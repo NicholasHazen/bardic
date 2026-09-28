@@ -62,7 +62,7 @@ Model requests use the same metered adapters as the rest of analysis:
 
 - The run's `RequestBudget` reserves and records each HTTP attempt before it is sent.
 - Runs have no request, token or dollar cap by default (changed 2026-09-28). Confirming the plan preview is the authorization; the preview states that retries and repairs can add requests and that dependent steps' work is only known once their inputs finish. A unit has at most four HTTP attempts (two transport attempts for each of at most two generations), so a run stays bounded by its work. API callers can still pass `limits`; the dollar guard, when set, is cumulative across all runs.
-- Evidence gets at most one repair generation.
+- A response gets at most one repair generation, for evidence that does not anchor to the source or for passage annotations that skip, repeat or invent passage IDs. The repair note names the affected IDs (only ID-shaped values; never book text or other response content).
 - Rejected outputs are retained as `analysis_rejection` artifacts.
 - Every request recipe is an `analysis_input` artifact with its verified source dependency.
 
@@ -141,7 +141,7 @@ and implements:
 | --- | --- |
 | `units(ctx)` | Plan the work from `ctx.book` (a copy of the projection) and `ctx.inputs` (accepted input payloads). LLM units carry an `LLMRequest(prompt, schema, output_cap)`, service units a `ServiceRequest(body)`, and either may set `chapter_id` (source dependency) and `dependencies` (other retained artifact IDs the request read). |
 | `execute(ctx, unit)` | Units with neither a request nor a service call: compute the unit result. |
-| `validate(ctx, unit, result)` | LLM units: raise `EvidenceValidationError` to allow one repair, any `ValueError` to reject. Service units: any `ValueError` rejects. Must not mutate shared state. |
+| `validate(ctx, unit, result)` | LLM units: raise a `RepairableValidationError` (`EvidenceValidationError`, `PassageIdError`) to allow one repair, any other `ValueError` to reject. Service units: any `ValueError` rejects. Must not mutate shared state. |
 | `assemble(ctx, done)` | Group validated unit results into `{scope: payload}`. Payloads are JSON and self-contained. |
 | `capture(book, scope)` | The payload that reproduces the current projection for a scope, or `None` if not recoverable. Must satisfy `apply(book, capture(book)) == book`. |
 | `apply(book, payloads)` | Idempotently write owned fields for the given scopes, honor `locked(item, field)`, and return `Conflict`s. Scopes not given are untouched. |
@@ -167,7 +167,7 @@ These recommendations came from reviewing the codebase and red-teaming the desig
 | Cast identity (alias clustering, groups, unnamed speakers) | LLM | book | deep | One request over discovery candidates. Wrong splits give one person two voices across the whole book. Must redirect, never delete, character IDs, and treat confirmed series links and reviewed characters as locks. Review gate recommended. |
 | Speaker attribution (split from directing) | Local tags and turn alternation first, then LLM | chapter | balanced; deep for a targeted re-fix of unassigned/low-confidence lines | The most audible error class. Re-running only uncertain lines must keep neighboring context. The BookNLP `quotes` step now provides the tag-and-alternation pass and a disagreement list; a targeted re-fix of `differs`/`suggests` lines is the natural next use. |
 | Line delivery (emotion from a fixed vocabulary with intensity, subtext, vocal cues, pace/pauses/emphasis) | LLM, one fused request | chapter | balanced | Fusing these avoids 2–3 extra whole-book passes. Cues stay metadata; the source is never rewritten (see R2). |
-| Pronunciation lexicon | Local candidate extraction, then LLM respellings, then review | book | economy | Verify each narration provider honors hints before investing in UI. Reusable across a series. |
+| Pronunciation lexicon | Local candidate extraction, then LLM respellings, then review | book | economy | The lexicon, its rendering and a Cast-tab editor with auditions exist (2026-09-28); this step would only propose entries for review. A trial found natural-looking respellings reliable and capitalized stress unreliable ([research](RESEARCH-VOICE.md#name-pronunciation-respelling-trial)); prompts should ask for that style. Reusable across a series. |
 | Utterance type (thought, written text, verse) | Local: retain italics/emphasis spans at import as source-coordinate metadata; LLM only for leftovers | chapter | economy | A label on existing passages, never a re-split. |
 | Narrator & point of view | Local pronoun statistics first; LLM where ambiguous | chapter | balanced | Lets a first-person narrator use that character's voice. |
 | Consistency checks | Local only | chapter | — | Alternation breaks, speaker absent from scene, unassigned rate. Feeds review and the targeted attribution re-fix. |

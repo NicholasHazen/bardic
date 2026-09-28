@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ...}`. `detail` is an English sentence, or a\n  list of issues for 422 request validation. Display it; do not parse it.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
@@ -3534,6 +3534,352 @@
         "x-bardic-cost": "none"
       }
     },
+    "/api/books/{book_id}/pronunciations": {
+      "get": {
+        "summary": "List the book's pronunciations",
+        "operationId": "listPronunciations",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PronunciationList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No book has this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many of those have a current Studio take, and up to three examples. Nothing is generated; the usage is computed from the current text on each call.",
+        "tags": [
+          "Pronunciations"
+        ],
+        "x-bardic-cost": "none"
+      },
+      "post": {
+        "summary": "Add a pronunciation",
+        "operationId": "addPronunciation",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PronunciationEntry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PronunciationSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The book is archived (restore it first); the entry is invalid (see the field rules); the term already has a pronunciation; the book has 500 entries; or `character_id` is not in the cast (\"Choose a character in this book's cast\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No book has this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nAdds one entry; only `term` and `respelling` are required, and the server assigns `id` (an `id` in the body is ignored). At most 500 entries per book.",
+        "tags": [
+          "Pronunciations"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
+    "/api/books/{book_id}/pronunciations/{entry_id}": {
+      "patch": {
+        "summary": "Change a pronunciation",
+        "operationId": "updatePronunciation",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            },
+            "description": "Pronunciation entry ID (`pr_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PronunciationEntry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PronunciationSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The book is archived; the merged entry is invalid; the term now duplicates another entry; or `character_id` is not in the cast.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No book has this ID, or no entry has this ID (\"Pronunciation not found\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nThe body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one.",
+        "tags": [
+          "Pronunciations"
+        ],
+        "x-bardic-cost": "none"
+      },
+      "delete": {
+        "summary": "Remove a pronunciation",
+        "operationId": "deletePronunciation",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            },
+            "description": "Pronunciation entry ID (`pr_…`)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PronunciationSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The book is archived (restore it first).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No book has this ID, or no entry has this ID (\"Pronunciation not found\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` field.",
+        "tags": [
+          "Pronunciations"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
     "/api/books/{book_id}/refresh-metadata": {
       "post": {
         "summary": "Re-read title, author and cover from the saved original",
@@ -4760,7 +5106,7 @@
             }
           }
         },
-        "description": "Audition a voice on a short, exact excerpt of the book (or the fixed demo text). `voice` accepts the\nsimple-listening values (`\"library:vl_…\"`, a direct ID, or empty for Default; a direct Breeze ID must\nbe in the last Breeze check). There is no caller-supplied transcript: the text is always resolved from\nthe stored book or the fixed demo.\n\nText selection: an explicit `segment_id` is used even when auditioning an unsaved speaker assignment.\nOtherwise a selected `character_id` uses that character's first attributed passage, falling back to\nthe demo when none exists; neither selector means demo text. References or name mentions never\nsubstitute for attributed speech. A passage sample is an exact original prefix of at most 400 Python\ncode points, preferably ending at a sentence or word boundary, with a validated chapter-local\n`source_anchor`; `truncated` marks a shortened sample. (The browser prefers the currently selected\npassage for the character, then its first passage in the current chapter.)\n\nWith a character, the recipe includes its effective direction (or `direction`) plus the saved scene\ntone/direction, the passage direction (or `segment_direction`) and cues. Without a character, the\nsample omits enhanced performance inputs. Requests never modify cast, source, reading position or\nselected simple/enhanced takes.\n\nA cache hit returns `{preview, audio, cached: true}` before provider availability or busy checks.\nReuse is book-scoped and covers source and the effective performance recipe (a character rename can\nreuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled\n`voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after\nthe busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its\n`preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is\nchecked before synthesis; a take finished in flight is still retained after Stop. There is no retry of\nthis POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which\nkeeps reported usage and records an unknown cost as unknown, not zero). Preview records and WAVs are kept\nin the library and in a full library backup, but are not included in the analysis or audiobook ZIP.",
+        "description": "Audition a voice on a short, exact excerpt of the book (or the fixed demo text). `voice` accepts the\nsimple-listening values (`\"library:vl_…\"`, a direct ID, or empty for Default; a direct Breeze ID must\nbe in the last Breeze check). There is no caller-supplied transcript: the text is always resolved from\nthe stored book or the fixed demo.\n\nText selection: an explicit `segment_id` is used even when auditioning an unsaved speaker assignment.\nOtherwise a selected `character_id` uses that character's first attributed passage, falling back to\nthe demo when none exists; neither selector means demo text. References or name mentions never\nsubstitute for attributed speech. A passage sample is an exact original prefix of at most 400 Python\ncode points, preferably ending at a sentence or word boundary, with a validated chapter-local\n`source_anchor`; `truncated` marks a shortened sample. (The browser prefers the currently selected\npassage for the character, then its first passage in the current chapter.)\n\nWith a character, the recipe includes its effective direction (or `direction`) plus the saved scene\ntone/direction, the passage direction (or `segment_direction`) and cues. Without a character, the\nsample omits enhanced performance inputs. Requests never modify cast, source, reading position or\nselected simple/enhanced takes.\n\nA cache hit returns `{preview, audio, cached: true}` before provider availability or busy checks.\nReuse is book-scoped and covers source and the effective performance recipe (a character rename can\nreuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled\n`voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after\nthe busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its\n`preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is\nchecked before synthesis; a take finished in flight is still retained after Stop. There is no retry of\nthis POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which\nkeeps reported usage and records an unknown cost as unknown, not zero).\n\nBook pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`\nof the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the\nbook. With it and no `segment_id`, the first passage containing the word is used, and the sample is that word's\nwhole sentence from the chapter (exact source coordinates in `source_anchor`, at most 400 code points). A word\nthe book does not contain is read in a fixed original carrier sentence (`source: \"demo\"`). When a respelling\napplies, `preview.spoken_text` shows the text sent, and a draft adds `preview.pronunciation: {term, spoken}`.\nThe retained request keeps only the matching entries' speech fields (`term`, `respelling`, `providers`,\n`match_case`), never IDs, notes or unrelated entries, so hearing the same unsaved spelling twice reuses the\nfirst example.\n\nPreview records and WAVs are kept\nin the library and in a full library backup, but are not included in the analysis or audiobook ZIP.",
         "tags": [
           "Voice previews"
         ],
@@ -9486,6 +9832,20 @@
             ],
             "description": "Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves.",
             "x-bardic-internal": true
+          },
+          "pronunciations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BookPronunciation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The book's pronunciations, in saved order; absent when there are none. Managed with the Pronunciations operations, which also report where each term occurs."
           }
         },
         "required": [
@@ -10313,6 +10673,71 @@
           "leading_text"
         ],
         "title": "BookPassage",
+        "type": "object"
+      },
+      "BookPronunciation": {
+        "description": "A book pronunciation: how narrators should say a word.\n\nOnly the text sent to the narrator changes; chapter and passage text,\noffsets, search and analysis are untouched. Matching is whole-word (a\nletter, digit or underscore on either side prevents a match, so `Will`\ndoes not match `Willow`), longest term first, and case-sensitive unless\n`match_case` is false. A space in a term matches any whitespace, including\na line break; straight and curly apostrophes are interchangeable; and a\nterm matches text stored in either composed or decomposed Unicode form.",
+        "properties": {
+          "id": {
+            "description": "Entry ID assigned by the server: `pr_` followed by 12 lowercase hex digits.",
+            "type": "string"
+          },
+          "term": {
+            "description": "The word or phrase as written in the book: at most 80 characters, whitespace collapsed, with at least one letter or digit.",
+            "type": "string"
+          },
+          "respelling": {
+            "description": "How to say it, for example `Kaylor` for `Cthaelor`: at most 120 characters. Control characters, brackets, parentheses, braces and backslashes are refused, because narrators perform `(laugh)`, `<sigh>` and `[[…]]` instead of reading them.",
+            "type": "string"
+          },
+          "match_case": {
+            "description": "True: match the term's exact case. False: match any case. Two case-sensitive entries may differ only in case; otherwise a term appears once per book.",
+            "type": "boolean"
+          },
+          "providers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-narrator overrides of `respelling`, keyed by `system`, `gemini` or `breeze`; absent when there are none. An override equal to the term leaves that narrator reading the word unchanged."
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Book-local character the word belongs to (informational); absent when none. It had to be in the cast when the entry was added or changed; a link left by a character that analysis later removed stays until the entry is edited."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free-text note, at most 500 characters; absent when empty."
+          }
+        },
+        "required": [
+          "id",
+          "term",
+          "respelling",
+          "match_case"
+        ],
+        "title": "BookPronunciation",
         "type": "object"
       },
       "BookScene": {
@@ -14600,7 +15025,7 @@
         "type": "object"
       },
       "Performance": {
-        "description": "A saved performance: a named chapter selection plus a narrator (`simple`) or the cast (`cast`).\n\nThis is the stored record without its internal `cast_snapshot`, which responses never include.",
+        "description": "A saved performance: a named chapter selection plus a narrator (`simple`) or the cast (`cast`).\n\nThis is the stored record without its internal `cast_snapshot` and `pronunciation_snapshot`, which responses\nnever include.",
         "properties": {
           "id": {
             "description": "Performance ID (`pf_…`).",
@@ -14656,6 +15081,17 @@
               }
             ],
             "description": "Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null."
+          },
+          "pronunciation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cast performances only: how many book pronunciations were pinned when it was created. Absent when none were (including performances made before pronunciations existed) and for simple performances, which always use the book's current pronunciations."
           },
           "session_id": {
             "anyOf": [
@@ -15454,7 +15890,7 @@
             "type": "array"
           },
           "notes": {
-            "description": "Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget.",
+            "description": "Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them.",
             "items": {
               "type": "string"
             },
@@ -18814,6 +19250,284 @@
           "provisional"
         ],
         "title": "ProfileFreshness",
+        "type": "object"
+      },
+      "PronunciationEntry": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved version replaces; omit it for a new word."
+          },
+          "term": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one letter or digit (the request accepts up to 200 before normalization)."
+          },
+          "respelling": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, parentheses, braces and backslashes are refused."
+          },
+          "providers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "propertyNames": {
+                  "enum": [
+                    "system",
+                    "gemini",
+                    "breeze"
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-narrator overrides keyed by `system`, `gemini` or `breeze`. An empty or null value drops that override; an override equal to the term leaves that narrator reading the word unchanged."
+          },
+          "match_case": {
+            "type": "boolean",
+            "default": true,
+            "description": "True (default): match exact case. False: match any case."
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional book-local character the word belongs to; must be in the current cast."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional free-text note, at most 500 characters."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "term",
+          "respelling"
+        ],
+        "title": "PronunciationEntry",
+        "description": "A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left out keep their saved values. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example."
+      },
+      "PronunciationExample": {
+        "description": "One occurrence of a term in chapter text.",
+        "properties": {
+          "chapter_id": {
+            "description": "Chapter whose text the offsets index.",
+            "type": "string"
+          },
+          "start": {
+            "description": "Zero-based Unicode code-point offset of the match in the chapter text.",
+            "type": "integer"
+          },
+          "end": {
+            "description": "Exclusive end offset of the match, in code points.",
+            "type": "integer"
+          },
+          "context": {
+            "description": "The match with up to 60 code points of chapter text on either side.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chapter_id",
+          "start",
+          "end",
+          "context"
+        ],
+        "title": "PronunciationExample",
+        "type": "object"
+      },
+      "PronunciationList": {
+        "description": "The book's pronunciations.",
+        "properties": {
+          "pronunciations": {
+            "description": "All entries, in saved order, each with its usage.",
+            "items": {
+              "$ref": "#/components/schemas/PronunciationWithUsage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pronunciations"
+        ],
+        "title": "PronunciationList",
+        "type": "object"
+      },
+      "PronunciationSaved": {
+        "description": "The result of adding, changing or removing a pronunciation.",
+        "properties": {
+          "book": {
+            "$ref": "#/components/schemas/Book",
+            "description": "The updated book document; its `revision` has increased."
+          },
+          "pronunciations": {
+            "description": "All entries after the change, each with its usage.",
+            "items": {
+              "$ref": "#/components/schemas/PronunciationWithUsage"
+            },
+            "type": "array"
+          },
+          "retired_takes": {
+            "description": "Studio takes that no longer match their recipe and were unselected. Their WAVs stay archived and are reused without a request if the recipe returns.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "book",
+          "pronunciations",
+          "retired_takes"
+        ],
+        "title": "PronunciationSaved",
+        "type": "object"
+      },
+      "PronunciationUsage": {
+        "description": "Where a term occurs, counted as narration applies entries.\n\nWhere terms overlap (\"Tar Valon\", \"Valon\") only the longer match counts.",
+        "properties": {
+          "occurrences": {
+            "description": "Whole-word matches in all chapter text.",
+            "type": "integer"
+          },
+          "passages": {
+            "description": "Passages containing at least one match.",
+            "type": "integer"
+          },
+          "rendered_passages": {
+            "description": "Of those, passages with a current Studio (enhanced) take. Changing the entry retires these takes.",
+            "type": "integer"
+          },
+          "first_passage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First passage containing the term, in reading order; null when none."
+          },
+          "examples": {
+            "description": "Up to three occurrences, in reading order.",
+            "items": {
+              "$ref": "#/components/schemas/PronunciationExample"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "occurrences",
+          "passages",
+          "rendered_passages",
+          "first_passage_id",
+          "examples"
+        ],
+        "title": "PronunciationUsage",
+        "type": "object"
+      },
+      "PronunciationWithUsage": {
+        "description": "A pronunciation entry with its use in the book.",
+        "properties": {
+          "id": {
+            "description": "Entry ID assigned by the server: `pr_` followed by 12 lowercase hex digits.",
+            "type": "string"
+          },
+          "term": {
+            "description": "The word or phrase as written in the book: at most 80 characters, whitespace collapsed, with at least one letter or digit.",
+            "type": "string"
+          },
+          "respelling": {
+            "description": "How to say it, for example `Kaylor` for `Cthaelor`: at most 120 characters. Control characters, brackets, parentheses, braces and backslashes are refused, because narrators perform `(laugh)`, `<sigh>` and `[[…]]` instead of reading them.",
+            "type": "string"
+          },
+          "match_case": {
+            "description": "True: match the term's exact case. False: match any case. Two case-sensitive entries may differ only in case; otherwise a term appears once per book.",
+            "type": "boolean"
+          },
+          "providers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-narrator overrides of `respelling`, keyed by `system`, `gemini` or `breeze`; absent when there are none. An override equal to the term leaves that narrator reading the word unchanged."
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Book-local character the word belongs to (informational); absent when none. It had to be in the cast when the entry was added or changed; a link left by a character that analysis later removed stays until the entry is edited."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free-text note, at most 500 characters; absent when empty."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/PronunciationUsage",
+            "description": "Where the term occurs, computed from the current book text."
+          }
+        },
+        "required": [
+          "id",
+          "term",
+          "respelling",
+          "match_case",
+          "usage"
+        ],
+        "title": "PronunciationWithUsage",
         "type": "object"
       },
       "RenderRequest": {
@@ -23880,11 +24594,11 @@
             "type": "string"
           },
           "text": {
-            "description": "Exact text sampled: an original passage prefix of at most 400 code points, or the fixed demo text.",
+            "description": "Exact source text sampled, at most 400 code points: a passage prefix; for a pronunciation audition, the sentence around the word; or a fixed demo or carrier sentence. Pronunciations are not applied here (see `spoken_text`).",
             "type": "string"
           },
           "source": {
-            "description": "`passage` when the text is a prefix of a book passage; `demo` when no passage was chosen or found and the fixed demo text is used.",
+            "description": "`passage` when the text comes from the book; `demo` when no passage was chosen or found and a fixed demo or pronunciation carrier sentence is used.",
             "enum": [
               "passage",
               "demo"
@@ -23949,6 +24663,28 @@
           "truncated": {
             "description": "True when the passage was shortened to the sample.",
             "type": "boolean"
+          },
+          "spoken_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The text actually sent to the narrator when a pronunciation changed it; absent otherwise."
+          },
+          "pronunciation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoicePreviewPronunciation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The unsaved pronunciation this audition tried; absent otherwise."
           },
           "provider": {
             "description": "Speech provider: `system` (macOS device voice), `gemini` or `breeze` (self-hosted).",
@@ -24172,6 +24908,25 @@
         "title": "VoicePreviewCached",
         "type": "object"
       },
+      "VoicePreviewPronunciation": {
+        "description": "The unsaved pronunciation a voice example auditioned.",
+        "properties": {
+          "term": {
+            "description": "The word as written in the book.",
+            "type": "string"
+          },
+          "spoken": {
+            "description": "What this example's narrator was asked to say: the provider override if any, else the respelling.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "term",
+          "spoken"
+        ],
+        "title": "VoicePreviewPronunciation",
+        "type": "object"
+      },
       "VoicePreviewQueued": {
         "description": "An audition that needs synthesis: a new or joined `voice_preview` job.",
         "properties": {
@@ -24279,6 +25034,17 @@
               }
             ],
             "description": "Unsaved passage direction. Requires both a passage and `character_id`. At most 3000 characters."
+          },
+          "pronunciation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PronunciationEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An unsaved pronunciation entry to audition in place of the saved entry with the same `id` (or in addition to the saved ones, without an `id`). Never stored in the book. Without `segment_id`, the sample is the sentence around the word's first occurrence, or a fixed carrier sentence when the book does not contain it."
           }
         },
         "additionalProperties": false,
@@ -24380,6 +25146,10 @@
     {
       "name": "Books",
       "description": "The book document and manual edits to its characters, passages and scenes."
+    },
+    {
+      "name": "Pronunciations",
+      "description": "Per-book respellings sent to narrators in place of a word; book text never changes."
     },
     {
       "name": "Classic analysis",

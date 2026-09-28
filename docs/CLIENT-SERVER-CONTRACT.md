@@ -13,7 +13,7 @@ This proposal was written on September 28, 2026. Part of it is now implemented; 
 - **A port needs a black-box conformance suite.** The current tests call the Python app in process. A suite that runs over real HTTP against any base URL, and checks the recorded contract, is the acceptance test for a replacement server. This is planned, not built.
 
 **Implemented** (Phases 0–1 of the original plan, for the server side):
-- `bardic/apispec/` describes all 96 operations.
+- `bardic/apispec/` describes every operation: 100 as of contract 0.1.2.
 - `contract/` holds the generated spec, a readable reference and a changelog.
 - The test suite validates every API response against the contract.
 - The workflow rules are in AGENTS.md and [API-WORKFLOW.md](API-WORKFLOW.md).

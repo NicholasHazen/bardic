@@ -188,19 +188,27 @@ class VoicePreviewSourceAnchor(View):
     end: int = Field(description='Exclusive chapter-local code-point end of the sample (start + sample length).')
     text_sha256: str = Field(description='SHA-256 hex of the sample text.')
 
+class VoicePreviewPronunciation(View):
+    """The unsaved pronunciation a voice example auditioned."""
+    term: str = Field(description='The word as written in the book.')
+    spoken: str = Field(description='What this example\'s narrator was asked to say: the provider override if any, else the respelling.')
+
+
 class VoicePreview(View):
     """An immutable audition request."""
     id: str = Field(description='Preview ID: a hash of the full audition recipe.')
     schema_version: int = Field(description='Preview request format version (1).')
     book_id: str = Field(description='Book ID the audition belongs to.')
-    text: str = Field(description='Exact text sampled: an original passage prefix of at most 400 code points, or the fixed demo text.')
-    source: Literal['passage', 'demo'] = Field(description='`passage` when the text is a prefix of a book passage; `demo` when no passage was chosen or found and the fixed demo text is used.')
+    text: str = Field(description='Exact source text sampled, at most 400 code points: a passage prefix; for a pronunciation audition, the sentence around the word; or a fixed demo or carrier sentence. Pronunciations are not applied here (see `spoken_text`).')
+    source: Literal['passage', 'demo'] = Field(description='`passage` when the text comes from the book; `demo` when no passage was chosen or found and a fixed demo or pronunciation carrier sentence is used.')
     segment_id: str | None = Field(description='Passage ID sampled: the requested passage, or else the character\'s first attributed passage. Null for demo text.')
     chapter_id: str | None = Field(description='Chapter ID of the sampled passage, or null for demo text.')
     character_id: str | None = Field(description='Book-local character ID whose voice and direction were auditioned, or null for a narrator audition.')
     character_name: str | None = Field(description='Character name at request time, or null.')
     source_anchor: VoicePreviewSourceAnchor | None = Field(description='Null for demo text.')
     truncated: bool = Field(description='True when the passage was shortened to the sample.')
+    spoken_text: str | None = Field(None, description='The text actually sent to the narrator when a pronunciation changed it; absent otherwise.')
+    pronunciation: VoicePreviewPronunciation | None = Field(None, description='The unsaved pronunciation this audition tried; absent otherwise.')
     provider: Provider = Field(description='Speech provider: `system` (macOS device voice), `gemini` or `breeze` (self-hosted).')
     model: str = Field(description='Speech model: `macos-say` for system, `breeze-tts-2` for Breeze, or the Gemini model (default `gemini-3.8-flash-tts`).')
     voice: str = Field(description='Resolved provider voice (Gemini defaults to `Kore`; device default is empty).')

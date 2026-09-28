@@ -208,7 +208,8 @@ class PerformanceProgress(View):
 class Performance(View):
     """A saved performance: a named chapter selection plus a narrator (`simple`) or the cast (`cast`).
 
-    This is the stored record without its internal `cast_snapshot`, which responses never include.
+    This is the stored record without its internal `cast_snapshot` and `pronunciation_snapshot`, which responses
+    never include.
     """
     id: str = Field(description='Performance ID (`pf_…`).')
     book_id: str = Field(description='ID of the book the performance belongs to.')
@@ -221,6 +222,10 @@ class Performance(View):
     provider: Provider = Field(description='Narration provider pinned at creation.')
     model: str = Field(description='Speech model pinned at creation.')
     voice: str | None = Field(description='Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null.')
+    pronunciation_count: int | None = Field(
+        None, description='Cast performances only: how many book pronunciations were pinned when it was created. Absent '
+                          'when none were (including performances made before pronunciations existed) and for simple '
+                          'performances, which always use the book\'s current pronunciations.')
     session_id: str | None = Field(None, description='Simple only: the pinned listening session.')
     created_at: str = Field(description='ISO 8601 UTC.')
     updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive and when a job starts.')
@@ -276,7 +281,7 @@ class PerformancePlan(View):
     expected_seconds: float = Field(description='Missing text at 14 code points per second plus ready durations.')
     chapters: list[PerformanceChapterProgress] = Field(description='Readiness per requested chapter, in book order.')
     problems: list[str] = Field(description='Blocking conditions; create refuses (400) while any exist.')
-    notes: list[str] = Field(description='Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget.')
+    notes: list[str] = Field(description='Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book\'s current ones or predate them.')
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
                                             'prefix of the default name.')
@@ -404,7 +409,19 @@ the busy, shutdown and provider checks, a one-unit `voice_preview` job is queued
 `preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is
 checked before synthesis; a take finished in flight is still retained after Stop. There is no retry of
 this POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which
-keeps reported usage and records an unknown cost as unknown, not zero). Preview records and WAVs are kept
+keeps reported usage and records an unknown cost as unknown, not zero).
+
+Book pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`
+of the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the
+book. With it and no `segment_id`, the first passage containing the word is used, and the sample is that word's
+whole sentence from the chapter (exact source coordinates in `source_anchor`, at most 400 code points). A word
+the book does not contain is read in a fixed original carrier sentence (`source: "demo"`). When a respelling
+applies, `preview.spoken_text` shows the text sent, and a draft adds `preview.pronunciation: {term, spoken}`.
+The retained request keeps only the matching entries' speech fields (`term`, `respelling`, `providers`,
+`match_case`), never IDs, notes or unrelated entries, so hearing the same unsaved spelling twice reuses the
+first example.
+
+Preview records and WAVs are kept
 in the library and in a full library backup, but are not included in the analysis or audiobook ZIP."""
 
 _PERFORMANCE_JOB = """\
@@ -696,5 +713,9 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                         'text if none). At most 200 characters.',
         'direction': 'Unsaved character direction to use instead of the saved one. Requires `character_id`. At most 3000 characters.',
         'segment_direction': 'Unsaved passage direction. Requires both a passage and `character_id`. At most 3000 characters.',
+        'pronunciation': 'An unsaved pronunciation entry to audition in place of the saved entry with the same `id` (or '
+                         'in addition to the saved ones, without an `id`). Never stored in the book. Without '
+                         '`segment_id`, the sample is the sentence around the word\'s first occurrence, or a fixed '
+                         'carrier sentence when the book does not contain it.',
     },
 }

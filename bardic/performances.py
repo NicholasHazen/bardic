@@ -22,6 +22,7 @@ import shutil
 from urllib.parse import quote
 from uuid import uuid4
 
+from . import pronunciation
 from .audio import (BREEZE_MODEL, SYSTEM_MODEL, TTS_MODELS, AudioError, RateLimited, render_fingerprint,
                     synthesize, validate_audio, voice_id, voice_selection)
 from .chapter_listening import ChapterCoordinator, QuotaReached
@@ -333,7 +334,9 @@ def cast_summary(runtime, record: dict, book: dict) -> list[dict]:
 def present(runtime, record: dict, book: dict | None = None, ready: dict | None = None) -> dict:
     book = book or runtime.store.book(record['book_id'])
     ready = ready_audio(runtime, record, book) if ready is None else ready
-    result = {key: value for key, value in record.items() if key != 'cast_snapshot'}
+    result = {key: value for key, value in record.items() if key not in ('cast_snapshot', 'pronunciation_snapshot')}
+    if record.get('pronunciation_snapshot'):
+        result['pronunciation_count'] = len(record['pronunciation_snapshot'])
     if record['mode'] == 'cast':
         result['cast'] = cast_summary(runtime, record, book)
     result['job'] = job_summary(runtime.store, record.get('job_id'))
@@ -414,6 +417,17 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         if voiceless:
             verb = 'has' if len(voiceless) == 1 else 'have'
             notes.append(f'{names(voiceless)} {verb} no {VOICE_NOUNS[provider]} voice and will use the narrator.')
+        lexicon = pronunciation.book_lexicon(book)
+        pinned = (record.get('pronunciation_snapshot') or []) if record else lexicon
+        if pinned:
+            notes.append(f'{len(pinned)} saved pronunciation{"s" if len(pinned) != 1 else ""} '
+                         f'appl{"y" if len(pinned) != 1 else "ies"} to this performance.')
+        if record and 'pronunciation_snapshot' not in record and lexicon:
+            notes.append('This performance was created before pronunciations existed and does not use them; '
+                         'create a new performance to use them.')
+        elif record and pinned != lexicon:
+            notes.append('Pronunciations changed after this performance started. It keeps its original '
+                         'pronunciations; create a new performance to use the current ones.')
         unassigned = speakers.count(UNASSIGNED)
         if unassigned:
             notes.append(f'{unassigned} passage{"s" if unassigned != 1 else ""} with no identified speaker '
@@ -494,6 +508,8 @@ def create(runtime, book_id: str, request: dict) -> dict:
         record['session_id'] = planned['session']['id']
     else:
         record['cast_snapshot'] = planned['snapshot']
+        # Pinned like the cast: a later lexicon edit must not mix pronunciations within one performance.
+        record['pronunciation_snapshot'] = pronunciation.book_lexicon(book)
     repository = PerformanceRepository(runtime.store)
     repository.create(record)
     job = start(runtime, record, planned['to_generate']) if planned['to_generate'] else None
@@ -694,7 +710,9 @@ def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: d
         runtime.check_cancel(job_id)
         used_id, character, fallback = cast_voice(snapshot, segment['speaker_id'], provider, model)
         scene = scenes.get(segment.get('scene_id'), {})
-        fingerprint = render_fingerprint(segment, character, scene, provider, model)
+        # Records made before pronunciations existed have no snapshot and keep their original recipes.
+        rendered = pronunciation.with_lexicon(segment, record.get('pronunciation_snapshot'))
+        fingerprint = render_fingerprint(rendered, character, scene, provider, model)
         store.update_job(job_id, message=f'Chapter {number} of {len(chapters)} · passage {index + 1} of {count}')
         metadata, reuse = None, None
         for body in by_fingerprint.get(fingerprint, []):
@@ -719,7 +737,7 @@ def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: d
                                output_bytes=runtime.audio_path(book_id, metadata['asset_id']).stat().st_size)
         else:
             try:
-                metadata = _generate(runtime, job_id, book_id, segment, character, scene, provider, model, key,
+                metadata = _generate(runtime, job_id, book_id, rendered, character, scene, provider, model, key,
                                      limits, chapter['id'])
             except (InterruptedError, QuotaReached):  # includes BudgetReached
                 raise

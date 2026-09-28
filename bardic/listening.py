@@ -19,6 +19,7 @@ from .alignment import align_file
 from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
 from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SECONDS
 from .store import now
+from . import pronunciation
 from .take_archive import produce_take
 
 
@@ -134,10 +135,11 @@ class ListeningRepository:
         return json.loads(row[0])
 
     @staticmethod
-    def _audio_recipe(segment, session):
+    def _audio_recipe(segment, session, lexicon=None):
         # Deliberately copy only the transcript identity. No inferred speaker,
         # stage direction, character trait, emotion, or cue enters simple mode.
-        passage = {'id': segment['id'], 'text': segment['text']}
+        # The book's pronunciations do: they belong to the text, not the cast.
+        passage = pronunciation.with_lexicon({'id': segment['id'], 'text': segment['text']}, lexicon)
         narrator = {'id': 'simple-narrator', 'voice': session['voice'] or 'Kore',
                     'system_voice': session['voice']}
         if session['provider'] == 'breeze':
@@ -151,7 +153,8 @@ class ListeningRepository:
     def _synthesis_key(cls, passage, session):
         # This constant ID is ONLY a lookup identity. Never pass it to synthesis
         # or publish its fingerprint as the source-bound generated fingerprint.
-        fingerprint = cls._audio_recipe({'id': 'simple-speech-content', 'text': passage['text']}, session)[-1]
+        fingerprint = cls._audio_recipe({'id': 'simple-speech-content', 'text': passage['text']}, session,
+                                        passage.get('pronunciations'))[-1]
         return _hash({'schema_version': SYNTHESIS_CACHE_VERSION, 'fingerprint': fingerprint})
 
     def _validated_asset(self, book_id, asset_id):
@@ -209,14 +212,14 @@ class ListeningRepository:
         if segment is None:
             raise KeyError('Passage not found in this book')
         chapter = next((c for c in book['chapters'] if c['id'] == segment['chapter_id']), None)
-        return self._source_inputs(book_id, session, segment, chapter)
+        return self._source_inputs(book_id, session, segment, chapter, pronunciation.book_lexicon(book))
 
-    def _source_inputs(self, book_id, session, segment, chapter):
+    def _source_inputs(self, book_id, session, segment, chapter, lexicon=None):
         start, end = segment.get('start'), segment.get('end')
         if (chapter is None or type(start) is not int or type(end) is not int or
                 not 0 <= start < end <= len(chapter['text']) or chapter['text'][start:end] != segment['text']):
             raise ValueError('This passage does not match its original source. Repair its source mapping before listening.')
-        passage, narrator, fingerprint = self._audio_recipe(segment, session)
+        passage, narrator, fingerprint = self._audio_recipe(segment, session, lexicon)
         identity = {'schema_version': VERSION, 'book_id': book_id, 'session_id': session['id'],
                     'chapter_id': chapter['id'], 'segment_id': segment['id'],
                     'start': start, 'end': end, 'fingerprint': fingerprint}
@@ -300,13 +303,14 @@ class ListeningRepository:
         chapters = {chapter['id']: chapter for chapter in book['chapters']}
         # Chunk clips come first: consecutive clips in one WAV play gaplessly.
         clips = self._chunk_clips(book, session)
+        lexicon = pronunciation.book_lexicon(book)
         takes = []
         for segment in book['segments']:
             if segment['id'] in clips:
                 takes.append({'segment_id': segment['id'], 'audio': clips[segment['id']]})
                 continue
             try:
-                recipe = self._source_inputs(book_id, session, segment, chapters.get(segment['chapter_id']))[-1]
+                recipe = self._source_inputs(book_id, session, segment, chapters.get(segment['chapter_id']), lexicon)[-1]
             except ValueError:
                 continue
             for metadata in saved.get((segment['id'], recipe), []):
@@ -342,12 +346,12 @@ class ListeningRepository:
         return _asset_checks.get(key)
 
     @staticmethod
-    def _chunk_recipe(chapter_id, start, end, text, session):
+    def _chunk_recipe(chapter_id, start, end, text, session, lexicon=None):
         source_id = 'chunk-' + _hash([chapter_id, start, end])[:24]
-        return ListeningRepository._audio_recipe({'id': source_id, 'text': text}, session)
+        return ListeningRepository._audio_recipe({'id': source_id, 'text': text}, session, lexicon)
 
     @classmethod
-    def _chunk_valid(cls, chunk, chapters, segments, session):
+    def _chunk_valid(cls, chunk, chapters, segments, session, lexicon=None):
         """A chunk applies only while its source slice, anchors and recipe are unchanged."""
         chapter = chapters.get(chunk.get('chapter_id'))
         if chunk.get('schema_version') != CHUNK_VERSION or chunk.get('session_id') != session['id'] or not chapter:
@@ -364,8 +368,8 @@ class ListeningRepository:
                     segment['end'] != segment_end or chapter['text'][segment_start:segment_end] != segment['text']):
                 return False
         try:
-            # A recipe version or narrator change invalidates chunks exactly as it does single takes.
-            if cls._chunk_recipe(chapter['id'], start, end, text, session)[-1] != chunk.get('fingerprint'):
+            # A recipe version, narrator or pronunciation change invalidates chunks exactly as it does single takes.
+            if cls._chunk_recipe(chapter['id'], start, end, text, session, lexicon)[-1] != chunk.get('fingerprint'):
                 return False
         except AudioError:
             return False
@@ -387,10 +391,11 @@ class ListeningRepository:
                 ORDER BY rowid DESC''', (book['id'], session['id'])).fetchall()
         chapters = {chapter['id']: chapter for chapter in book['chapters']}
         segments = {segment['id']: segment for segment in book['segments']}
+        lexicon = pronunciation.book_lexicon(book)
         clips = {}
         for (body,) in rows:
             chunk = json.loads(body)
-            if not self._chunk_valid(chunk, chapters, segments, session):
+            if not self._chunk_valid(chunk, chapters, segments, session, lexicon):
                 continue
             if self._asset_state(book['id'], chunk['asset_id'], verify=verify) is False:
                 continue
@@ -419,16 +424,19 @@ class ListeningRepository:
         if not segment_ids or None in indexes or indexes != list(range(indexes[0], indexes[0] + len(indexes))):
             raise ValueError('A chunk must be consecutive passages from one chapter.')
         selected = [ordered[index] for index in indexes]
+        lexicon = pronunciation.book_lexicon(book)
         for segment in selected:
-            self._source_inputs(book_id, session, segment, chapter)
+            self._source_inputs(book_id, session, segment, chapter, lexicon)
         start, end = selected[0]['start'], selected[-1]['end']
         text = chapter['text'][start:end]
-        passage, narrator, fingerprint = self._chunk_recipe(chapter_id, start, end, text, session)
+        passage, narrator, fingerprint = self._chunk_recipe(chapter_id, start, end, text, session, lexicon)
         identity = {'schema_version': CHUNK_VERSION, 'chunking_version': CHUNKING_VERSION,
                     'book_id': book_id, 'session_id': session['id'], 'chapter_id': chapter_id,
                     'start': start, 'end': end, 'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
                     'segments': [[s['id'], s['start'], s['end']] for s in selected], 'fingerprint': fingerprint}
-        alignment_input = [{'id': segment['id'], 'text': segment['text'],
+        # Boundaries are estimated from what was spoken, so respelled names weigh as heard.
+        alignment_input = [{'id': segment['id'],
+                            'text': pronunciation.apply(segment['text'], lexicon, session['provider'])[0],
                             'gap_after': chapter['text'][segment['end']:selected[i + 1]['start']] if i + 1 < len(selected) else ''}
                            for i, segment in enumerate(selected)]
 
@@ -448,8 +456,9 @@ class ListeningRepository:
             latest = self.store.book(book_id)
             latest_chapter, latest_ordered = self.chapter_segments(latest, chapter_id)
             if not self._chunk_valid({**identity, 'session_id': session['id']}, {latest_chapter['id']: latest_chapter},
-                                     {segment['id']: segment for segment in latest_ordered}, session):
-                raise ValueError('The source passages changed during narration. Prepare the chapter again.')
+                                     {segment['id']: segment for segment in latest_ordered}, session,
+                                     pronunciation.book_lexicon(latest)):
+                raise ValueError('The source passages or pronunciations changed during narration. Prepare the chapter again.')
             timing = align_file(path, alignment_input)
             edges = [clip['start'] for clip in timing['clips']] + [timing['clips'][-1]['end']]
             if (edges[0] != 0 or any(b < a for a, b in zip(edges, edges[1:])) or edges[-1] > duration + 0.01 or
@@ -490,7 +499,7 @@ class ListeningRepository:
         # Concurrent enhanced changes do not affect this recipe. A source change
         # must not publish a new take against the wrong passage coordinates.
         if self._inputs(book_id, session_id, segment_id)[-1] != recipe:
-            raise ValueError('The source passage changed during narration. Select the passage again.')
+            raise ValueError('The source passage or its pronunciations changed during narration. Select the passage again.')
         metadata = self._retain(book_id, session_id, segment_id, identity, recipe,
                                 self._synthesis_key(passage, session), metadata)
         # Completed audio is retained even if Stop was pressed during the call.

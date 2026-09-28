@@ -34,6 +34,7 @@ The reference groups operations by family:
 | [Library](../contract/API-REFERENCE.md#library) | Import, the library snapshot, metadata, covers, removal and restoration, audiobook export |
 | [Series](../contract/API-REFERENCE.md#series) | Membership, volume placeholders, cross-book identities, collection runs |
 | [Books](../contract/API-REFERENCE.md#books) | The book document and manual edits |
+| [Pronunciations](../contract/API-REFERENCE.md#pronunciations) | Per-book respellings sent to narrators, with where each word occurs |
 | [Classic analysis](../contract/API-REFERENCE.md#classic-analysis) | The older phase-based analysis, its plan preview and local preprocessing |
 | [Analysis pipeline](../contract/API-REFERENCE.md#analysis-pipeline) | Step settings, previewed runs, versioned results to accept or reject |
 | [Inspection](../contract/API-REFERENCE.md#inspection) | Stages, artifacts, the story map, passage search, resource usage, the analysis export |

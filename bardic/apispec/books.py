@@ -321,6 +321,37 @@ class BookCharacter(View):
     edited_fields: list[str] | None = internal('Names of fields edited by hand; `"*"` means all. ' + _EDIT_LOCKS, default=None)
 
 
+# ------------------------------------------------------------------ pronunciations
+
+class BookPronunciation(View):
+    """A book pronunciation: how narrators should say a word.
+
+    Only the text sent to the narrator changes; chapter and passage text,
+    offsets, search and analysis are untouched. Matching is whole-word (a
+    letter, digit or underscore on either side prevents a match, so `Will`
+    does not match `Willow`), longest term first, and case-sensitive unless
+    `match_case` is false. A space in a term matches any whitespace, including
+    a line break; straight and curly apostrophes are interchangeable; and a
+    term matches text stored in either composed or decomposed Unicode form.
+    """
+    id: str = Field(description='Entry ID assigned by the server: `pr_` followed by 12 lowercase hex digits.')
+    term: str = Field(description='The word or phrase as written in the book: at most 80 characters, whitespace collapsed, '
+                                  'with at least one letter or digit.')
+    respelling: str = Field(description='How to say it, for example `Kaylor` for `Cthaelor`: at most 120 characters. '
+                                        'Control characters, brackets, parentheses, braces and backslashes are refused, '
+                                        'because narrators perform `(laugh)`, `<sigh>` and `[[…]]` instead of reading them.')
+    match_case: bool = Field(description='True: match the term\'s exact case. False: match any case. Two case-sensitive '
+                                         'entries may differ only in case; otherwise a term appears once per book.')
+    providers: dict[str, str] | None = Field(
+        None, description='Per-narrator overrides of `respelling`, keyed by `system`, `gemini` or `breeze`; absent when '
+                          'there are none. An override equal to the term leaves that narrator reading the word unchanged.')
+    character_id: str | None = Field(
+        None, description='Book-local character the word belongs to (informational); absent when none. It had to be in '
+                          'the cast when the entry was added or changed; a link left by a character that analysis later '
+                          'removed stays until the entry is edited.')
+    note: str | None = Field(None, description='Free-text note, at most 500 characters; absent when empty.')
+
+
 class Book(View):
     """The full book document: the reader's projection of one imported book.
 
@@ -355,6 +386,48 @@ class Book(View):
     analysis: BookAnalysisSummary = Field(description='Who produced the current annotations.')
     cover: BookCover | None = Field(default=None, description='Cover thumbnail metadata; absent when the original had no usable cover.')
     metadata_edited: BookMetadataEdits | None = internal('Display fields set by hand, which metadata refresh preserves.', default=None)
+    pronunciations: list[BookPronunciation] | None = Field(
+        None, description='The book\'s pronunciations, in saved order; absent when there are none. Managed with the '
+                          'Pronunciations operations, which also report where each term occurs.')
+
+
+class PronunciationExample(View):
+    """One occurrence of a term in chapter text."""
+    chapter_id: str = Field(description='Chapter whose text the offsets index.')
+    start: int = Field(description='Zero-based Unicode code-point offset of the match in the chapter text.')
+    end: int = Field(description='Exclusive end offset of the match, in code points.')
+    context: str = Field(description='The match with up to 60 code points of chapter text on either side.')
+
+
+class PronunciationUsage(View):
+    """Where a term occurs, counted as narration applies entries.
+
+    Where terms overlap ("Tar Valon", "Valon") only the longer match counts.
+    """
+    occurrences: int = Field(description='Whole-word matches in all chapter text.')
+    passages: int = Field(description='Passages containing at least one match.')
+    rendered_passages: int = Field(description='Of those, passages with a current Studio (enhanced) take. Changing the '
+                                               'entry retires these takes.')
+    first_passage_id: str | None = Field(description='First passage containing the term, in reading order; null when none.')
+    examples: list[PronunciationExample] = Field(description='Up to three occurrences, in reading order.')
+
+
+class PronunciationWithUsage(BookPronunciation):
+    """A pronunciation entry with its use in the book."""
+    usage: PronunciationUsage = Field(description='Where the term occurs, computed from the current book text.')
+
+
+class PronunciationList(View):
+    """The book's pronunciations."""
+    pronunciations: list[PronunciationWithUsage] = Field(description='All entries, in saved order, each with its usage.')
+
+
+class PronunciationSaved(View):
+    """The result of adding, changing or removing a pronunciation."""
+    book: Book = Field(description='The updated book document; its `revision` has increased.')
+    pronunciations: list[PronunciationWithUsage] = Field(description='All entries after the change, each with its usage.')
+    retired_takes: int = Field(description='Studio takes that no longer match their recipe and were unselected. Their WAVs '
+                                           'stay archived and are reused without a request if the recipe returns.')
 
 
 # ------------------------------------------------------------------ references
@@ -387,6 +460,21 @@ class CharacterReference(View):
 
 
 # ------------------------------------------------------------------ operations
+
+_PRONUNCIATION_EFFECTS = (
+    "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a "
+    "change alters the audio identity of the passages containing that word and no others. Studio takes that no "
+    "longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if "
+    "the recipe returns. Simple listening, including simple saved performances, always uses the current entries: "
+    "affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the "
+    "entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, "
+    "or that a performance made before pronunciations existed does not use them. Voice examples apply them too; "
+    "`POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\n"
+    "Limits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) "
+    "but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it "
+    "back to source offsets for clients yet."
+)
+
 
 OPS: list[Op] = [
     op('GET', '/api/books/{book_id}', 'getBook', 'Books', 'Get the full book document',
@@ -469,9 +557,57 @@ OPS: list[Op] = [
        'Read-only. Works for archived books.',
        response=list[CharacterReference], params={'book_id': 'Book ID.', 'character_id': 'Book-local character ID.'},
        errors={404: 'No book has this ID, or the character is not in its current cast ("Character not found").'}),
+    op('GET', '/api/books/{book_id}/pronunciations', 'listPronunciations', 'Pronunciations', "List the book's pronunciations",
+       "Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many "
+       "of those have a current Studio take, and up to three examples. Nothing is generated; the usage is computed "
+       "from the current text on each call.",
+       response=PronunciationList, params={'book_id': 'Book ID.'},
+       errors={404: 'No book has this ID.'}),
+    op('POST', '/api/books/{book_id}/pronunciations', 'addPronunciation', 'Pronunciations', 'Add a pronunciation',
+       _PRONUNCIATION_EFFECTS + "\n\nAdds one entry; only `term` and `respelling` are required, and the server assigns "
+       "`id` (an `id` in the body is ignored). At most 500 entries per book.",
+       response=PronunciationSaved, params={'book_id': 'Book ID.'},
+       errors={400: 'The book is archived (restore it first); the entry is invalid (see the field rules); the term '
+                    'already has a pronunciation; the book has 500 entries; or `character_id` is not in the cast '
+                    '("Choose a character in this book\'s cast").',
+               404: 'No book has this ID.',
+               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+    op('PATCH', '/api/books/{book_id}/pronunciations/{entry_id}', 'updatePronunciation', 'Pronunciations',
+       'Change a pronunciation',
+       _PRONUNCIATION_EFFECTS + "\n\nThe body has the same fields as for adding. Fields left out keep their saved "
+       "values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a "
+       "`respelling`, and is validated like a new one.",
+       response=PronunciationSaved, params={'book_id': 'Book ID.', 'entry_id': 'Pronunciation entry ID (`pr_…`).'},
+       errors={400: 'The book is archived; the merged entry is invalid; the term now duplicates another entry; or '
+                    '`character_id` is not in the cast.',
+               404: 'No book has this ID, or no entry has this ID ("Pronunciation not found").',
+               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+    op('DELETE', '/api/books/{book_id}/pronunciations/{entry_id}', 'deletePronunciation', 'Pronunciations',
+       'Remove a pronunciation',
+       _PRONUNCIATION_EFFECTS + "\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` field.",
+       response=PronunciationSaved, params={'book_id': 'Book ID.', 'entry_id': 'Pronunciation entry ID (`pr_…`).'},
+       errors={400: 'The book is archived (restore it first).',
+               404: 'No book has this ID, or no entry has this ID ("Pronunciation not found").',
+               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
 ]
 
 REQUEST_DOCS: dict[str, dict[str, str]] = {
+    'PronunciationEntry': {
+        '__doc__': 'A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left '
+                   'out keep their saved values. Also used, with the `id` of the entry it edits, to audition an '
+                   'unsaved respelling in a voice example.',
+        'id': 'Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved '
+              'version replaces; omit it for a new word.',
+        'term': 'The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one '
+                'letter or digit (the request accepts up to 200 before normalization).',
+        'respelling': 'How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, '
+                      'parentheses, braces and backslashes are refused.',
+        'providers': 'Per-narrator overrides keyed by `system`, `gemini` or `breeze`. An empty or null value drops '
+                     'that override; an override equal to the term leaves that narrator reading the word unchanged.',
+        'match_case': 'True (default): match exact case. False: match any case.',
+        'character_id': 'Optional book-local character the word belongs to; must be in the current cast.',
+        'note': 'Optional free-text note, at most 500 characters.',
+    },
     'CharacterEdit': {
         '__doc__': 'Character fields to change (edit) or set (create). Omitted or null fields are ignored; send "" '
                    'or [] to clear. Creation requires a nonempty `name` even though this DTO marks it optional.',

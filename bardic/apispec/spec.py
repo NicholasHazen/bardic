@@ -21,7 +21,7 @@ from .base import Error, Op, Tag
 # Semantic version of the contract (not of the server). While 0.x, a breaking
 # change bumps the minor version and an additive change bumps the patch
 # version. Every change is recorded in contract/CHANGELOG.md.
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 
 FAMILIES = ('system', 'library', 'series', 'books', 'inspection', 'listening', 'voices', 'pipeline')
 
@@ -32,6 +32,7 @@ TAGS = [
     Tag('Library', 'Importing books, the library snapshot, metadata, covers, removal and restoration, and exports.'),
     Tag('Series', 'Series membership, volume placeholders, cross-book character identities and collection runs.'),
     Tag('Books', 'The book document and manual edits to its characters, passages and scenes.'),
+    Tag('Pronunciations', 'Per-book respellings sent to narrators in place of a word; book text never changes.'),
     Tag('Classic analysis', 'The older phase-based story analysis, its plan preview and local preprocessing.'),
     Tag('Analysis pipeline', 'The step pipeline: step settings, previewed runs, and versioned results to accept or reject.'),
     Tag('Inspection', 'Read-only views of stages, artifacts, the story map, passage search and resource usage.'),
