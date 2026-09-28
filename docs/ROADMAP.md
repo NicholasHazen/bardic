@@ -214,6 +214,26 @@ Acceptance criteria: preserve known/unknown distinctions; avoid counting request
 
 Acceptance criteria: keep locked dependencies and offline regression tests reproducible; ensure CI fixtures use original/synthetic material and no credentials; test migrations/recovery on temporary libraries; link changes to the current architecture, operations and validation records. Separate opt-in live/model/device checks from the default suite, with explicit resource limits. Git tracks source and documentation; it is not a backup of the excluded library and credentials.
 
+### R15. Published API contract, dedicated clients and a portable server — partial (2026-09-28)
+
+The owner intends to move the server off Python eventually and to build dedicated clients. Implemented so far:
+- a complete, checked-in OpenAPI contract ([contract/](../contract/)) covering all 100 operations as of contract 0.1.2;
+- a readable reference and a versioned changelog;
+- test-suite validation of every API response against the contract;
+- agent rules for keeping it current ([API workflow](API-WORKFLOW.md)).
+
+The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). Defects found while writing the contract are in [API known issues](API-KNOWN-ISSUES.md), tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
+
+Acceptance criteria for the remaining work:
+- machine-readable error codes;
+- a contract-version handshake in `/api/status`;
+- `GET /api/jobs/{id}`;
+- a single client HTTP module, with Node tests that check requests against the contract;
+- authentication, CORS and a threat model before any client is served from another origin;
+- a black-box HTTP conformance suite, runnable against any base URL, as the acceptance test for a replacement server;
+- a decision on each known issue (keep or fix) before the port;
+- consolidation of duplicated response shapes through the changelog's breaking-change rules.
+
 ## Decisions deliberately left open
 
 | Decision | Current position | Evidence needed before selecting |

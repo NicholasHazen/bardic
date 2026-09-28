@@ -4,7 +4,7 @@ This guide describes the code in this checkout. Start with [README](../README.md
 
 ## Reproducible setup
 
-The application uses Python 3.11 or newer, FastAPI, SQLite, and browser JavaScript. Dependencies and version ranges are in [pyproject.toml](../pyproject.toml); resolved dependencies are in [uv.lock](../uv.lock). There is no `requirements.txt`, Node package installation, frontend bundler, or asset build step.
+The application uses Python 3.11 or newer, FastAPI, SQLite, and browser JavaScript. Dependencies and version ranges are in [pyproject.toml](../pyproject.toml); resolved dependencies are in [uv.lock](../uv.lock). There is no `requirements.txt`, frontend bundler, or asset build step. The app and its UI tests need no npm packages. [package.json](../package.json) pins development-only tools (openapi-typescript and TypeScript) for the contract code-generation check; install them with `npm ci`.
 
 For a new checkout:
 
@@ -22,7 +22,7 @@ uv run --frozen python -m bardic
 
 Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. To keep the owner's library running in the background instead, use the [service](OPERATIONS.md#run-as-a-service). Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
 
-Node.js is required to execute the JavaScript tests. The tests use Node built-ins; no npm dependencies are needed. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
+Node.js is required to execute the JavaScript tests. The UI tests use Node built-ins and need no npm dependencies. Only `npm run contract:codegen` (and its pytest wrapper, which skips without `npm ci`) uses the pinned dev tools. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
 
 Device narration additionally requires macOS `say`, installed voices, and `ffmpeg`. Other operating systems can run the app and use Gemini narration, but do not gain a local speech backend automatically. Provider adapters and format validation live in [audio.py](../bardic/audio.py).
 
@@ -101,10 +101,13 @@ For an already installed environment with no dependency resolution:
 node --test tests/*_test.js tests/*.test.cjs
 ```
 
+Every `/api` response a pytest test receives is validated against the published contract by [conftest.py](../tests/conftest.py). An undeclared response field or an undocumented error status fails the test. After changing a route, follow [the API workflow](API-WORKFLOW.md): describe the change in `bardic/apispec/`, then run `uv run --frozen python -m bardic.apispec`. `--check` only reports whether `contract/` is stale. To list every contract problem in a run without failing tests, set `BARDIC_CONTRACT_REPORT=<file>`; each checked call is appended to that file as a JSON line.
+
 Useful targeted suites:
 
 | Change | Focused command after `uv run --frozen` |
 | --- | --- |
+| HTTP contract (`bardic/apispec/`, `contract/`) | `pytest -q tests/test_contract.py tests/test_contract_*.py`, then the suites for the routes you changed |
 | EPUB/text extraction and structure | `pytest -q tests/test_importer.py tests/test_series_structure_api.py` |
 | Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
 | Progressive analysis, evidence and budgets | `pytest -q tests/test_progressive.py tests/test_progressive_api.py tests/test_evidence.py tests/test_processing.py tests/test_preprocessing.py` |

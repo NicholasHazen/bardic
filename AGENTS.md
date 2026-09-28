@@ -22,6 +22,15 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 - Artifact dependencies must reference actual retained inputs. Accepted, rejected, cached, interrupted and unknown states remain distinct. Historical provenance cannot be reconstructed by guessing.
 - Rendering recipes and audio content hashes are different identities. Forcing a new performance must not overwrite old audio. Simple listening must remain independent of cast settings and enhanced takes.
 
+## Keep the API contract current
+
+The checked-in [`contract/openapi.json`](contract/openapi.json) is the normative, language-neutral API contract. Dedicated clients will be generated from it, and a future non-Python server must satisfy it. Follow [the API workflow](docs/API-WORKFLOW.md) for every change to a route, request field, response field, error or route behavior:
+
+- Describe the change in `bardic/apispec/` in the same commit. That covers the operation's description, errors, parameters and cost, the response `View` fields with descriptions, and `REQUEST_DOCS` for request fields. A new route needs an `op(...)` entry.
+- Regenerate with `uv run --frozen python -m bardic.apispec` and review the diff. Record the change in `contract/CHANGELOG.md` and bump the version according to its rules. Never hand-edit `openapi.json` or `API-REFERENCE.md`; after a merge conflict, regenerate them.
+- Every operation needs a test that receives its 2xx response. The test suite validates every API response against the contract, and fails on undeclared fields and undocumented error statuses. Do not weaken that check to make a test pass; fix the description or the code.
+- Operation IDs are permanent client method names. Removing or renaming anything a client can see is a breaking change: classify it in the changelog and say what clients must change.
+
 ## Work and cost boundaries
 
 - Development verification is offline by default. Loading a key does not authorize a paid whole-book run. Use a bounded live request only when the user has authorized that scope; do not switch providers automatically after a failure.
@@ -46,13 +55,16 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 3. For parallel agents, divide file ownership explicitly. Shared module edits require coordination; do not independently rewrite the same file.
 4. Change the smallest cohesive set of contracts. New retained formats need version identifiers and compatibility/reuse decisions, not just new fields.
 5. Verify the relevant invariants with focused tests. Run the full suite for changes spanning processing, storage or player integration.
-6. Update the applicable current docs and roadmap status in the same change. Record actual validation and limitations in the handoff.
+6. Update the applicable current docs and roadmap status in the same change. For an API change, this includes the contract (see above). Record actual validation and limitations in the handoff.
 
 Useful commands, from the repository root:
 
 ```sh
 uv sync --frozen --group dev
 uv run --frozen pytest -q
+uv run --frozen python -m bardic.apispec          # regenerate contract/ after an API change
+uv run --frozen python -m bardic.apispec --check  # exit 1 if contract/ is stale
+npm ci && npm run contract:codegen                 # dev-only: clients can generate strict TypeScript types
 node --test tests/*_test.js tests/*.test.cjs
 for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 ```

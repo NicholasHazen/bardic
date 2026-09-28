@@ -8,3 +8,7 @@
 *.toml text eol=lf
 *.lock text eol=lf
 .env.example text eol=lf
+*.json text eol=lf
+# Generated from bardic/apispec/; collapsed in reviews. Regenerate, never hand-merge.
+contract/openapi.json linguist-generated=true
+contract/API-REFERENCE.md linguist-generated=true
