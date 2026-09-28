@@ -39,6 +39,7 @@ from .voice_library import VoiceLibrary, assignments, concrete_selection, librar
 from .voice_routes import import_breeze_voices, register as register_voice_routes
 from .config import data_directory
 from .errors import STATUS_CODES, ApiError, NotFound
+from .errors import Conflict, Invalid
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .lan import allowed_hosts
@@ -64,6 +65,9 @@ ACCOUNT_LINKS = {
 }
 STATIC = Path(__file__).parent / "static"
 ACTIVE = {"queued", "running"}
+# Stored per item but never presented (see Runtime.present).
+STORAGE_ONLY_FIELDS = {"characters": ("edited", "edited_fields", "profile_input_key", "voice", "system_voice"),
+                       "scenes": ("edited", "edited_fields"), "segments": ("edited", "edited_fields")}
 
 
 class Cancelled(Exception):
@@ -209,8 +213,12 @@ def valid_analysis_model(model):
 
 
 class VoiceChoice(StrictModel):
-    """Exactly one of ``id`` (a provider voice) or ``library`` (follow a library voice)."""
-    id: str | None = Field(default=None, min_length=1, max_length=200)
+    """Exactly one of ``id`` (a provider voice) or ``library`` (follow a library voice).
+
+    A blank ``id`` clears the choice (Default) for every provider. ``seed``
+    applies only to a Breeze ``id``; elsewhere it is rejected (400).
+    """
+    id: str | None = Field(default=None, max_length=200)
     library: str | None = Field(default=None, pattern=r"^vl_[a-f0-9]{16}$")
     seed: int | None = Field(default=None, ge=0, le=breeze.MAX_SEED)
 
@@ -238,6 +246,7 @@ class SegmentEdit(StrictModel):
     direction: str | None = Field(default=None, max_length=3000)
     cues: list[str] | None = None
     # A seeded provider (Breeze) repeats a take for the same seed; a new seed is a new take.
+    # An explicit null clears it (the voice's own seed applies); omitting it keeps it.
     seed: int | None = Field(default=None, ge=0, le=breeze.MAX_SEED)
 
 
@@ -436,10 +445,13 @@ class Runtime:
         reference = voice[len("library:"):] if isinstance(voice, str) and voice.startswith("library:") else None
         if reference is not None or (provider == "breeze" and not voice):
             if provider not in ("breeze", "gemini"):
-                raise HTTPException(400, "Library voices are Breeze or Gemini voices.")
+                raise Invalid("library_voice_unavailable", "Library voices are Breeze or Gemini voices.")
             resolved = self.resolve_choice(provider, {"library": reference} if reference else None)
             if resolved is None or resolved.get("error"):
-                raise HTTPException(400, (resolved or {}).get("error") or "Choose a voice first.")
+                if reference is None:
+                    raise Invalid("breeze_default_voice_missing", "No usable default Breeze voice is set.")
+                raise Invalid("library_voice_unavailable",
+                              "The library voice does not exist, was deleted, or belongs to another provider.")
             return resolved["id"], (resolved if provider == "breeze" else None)
         if provider == "breeze":
             return voice, self.breeze_selection(voice)
@@ -450,8 +462,9 @@ class Runtime:
         view = self.breeze_view()
         try:
             return breeze.pin(view, voice, seed=seed)
-        except ValueError as error:
-            raise HTTPException(400, str(error)) from None
+        except ValueError:
+            raise Invalid("breeze_voice_unavailable",
+                          "The Breeze voice is not a usable voice in the last Breeze voice check.") from None
 
     def narration_credentials(self, provider):
         if provider == "gemini":
@@ -466,7 +479,7 @@ class Runtime:
 
     def require_breeze(self):
         if not self.preferences["breeze_url"]:
-            raise HTTPException(400, "Add the Breeze server URL in Settings first, or choose another narrator.")
+            raise Invalid("breeze_url_missing", "No Breeze server URL is configured.")
 
     @staticmethod
     def _saved_tts_limits(saved):
@@ -561,7 +574,9 @@ class Runtime:
         if self.cancelled(job_id):
             raise Cancelled()
 
-    def assign_local_voices(self, book):
+    @staticmethod
+    def local_voice_choices():
+        """Installed device voices to rotate through a cast, preferred voices first."""
         installed = list_system_voices()
         choices = []
         for preferred in ("Samantha", "Daniel", "Moira", "Karen", "Tessa", "Alex", "Fred"):
@@ -570,6 +585,10 @@ class Runtime:
                 choices.append(match)
         if not choices:
             choices = [v["id"] for v in installed if v["locale"].startswith("en-")][:8]
+        return choices
+
+    def assign_local_voices(self, book):
+        choices = self.local_voice_choices()
         if choices:
             for index, character in enumerate(book["characters"]):
                 if not voice_id(character, "system"):
@@ -579,10 +598,10 @@ class Runtime:
         self.store.require_active(book_id)
         # Every active job counts: a long run can have more than 100 newer child jobs.
         if any(j["status"] in ACTIVE for j in self.store.jobs(book_id, limit=None, active=True)):
-            raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
+            raise Conflict("job_active", "A job is already working on this book. Let it finish or cancel it before editing.")
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
                for j in self.store.jobs(limit=None)):
-            raise HTTPException(409, 'This book is reserved by an active series run. Stop the series run before editing.')
+            raise Conflict('series_run_active', 'This book is reserved by an active series run. Stop the series run before editing.')
 
     def audio_path(self, book_id, audio_id):
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", book_id) or not re.fullmatch(r"[a-f0-9]{32,128}", audio_id):
@@ -670,6 +689,13 @@ class Runtime:
             c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
         for character in result["characters"]:
             character["voices"] = assignments(character)
+        # Storage bookkeeping stays stored but off the wire: edit locks, legacy voice
+        # fields (already folded into `voices`), profile cache keys, metadata locks.
+        result.pop("metadata_edited", None)
+        for collection, names in STORAGE_ONLY_FIELDS.items():
+            for entry in result[collection]:
+                for name in names:
+                    entry.pop(name, None)
         return result
 
     def merge_voices(self, item, fields):
@@ -682,25 +708,29 @@ class Runtime:
         changes = dict(fields.pop("voices", None) or {})
         for provider, legacy in (("gemini", "voice"), ("system", "system_voice")):
             if legacy in fields:
-                value = fields.pop(legacy)
-                changes.setdefault(provider, {"id": value} if isinstance(value, str) and value.strip() else None)
+                changes.setdefault(provider, {"id": fields.pop(legacy)})
         if not changes:
             return
         if set(changes) - set(NARRATION_PROVIDERS):
-            raise HTTPException(400, "Choose voices for system, gemini or breeze narration")
+            raise Invalid("voice_provider_unknown", "Voice choices are keyed by system, gemini or breeze.")
         voices = assignments(item)
         for provider, choice in changes.items():
-            if choice is None:
+            # One rule for every provider: null or a blank id clears the choice, so Default applies.
+            voice = choice.get("id").strip() if choice and isinstance(choice.get("id"), str) else ""
+            if choice and choice.get("seed") is not None and (provider != "breeze" or choice.get("library") or not voice):
+                raise Invalid("seed_not_applicable", "A seed applies only to a Breeze voice chosen by id.")
+            if choice and choice.get("library"):
+                library = self.library_index().get(choice["library"])
+                if not library or library.get("deleted_at") or library["provider"] != provider:
+                    raise Invalid("library_voice_unavailable",
+                                  "The library voice does not exist, was deleted, or belongs to another provider.")
+                voices[provider] = {"library": library["id"]}
+            elif not voice:
                 voices.pop(provider, None)
-            elif choice.get("library"):
-                voice = self.library_index().get(choice["library"])
-                if not voice or voice.get("deleted_at") or voice["provider"] != provider:
-                    raise HTTPException(400, f"Choose a {provider.title()} voice from the voice library.")
-                voices[provider] = {"library": voice["id"]}
             elif provider == "breeze":
-                voices[provider] = self.breeze_selection(choice["id"].strip(), seed=choice.get("seed"))
+                voices[provider] = self.breeze_selection(voice, seed=choice.get("seed"))
             else:
-                voices[provider] = {"id": choice["id"].strip()}
+                voices[provider] = {"id": voice}
         fields["voices"] = voices
         item.pop("voice", None)
         item.pop("system_voice", None)
@@ -1165,32 +1195,36 @@ def create_app(data_dir: Path | None = None):
         from .resources import ResourceLedger
 
         runtime = rt(request)
-        with runtime.store.lock, ResourceLedger(runtime.store).operation(book_id, 'structure_repair', measure_cpu=True):
-            runtime.require_idle(book_id)
-            book = runtime.store.book(book_id)
-            suffix = Path(book.get("source_name", "")).suffix.lower()
-            if suffix not in {".epub", ".txt"}:
-                raise HTTPException(400, "This book has no saved original EPUB or text file to refresh.")
-            path = runtime.store.root / "originals" / book["id"] / f"source{suffix}"
-            if not path.resolve().is_relative_to((runtime.store.root / "originals").resolve()) or not path.is_file():
-                raise HTTPException(400, "The saved original is unavailable. Existing book work was preserved.")
-            data = path.read_bytes()
-            if len(data) > 30 * 1024 * 1024:
-                raise HTTPException(400, "The saved original is too large to refresh. Existing book work was preserved.")
-            try:
-                updated = repair_structure(book, book["source_name"], data)
-            except zipfile.BadZipFile as exc:
-                raise HTTPException(400, "The saved original EPUB could not be read. Existing book work was preserved.") from exc
-            updated["revision"] = book.get("revision", 0) + 1
-            summary = runtime.store.analysis_status(book_id)
-            checkpoint = runtime.store.analysis_checkpoint(book_id, summary["fingerprint"]) if summary else None
-            if checkpoint:
-                transformed = transform_checkpoint_structure(checkpoint, updated)
-                new_fingerprint = fingerprint(updated, checkpoint["provider"], checkpoint.get("model"))
-                runtime.store.commit_analysis(updated, new_fingerprint, transformed)
-            else:
-                runtime.store.save_book(updated)
-            return runtime.present(updated)
+        with runtime.store.lock:
+            # Preconditions first: an unknown, archived or busy book records no measurement.
+            require_editable(runtime, book_id)
+            with ResourceLedger(runtime.store).operation(book_id, 'structure_repair', measure_cpu=True):
+                book = runtime.store.book(book_id)
+                suffix = Path(book.get("source_name", "")).suffix.lower()
+                if suffix not in {".epub", ".txt"}:
+                    raise Invalid("original_missing", "This book has no saved original EPUB or text file. Existing book work was preserved.")
+                path = runtime.store.root / "originals" / book["id"] / f"source{suffix}"
+                if not path.resolve().is_relative_to((runtime.store.root / "originals").resolve()) or not path.is_file():
+                    raise Invalid("original_missing", "The saved original is unavailable. Existing book work was preserved.")
+                data = path.read_bytes()
+                if len(data) > 30 * 1024 * 1024:
+                    raise Invalid("original_too_large", "The saved original is too large to refresh. Existing book work was preserved.")
+                try:
+                    updated = repair_structure(book, book["source_name"], data)
+                except ApiError:
+                    raise
+                except (ValueError, zipfile.BadZipFile) as exc:
+                    raise Invalid("original_unreadable", "The saved original could not be read. Existing book work was preserved.") from exc
+                updated["revision"] = book.get("revision", 0) + 1
+                summary = runtime.store.analysis_status(book_id)
+                checkpoint = runtime.store.analysis_checkpoint(book_id, summary["fingerprint"]) if summary else None
+                if checkpoint:
+                    transformed = transform_checkpoint_structure(checkpoint, updated)
+                    new_fingerprint = fingerprint(updated, checkpoint["provider"], checkpoint.get("model"))
+                    runtime.store.commit_analysis(updated, new_fingerprint, transformed)
+                else:
+                    runtime.store.save_book(updated)
+                return runtime.present(updated)
 
     @app.get("/api/series")
     def list_series(request: Request):
@@ -1260,40 +1294,66 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/books/{book_id}/characters/{character_id}/references")
     def get_character_references(book_id: str, character_id: str, request: Request):
+        from .staged_analysis import current_references
+
         runtime = rt(request)
         book = runtime.store.book(book_id)
         if character_id not in {c["id"] for c in book["characters"]}:
-            raise HTTPException(404, "Character not found")
-        return runtime.store.character_references(book_id, character_id)
+            raise NotFound("character_not_found", "No character has this ID in the book.")
+        # Derived from the current book on every read, so every writer of the book is reflected;
+        # only discovery evidence comes from the stored analysis references.
+        return current_references(book, runtime.store.character_references(book_id, character_id), character_id)
+
+    def require_editable(runtime, book_id):
+        """Changes need a known (404), non-archived (409 book_archived) and idle (409) book."""
+        if runtime.store.is_archived(book_id):
+            raise Conflict("book_archived", "The book is archived. Restore it before changing it.")
+        runtime.require_idle(book_id)
+
+    ITEM_NOT_FOUND = {"characters": ("character_not_found", "No character has this ID in the book."),
+                      "segments": ("passage_not_found", "No passage has this ID in the book."),
+                      "scenes": ("scene_not_found", "No scene has this ID in the book.")}
 
     def edit(runtime, book_id, collection, item_id, fields):
+        """Apply a manual edit. A value of None removes that field. A request that changes nothing
+        is a no-op: nothing is saved, marked edited or re-revisioned."""
         with runtime.store.lock:
-            runtime.require_idle(book_id)
+            require_editable(runtime, book_id)
             book = runtime.store.book(book_id)
             item = next((x for x in book[collection] if x["id"] == item_id), None)
             if item is None:
-                raise HTTPException(404, "Item not found")
+                raise NotFound(*ITEM_NOT_FOUND[collection])
             if "speaker_id" in fields and fields["speaker_id"] not in {c["id"] for c in book["characters"]}:
-                raise HTTPException(400, "Choose a character in this book's cast")
+                raise Invalid("character_not_in_cast", "The speaker is not a character in this book's cast.")
             before = copy.deepcopy(item)
             if collection == "characters":
                 runtime.merge_voices(item, fields)
             # Per-field edit locks, only for values that actually changed: editors
             # submit whole forms, so an unchanged description must not become locked.
             # An item edited before per-field tracking existed stays wholly locked.
-            changed = {name for name, value in fields.items() if before.get(name) != value}
-            if item.get("voices") != before.get("voices"):
+            changed = {name for name, value in fields.items() if name != "voices" and before.get(name) != value}
+            if "voices" in fields and fields["voices"] != assignments(before):
                 changed.add("voices")
+            if collection == "segments" and "speaker_id" in fields and before.get("confidence") != 1.0:
+                changed.add("speaker_id")  # Confirming the proposed speaker is a review of it.
+            if not changed:
+                item.clear()
+                item.update(before)  # merge_voices may have normalized legacy fields in place
+                return runtime.present(book)
             prior = item.get("edited_fields") if isinstance(item.get("edited_fields"), list) else (["*"] if item.get("edited") else [])
             item["edited_fields"] = sorted(set(prior) | changed)
-            if collection == "characters" and fields.get("name") and fields["name"] != item.get("name"):
+            if collection == "characters" and "name" in changed:
                 # Remember replaced names so later discovery resolves them to this character.
                 item["former_names"] = list(dict.fromkeys([*item.get("former_names", []), item["name"]]))
-            item.update(fields)
+            for name, value in fields.items():
+                if value is None:
+                    item.pop(name, None)
+                else:
+                    item[name] = value
             item["edited"] = True
             if collection == "segments" and "speaker_id" in fields:
                 item["confidence"] = 1.0
-                if "speaker_id" in changed:
+                if fields["speaker_id"] != before.get("speaker_id"):
                     # A BookNLP check judged the replaced speaker; the Quote attribution table still compares live.
                     item.pop("speaker_check", None)
             cast = runtime.resolved_cast(book)
@@ -1323,16 +1383,20 @@ def create_app(data_dir: Path | None = None):
     @app.post("/api/books/{book_id}/characters")
     def add_character(book_id: str, body: CharacterEdit, request: Request):
         runtime = rt(request)
+        # Like imported characters, a new one gets a device voice unless the request chose Default.
+        device_voices = [] if "system" in (body.voices or {}) or body.system_voice is not None else runtime.local_voice_choices()
         with runtime.store.lock:
-            runtime.require_idle(book_id)
+            require_editable(runtime, book_id)
             book = runtime.store.book(book_id)
             if not body.name:
-                raise HTTPException(400, "A character name is required")
+                raise Invalid("character_name_required", "A character name is required.")
             character = {"id": f"character-{uuid4().hex[:12]}", "name": body.name, "aliases": [], "description": "", "evidence": [],
                          "voices": {"gemini": {"id": "Kore"}}, "direction": ""}
             fields = character_fields(body)
             runtime.merge_voices(character, fields)
             character.update(fields)
+            if device_voices and not voice_id(character, "system"):
+                character["voices"]["system"] = {"id": device_voices[len(book["characters"]) % len(device_voices)]}
             character["edited"] = True
             # The owner set only these fields; generated profile text may fill the rest.
             character["edited_fields"] = sorted(set(fields) | {"name"})
@@ -1341,9 +1405,15 @@ def create_app(data_dir: Path | None = None):
             runtime.store.save_book(book)
             return runtime.present(book)
 
+    def segment_fields(body):
+        fields = body.model_dump(exclude_none=True)
+        if "seed" in body.model_fields_set and body.seed is None:
+            fields["seed"] = None  # An explicit null clears the passage seed.
+        return fields
+
     @app.patch("/api/books/{book_id}/segments/{segment_id}")
     def edit_segment(book_id: str, segment_id: str, body: SegmentEdit, request: Request):
-        return edit(rt(request), book_id, "segments", segment_id, body.model_dump(exclude_none=True))
+        return edit(rt(request), book_id, "segments", segment_id, segment_fields(body))
 
     @app.patch("/api/books/{book_id}/scenes/{scene_id}")
     def edit_scene(book_id: str, scene_id: str, body: SceneEdit, request: Request):
@@ -1362,7 +1432,7 @@ def create_app(data_dir: Path | None = None):
 
     def save_lexicon(runtime, book_id, change):
         with runtime.store.lock:
-            runtime.require_idle(book_id)
+            require_editable(runtime, book_id)
             book = runtime.store.book(book_id)
             before = {entry["id"]: entry for entry in pronunciation.book_lexicon(book)}
             entries = pronunciation.normalize_lexicon(change(copy.deepcopy(list(before.values()))))
@@ -1370,20 +1440,21 @@ def create_app(data_dir: Path | None = None):
             # Only the entry being changed must name a current character; an older link is left alone.
             if any(before.get(entry["id"]) != entry and entry.get("character_id") not in (None, *characters)
                    for entry in entries):
-                raise HTTPException(400, "Choose a character in this book's cast")
-            cast = runtime.resolved_cast(book)
-            valid_before = {s["id"] for s in book["segments"] if s.get("audio") and runtime.valid_audio(book, s, cast)}
-            if entries:
-                book["pronunciations"] = entries
-            else:
-                book.pop("pronunciations", None)
+                raise Invalid("character_not_in_cast", "The pronunciation's character is not in this book's cast.")
             retired = 0
-            for s in book["segments"]:
-                if s["id"] in valid_before and not runtime.valid_audio(book, s, cast):
-                    s["audio"] = None
-                    retired += 1
-            book["revision"] = book.get("revision", 0) + 1
-            runtime.store.save_book(book)
+            if entries != list(before.values()):  # A request that changes nothing saves nothing.
+                cast = runtime.resolved_cast(book)
+                valid_before = {s["id"] for s in book["segments"] if s.get("audio") and runtime.valid_audio(book, s, cast)}
+                if entries:
+                    book["pronunciations"] = entries
+                else:
+                    book.pop("pronunciations", None)
+                for s in book["segments"]:
+                    if s["id"] in valid_before and not runtime.valid_audio(book, s, cast):
+                        s["audio"] = None
+                        retired += 1
+                book["revision"] = book.get("revision", 0) + 1
+                runtime.store.save_book(book)
             presented = runtime.present(book)
         return {"book": presented, "pronunciations": lexicon_usage(runtime, book), "retired_takes": retired}
 
@@ -1412,7 +1483,7 @@ def create_app(data_dir: Path | None = None):
         def change(entries):
             current = next((item for item in entries if item["id"] == entry_id), None)
             if current is None:
-                raise HTTPException(404, "Pronunciation not found")
+                raise NotFound("pronunciation_not_found", "No pronunciation has this ID in the book.")
             values = {key: value for key, value in {**current, **changes}.items() if key != "id" and value is not None}
             entry = pronunciation.normalize_entry(values, entry_id=entry_id)
             return [entry if item["id"] == entry_id else item for item in entries]
@@ -1422,7 +1493,7 @@ def create_app(data_dir: Path | None = None):
     def delete_pronunciation(book_id: str, entry_id: str, request: Request):
         def change(entries):
             if not any(item["id"] == entry_id for item in entries):
-                raise HTTPException(404, "Pronunciation not found")
+                raise NotFound("pronunciation_not_found", "No pronunciation has this ID in the book.")
             return [item for item in entries if item["id"] != entry_id]
         return save_lexicon(rt(request), book_id, change)
 

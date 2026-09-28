@@ -281,7 +281,7 @@ def test_manual_edits_survive_acceptance_and_only_lock_their_fields(client):
     impact = client.post(f"{base}/steps/directing/versions/{candidate['id']}/preview", json={}).json()
     assert any(c['item_id'] == first_dialogue['id'] and c['field'] == 'speaker_id' for c in impact['conflicts'])
     client.post(f"{base}/steps/directing/versions/{candidate['id']}/accept", json={})
-    after = client.get(f"/api/books/{book['id']}").json()
+    after = client.app.state.runtime.store.book(book['id'])  # edit locks are stored, not presented
     segment = next(s for s in after['segments'] if s['id'] == first_dialogue['id'])
     assert segment['speaker_id'] == elio['id'] and segment['edited_fields'] == ['speaker_id']
     assert segment['direction'] == 'Low and even.'  # unlocked fields still update
@@ -588,7 +588,8 @@ def test_added_character_locks_only_the_fields_the_owner_set(client):
     book = import_book(client)
     revision = client.get(f"/api/books/{book['id']}").json()['revision']
     added = client.post(f"/api/books/{book['id']}/characters", json={'name': 'Wren'}).json()
-    wren = next(c for c in added['characters'] if c['name'] == 'Wren')
+    assert 'edited_fields' not in next(c for c in added['characters'] if c['name'] == 'Wren')
+    wren = next(c for c in client.app.state.runtime.store.book(book['id'])['characters'] if c['name'] == 'Wren')
     assert wren['edited_fields'] == ['name'] and not locked(wren, 'description')
     assert added['revision'] == revision + 1
 
@@ -602,7 +603,7 @@ def test_saving_a_whole_cast_form_locks_only_changed_fields(client):
                          json={'description': elio['description'], 'direction': elio['direction'],
                                'voices': {'gemini': {'id': 'Charon'}}})
     assert saved.status_code == 200
-    elio = next(c for c in saved.json()['characters'] if c['id'] == elio['id'])
+    elio = next(c for c in client.app.state.runtime.store.book(book['id'])['characters'] if c['id'] == elio['id'])
     assert elio['edited_fields'] == ['voices']
     client.patch(f"/api/books/{book['id']}/characters/{elio['id']}", json={'description': 'A tired ferryman.'})
     table = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/profiles/versions/accepted").json()

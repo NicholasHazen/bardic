@@ -394,14 +394,17 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -414,7 +417,7 @@
             }
           }
         },
-        "description": "Returns the full reader projection: chapters with canonical text, scenes, passages with source offsets, the cast with voice choices, `revision`, and the analysis summary. Valid enhanced audio has a playback URL; an unavailable or stale selected take is presented as `null`. Read-only. Works for archived books.",
+        "description": "Returns the full reader projection: chapters with canonical text, scenes, passages with source offsets, the cast with voice choices, `revision`, and the analysis summary. Valid enhanced audio has a playback URL; an unavailable or stale selected take is presented as `null`. Server bookkeeping (edit locks, metadata locks, cache keys, single-provider voice fields of older versions) is not included. Read-only. Works for archived books. A book whose stored data is inconsistent (for example a passage naming a missing chapter) is a server defect (500 `internal_error`), never 404.",
         "tags": [
           "Books"
         ],
@@ -1924,14 +1927,21 @@
             }
           },
           "400": {
-            "description": "The book is archived; `name` is missing (\"A character name is required\"); or a `voices` choice is invalid (see editCharacter).",
+            "description": "- `character_name_required`: `name` is missing.\n- `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`.\n- `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider.\n- `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice.\n- `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "character_name_required",
+              "voice_provider_unknown",
+              "library_voice_unavailable",
+              "breeze_voice_unavailable",
+              "seed_not_applicable"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -1944,24 +1954,32 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1974,7 +1992,7 @@
             }
           }
         },
-        "description": "Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty; voices start as `{\"gemini\": {\"id\": \"Kore\"}}` plus any `voices` sent. The new character has `edited: true` and `edited_fields` listing only the fields sent (always including `name`), so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Rejected while a job or series run holds the book (409) or when it is archived (400). Returns the full, presented book.",
+        "description": "Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as `{\"gemini\": {\"id\": \"Kore\"}}` plus a device (`system`) voice chosen from the installed voices the same way imported characters get one (none when no suitable voice is installed), then any `voices` sent are applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always including `name`) are locked against generated analysis, so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a non-archived, idle book (409). Returns the full, presented book.",
         "tags": [
           "Books"
         ],
@@ -2029,14 +2047,20 @@
             }
           },
           "400": {
-            "description": "The book is archived; `voices` names a provider other than system, gemini or breeze; a `library` voice does not exist, is deleted or belongs to another provider; or a Breeze `id` is not in the last Breeze check or is not a usable (cloned) voice.",
+            "description": "- `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`.\n- `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider.\n- `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice.\n- `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "voice_provider_unknown",
+              "library_voice_unavailable",
+              "breeze_voice_unavailable",
+              "seed_not_applicable"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -2049,24 +2073,33 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or no item of that kind has this ID in the book (\"Item not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `character_not_found`: No character in this book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "character_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -2079,7 +2112,7 @@
             }
           }
         },
-        "description": "Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` for the forms. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.\n\nManual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.\n\nEdits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.\n\nAfter the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nThe review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` and `VoiceChoice` for the forms. For every provider, `null` or a blank `id` clears the choice, so Default applies. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
         "tags": [
           "Books"
         ],
@@ -2127,14 +2160,18 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or the character is not in its current cast (\"Character not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `character_not_found`: No character in the book's current cast has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "character_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -2147,7 +2184,7 @@
             }
           }
         },
-        "description": "Returns every reference to this current cast member from the latest published analysis checkpoint, unpaginated, in insertion order: attributed dialogue passages, name/alias mentions, and discovery evidence quotations, each with a source anchor. References are replaced whenever Classic analysis (including series runs) publishes; structure repair carries them over. Manual edits and the step analysis pipeline (runs and acceptance) do not update them, so they can lag the book document. An empty list means no analysis checkpoint has recorded references (for example after import or the demo). Read-only. Works for archived books.",
+        "description": "Returns every source reference to this current cast member, unpaginated, in reading order (chapter, then offset): dialogue passages currently attributed to it, mentions of its name or aliases, and discovery evidence quotations, each with a source anchor. Dialogue and mentions are derived from the current book on every call, so manual edits, pipeline acceptance and analysis are all reflected at once. A name or alias that another cast member shares is not counted as a mention. Discovery evidence comes from the latest Classic analysis (including series runs) and is listed while its quote still matches the chapter text; other analyses record none. `narrator` and `unassigned` have no references. Read-only; nothing is written. Works for archived books.",
         "tags": [
           "Books"
         ],
@@ -3562,14 +3599,17 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -3582,7 +3622,7 @@
             }
           }
         },
-        "description": "Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many of those have a current Studio take, and up to three examples. Nothing is generated; the usage is computed from the current text on each call.",
+        "description": "Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many of those have a current Studio take, and up to three examples. Nothing is generated or written; the usage is computed from the current text on each call.",
         "tags": [
           "Pronunciations"
         ],
@@ -3625,14 +3665,20 @@
             }
           },
           "400": {
-            "description": "The book is archived (restore it first); the entry is invalid (see the field rules); the term already has a pronunciation; the book has 500 entries; or `character_id` is not in the cast (\"Choose a character in this book's cast\").",
+            "description": "- `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`).\n- `pronunciation_duplicate`: Another entry already has this term (under the case rules).\n- `pronunciation_limit_reached`: The book already has 500 entries.\n- `character_not_in_cast`: `character_id` is not a character in the book's current cast.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "pronunciation_invalid",
+              "pronunciation_duplicate",
+              "pronunciation_limit_reached",
+              "character_not_in_cast"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -3645,24 +3691,32 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -3675,7 +3729,7 @@
             }
           }
         },
-        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nAdds one entry; only `term` and `respelling` are required, and the server assigns `id` (an `id` in the body is ignored). At most 500 entries per book.",
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nAdds one entry; only `term` and `respelling` are required, and the server assigns `id` (an `id` in the body is ignored). At most 500 entries per book. Requires a non-archived, idle book (409).",
         "tags": [
           "Pronunciations"
         ],
@@ -3730,14 +3784,20 @@
             }
           },
           "400": {
-            "description": "The book is archived; the merged entry is invalid; the term now duplicates another entry; or `character_id` is not in the cast.",
+            "description": "- `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`).\n- `pronunciation_duplicate`: Another entry already has this term (under the case rules).\n- `pronunciation_limit_reached`: The book already has 500 entries.\n- `character_not_in_cast`: `character_id` is not a character in the book's current cast.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "pronunciation_invalid",
+              "pronunciation_duplicate",
+              "pronunciation_limit_reached",
+              "character_not_in_cast"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -3750,24 +3810,33 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or no entry has this ID (\"Pronunciation not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `pronunciation_not_found`: No entry in this book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "pronunciation_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -3780,7 +3849,7 @@
             }
           }
         },
-        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nThe body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one.",
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nThe body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).",
         "tags": [
           "Pronunciations"
         ],
@@ -3822,16 +3891,6 @@
               }
             }
           },
-          "400": {
-            "description": "The book is archived (restore it first).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -3843,24 +3902,33 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or no entry has this ID (\"Pronunciation not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `pronunciation_not_found`: No entry in this book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "pronunciation_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -3873,7 +3941,7 @@
             }
           }
         },
-        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` field.",
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` field. Requires a non-archived, idle book (409).",
         "tags": [
           "Pronunciations"
         ],
@@ -4088,14 +4156,20 @@
             }
           },
           "400": {
-            "description": "The book is archived; it has no saved original EPUB/TXT; the original is missing, larger than 30 MiB (the import limit) or an unreadable EPUB; or the re-parsed source does not match the saved chapters or checkpoint. Existing work is preserved.",
+            "description": "- `original_missing`: The book has no saved original EPUB or TXT, or the saved file is missing.\n- `original_too_large`: The saved original is larger than 30 MiB (the import limit).\n- `original_unreadable`: The saved original could not be parsed (for example an unreadable EPUB).\n- `structure_mismatch`: The re-parsed source does not match the saved chapters or the saved analysis checkpoint.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "original_missing",
+              "original_too_large",
+              "original_unreadable",
+              "structure_mismatch"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -4108,24 +4182,32 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -4138,7 +4220,7 @@
             }
           }
         },
-        "description": "Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; edited scenes are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.\n\nRefused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400). Requires an idle, non-archived book. Runs locally with no provider request; every attempt, including a refused one, records a local `structure_repair` resource measurement. Returns the full, presented book.",
+        "description": "Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.\n\nRefused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.",
         "tags": [
           "Books"
         ],
@@ -4371,16 +4453,6 @@
               }
             }
           },
-          "400": {
-            "description": "The book is archived.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -4392,24 +4464,33 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or no item of that kind has this ID in the book (\"Item not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `scene_not_found`: No scene in this book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "scene_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -4422,7 +4503,7 @@
             }
           }
         },
-        "description": "Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.\n\nManual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.\n\nEdits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.\n\nAfter the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nThe review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
         "tags": [
           "Books"
         ],
@@ -4574,14 +4655,17 @@
             }
           },
           "400": {
-            "description": "The book is archived, or `speaker_id` is not a character in this book's cast (\"Choose a character in this book's cast\").",
+            "description": "- `character_not_in_cast`: `speaker_id` is not a character in this book's cast.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "character_not_in_cast"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -4594,24 +4678,33 @@
             }
           },
           "404": {
-            "description": "No book has this ID, or no item of that kind has this ID in the book (\"Item not found\").",
+            "description": "- `book_not_found`: No book has this ID.\n- `passage_not_found`: No passage in this book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "passage_not_found"
+            ]
           },
           "409": {
-            "description": "A job is queued or running for this book, or an active series run reserves it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.\n- `book_archived`: The book is archived; restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -4624,7 +4717,7 @@
             }
           }
         },
-        "description": "Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`) and marks the passage edited. Sending `speaker_id` (even unchanged) sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take; like other performance edits it deselects the current take while retaining its history.\n\nManual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.\n\nEdits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.\n\nAfter the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nThe review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending `speaker_id` sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` clears it so the speaker's voice seed applies; like other performance edits this deselects the current take while retaining its history.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
         "tags": [
           "Books"
         ],
@@ -9821,18 +9914,6 @@
             ],
             "description": "Cover thumbnail metadata; absent when the original had no usable cover."
           },
-          "metadata_edited": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BookMetadataEdits"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves.",
-            "x-bardic-internal": true
-          },
           "pronunciations": {
             "anyOf": [
               {
@@ -10133,7 +10214,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/BookCharacterVoice"
             },
-            "description": "Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: the system voice). Library references are shown as references, not resolved. Legacy `voice`/`system_voice` fields are folded in here.",
+            "description": "Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: the system voice). Library references are shown as references, not resolved. Choices saved by older versions in single-provider fields are included here.",
             "type": "object"
           },
           "former_names": {
@@ -10226,69 +10307,6 @@
               }
             ],
             "description": "Classic progressive analysis: true while the profile may still change."
-          },
-          "profile_input_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Cache key of the profile request that produced the profile.",
-            "x-bardic-internal": true
-          },
-          "voice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`.",
-            "x-bardic-internal": true
-          },
-          "system_voice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`.",
-            "x-bardic-internal": true
-          },
-          "edited": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
-          },
-          "edited_fields": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
           }
         },
         "required": [
@@ -10450,35 +10468,6 @@
         "title": "BookLogicalSection",
         "type": "object"
       },
-      "BookMetadataEdits": {
-        "description": "Which display metadata fields a person set; a later metadata refresh from the original keeps them.",
-        "properties": {
-          "title": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "True when the title was set by hand."
-          },
-          "author": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "True when the author was set by hand."
-          }
-        },
-        "title": "BookMetadataEdits",
-        "type": "object"
-      },
       "BookMetadataRequest": {
         "properties": {
           "title": {
@@ -10579,7 +10568,7 @@
                 "type": "null"
               }
             ],
-            "description": "Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed means a new take. Ignored by Gemini and device narration."
+            "description": "Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit; absent when not set, in which case the speaker's Breeze voice seed applies. A new seed means a new take. Ignored by Gemini and device narration."
           },
           "speaker_check": {
             "anyOf": [
@@ -10628,33 +10617,6 @@
           "leading_text": {
             "description": "Presented only: chapter text between the previous passage (or the chapter start) and this passage, usually whitespace or a replaced scene-break ornament.",
             "type": "string"
-          },
-          "edited": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
-          },
-          "edited_fields": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
           }
         },
         "required": [
@@ -10808,33 +10770,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "edited": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
-          },
-          "edited_fields": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
-            "x-bardic-internal": true
           }
         },
         "required": [
@@ -11768,7 +11703,7 @@
                 "type": "null"
               }
             ],
-            "description": "Per-provider voice choices: `{provider: VoiceChoice | null}` where provider is `system`, `gemini` or `breeze` (another key is rejected with 400). Only the providers present change; `null` removes that provider's choice, which means Default. The stored map is returned in `characters[].voices` (library references stay references)."
+            "description": "Per-provider voice choices: `{provider: VoiceChoice | null}` where provider is `system`, `gemini` or `breeze` (another key is 400 `voice_provider_unknown`). Only the providers present change; `null`, or a choice whose `id` is empty or blank, removes that provider's choice, which means Default. This rule is the same for every provider. The stored map is returned in `characters[].voices` (library references stay references)."
           },
           "voice": {
             "anyOf": [
@@ -11780,7 +11715,7 @@
                 "type": "null"
               }
             ],
-            "description": "Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is stored as `voices.gemini = {id}`; an empty or blank string removes it. Ignored for Gemini when `voices` also names `gemini`. Any voice change removes the legacy fields from the stored character."
+            "description": "Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is treated as `voices.gemini = {id}`, with the same rules (an empty or blank string removes it). Ignored for Gemini when `voices` also names `gemini`."
           },
           "system_voice": {
             "anyOf": [
@@ -11813,7 +11748,7 @@
         "description": "Character fields to change (edit) or set (create). Omitted or null fields are ignored; send \"\" or [] to clear. Creation requires a nonempty `name` even though this DTO marks it optional."
       },
       "CharacterReference": {
-        "description": "One source-anchored reference to a character from the latest published analysis.\n\n`chapter.text[start:end] == quote`. A mention is an explicit textual\nreference, not proof that the character is present in the scene.",
+        "description": "One source-anchored reference to a character in the current book.\n\n`chapter.text[start:end] == quote`. A mention is an explicit textual\nreference, not proof that the character is present in the scene.",
         "properties": {
           "id": {
             "description": "Stable hex ID derived from character, chapter, offsets and kind.",
@@ -11851,7 +11786,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`dialogue`: a passage attributed to the character. `mention`: the character's unique name or alias occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence.",
+            "description": "`dialogue`: a dialogue passage currently attributed to the character. `mention`: the character's name or an alias, unique within the cast, occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence.",
             "enum": [
               "dialogue",
               "mention",
@@ -11879,7 +11814,7 @@
                 "type": "null"
               }
             ],
-            "description": "Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited dialogue attribution; null when unknown. Current analysis always writes `confidence`, `provider` and `model`; references retained from older versions may omit them."
+            "description": "Who produced it: the analysis provider of the passage's attribution or of the evidence, `local` for mentions, or `reviewed` for a dialogue attribution a person set or confirmed; null when unknown. Evidence retained from older versions may omit `confidence`, `provider` and `model`."
           },
           "model": {
             "anyOf": [
@@ -20890,7 +20825,7 @@
                 "type": "null"
               }
             ],
-            "description": "Character ID from this book's cast (including `narrator` or `unassigned`); anything else is 400. Sets `confidence` to 1.0."
+            "description": "Character ID from this book's cast (including `narrator` or `unassigned`); anything else is 400 `character_not_in_cast`. Sets `confidence` to 1.0."
           },
           "direction": {
             "anyOf": [
@@ -20929,13 +20864,13 @@
                 "type": "null"
               }
             ],
-            "description": "Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. Gemini and device narration ignore it. It cannot be cleared through this endpoint (null is ignored)."
+            "description": "Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. `null` clears it, so the speaker's Breeze voice seed applies; omitting it keeps the saved seed. Gemini and device narration ignore it."
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "SegmentEdit",
-        "description": "Passage fields to change. Omitted or null fields are ignored; send \"\" or [] to clear."
+        "description": "Passage fields to change. Omitted or null fields are ignored, except `seed`; send \"\" or [] to clear."
       },
       "Series": {
         "description": "A series with its supplied books, all volume slots and its identity count.",
@@ -23809,14 +23744,13 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 200,
-                "minLength": 1
+                "maxLength": 200
               },
               {
                 "type": "null"
               }
             ],
-            "description": "A direct provider voice ID, 1–200 characters, trimmed of surrounding spaces. For Breeze it must be a usable (cloned) voice in the last Breeze check and is stored pinned as `{id, revision, seed}`; for Gemini and device voices it is stored as `{id}`."
+            "description": "A direct provider voice ID, at most 200 characters, trimmed of surrounding spaces. Empty or blank (after trimming) clears the choice so Default applies, for every provider; it never selects a provider's own default voice. For Breeze a nonblank ID must be a usable (cloned) voice in the last Breeze check (400 `breeze_voice_unavailable`) and is stored pinned as `{id, revision, seed}`; for Gemini and device voices it is stored as `{id}`."
           },
           "library": {
             "anyOf": [
@@ -23828,7 +23762,7 @@
                 "type": "null"
               }
             ],
-            "description": "A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted. Stored as `{library}`: the character follows that voice's current version."
+            "description": "A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted (400 `library_voice_unavailable`). Stored as `{library}`: the character follows that voice's current version."
           },
           "seed": {
             "anyOf": [
@@ -23841,7 +23775,7 @@
                 "type": "null"
               }
             ],
-            "description": "Breeze `id` choices only: take seed 0–4294967295 for the pin; defaults to the voice's own seed, else 42. Ignored with `library` and for other providers."
+            "description": "Take seed 0–4294967295 for a Breeze pin; only with a nonblank Breeze `id`. Defaults to the voice's own seed, else 42. With `library`, a blank `id` or another provider it is 400 `seed_not_applicable` (it is never silently ignored)."
           }
         },
         "additionalProperties": false,

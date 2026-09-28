@@ -18,7 +18,7 @@ This document describes current storage as of 2026-09-28. Read [architecture](AR
 | Cast performance take history | `performance_takes` and WAV files | Immutable passage takes keyed by performance, passage and source key. Independent of the Studio `takes` selection. |
 | Accepted model results for fast reuse | `analysis_units` | Replaceable/rejectable cache; original accepted outputs retained in artifacts. |
 | Analysis progress | `analysis_checkpoints`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
-| Current character references | `character_references` | Replaced with a published checkpoint. |
+| Current character references | `character_references` | Replaced with a published checkpoint. The references API reads only discovery evidence from it; dialogue and mentions are derived from the current book on each read. |
 | Validated observations | `character_observations` | Append-only by repository convention, deduplicated by content. |
 | Output/provenance history | `artifact_versions`, `artifact_dependencies` | Immutable, including when no longer current. |
 | Current artifact selections | `artifact_heads` | Mutable pointers; removable without deleting history. |
@@ -59,7 +59,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 | `segments[]` | Passage ID, chapter/scene IDs, exact source offsets and text, kind, speaker, confidence, direction/cues/evidence, optional `speaker_check` (a dialogue passage's comparison with accepted BookNLP quote attribution: `source`, `result`, BookNLP's `speaker_id`/`speaker`, `tag_conflict`; absent when not checked, dropped when a person changes the speaker), optional `seed` for seeded narration providers, optional edit/provenance data, and presented audio selection. |
 | `analysis` | Current overall analysis summary; detailed resumable state lives in checkpoint/cache tables. |
 | `former_names` (on characters) | Names replaced by a manual rename. Discovery resolves them to the same character; they are not aliases. |
-| `edited_fields` (on characters, scenes, passages) | Field names changed through the review endpoints. The [analysis pipeline](ANALYSIS-PIPELINE.md#acceptance-rollback-and-manual-edits) never overwrites a listed field. `"*"` marks an item edited before per-field tracking, which stays wholly locked. The older phase pipeline still reads only the boolean `edited`. |
+| `edited_fields` (on characters, scenes, passages) | Field names whose value an edit through the review endpoints actually changed; an edit that changes nothing records nothing and keeps the revision. The [analysis pipeline](ANALYSIS-PIPELINE.md#acceptance-rollback-and-manual-edits) never overwrites a listed field. `"*"` marks an item edited before per-field tracking, which stays wholly locked. The older phase pipeline still reads only the boolean `edited`. Stored only: the book document the API presents omits `edited`, `edited_fields`, `metadata_edited`, `profile_input_key` and the legacy `voice`/`system_voice` fields. |
 | `cover` | Thumbnail metadata/hash. Image bytes live in `book_covers`, not book JSON. |
 | `pronunciations[]` | Optional pronunciation lexicon (absent when empty): `id` (`pr_<12 hex>`), `term`, `respelling`, `match_case`, optional `providers` (per-narrator respellings), `character_id` and `note`. Edited only through the pronunciation endpoints; analysis carries it through unchanged. It is a narration input, never a text change: the respelled text exists only in render recipes. |
 

@@ -123,7 +123,8 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     assert edited['segments'][0]['audio'] is None
     assert all(s['audio'] for s in edited['segments'][1:])
     assert client.get(audio_url).status_code == 404
-    assert edited['segments'][0]['edited'] is True
+    assert 'edited' not in edited['segments'][0]  # edit locks are stored, not presented
+    assert client.app.state.runtime.store.book(book['id'])['segments'][0]['edited'] is True
 
 
 def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):

@@ -24,6 +24,8 @@ from functools import lru_cache
 from typing import Any
 from uuid import uuid4
 
+from .errors import Invalid
+
 LEXICON_VERSION = 1
 MAX_ENTRIES = 500
 MAX_TERM_CHARS = 80
@@ -36,8 +38,11 @@ _FORBIDDEN = re.compile(r"[<>()\[\]{}\\]")
 _ENTRY_ID = re.compile(r"pr_[0-9a-f]{12}")
 
 
-class PronunciationError(ValueError):
-    pass
+class PronunciationError(Invalid):
+    """An unacceptable entry or lexicon: HTTP 400 with a stable code (still a ValueError)."""
+
+    def __init__(self, detail: str, code: str = "pronunciation_invalid"):
+        super().__init__(code, detail)
 
 
 def _clean(value: Any, label: str, limit: int) -> str:
@@ -108,7 +113,7 @@ def normalize_lexicon(entries: Any) -> list[dict]:
     if not isinstance(entries, list):
         raise PronunciationError("Pronunciations must be a list.")
     if len(entries) > MAX_ENTRIES:
-        raise PronunciationError(f"A book can have at most {MAX_ENTRIES} pronunciations.")
+        raise PronunciationError(f"A book can have at most {MAX_ENTRIES} pronunciations.", "pronunciation_limit_reached")
     result, seen_ids = [], set()
     for raw in entries:
         entry = normalize_entry(raw)
@@ -116,7 +121,7 @@ def normalize_lexicon(entries: Any) -> list[dict]:
             raise PronunciationError("Two pronunciation entries share an ID.")
         seen_ids.add(entry["id"])
         if any(conflicts(entry, other) for other in result):
-            raise PronunciationError(f"“{entry['term']}” already has a pronunciation.")
+            raise PronunciationError(f"“{entry['term']}” already has a pronunciation.", "pronunciation_duplicate")
         result.append(entry)
     return result
 

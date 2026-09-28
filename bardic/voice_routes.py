@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import breeze, gemini_voices
 from .audio import BREEZE_MODEL, AudioError, UncertainRequest, _VOICE_NAMES, list_system_voices
+from .errors import ApiError
 from .store import now
 from .voice_previews import DEMO_TEXT, _excerpt
 
@@ -276,7 +277,7 @@ def register(app, rt, edit):
                         {"voices": {provider: {"library": voice_id}}}), None
         except HTTPException as error:
             return None, str(error.detail)
-        except (KeyError, ValueError) as error:
+        except (KeyError, ValueError, ApiError) as error:
             return None, str(error)
 
     def delete_quietly(key, voice_ids):
