@@ -31,6 +31,13 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 - Keep database mutations short and serialized through existing Store locks/transactions. Do not hold a SQLite transaction open during cloud requests. Preserve single-instance protection for a data directory.
 - Do not expose the service publicly as part of routine development. The app binds to loopback by default and has no user authentication. The owner's `.env` may set `BARDIC_LAN_NAME` for trusted-network access, so development launches blank it as shown in [development](docs/DEVELOPMENT.md). Its browser write-origin guard is not a public-service security model.
 
+## Running servers
+
+- The owner's library is served by the launchd service `local.bardic` from the main checkout. `./bardicctl status` is read-only and always safe: it shows what serves the port, which process owns it, and whether jobs are active.
+- Do not stop, restart, install or uninstall the owner's service, or signal a server you did not start, unless the user asks in the current task. The owner may be listening, and a job may be spending requests. When asked, restart only with `./bardicctl restart`. From a worktree it needs `--yes`, which states that the user asked. It refuses while jobs are active; pass `--force` only with the user's agreement. Never relaunch the owner's library with `nohup`, a background shell or a second server.
+- Changes in a worktree are not live in the service until they are merged into the main checkout and it restarts.
+- To run your change, use `./bardicctl dev start` from your checkout (own port, scratch library, loopback, blank keys). Use `./bardicctl dev restart` after Python edits and `./bardicctl dev stop` before handing off. `./bardicctl dev list` also shows other agents' servers; leave those alone. See [development](docs/DEVELOPMENT.md#configuration-and-data-isolation) and [operations](docs/OPERATIONS.md#run-as-a-service).
+
 ## Implementation workflow
 
 1. Inspect `git status --short` and preserve unrelated changes. Keep work scoped to the requested behavior.
@@ -51,7 +58,7 @@ for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 
 Python 3.11+ is supported by project metadata; the recorded development environment is Python 3.12 and Node 22. Node behavior tests do not install browser packages. The optional real Mac speech test is opt-in; routine tests use fake audio and do not call cloud providers. Node-dependent pytest wrappers skip if Node is missing, so run the Node command explicitly for frontend work.
 
-Use an isolated `BARDIC_DATA_DIR` and another `BARDIC_PORT` for a development server if the user's app is already running. See [development](docs/DEVELOPMENT.md) for a key-free launch. `python -m bardic` loads only the repository-root `.env`; existing shell variables win. Running the ASGI app directly does not invoke that loader.
+Use `./bardicctl dev start` rather than a hand launch for a development server; [development](docs/DEVELOPMENT.md) also shows the equivalent key-free command. `python -m bardic` loads only the repository-root `.env`; existing shell variables win. Running the ASGI app directly does not invoke that loader.
 
 The old `python -m spintails` launcher and `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain compatibility paths. New libraries use `.bardic/`; an existing `.spintails/` is reused in place when no directory is configured and `.bardic/` is absent. Use `bardic.config.data_directory()` when resolving the default in tooling. Preserve the version-1 `spintails-analysis` export format identifier; a product rename is not a schema change. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
 

@@ -207,7 +207,7 @@ Source: [series_processing.py](../bardic/series_processing.py). Contract tests: 
 
 ## Jobs and cancellation
 
-`GET /api/jobs` returns up to the 100 most recent jobs. Optional `book_id` filters to one book or the synthetic series-parent owner before that bound applies. The route exposes no limit/offset parameters and no single-job GET route: select the returned record by its `id`, or use the series run endpoint.
+`GET /api/jobs` returns up to the 100 most recent jobs. Optional `book_id` filters to one book or the synthetic series-parent owner before that bound applies. `active=true` returns every `queued` or `running` job instead, with no bound; `./bardicctl` uses it before stopping a server. The route exposes no limit/offset parameters and no single-job GET route: select the returned record by its `id`, or use the series run endpoint.
 
 Common job fields are `id`, `book_id`, `kind`, `status`, `progress`, `total`, `message`, `error`, `created_at`, `updated_at`, and `cancel_requested`. Depending on kind, records include provider/model/phase, selected passage/session, series children, or a completed simple `audio` object. Progress units depend on the job and are not a universal percent.
 

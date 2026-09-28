@@ -1258,8 +1258,9 @@ def create_app(data_dir: Path | None = None):
         return rt(request).render(book_id, body)
 
     @app.get("/api/jobs")
-    def jobs(request: Request, book_id: str | None = None):
-        return rt(request).store.jobs(book_id)
+    def jobs(request: Request, book_id: str | None = None, active: bool = False):
+        # Every queued/running job, however many newer ones exist: `./bardicctl` checks this before stopping.
+        return rt(request).store.jobs(book_id, limit=None if active else 100, active=active)
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str, request: Request):
