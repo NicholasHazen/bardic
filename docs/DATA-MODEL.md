@@ -287,7 +287,7 @@ Important write boundaries:
 - Provider requests run outside long SQLite transactions. Reservations are committed before the request.
 - Audio file publication is atomic separately from SQLite. A validated asset can survive without a selected database pointer if a later step fails; there is no filesystem/database distributed transaction or automatic orphan cleanup.
 
-Ordinary worker jobs, bounded parallel discovery, and collection reservations are coordinated by `Runtime` and the series coordinator. Mutation endpoints check active work; the database alone does not enforce these scheduling rules. Cancellation and restart preserve completed units and assets, while uncertain remote work remains visible rather than silently replayed.
+Ordinary worker jobs and series reservations are coordinated by `Runtime` and the series coordinator, which runs one book's pipeline run at a time (`pipeline_runs.series_run_id` names the parent job). Mutation endpoints check active work; the database alone does not enforce these scheduling rules. Cancellation and restart preserve completed units and assets, while uncertain remote work remains visible rather than silently replayed.
 
 Migration currently uses additive table/index/trigger initialization and targeted legacy backfill. Some optional tables are initialized on first repository use. There is no migration-number table, `PRAGMA user_version` protocol, or tested downgrade path. Artifact schema versions and request recipe versions are payload/behavior versioning, not database migration numbers. A maintenance reader must also know that constructing `Store` updates interrupted jobs/checkpoints; use a deliberate read-only SQLite connection for a truly non-mutating inspection.
 

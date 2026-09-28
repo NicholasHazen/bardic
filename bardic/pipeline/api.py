@@ -230,6 +230,79 @@ def new_character_voices(runtime):
     return prepare
 
 
+def resolve_configs(runtime, registry, steps, overrides=None):
+    """Each step's provider/model: a validated override, else the saved step settings."""
+    settings = step_settings(runtime, registry)
+    configs = {}
+    for step in steps:
+        override = (overrides or {}).get(step.id)
+        configs[step.id] = _validate_config(step, override.model_dump()) if override else \
+            {'provider': settings[step.id]['provider'], 'model': settings[step.id]['model']}
+    return configs
+
+
+def credentials_needed(runtime, registry, configs):
+    """(providers a run must call, every configured credential, the providers still missing one)."""
+    needed = {c['provider'] for step_id, c in configs.items()
+              if c['provider'] != 'local' and c['provider'] not in registry.get(step_id).offline_providers}
+    credentials = runtime.analysis_credentials()
+    return needed, credentials, [p for p in sorted(needed) if not credentials.get(p)]
+
+
+def setup_message(missing):
+    return 'Add in Settings first: ' + ', '.join(
+        f"the {LABELS[p]} server URL" if p not in PROVIDER_LABELS else f"{'an' if LABELS[p][0] in 'AEIOU' else 'a'} {LABELS[p]} API key"
+        for p in missing)
+
+
+def accept_versions(runtime, registry, book_id, step, versions, step_run_id, *, mode, expected_revision=None):
+    repository = PipelineRepository(runtime.store)
+    run = repository.step_run(book_id, step_run_id) if step_run_id else None
+    voices = new_character_voices(runtime)
+
+    def prepare(work, before):
+        voices(work, before)
+        if step.method == 'llm' and run and run.get('origin') == 'run':
+            # The reader and Cast summarize who produced the current analysis.
+            work['analysis'] = {'provider': run['provider'], 'model': run['model'], 'status': 'partial',
+                                'phase': step.id, 'notes': f'{step.label} accepted in the Analysis tab.'}
+    return projection.accept(runtime.store, repository, registry, book_id, step, versions,
+                             mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime),
+                             prepare=prepare, expected_revision=expected_revision)
+
+
+def execute_run(runtime, registry, job, run, secrets, *, limits, concurrency, fresh, cancelled=None):
+    """Run a queued pipeline run inside its job, then settle the run record.
+
+    ``limits`` must be a full ``Limits`` dump: ``None`` values mean uncapped,
+    while a missing key would fall back to the older phase-engine defaults.
+    """
+    repository = PipelineRepository(runtime.store)
+    book_id = run['book_id']
+    stop = cancelled or (lambda: runtime.cancelled(job['id']))
+
+    def accept(step, versions, step_run_id):
+        accept_versions(runtime, registry, book_id, step, versions, step_run_id, mode='auto')
+
+    def work():
+        def progress(done, total, message):
+            runtime.check_cancel(job['id'])
+            runtime.store.update_job(job['id'], progress=done, total=total, message=message)
+        RunExecutor(runtime.store, registry, run, secrets=secrets, cancelled=stop,
+                    progress=progress, accept=accept, limits=limits,
+                    concurrency=concurrency, fresh=fresh).execute()
+
+    try:
+        runtime.run(job, work, tuple(secrets.values()))
+    finally:
+        # A job cancelled while queued never reaches work(); settle its run too.
+        settled = repository.run(run['id'])
+        if settled['status'] in ACTIVE:
+            final = runtime.store.job(job['id'])['status']
+            repository.update_run(run['id'], status=final if final not in ACTIVE else 'interrupted',
+                                  error=None if final == 'completed' else 'The job ended before this run finished.')
+
+
 def build_router(registry: Registry):
     router = APIRouter()
 
@@ -297,13 +370,7 @@ def build_router(registry: Registry):
                                                   for c in book['chapters']]}
 
     def configs_for(runtime, body, steps):
-        settings = step_settings(runtime, registry)
-        configs = {}
-        for step in steps:
-            override = (body.configs or {}).get(step.id)
-            configs[step.id] = _validate_config(step, override.model_dump()) if override else \
-                {'provider': settings[step.id]['provider'], 'model': settings[step.id]['model']}
-        return configs
+        return resolve_configs(runtime, registry, steps, body.configs)
 
     def chapters_for(book, body):
         if body.chapter_ids is None:
@@ -335,13 +402,9 @@ def build_router(registry: Registry):
             book = runtime.store.book(book_id)
             chapter_ids = chapters_for(book, body)
             configs = configs_for(runtime, body, steps)
-            providers_needed = {c['provider'] for step_id, c in configs.items()
-                                if c['provider'] != 'local' and c['provider'] not in registry.get(step_id).offline_providers}
-            credentials = runtime.analysis_credentials()
-            missing = [p for p in sorted(providers_needed) if not credentials.get(p)]
+            providers_needed, credentials, missing = credentials_needed(runtime, registry, configs)
             if missing:
-                raise HTTPException(400, 'Add in Settings first: ' + ', '.join(
-                    f"the {LABELS[p]} server URL" if p not in PROVIDER_LABELS else f"an {LABELS[p]} API key" for p in missing))
+                raise HTTPException(400, setup_message(missing))
             repository = PipelineRepository(runtime.store)
             with runtime.store.connect() as conn:
                 projection.sync(repository, registry, conn, book)
@@ -366,29 +429,9 @@ def build_router(registry: Registry):
             job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], mode=body.mode,
                                            message='Waiting for the local worker')
 
-            def accept(step, versions, step_run_id):
-                accept_versions(runtime, book_id, step, versions, step_run_id, mode='auto')
-
-            def work():
-                def progress(done, total, message):
-                    runtime.check_cancel(job['id'])
-                    runtime.store.update_job(job['id'], progress=done, total=total, message=message)
-                RunExecutor(runtime.store, registry, run, secrets=secrets, cancelled=lambda: runtime.cancelled(job['id']),
-                            progress=progress, accept=accept, limits=body.limits.model_dump(),
-                            concurrency=body.concurrency, fresh=body.fresh).execute()
-
-            def execute():
-                try:
-                    runtime.run(job, work, tuple(secrets.values()))
-                finally:
-                    # A job cancelled while queued never reaches work(); settle its run too.
-                    settled = repository.run(run['id'])
-                    if settled['status'] in ACTIVE:
-                        final = runtime.store.job(job['id'])['status']
-                        repository.update_run(run['id'], status=final if final not in ACTIVE else 'interrupted',
-                                              error=None if final == 'completed' else 'The job ended before this run finished.')
-
-            runtime.pool.submit(execute)
+            limits = body.limits.model_dump()
+            runtime.pool.submit(lambda: execute_run(runtime, registry, job, run, secrets, limits=limits,
+                                                    concurrency=body.concurrency, fresh=body.fresh))
             return {'job': job, 'run': run}
 
     def version_scopes(runtime, book_id, step, version_id):
@@ -400,21 +443,6 @@ def build_router(registry: Registry):
         if run['step_id'] != step.id:
             raise HTTPException(404, 'Step version not found')
         return dict(run.get('scopes', {})), run
-
-    def accept_versions(runtime, book_id, step, versions, step_run_id, *, mode, expected_revision=None):
-        repository = PipelineRepository(runtime.store)
-        run = repository.step_run(book_id, step_run_id) if step_run_id else None
-        voices = new_character_voices(runtime)
-
-        def prepare(work, before):
-            voices(work, before)
-            if step.method == 'llm' and run and run.get('origin') == 'run':
-                # The reader and Cast summarize who produced the current analysis.
-                work['analysis'] = {'provider': run['provider'], 'model': run['model'], 'status': 'partial',
-                                    'phase': step.id, 'notes': f'{step.label} accepted in the Analysis tab.'}
-        return projection.accept(runtime.store, repository, registry, book_id, step, versions,
-                                 mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime),
-                                 prepare=prepare, expected_revision=expected_revision)
 
     def require_decidable(runtime, book_id):
         runtime.store.require_active(book_id)
@@ -523,7 +551,7 @@ def build_router(registry: Registry):
         with runtime.store.lock:
             require_decidable(runtime, book_id)
             try:
-                return accept_versions(runtime, book_id, step, chosen, run['id'] if run else None, mode='user',
+                return accept_versions(runtime, registry, book_id, step, chosen, run['id'] if run else None, mode='user',
                                        expected_revision=body.expected_revision)
             except projection.RevisionConflict as exc:
                 raise HTTPException(409, str(exc)) from exc
