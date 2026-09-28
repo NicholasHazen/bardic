@@ -104,6 +104,8 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Revisit when:** Narration budget planning, series-wide allowances or invoice reconciliation are implemented with explicit scopes and uncertain-outcome handling.
 
+**Amended 2026-09-28 (Analysis tab):** At the owner's request, step-pipeline runs no longer take a request limit or dollar guard up front. The confirmed plan preview, which shows the estimated requests and cost and says retries can add requests, is the authorization. Attempts are still reserved and recorded before sending, unknown cost stays unknown, and each unit's attempts stay bounded. API callers may still pass limits. Phase controls and series runs keep their allowances.
+
 ## D11 · Lexical retrieval first
 
 **Decision:** Use SQLite FTS5 for local passage search with bounded results. Keep source hashes and book/reading-order scope. If FTS5 is unavailable, report that limitation and keep source artifacts accessible. A vector database is not installed.

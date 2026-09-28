@@ -95,6 +95,9 @@ class DirectingStep(Step):
     chapter_scoped = True
     capturable = True
     inputs = ('discovery', 'profiles', 'quotes')
+    # Passages are attributed to the cast in the book; discovery is recorded for staleness only.
+    # Quote attribution is optional: when accepted it checks speakers (and BookNLP as provider needs it).
+    requires = ('profiles',)
     parallel = 2
     # 2: adds the BookNLP speaker check to every provider's assembly. Model requests and their
     # validation are unchanged, so cached units from version 1 stay valid and are reused.

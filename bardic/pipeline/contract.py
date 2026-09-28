@@ -141,6 +141,9 @@ class Step:
     offline_providers: tuple[str, ...] = ()
     # Upstream step IDs whose ACCEPTED payloads this step reads.
     inputs: tuple[str, ...] = ()
+    # Inputs that must have an accepted result before this step can run (None: all inputs).
+    # Others are only recorded, e.g. for staleness. A requirement also requested in the same run counts.
+    requires: tuple[str, ...] | None = None
     # Projection fields this step overwrites, as 'collection.field'.
     owns: tuple[str, ...] = ()
     # Bump when prompts, schemas or logic change: new cache keys, old versions stay readable.
@@ -207,9 +210,13 @@ class Step:
         """
         return {'stats': {'scopes': len(payloads)}, 'columns': [], 'rows': []}
 
+    @property
+    def required_inputs(self) -> tuple[str, ...]:
+        return self.inputs if self.requires is None else self.requires
+
     def describe(self) -> dict:
         return {'id': self.id, 'label': self.label, 'summary': self.summary, 'method': self.method,
-                'scope': self.scope, 'inputs': list(self.inputs), 'owns': list(self.owns),
+                'scope': self.scope, 'inputs': list(self.inputs), 'requires': list(self.required_inputs), 'owns': list(self.owns),
                 'version': self.version, 'parallel': self.parallel, 'default_gate': self.default_gate,
                 'providers': list(self.allowed_providers()), 'offline_providers': list(self.offline_providers),
                 'default_model_role': self.default_model_role, 'chapter_scoped': self.chapter_scoped,

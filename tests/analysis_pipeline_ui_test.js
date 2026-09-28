@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const REGIONS = ['message', 'runbar', 'plan', 'steps', 'detail', 'versions', 'result'];
+const REGIONS = ['message', 'runs', 'plan', 'steps', 'detail', 'versions', 'result'];
 class Region { constructor() { this.innerHTML = ''; } querySelector() { return null; } }
 class Container {
   constructor({hidden = false} = {}) {
@@ -242,45 +242,52 @@ test('a failed settings save restores the previous choice', async () => {
   assert.ok(container.regions.detail.innerHTML.includes('value="gpt-a" selected'));
 });
 
-test('Run selected previews a plan and runs only after Confirm, with the plan fingerprint', async () => {
+test('Run this step previews a plan and runs only after Confirm, with the plan fingerprint', async () => {
   const env = environment();
   const container = new Container();
   const started = [];
   await env.render(container, book, {status, onJobStarted:async job => { started.push(job); }});
   await settle();
-  change(container, 'ap_include', '', {checked:true, dataset:{apInclude:'discovery'}});
-  change(container, 'ap_include', '', {checked:true, dataset:{apInclude:'structure'}});
-  assert.ok(container.regions.runbar.innerHTML.includes('Run selected (2)'));
+  assert.ok(!container.regions.steps.innerHTML.includes('type="checkbox"'), 'steps are run one at a time');
+  for (const region of Object.values(container.regions)) assert.ok(!/plan-selected|"ap_mode"|ap_include/.test(region.innerHTML));
+  const detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('name="ap_concurrency"') && detail.includes('name="ap_fresh"') && detail.includes('>Run this step<'));
+  assert.ok(!/name="ap_(max_requests|budget|budget_on)"/.test(detail), 'no limit fields are offered');
   change(container, 'ap_chapter', 'c1');
-  click(container, 'ap-action', 'plan-selected');
+  change(container, 'ap_concurrency', '3');
+  click(container, 'ap-action', 'plan-step');
   await settle();
   const planned = env.writes();
   assert.equal(planned.length, 1);
   assert.equal(planned[0].url, '/api/books/book%2F1/analysis-pipeline/plan');
-  assert.deepEqual(planned[0].body, {steps:['structure', 'discovery'], chapter_ids:['c1'],
-    configs:{structure:{provider:'local', model:null}, discovery:{provider:'openai', model:'gpt-a'}}});
+  assert.deepEqual(planned[0].body, {steps:['discovery'], chapter_ids:['c1'], fresh:false, configs:{discovery:{provider:'openai', model:'gpt-a'}}});
   const preview = container.regions.plan.innerHTML;
   assert.ok(preview.includes('Unknown price') && preview.includes('Estimates &lt;note&gt;'));
-  assert.ok(preview.includes('Runs locally · free') && preview.includes('Sections: The &lt;Gate&gt;'));
-  assert.ok(preview.includes('Confirm and run · up to 1 request'));
+  assert.ok(preview.includes('Sections: The &lt;Gate&gt;'));
+  assert.ok(preview.includes('Confirm and run · about 1 request'));
+  assert.ok(preview.includes('3 requests at once') && preview.includes('There is no request or dollar cap'));
   assert.ok(!env.calls.some(call => call.url.endsWith('/runs')), 'previewing never starts work');
 
-  change(container, 'ap_budget_on', '', {checked:false});
-  input(container, 'ap_max_requests', '10');
-  change(container, 'ap_mode', 'parallel');
   change(container, 'ap_fresh', '', {checked:true});
-  assert.ok(container.regions.plan.innerHTML.includes('Fresh samples is on'));
+  assert.equal(container.regions.plan.innerHTML, '', 'fresh samples change the estimate, so the preview closes');
+  assert.ok(container.regions.message.innerHTML.includes('Fresh samples changed'));
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  assert.equal(env.writes().at(-1).body.fresh, true, 'the estimate is made for fresh samples');
   click(container, 'ap-action', 'confirm-run');
   await settle();
   const run = env.calls.find(call => call.url.endsWith('/runs'));
   assert.equal(run.method, 'POST');
-  assert.deepEqual(run.body, {steps:['structure', 'discovery'], chapter_ids:['c1'],
-    configs:{structure:{provider:'local', model:null}, discovery:{provider:'openai', model:'gpt-a'}},
-    gates:{structure:'auto', discovery:'auto'}, mode:'parallel', concurrency:2, fresh:true,
-    limits:{max_requests:10, budget_usd:null}, expected_fingerprint:'fp-123'});
+  assert.deepEqual(run.body, {steps:['discovery'], chapter_ids:['c1'], configs:{discovery:{provider:'openai', model:'gpt-a'}},
+    gates:{discovery:'auto'}, mode:'serial', concurrency:3, fresh:true, expected_fingerprint:'fp-123'});
   assert.deepEqual(started.map(job => job.id), ['job-1']);
   assert.equal(container.regions.plan.innerHTML, '');
   assert.equal(env.calls.filter(call => call.url.endsWith('/runs')).length, 1);
+
+  // Local steps have nothing to send or reuse: no request options.
+  click(container, 'ap-step', 'census');
+  await settle();
+  assert.ok(!container.regions.detail.innerHTML.includes('name="ap_concurrency"') && container.regions.detail.innerHTML.includes('>Run this step<'));
 });
 
 test('a changed setting closes an open preview; a stale fingerprint asks for a new preview', async () => {
@@ -300,16 +307,10 @@ test('a changed setting closes an open preview; a stale fingerprint asks for a n
 
   click(container, 'ap-action', 'plan-step');
   await settle();
-  input(container, 'ap_budget', '0');
-  assert.ok(container.regions.plan.innerHTML.includes('Set a dollar budget'));
-  click(container, 'ap-action', 'confirm-run');
-  await settle();
-  assert.ok(!env.calls.some(call => call.url.endsWith('/runs')), 'invalid limits never start work');
-  input(container, 'ap_budget', '2.5');
   click(container, 'ap-action', 'confirm-run');
   await settle();
   assert.equal(env.calls.filter(call => call.url.endsWith('/runs')).length, 1);
-  assert.equal(env.calls.find(call => call.url.endsWith('/runs')).body.limits.budget_usd, 2.5);
+  assert.ok(!('limits' in env.calls.find(call => call.url.endsWith('/runs')).body), 'runs carry no limits');
   assert.ok(container.regions.plan.innerHTML.includes('The plan changed since the preview.'));
   assert.ok(container.regions.plan.innerHTML.includes('Preview again'));
   assert.ok(!container.regions.plan.innerHTML.includes('confirm-run'));
@@ -321,8 +322,6 @@ test('runs are blocked while another job or a pipeline run is active; active run
   await env.render(container, book, {status, busy:true});
   await settle();
   assert.ok(/data-ap-action="plan-step"[^>]*disabled/.test(container.regions.detail.innerHTML));
-  change(container, 'ap_include', '', {checked:true, dataset:{apInclude:'structure'}});
-  click(container, 'ap-action', 'plan-selected');
   click(container, 'ap-action', 'plan-step');
   await settle();
   assert.equal(env.writes().length, 0);
@@ -338,7 +337,7 @@ test('runs are blocked while another job or a pipeline run is active; active run
   const activeContainer = new Container();
   await active.render(activeContainer, book, {status});
   await settle();
-  assert.ok(activeContainer.regions.runbar.innerHTML.includes('Run in progress'));
+  assert.ok(activeContainer.regions.runs.innerHTML.includes('Run in progress'));
   const pending = active.timers.filter(timer => !timer.cleared);
   assert.equal(pending.length, 1);
   assert.equal(pending[0].ms, 2000);
@@ -348,7 +347,7 @@ test('runs are blocked while another job or a pipeline run is active; active run
   active.timers.filter(timer => !timer.cleared).at(-1).fn();
   await settle();
   assert.equal(reads, 3);
-  assert.ok(!activeContainer.regions.runbar.innerHTML.includes('Run in progress'));
+  assert.ok(!activeContainer.regions.runs.innerHTML.includes('Run in progress'));
   const before = active.timers.length;
   await settle();
   assert.equal(active.timers.length, before, 'polling stops after the run');
@@ -482,13 +481,168 @@ test('responses for a previous book are discarded after switching books', async 
   releaseOld();
   await first;
   await settle();
-  assert.ok(!container.regions.runbar.innerHTML.includes('Old book'));
+  assert.ok(!container.regions.runs.innerHTML.includes('Old book'));
   assert.ok(container.regions.steps.innerHTML.includes('Waiting for review'));
   assert.ok(env.calls.some(call => call.url === '/api/books/new/analysis-pipeline'));
 
   // Clearing the book empties the view and discards pending work.
   await env.render(container, null, {status});
   assert.equal(container.innerHTML, '');
+});
+
+test('a step whose required inputs have no accepted result says so and cannot run', async () => {
+  // Discovery has only a version waiting for review; profiles reads discovery.
+  const env = environment();
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.ok(container.regions.steps.innerHTML.includes('Needs Character discovery'));
+  click(container, 'ap-step', 'profiles');
+  await settle();
+  const detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('Not ready to run.'));
+  assert.ok(detail.includes('Character profiles needs accepted results from Character discovery.'));
+  assert.ok(detail.includes('has a version waiting for your review: accept it first'));
+  assert.match(detail, /data-ap-action="plan-step"[^>]*disabled/);
+  assert.ok(detail.includes('data-ap-step="discovery"') && detail.includes('Go to Character discovery'));
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  assert.equal(env.writes().length, 0, 'no plan is requested for a step that cannot run');
+  // Going to the needed step opens it, and it can run.
+  click(container, 'ap-step', 'discovery');
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('data-ap-key="detail-heading">Character discovery</h3>'));
+  assert.doesNotMatch(container.regions.detail.innerHTML, /data-ap-action="plan-step"[^>]*disabled/);
+});
+
+test('the server decides missing inputs in a preview', async () => {
+  // The overview says discovery is accepted; the server knows better by the time of the preview.
+  const env = environment(call => {
+    if (call.method === 'GET' && call.url === '/api/books/book%2F1/analysis-pipeline') {
+      const value = overview('book/1');
+      value.steps.find(step => step.id === 'discovery').has_accepted = true;
+      return {data:value};
+    }
+    if (call.url.endsWith('/plan')) return {data:{...plan, missing_inputs:{profiles:['discovery']}}};
+    return ordinary(call);
+  });
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  click(container, 'ap-step', 'profiles');
+  await settle();
+  assert.ok(!container.regions.detail.innerHTML.includes('Not ready to run.'));
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  const preview = container.regions.plan.innerHTML;
+  assert.match(preview, /data-ap-action="confirm-run"[^>]*disabled/);
+  assert.ok(preview.includes('Character profiles needs accepted results from Character discovery.'));
+});
+
+test('leaving the tab discards selections, previews and messages; the next visit starts clean', async () => {
+  const lastRun = {id:'run-9', status:'failed', steps:['census'], created_at:'2026-09-27T10:00:00Z', error:'Census <broke>'};
+  const env = environment(call => call.method === 'GET' && call.url === '/api/books/book%2F1/analysis-pipeline'
+    ? {data:overview('book/1', {recent_runs:[lastRun]})} : ordinary(call), {observer:true});
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.ok(container.regions.runs.innerHTML.includes('Census &lt;broke&gt;'), 'a finished run is reported');
+  change(container, 'ap_fresh', '', {checked:true});
+  change(container, 'ap_concurrency', '4');
+  change(container, 'ap_chapter', 'c1');
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  assert.ok(container.regions.plan.innerHTML.includes('Review before running'));
+  click(container, 'ap-step', 'census');
+  await settle();
+  change(container, 'ap_gate', 'review');
+  await settle();
+  assert.ok(container.regions.message.innerHTML.includes('Saved settings'));
+
+  container.hidden = true;
+  env.observers[0].fn();
+  await settle();
+  const before = env.calls.length;
+  container.hidden = false;
+  env.observers[0].fn();
+  await settle();
+  assert.ok(env.calls.length > before, 'returning reloads the book state');
+  assert.equal(container.regions.plan.innerHTML, '');
+  assert.equal(container.regions.message.innerHTML, '');
+  const detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('data-ap-key="detail-heading">Character discovery</h3>'), 'the step waiting for review opens again');
+  assert.ok(!detail.includes('data-ap-key="fresh" checked') && detail.includes('<option value="2" selected>'));
+  assert.ok(detail.includes('<option value="">All story sections</option>') && !detail.includes('value="c1" selected'));
+  assert.ok(!container.regions.runs.innerHTML.includes('Census &lt;broke&gt;'), 'a run already shown is not reported again');
+});
+
+test('previews and messages close when their step changes; a finished run can be dismissed', async () => {
+  const env = environment(call => call.method === 'GET' && call.url === '/api/books/book%2F1/analysis-pipeline'
+    ? {data:overview('book/1', {recent_runs:[{id:'run-9', status:'completed', steps:['census'], created_at:'2026-09-27T10:00:00Z'}]})} : ordinary(call));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  assert.ok(container.regions.plan.innerHTML.includes('Review before running'));
+  change(container, 'ap_concurrency', '1');
+  assert.ok(container.regions.plan.innerHTML.includes('1 request at once'), 'requests at once only relabels the preview');
+  change(container, 'ap_fresh', '', {checked:true});
+  assert.ok(container.regions.message.innerHTML.includes('Fresh samples changed'));
+  click(container, 'ap-step', 'census');
+  await settle();
+  assert.equal(container.regions.plan.innerHTML, '');
+  assert.equal(container.regions.message.innerHTML, '', 'a message does not follow you to another step');
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  click(container, 'ap-step', 'structure');
+  await settle();
+  assert.equal(container.regions.plan.innerHTML, '', 'a preview belongs to its step');
+
+  assert.ok(container.regions.runs.innerHTML.includes('Latest run'));
+  click(container, 'ap-action', 'dismiss-run');
+  assert.ok(!container.regions.runs.innerHTML.includes('Latest run'));
+});
+
+test('a preview being confirmed stays open, so a failed start is reported even after browsing', async () => {
+  let reject;
+  const env = environment(call => call.url.endsWith('/runs')
+    ? new Promise(resolve => { reject = () => resolve({ok:false, status:500, data:{detail:'Worker <down>'}}); }) : ordinary(call));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  click(container, 'ap-action', 'confirm-run');
+  await settle();
+  click(container, 'ap-step', 'census');
+  await settle();
+  assert.ok(container.regions.plan.innerHTML.includes('Starting…'), 'the starting preview is not discarded');
+  reject();
+  await settle();
+  assert.ok(container.regions.plan.innerHTML.includes('Could not start the run: Worker &lt;down&gt;'));
+});
+
+test('responses arriving after the tab was left leave no message or preview behind', async () => {
+  let release;
+  const env = environment(call => call.url.endsWith('/plan')
+    ? new Promise(resolve => { release = () => resolve({data:plan}); }) : ordinary(call), {observer:true});
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  container.hidden = true;
+  env.observers[0].fn();
+  release();
+  await settle();
+  change(container, 'ap_gate', 'review');
+  await settle();
+  container.hidden = false;
+  env.observers[0].fn();
+  await settle();
+  assert.equal(container.regions.plan.innerHTML, '', 'the late estimate is discarded');
+  assert.equal(container.regions.message.innerHTML, '');
 });
 
 test('self-hosted providers: per-step choices, no model for services, URL wording and free service calls', async () => {
@@ -503,7 +657,7 @@ test('self-hosted providers: per-step choices, no model for services, URL wordin
     const directing = value.steps.find(step => step.id === 'directing');
     directing.providers = [...directing.providers, 'novel_analyzer', 'booknlp'];
     directing.offline_providers = ['booknlp'];
-    value.steps.splice(3, 0, {id:'quotes', label:'Quote attribution (BookNLP)', summary:'s', method:'service', scope:'chapter', inputs:['discovery'],
+    value.steps.splice(3, 0, {id:'quotes', label:'Quote attribution (BookNLP)', summary:'s', method:'service', scope:'chapter', inputs:['discovery'], requires:[],
       owns:[], version:1, parallel:1, default_gate:'auto', default_model_role:'analysis', chapter_scoped:true, providers:['booknlp'],
       settings:{provider:'booknlp', model:null, gate:'auto', saved:false}});
     return value;
@@ -549,7 +703,7 @@ test('self-hosted providers: per-step choices, no model for services, URL wordin
   const shown = container.regions.plan.innerHTML;
   assert.ok(shown.includes('BookNLP · your server · free') && shown.includes('2 service calls') && shown.includes('Calls to your servers'));
   assert.ok(shown.includes('Confirm and run · 2 calls to your servers') && !shown.includes('$0.00'));
-  assert.ok(shown.includes('use that machine’s GPU') && shown.includes('service calls are not counted'));
+  assert.ok(shown.includes('use that machine’s GPU') && shown.includes('Service calls are not counted as model requests'));
 
   // Readiness follows the refreshed status: a URL saved in Settings counts without reloading definitions.
   click(container, 'ap-action', 'cancel-plan');

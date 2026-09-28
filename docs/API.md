@@ -329,16 +329,16 @@ Step-based analysis with versioned, reviewable outputs. The contract and semanti
 | --- | --- |
 | `GET /api/analysis-pipeline` | Step definitions in pipeline order (each lists its allowed `providers`), every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `has_api_key` (a key or URL is set; not a reachability check), the Local LLM's `models`, and saved per-step `{provider, model, gate}`. Service providers take `model: null`. |
 | `PUT /api/analysis-pipeline/steps/{step}/settings` | Save a step's provider/model and gate (`auto` or `review`). Local steps accept only `provider: "local"`. Never starts work. |
-| `GET /api/books/{id}/analysis-pipeline` | Per-step accepted/total scopes, origins, stale scopes, pending candidates, latest version, active and recent runs. Records outside changes first. |
-| `POST /api/books/{id}/analysis-pipeline/plan` | `{steps, chapter_ids?, configs?}` → units, cached units, requests, `service_calls` (free calls to self-hosted services, outside the request limit), token/cost estimates, `inputs_pending`, `fingerprint`. No model or service calls. |
-| `POST /api/books/{id}/analysis-pipeline/runs` | `{steps, mode: serial|parallel, chapter_ids?, configs?, gates?, concurrency: 1–4, fresh, limits, expected_fingerprint?}` → `{job, run}`. Job kind `pipeline`; cancel through the jobs API. 409 when the plan fingerprint changed or a job is active. |
+| `GET /api/books/{id}/analysis-pipeline` | Per-step accepted/total scopes, `has_accepted` (any accepted version), origins, stale scopes, pending candidates, latest version, active and recent runs. Records outside changes first. |
+| `POST /api/books/{id}/analysis-pipeline/plan` | `{steps, chapter_ids?, configs?, fresh?}` → units, cached units, requests, `service_calls` (free calls to self-hosted services, not counted as model requests), token/cost estimates, `inputs_pending`, `missing_inputs` (per step and `{step: [inputs]}` overall), `fingerprint`. No model calls. Send the same `fresh` value as the run, because it is part of the fingerprint. |
+| `POST /api/books/{id}/analysis-pipeline/runs` | `{steps, mode: serial|parallel, chapter_ids?, configs?, gates?, concurrency: 1–4, fresh, limits?, expected_fingerprint?}` → `{job, run}`. Job kind `pipeline`; cancel through the jobs API. 400 when a step's required input has no accepted result and is not in the same run, or when neither `expected_fingerprint` nor any limit is sent (an uncapped run must come from a confirmed preview). 409 when the plan fingerprint changed or a job is active. |
 | `GET …/steps/{step}/versions` | Version history with state (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and recent decisions. |
 | `GET …/steps/{step}/versions/{id}` | Generic result table (`stats`, `columns`, paged `rows`) diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{id}` may be `accepted`. |
 | `POST …/versions/{id}/preview` | `{scopes?}` → changed scopes, conflicts with manual edits, audio takes invalidated, downstream steps affected, `revision`. |
 | `POST …/versions/{id}/accept` | `{scopes?, expected_revision?}`. Accepting an older version is rollback. 409 while another non-pipeline job changes the book. |
 | `POST …/versions/{id}/reject` | Reject a candidate. An accepted version cannot be rejected. |
 
-Run limits use the same fields and defaults as `AnalysisLimits`, including the cumulative book dollar guard.
+`limits` is optional and uncapped by default: the Analysis tab sends none, because the confirmed plan (its `expected_fingerprint`) is the authorization. A run with neither is refused. An API caller may still set `max_requests` (1–1,000), `max_input_tokens`, `max_output_tokens` or `budget_usd` (the cumulative book dollar guard) with the same bounds as `AnalysisLimits`. Every attempt is reserved and recorded either way.
 
 ## Pipeline inspection, artifacts, graph, search, and portable export
 

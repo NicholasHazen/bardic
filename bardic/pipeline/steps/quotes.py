@@ -110,8 +110,10 @@ class QuotesStep(Step):
     providers = ('booknlp',)
     scope = 'chapter'
     chapter_scoped = True
-    # Cast names become BookNLP aliases, so accepted discovery changes the request.
+    # Cast names become BookNLP aliases, so accepted discovery changes the request. It maps onto
+    # the cast in the book, so discovery is recorded for staleness but not required.
     inputs = ('discovery',)
+    requires = ()
     owns = ()
 
     def units(self, ctx):

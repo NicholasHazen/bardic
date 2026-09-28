@@ -362,7 +362,8 @@ def test_booknlp_as_speaker_source_uses_tags_and_leaves_conflicts_unassigned(cli
     configure(client, booknlp='http://nlp.local:8100')
     book = with_cast(client)
     missing = client.post(f"/api/books/{book['id']}/analysis-pipeline/runs",
-                          json={'steps': ['directing'], 'configs': {'directing': {'provider': 'booknlp'}}})
+                          json={'steps': ['directing'], 'configs': {'directing': {'provider': 'booknlp'}},
+                                'limits': {'max_requests': 25}})
     assert wait_job(client, missing.json()['job']['id'])['status'] == 'failed'
     run(client, book['id'], ['quotes'])
     job, _ = run(client, book['id'], ['directing'], configs={'directing': {'provider': 'booknlp'}})
