@@ -457,6 +457,22 @@ class CharacterReference(View):
     model: str | None = Field(default=None, description='Model that produced it, or null.')
     profile_description: str | None = Field(default=None, description='`profile_evidence` only: the description proposed with this evidence.')
     profile_direction: str | None = Field(default=None, description='`profile_evidence` only: the direction proposed with this evidence.')
+    step: Literal['discovery', 'profiles', 'directing'] | None = Field(
+        default=None, description='Analysis step whose accepted version supplied this row; absent or null for '
+                                  'mentions and for rows written by the older phase engine.')
+    version_id: str | None = Field(
+        default=None, description='Accepted step-output artifact the row was projected from; absent or null when '
+                                  'there is none (mentions, manual attributions, older rows).')
+    origin: str | None = Field(
+        default=None, description='How the source result came to be: `run`, `baseline` or `external` (from the '
+                                  'step version), `manual` (a hand-edited attribution), `book` (dialogue with no '
+                                  'accepted directing version), `cast_names` (mentions); null when unknown.')
+    projection: int | None = Field(
+        default=None, description='Version of the evidence projection that wrote the row (1). Absent on rows '
+                                  'written by the older phase engine.')
+    anchors: int | None = Field(
+        default=None, description='Profiles evidence only: how many exact locations the quotation matched within '
+                                  'the discovery evidence it came from. Every location is listed; none is chosen.')
 
 
 # ------------------------------------------------------------------ operations

@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.2.0
+# Bardic 0.2.1
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -3583,6 +3583,11 @@ reference, not proof that the character is present in the scene.
 | `model` | string \| null |  | Model that produced it, or null. |
 | `profile_description` | string \| null |  | `profile_evidence` only: the description proposed with this evidence. |
 | `profile_direction` | string \| null |  | `profile_evidence` only: the direction proposed with this evidence. |
+| `step` | `"discovery"` \| `"profiles"` \| `"directing"` \| null |  | Analysis step whose accepted version supplied this row; absent or null for mentions and for rows written by the older phase engine. |
+| `version_id` | string \| null |  | Accepted step-output artifact the row was projected from; absent or null when there is none (mentions, manual attributions, older rows). |
+| `origin` | string \| null |  | How the source result came to be: `run`, `baseline` or `external` (from the step version), `manual` (a hand-edited attribution), `book` (dialogue with no accepted directing version), `cast_names` (mentions); null when unknown. |
+| `projection` | integer \| null |  | Version of the evidence projection that wrote the row (1). Absent on rows written by the older phase engine. |
+| `anchors` | integer \| null |  | Profiles evidence only: how many exact locations the quotation matched within the discovery evidence it came from. Every location is listed; none is chosen. |
 
 <a id="schema-chunkingoptions"></a>
 ### ChunkingOptions
