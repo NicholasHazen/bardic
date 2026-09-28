@@ -22,6 +22,13 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.1.3 — 2026-09-28
+<!-- contract-sha256: 540a52e82a8f8041918ec5db29114c679637e3abba5d0bad3415deb9c60bc9c1 -->
+
+Adds the daily Gemini speech count to the status response (UI redesign phase 1). Additive.
+
+- `GET /api/status` gains `tts_quota`: `{<tts_model>: ChapterListenQuota}` with `requests_today`, `rpd`, `resets_at` and `scope`, the same count chapter-listening jobs report. The browser uses it to warn before a Studio recording would exceed today's remaining requests.
+
 ## 0.1.2 — 2026-09-28
 <!-- contract-sha256: 3be45c18b27d3dd84ab1dc0eef9f2cd9b0f7c1da48b0e3f2def9dbd0fed52778 -->
 

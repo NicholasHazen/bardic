@@ -7,7 +7,7 @@ from pydantic import Field
 
 from .base import Op, View, internal, op
 from .common import TIME, Job
-from .media import ChapterListenChunking, ChapterListenLimits
+from .media import ChapterListenChunking, ChapterListenLimits, ChapterListenQuota
 from .voices import VoiceLibraryBreezeStatus, VoiceLibraryDefaults, VoiceLibrarySystemVoice
 
 CloudProvider = Literal['gemini', 'openai', 'anthropic']
@@ -219,6 +219,10 @@ class Status(View):
     tts_models: list[str] = Field(description='Supported Gemini speech models.')
     analysis_models: list[str] = Field(description='Curated Gemini analysis model IDs (compatibility; see `model_catalogs`).')
     tts_rate: dict[str, TtsRateState] = Field(description='Live rate-limiter state per Gemini speech model.')
+    tts_quota: dict[str, ChapterListenQuota] = Field(
+        description='This library\'s daily Gemini speech request count for the selected speech model: one entry '
+                    'keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before '
+                    'any usage is recorded.')
     data_directory: str = internal('Absolute path of the server library directory.')
     timing_kind: Literal['segment'] = Field(description='Granularity of read-along timing: per passage (segment).')
 

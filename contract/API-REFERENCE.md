@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.1.2
+# Bardic 0.1.3
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -6032,6 +6032,7 @@ derived at request time.
 | `tts_models` | list of string | yes | Supported Gemini speech models. |
 | `analysis_models` | list of string | yes | Curated Gemini analysis model IDs (compatibility; see `model_catalogs`). |
 | `tts_rate` | map of string → [TtsRateState](#schema-ttsratestate) | yes | Live rate-limiter state per Gemini speech model. |
+| `tts_quota` | map of string → [ChapterListenQuota](#schema-chapterlistenquota) | yes | This library's daily Gemini speech request count for the selected speech model: one entry keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before any usage is recorded. |
 | `data_directory` | string | yes | Internal; do not rely on it. Absolute path of the server library directory. |
 | `timing_kind` | `"segment"` | yes | Granularity of read-along timing: per passage (segment). |
 
