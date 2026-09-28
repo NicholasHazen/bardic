@@ -8276,7 +8276,7 @@
             ]
           },
           "409": {
-            "description": "- `series_run_not_waiting`: The run is not waiting for review (never paused, already resumed, ended, or cancelled).\n- `series_run_not_resumable`: The server restarted since the run paused; start the series again.\n- `review_pending`: The waiting book still has a version from this run waiting for a decision.",
+            "description": "- `series_run_not_waiting`: The run is not waiting for review (never paused, already resumed, ended, cancelled, or interrupted by a server restart, which also clears `waiting_for_review`).\n- `series_run_not_resumable`: The run is still marked as paused but its worker state is gone; start the series again.\n- `review_pending`: The waiting book still has a version from this run waiting for a decision.",
             "content": {
               "application/json": {
                 "schema": {

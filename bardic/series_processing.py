@@ -495,13 +495,14 @@ def resume(runtime, registry, series_id, job_id):
         parent = _parent(runtime, series_id, job_id)
         wait = parent.get('waiting_for_review')
         if parent['status'] not in ACTIVE or not wait:
+            # Includes a run the server restart interrupted: startup ends it and clears the pause.
             raise Conflict('series_run_not_waiting', 'This series run is not waiting for review.')
         if parent.get('cancel_requested'):
             raise Conflict('series_run_not_waiting', 'This series run was cancelled.')
         state = _paused(runtime).get(job_id)
         if state is None:
-            raise Conflict('series_run_not_resumable', 'This series run can no longer resume (the server restarted '
-                                                       'since it paused). Start the series again; saved results are reused.')
+            raise Conflict('series_run_not_resumable', 'This series run has no paused worker state left to resume. '
+                                                       'Start the series again; saved results are reused.')
         child = store.job(wait['child_job_id'])
         waiting = waiting_steps(runtime, registry, wait['book_id'], child.get('run_id')) if child.get('run_id') else []
         if waiting:
@@ -532,7 +533,15 @@ def cancel_paused(runtime, job):
     """
     store = runtime.store
     state = _paused(runtime).pop(job['id'], None)
-    children = state[0] if state else [store.job(i) for i in job.get('child_job_ids', [])]
+    if state:
+        children = state[0]
+    else:
+        children = []
+        for identifier in job.get('child_job_ids', []):
+            try:
+                children.append(store.job(identifier))
+            except NotFound:
+                continue  # A dangling child job ID in stored data: skip it, as runs() and cancelJob do.
     for child in children:
         current = store.job(child['id'])
         if current['status'] == 'cancelled' and not current.get('run_id') and not current.get('not_started'):

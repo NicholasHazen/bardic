@@ -190,3 +190,30 @@ def test_series_runs_list_existing_children_when_a_child_id_dangles(client):  # 
     runs = client.get(f"/api/series/{series['id']}/runs")
     assert runs.status_code == 200, runs.text
     assert [c['id'] for c in runs.json()['runs'][0]['children']] == [child['id']]
+
+
+def test_a_restart_ends_a_paused_series_run_and_clears_its_pause(tmp_path):
+    """Startup recovery interrupts a paused parent and clears `waiting_for_review`; resume is then not waiting."""
+    from bardic.store import Store
+    store = Store(tmp_path)
+    parent = store.create_job('series:series_paused', 'series')
+    store.update_job(parent['id'], status='running', series_id='series_paused', child_job_ids=['0' * 32],
+                     waiting_for_review={'book_id': 'b', 'child_job_id': 'c', 'title': '', 'position': 1.0,
+                                         'steps': ['profiles'], 'since': '2026-09-28T00:00:00+00:00'})
+    restarted = Store(tmp_path).job(parent['id'])
+    assert restarted['status'] == 'interrupted' and restarted['waiting_for_review'] is None
+    assert 'restarted' in restarted['message'] and 'Settings' not in restarted['message']
+
+
+def test_cancelling_a_paused_run_skips_a_dangling_child(client):  # noqa: F811
+    from bardic.series_processing import cancel_paused
+    series, books = collection(client, (1,))
+    store = client.app.state.runtime.store
+    child = store.create_job(books[0]['id'], 'pipeline')
+    store.update_job(child['id'], status='completed')
+    parent = active_series_run(client, series['id'])
+    parent = store.update_job(parent['id'], series_id=series['id'], book_ids=[books[0]['id']],
+                              child_job_ids=['0' * 32, child['id']])
+    with store.lock:
+        settled = cancel_paused(client.app.state.runtime, parent)
+    assert settled['status'] == 'cancelled'

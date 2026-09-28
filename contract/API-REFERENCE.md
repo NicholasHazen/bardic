@@ -941,7 +941,7 @@ Continues a series run that paused for the owner's review (`waiting_for_review` 
 | 200 | [Job](#schema-job) | The parent series job, still running. Poll it until it is terminal. |
 | 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. - `series_run_not_found`: The job is not a series run of this series. |
-| 409 | [Error](#schema-error) | - `series_run_not_waiting`: The run is not waiting for review (never paused, already resumed, ended, or cancelled). - `series_run_not_resumable`: The server restarted since the run paused; start the series again. - `review_pending`: The waiting book still has a version from this run waiting for a decision. |
+| 409 | [Error](#schema-error) | - `series_run_not_waiting`: The run is not waiting for review (never paused, already resumed, ended, cancelled, or interrupted by a server restart, which also clears `waiting_for_review`). - `series_run_not_resumable`: The run is still marked as paused but its worker state is gone; start the series again. - `review_pending`: The waiting book still has a version from this run waiting for a decision. |
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The series worker is not accepting work because the server is shutting down. The run is marked failed and nothing more runs. |

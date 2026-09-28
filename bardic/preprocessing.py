@@ -15,10 +15,6 @@ def eligible_chapters(book):
     return [c for c in book['chapters'] if c.get('kind') not in {'front_matter', 'back_matter'}]
 
 
-# Census bookkeeping that stays in the cache and the retained artifact but is not presented to clients.
-INTERNAL_FIELDS = ('fingerprint', 'source_hash')
-
-
 def census(book, store, *, retain=True):
     """The whole-book census, from the per-book cache when its inputs are unchanged.
 

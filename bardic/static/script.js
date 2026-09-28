@@ -254,9 +254,9 @@
     if (check?.result === 'differs') out.push(ui().badge(`BookNLP disagrees${other ? ` · ${other}` : ''}`, 'info'));
     else if (check?.result === 'suggests' && other) out.push(ui().badge(`BookNLP suggests ${other}`, 'info'));
     const fields = editedFields(segment);
-    if (fields.length) out.push(`<span class="badge" data-tone="accent" title="Analysis keeps what you changed by hand">${esc(fields.includes('*') || fields.length > 1 ? 'Your edits' : fields[0] === 'speaker_id' ? 'Your speaker' : fields[0] === 'direction' ? 'Your note' : 'Your edit')}</span>`);
+    if (fields.length) out.push(`<span class="badge" data-tone="accent" title="Analysis keeps what you changed by hand">${esc(fields.length > 1 ? 'Your edits' : fields[0] === 'speaker_id' ? 'Your speaker' : fields[0] === 'direction' ? 'Your note' : 'Your edit')}</span>`);
     const take = playable(segment) ? `Recorded · ${api?.formatTime ? api.formatTime(segment.audio.duration) : ''}${segment.audio.provider ? ` · ${segment.audio.provider}` : ''}`
-      : segment.audio ? 'Out of date · record again' : 'Not recorded';
+      : 'Not recorded';  // An out-of-date take is presented as null audio.
     out.push(`<span class="script-take" data-recorded="${playable(segment) ? 'true' : 'false'}">${esc(take)}</span>`);
     if (segment.cues?.length) out.push(`<span>${esc(segment.cues.map(cue => typeof cue === 'string' ? cue : cue?.text || '').filter(Boolean).join(' · '))}</span>`);
     return out.join('');

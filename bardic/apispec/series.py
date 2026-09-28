@@ -725,8 +725,10 @@ OPS: list[Op] = [
        errors={404: {**NO_SERIES,
                      'series_run_not_found': 'The job is not a series run of this series.'},
                409: {'series_run_not_waiting': 'The run is not waiting for review (never paused, already resumed, '
-                                               'ended, or cancelled).',
-                     'series_run_not_resumable': 'The server restarted since the run paused; start the series again.',
+                                               'ended, cancelled, or interrupted by a server restart, which also '
+                                               'clears `waiting_for_review`).',
+                     'series_run_not_resumable': 'The run is still marked as paused but its worker state is gone; '
+                                                 'start the series again.',
                      'review_pending': 'The waiting book still has a version from this run waiting for a decision.'},
                503: {'shutting_down': 'The series worker is not accepting work because the server is shutting down. '
                                       'The run is marked failed and nothing more runs.'}},
