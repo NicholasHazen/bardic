@@ -28,6 +28,7 @@ function environment(prior = {}, unavailable = false) {
       setItem:(key, value) => { if (unavailable) throw new Error('Storage disabled'); storage.set(key, value); },
     },
     clearTimeout, stopAudio:()=>{}, renderBook:()=>{}, renderReader:()=>{}, updatePlayer:()=>{}, updateListeningBuffer:()=>{}, pollJobs:async()=>{}, refreshStatus:async()=>{},
+    loadVoiceLibrary:async()=>null,
     refreshLibrary:async()=>{ scope.reader.state.books = books; },
     request:async url => books.find(book => url === `/api/books/${book.id}`),
     toast:message => { throw new Error(message); },

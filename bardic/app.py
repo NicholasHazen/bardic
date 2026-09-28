@@ -23,7 +23,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -31,8 +31,10 @@ from .analysis import analyze_book
 from .processing import BudgetReached
 from .account_checks import check_account
 from . import breeze
-from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, assemble_audio, list_system_voices,
+from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, assemble_audio, list_system_voices,
                     providers_status, render_fingerprint, synthesize, validate_audio, voice_id, voice_selection)
+from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
+from .voice_routes import import_breeze_voices, register as register_voice_routes
 from .config import data_directory
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
@@ -171,8 +173,16 @@ def valid_analysis_model(model):
 
 
 class VoiceChoice(StrictModel):
-    id: str = Field(min_length=1, max_length=200)
+    """Exactly one of ``id`` (a provider voice) or ``library`` (follow a library voice)."""
+    id: str | None = Field(default=None, min_length=1, max_length=200)
+    library: str | None = Field(default=None, pattern=r"^vl_[a-f0-9]{16}$")
     seed: int | None = Field(default=None, ge=0, le=breeze.MAX_SEED)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if (self.id is None) == (self.library is None):
+            raise ValueError("Choose either a provider voice id or a library voice")
+        return self
 
 
 class CharacterEdit(StrictModel):
@@ -219,6 +229,10 @@ class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
         self.store = Store(root)
+        self.voices = VoiceLibrary(self.store)
+        # Voice drafts with a generation request in flight (a per-draft lock).
+        self.voice_busy: set[str] = set()
+        self.voice_import_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bardic")
         self.series_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='series-coordinator')
         # Chapter listening has its own coordinator and bounded request pool so
@@ -261,6 +275,11 @@ class Runtime:
             # The last voice check survives restarts so pinned sessions and
             # cached audio resolve while the server is offline.
             "breeze_catalog": saved.get("breeze_catalog") if isinstance(saved.get("breeze_catalog"), dict) else None,
+            # Characters with no Breeze choice follow this library voice.
+            "narration_defaults": {"breeze": (saved.get("narration_defaults") or {}).get("breeze")
+                                   if isinstance(saved.get("narration_defaults"), dict) else None},
+            # Last listing of the Google project's stored voices (metadata only).
+            "gemini_voice_catalog": saved.get("gemini_voice_catalog") if isinstance(saved.get("gemini_voice_catalog"), dict) else None,
         }
         LIMITER.configure(self.preferences["tts_limits"])
         self.breeze_checking = False
@@ -330,6 +349,25 @@ class Runtime:
             self.store.save_settings(preferences)
             self.preferences = preferences
             return self.breeze_view()
+
+    def narrator_choice(self, provider, voice):
+        """Resolve a listen/preview voice value to (voice id, Breeze pin). Local only.
+
+        ``voice`` is "library:<id>" (that voice's current version), a direct
+        provider voice id, or empty for Default. Breeze's Default is the Bardic
+        default voice, the same one characters without a choice follow.
+        """
+        reference = voice[len("library:"):] if isinstance(voice, str) and voice.startswith("library:") else None
+        if reference is not None or (provider == "breeze" and not voice):
+            if provider not in ("breeze", "gemini"):
+                raise HTTPException(400, "Library voices are Breeze or Gemini voices.")
+            resolved = self.resolve_choice(provider, {"library": reference} if reference else None)
+            if resolved is None or resolved.get("error"):
+                raise HTTPException(400, (resolved or {}).get("error") or "Choose a voice first.")
+            return resolved["id"], (resolved if provider == "breeze" else None)
+        if provider == "breeze":
+            return voice, self.breeze_selection(voice)
+        return voice, None
 
     def breeze_selection(self, voice, seed=None):
         """Pin a Breeze voice from the saved check. Local only; call under the store lock."""
@@ -476,12 +514,59 @@ class Runtime:
     def take_path(self, book_id, metadata):
         return self.audio_path(book_id, metadata.get("asset_id") or metadata["fingerprint"])
 
-    def valid_audio(self, book, segment):
+    # Voice resolution -------------------------------------------------
+    # Cast assignments may name a library voice (following its current
+    # version) or rely on the Breeze default. These helpers turn them into
+    # concrete provider voices from local SQLite state only, so takes validate
+    # offline. An unresolvable assignment becomes {"error": ...}, which the
+    # recipe refuses instead of falling back to a provider default voice.
+
+    def narration_defaults(self):
+        return dict(self.preferences.get("narration_defaults") or {})
+
+    def library_index(self):
+        return {voice["id"]: voice for voice in self.voices.voices(include_deleted=True)}
+
+    def resolve_choice(self, provider, selection, index=None):
+        if selection is None:
+            if provider != "breeze":
+                return None
+            default = self.narration_defaults().get("breeze")
+            if not default:
+                return {"error": "Choose a Breeze voice for this character, or set a default Breeze voice in Voices."}
+            selection = {"library": default}
+        reference = library_reference(selection)
+        if reference is None:
+            return selection
+        index = self.library_index() if index is None else index
+        try:
+            return concrete_selection(index.get(reference), provider)
+        except AudioError as error:
+            return {"error": str(error), "library": reference}
+
+    def effective_character(self, character, index=None):
+        """A copy of a cast character whose Breeze and Gemini voices are concrete."""
+        index = self.library_index() if index is None else index
+        voices = dict(character.get("voices")) if isinstance(character.get("voices"), dict) else {}
+        for provider in ("breeze", "gemini"):
+            selection = voices.get(provider) if isinstance(voices.get(provider), dict) else None
+            if selection is None and provider == "gemini":
+                continue  # Legacy field or the recipe's own default.
+            resolved = self.resolve_choice(provider, selection, index)
+            if resolved is not None:
+                voices[provider] = resolved
+        return {**character, "voices": voices}
+
+    def resolved_cast(self, book):
+        index = self.library_index()
+        return {c["id"]: self.effective_character(c, index) for c in book["characters"]}
+
+    def valid_audio(self, book, segment, cast=None):
         metadata = segment.get("audio")
         if not metadata:
             return False
         try:
-            characters = {c["id"]: c for c in book["characters"]}
+            characters = self.resolved_cast(book) if cast is None else cast
             scenes = {s["id"]: s for s in book["scenes"]}
             expected = render_fingerprint(segment, characters[segment["speaker_id"]], scenes[segment["scene_id"]], metadata["provider"], metadata["model"])
             return expected == metadata.get("fingerprint") and self.take_path(book["id"], metadata).is_file()
@@ -492,11 +577,12 @@ class Runtime:
         result = copy.deepcopy(book)
         chapter_map = {c["id"]: c for c in result["chapters"]}
         previous = {}
+        cast = self.resolved_cast(book)
         for s in result["segments"]:
             chapter = chapter_map[s["chapter_id"]]
             s["leading_text"] = chapter["text"][previous.get(chapter["id"], 0):s["start"]]
             previous[chapter["id"]] = s["end"]
-            if s.get("audio") and self.valid_audio(book, s):
+            if s.get("audio") and self.valid_audio(book, s, cast):
                 audio_id = s["audio"].get("asset_id") or s["audio"]["fingerprint"]
                 s["audio"]["url"] = f"/api/audio/{book['id']}/{s['id']}?v={audio_id[:16]}"
             else:
@@ -504,8 +590,7 @@ class Runtime:
         for c in result["chapters"]:
             c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
         for character in result["characters"]:
-            character["voices"] = {provider: selection for provider in NARRATION_PROVIDERS
-                                   if (selection := voice_selection(character, provider))}
+            character["voices"] = assignments(character)
         return result
 
     def merge_voices(self, item, fields):
@@ -524,11 +609,15 @@ class Runtime:
             return
         if set(changes) - set(NARRATION_PROVIDERS):
             raise HTTPException(400, "Choose voices for system, gemini or breeze narration")
-        voices = {provider: copy.deepcopy(selection) for provider in NARRATION_PROVIDERS
-                  if (selection := voice_selection(item, provider))}
+        voices = assignments(item)
         for provider, choice in changes.items():
             if choice is None:
                 voices.pop(provider, None)
+            elif choice.get("library"):
+                voice = self.library_index().get(choice["library"])
+                if not voice or voice.get("deleted_at") or voice["provider"] != provider:
+                    raise HTTPException(400, f"Choose a {provider.title()} voice from the voice library.")
+                voices[provider] = {"library": voice["id"]}
             elif provider == "breeze":
                 voices[provider] = self.breeze_selection(choice["id"].strip(), seed=choice.get("seed"))
             else:
@@ -602,21 +691,31 @@ class Runtime:
             selected = [s for s in book["segments"] if (not request.scene_id or s["scene_id"] == request.scene_id) and (not request.segment_id or s["id"] == request.segment_id)]
             if not selected:
                 raise HTTPException(400, "No passages selected")
-            if request.provider == "breeze":
+            # Snapshot the resolved voices: a version or default change while
+            # this job runs must not mix voices within it.
+            cast = self.resolved_cast(book)
+            if request.provider in ("breeze", "gemini"):
                 # Fail before queueing rather than part way through a scene.
-                cast = {c["id"]: c for c in book["characters"]}
-                missing = sorted({cast[s["speaker_id"]].get("name", s["speaker_id"]) for s in selected
-                                  if s["speaker_id"] in cast and not voice_id(cast[s["speaker_id"]], "breeze")})
-                if missing:
-                    more = "…" if len(missing) > 5 else ""
-                    raise HTTPException(400, f"Choose a Breeze voice for {', '.join(missing[:5])}{more} in the cast first.")
+                problems = {}
+                for s in selected:
+                    try:
+                        voice_selection(cast[s["speaker_id"]], request.provider)
+                    except AudioError as error:
+                        problems.setdefault(cast[s["speaker_id"]].get("name", s["speaker_id"]), str(error))
+                    except KeyError:
+                        pass
+                if problems:
+                    names = sorted(problems)
+                    more = "…" if len(names) > 5 else ""
+                    raise HTTPException(400, f"Fix the {NARRATION_PROVIDERS[request.provider]['label'].split(' ·')[0]} voice for "
+                                             f"{', '.join(names[:5])}{more}: {problems[names[0]]}")
             model = {"gemini": self.preferences["tts_model"], "breeze": BREEZE_MODEL}.get(request.provider, "macos-say")
             # Snapshot credentials and server configuration for this queued job.
             key = self.narration_credentials(request.provider)
             job = self.store.create_job(book_id, "render", len(selected))
 
             def work():
-                characters = {c["id"]: c for c in book["characters"]}
+                characters = cast
                 scenes = {s["id"]: s for s in book["scenes"]}
                 reused = 0
                 for i, s in enumerate(selected):
@@ -632,7 +731,7 @@ class Runtime:
                         metadata = None
                         if not request.force:
                             current = s.get("audio")
-                            if current and current.get("fingerprint") == fingerprint and self.valid_audio(book, s):
+                            if current and current.get("fingerprint") == fingerprint and self.valid_audio(book, s, cast):
                                 try:
                                     duration = validate_audio(self.take_path(book_id, current))
                                     metadata = {**current, "duration": duration}
@@ -699,8 +798,9 @@ class Runtime:
                 def prepare(snapshot):
                     self.check_cancel(job["id"])
                     self.assign_local_voices(snapshot)
+                    cast = self.resolved_cast(snapshot)
                     for segment in snapshot["segments"]:
-                        if segment.get("audio") and not self.valid_audio(snapshot, segment):
+                        if segment.get("audio") and not self.valid_audio(snapshot, segment, cast):
                             segment["audio"] = None
                 from contextlib import nullcontext
                 from .resources import ResourceLedger
@@ -713,8 +813,9 @@ class Runtime:
                 self.check_cancel(job["id"])
                 self.assign_local_voices(updated)
                 updated["revision"] = book.get("revision", 0) + 1
+                cast = self.resolved_cast(updated)
                 for s in updated["segments"]:
-                    if s.get("audio") and not self.valid_audio(updated, s):
+                    if s.get("audio") and not self.valid_audio(updated, s, cast):
                         s["audio"] = None
                 self.store.save_book(updated)
             self.pool.submit(self.run, job, work, (key,))
@@ -779,6 +880,7 @@ def create_app(data_dir: Path | None = None):
         with runtime.store.lock:
             preferences = copy.deepcopy(runtime.preferences)
             preferences.pop("breeze_catalog", None)
+            preferences.pop("gemini_voice_catalog", None)
             breeze_view = runtime.breeze_view()
             breeze_ready = breeze_view["configured"] and any(voice["usable"] for voice in breeze_view["voices"])
             return {"has_api_key": bool(runtime.api_key), **preferences,
@@ -809,7 +911,16 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/narration/breeze/refresh")
     def refresh_breeze(request: Request):
-        return rt(request).refresh_breeze()
+        runtime = rt(request)
+        view = runtime.refresh_breeze()
+        if view["state"] == "ready" and runtime.voice_import_lock.acquire(blocking=False):
+            try:
+                import_breeze_voices(runtime, voice_api["set_default"])
+            finally:
+                runtime.voice_import_lock.release()
+            with runtime.store.lock:
+                view = runtime.breeze_view()
+        return view
 
     @app.post("/api/models/{provider}/refresh")
     def refresh_provider_models(provider: str, request: Request):
@@ -1058,14 +1169,17 @@ def create_app(data_dir: Path | None = None):
             item["edited"] = True
             if collection == "segments" and "speaker_id" in fields:
                 item["confidence"] = 1.0
+            cast = runtime.resolved_cast(book)
             for s in book["segments"]:
-                if s.get("audio") and not runtime.valid_audio(book, s):
+                if s.get("audio") and not runtime.valid_audio(book, s, cast):
                     s["audio"] = None
             for scene in book["scenes"]:
                 scene["character_ids"] = sorted({s["speaker_id"] for s in book["segments"] if s["scene_id"] == scene["id"]})
             book["revision"] = book.get("revision", 0) + 1
             runtime.store.save_book(book)
             return runtime.present(book)
+
+    voice_api = register_voice_routes(app, rt, edit)
 
     def character_fields(body):
         fields = body.model_dump(exclude_none=True)
@@ -1191,7 +1305,8 @@ def create_app(data_dir: Path | None = None):
         from .resources import ResourceLedger
         runtime = rt(request)
         book = runtime.store.book(book_id)
-        available = [s for s in book["segments"] if runtime.valid_audio(book, s)]
+        cast = runtime.resolved_cast(book)
+        available = [s for s in book["segments"] if runtime.valid_audio(book, s, cast)]
         available_ids = {s["id"] for s in available}
         if not available:
             raise HTTPException(400, "Generate some audio before exporting")
@@ -1231,7 +1346,9 @@ def create_app(data_dir: Path | None = None):
         from .pipeline_view import pipeline
         runtime = rt(request)
         with runtime.store.lock:
-            return pipeline(runtime.store, runtime.store.book(book_id), runtime.valid_audio)
+            book = runtime.store.book(book_id)
+            cast = runtime.resolved_cast(book)
+            return pipeline(runtime.store, book, lambda book, segment: runtime.valid_audio(book, segment, cast))
 
     @app.get('/api/books/{book_id}/resources')
     def resource_usage(book_id: str, request: Request, limit: int = 100, offset: int = 0, run_id: str | None = None):
@@ -1370,8 +1487,8 @@ def create_app(data_dir: Path | None = None):
         with store.lock:
             store.require_active(book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
-            selection = runtime.breeze_selection(body.voice) if body.provider == 'breeze' else None
-            session = repository.session(book_id, body.provider, body.voice, model, selection=selection)
+            voice, selection = runtime.narrator_choice(body.provider, body.voice)
+            session = repository.session(book_id, body.provider, voice, model, selection=selection)
             cached = repository.cached(book_id, session['id'], body.segment_id)
             if cached:
                 with ResourceLedger(store).operation(book_id, 'simple_listen', unit_key=body.segment_id,
@@ -1448,7 +1565,8 @@ def create_app(data_dir: Path | None = None):
         repository = ListeningRepository(store)
         store.require_active(book_id)
         model = body.model or runtime.preferences['tts_model']
-        session = repository.session(book_id, body.provider, body.voice, model)
+        voice, _ = runtime.narrator_choice(body.provider, body.voice)
+        session = repository.session(book_id, body.provider, voice, model)
         book = store.book(book_id)
         segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
         if segment is None:
@@ -1560,8 +1678,8 @@ def create_app(data_dir: Path | None = None):
         with store.lock:
             store.require_active(book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
-            selection = runtime.breeze_selection(body.voice) if body.provider == 'breeze' else None
-            preview = repository.prepare(book_id, body.provider, body.voice, model,
+            voice, selection = runtime.narrator_choice(body.provider, body.voice)
+            preview = repository.prepare(book_id, body.provider, voice, model,
                                          segment_id=body.segment_id, character_id=body.character_id,
                                          direction=body.direction, segment_direction=body.segment_direction,
                                          selection=selection)
