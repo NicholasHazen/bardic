@@ -10439,112 +10439,6 @@
         "title": "AudioTakeSentenceTiming",
         "type": "object"
       },
-      "AudioTakeUsage": {
-        "description": "Provider usage measured for the request that produced a take.\n\nCounts are reported by the provider, never inferred from audio length.\nAbsent or null values are unknown, not zero. Test synthesizers and older\ntakes may carry only some of these fields.",
-        "properties": {
-          "input_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported input tokens (Gemini)."
-          },
-          "output_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported output (audio) tokens (Gemini)."
-          },
-          "cached_input_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported cached input tokens (Gemini)."
-          },
-          "usage_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`."
-          },
-          "estimated_cost_usd": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze."
-          },
-          "cost_basis": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`."
-          },
-          "price_as_of": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Date of the price table used (Gemini)."
-          },
-          "price_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Source of the price table (Gemini)."
-          },
-          "characters": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Characters the Breeze server reported synthesizing."
-          }
-        },
-        "title": "AudioTakeUsage",
-        "type": "object"
-      },
       "AudioTakeVoiceLibrary": {
         "description": "The voice-library voice and version that performed a take.",
         "properties": {
@@ -15133,17 +15027,6 @@
             ],
             "description": "Present when the bytes were copied from an equivalent retained take instead of being generated."
           },
-          "resource_usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AudioTakeUsage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Usage of the generating request; absent for device takes and for reused bytes."
-          },
           "provider_timing": {
             "anyOf": [
               {
@@ -15214,14 +15097,6 @@
           "segment_id": {
             "description": "Passage ID the original take narrated, in the original take's book; may differ from this passage when equivalent text was reused.",
             "type": "string"
-          },
-          "recipe": {
-            "description": "Source-bound recipe hash of the original take.",
-            "type": "string"
-          },
-          "fingerprint": {
-            "description": "Producer fingerprint of the original take.",
-            "type": "string"
           }
         },
         "required": [
@@ -15229,9 +15104,7 @@
           "take_id",
           "book_id",
           "session_id",
-          "segment_id",
-          "recipe",
-          "fingerprint"
+          "segment_id"
         ],
         "title": "ListeningReuse",
         "type": "object"
@@ -25110,10 +24983,6 @@
             "description": "ID of the audition request (`VoicePreview.id`) this take was retained for.",
             "type": "string"
           },
-          "schema_version": {
-            "description": "Take record format version (1).",
-            "type": "integer"
-          },
           "reuse": {
             "anyOf": [
               {
@@ -25124,17 +24993,6 @@
               }
             ],
             "description": "Present when bytes were reused from an equivalent audition (for example after a character rename)."
-          },
-          "resource_usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AudioTakeUsage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Usage of the generating request; absent for device takes and reused bytes."
           },
           "provider_timing": {
             "anyOf": [
@@ -25189,8 +25047,7 @@
           "model",
           "voice",
           "created_at",
-          "preview_id",
-          "schema_version"
+          "preview_id"
         ],
         "title": "VoicePreviewAudio",
         "type": "object"

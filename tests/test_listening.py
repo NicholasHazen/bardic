@@ -45,7 +45,8 @@ def stored(store, audio):
 
 
 PUBLIC = {'url', 'asset_id', 'duration', 'provider', 'model', 'voice', 'created_at', 'session_id', 'segment_id',
-          'reuse', 'resource_usage', 'provider_timing', 'breeze', 'voice_revision'}
+          'reuse', 'provider_timing', 'breeze', 'voice_revision'}
+REUSE_PUBLIC = {'schema_version', 'take_id', 'book_id', 'session_id', 'segment_id'}
 
 
 def production_snapshot(store):
@@ -251,7 +252,8 @@ def test_same_text_reuses_across_passage_ids_books_and_restart_with_real_provena
         assert record['source_anchor']['book_id'] == repeated['id']
         assert record['source_anchor']['start'] == target['start']
         assert record['recipe'] != first_record['recipe']
-        assert reused['reuse']['fingerprint'] == first_record['fingerprint']
+        assert set(reused) <= PUBLIC and set(reused['reuse']) == REUSE_PUBLIC, 'reuse hashes stay in storage'
+        assert record['reuse']['fingerprint'] == first_record['fingerprint']
         with store.connect() as conn:
             reused_row = conn.execute('SELECT body FROM listening_takes WHERE id=?', (reused['reuse']['take_id'],)).fetchone()
         assert reused_row, 'Every reuse dependency references an actual retained take'
@@ -372,3 +374,19 @@ def test_cache_version_bump_retains_new_identity_even_when_audio_bytes_are_ident
     assert repo.cached(book['id'], session['id'], segment['id'])['created_at'] == new['created_at']
     assert repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic) is not None
     assert len(calls) == 2, 'the new identity is a cache hit'
+
+
+def test_presented_take_keeps_hashes_and_usage_in_storage():
+    from bardic.listening import present_take
+    stored_record = {'asset_id': 'a' * 64, 'duration': 1.5, 'provider': 'gemini', 'model': DEFAULT_TTS_MODEL,
+                     'voice': 'Kore', 'created_at': '2026-09-28T00:00:00Z', 'session_id': 's' * 64, 'segment_id': 'p1',
+                     'recipe': 'r' * 64, 'fingerprint': 'f' * 64, 'synthesis_key': 'k' * 64,
+                     'source_anchor': {'fingerprint': 'f' * 64}, 'resource_usage': {'output_tokens': 7},
+                     'reuse': {'schema_version': 1, 'take_id': 't' * 64, 'book_id': 'b', 'session_id': 's' * 64,
+                               'segment_id': 'p0', 'recipe': 'r' * 64, 'fingerprint': 'f' * 64}}
+    audio = present_take('b', stored_record)
+    assert set(audio) <= PUBLIC and 'resource_usage' not in audio
+    assert audio['reuse'] == {'schema_version': 1, 'take_id': 't' * 64, 'book_id': 'b', 'session_id': 's' * 64,
+                              'segment_id': 'p0'}
+    assert present_take('b', audio) == audio, 'presenting is idempotent'
+    assert stored_record['reuse']['recipe'] == 'r' * 64, 'the stored record is not changed'

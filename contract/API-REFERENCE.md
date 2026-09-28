@@ -3030,27 +3030,6 @@ Sentence timing reported by the Breeze server, accepted only when every offset m
 | `offsets` | `"recipe_text_code_points"` | yes | What the character offsets index into. |
 | `segments` | list of [AudioTakeSentenceSpan](#schema-audiotakesentencespan) | yes | Sentences in order. |
 
-<a id="schema-audiotakeusage"></a>
-### AudioTakeUsage
-
-Provider usage measured for the request that produced a take.
-
-Counts are reported by the provider, never inferred from audio length.
-Absent or null values are unknown, not zero. Test synthesizers and older
-takes may carry only some of these fields.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `input_tokens` | integer \| null |  | Reported input tokens (Gemini). |
-| `output_tokens` | integer \| null |  | Reported output (audio) tokens (Gemini). |
-| `cached_input_tokens` | integer \| null |  | Reported cached input tokens (Gemini). |
-| `usage_source` | string \| null |  | Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`. |
-| `estimated_cost_usd` | number \| null |  | Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze. |
-| `cost_basis` | string \| null |  | How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`. |
-| `price_as_of` | string \| null |  | Date of the price table used (Gemini). |
-| `price_source` | string \| null |  | Source of the price table (Gemini). |
-| `characters` | integer \| null |  | Characters the Breeze server reported synthesizing. |
-
 <a id="schema-audiotakevoicelibrary"></a>
 ### AudioTakeVoiceLibrary
 
@@ -4163,7 +4142,6 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
@@ -4180,8 +4158,6 @@ Pointer to the original retained take whose bytes were reused for this passage.
 | `book_id` | string | yes | Book of the original take (reuse can cross books). |
 | `session_id` | string | yes | Listening session ID (64 hex) of the original take; may differ from the current session. |
 | `segment_id` | string | yes | Passage ID the original take narrated, in the original take's book; may differ from this passage when equivalent text was reused. |
-| `recipe` | string | yes | Source-bound recipe hash of the original take. |
-| `fingerprint` | string | yes | Producer fingerprint of the original take. |
 
 <a id="schema-listeningsession"></a>
 ### ListeningSession
@@ -6455,9 +6431,7 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `voice` | string | yes | Provider voice actually used. |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained. |
 | `preview_id` | string | yes | ID of the audition request (`VoicePreview.id`) this take was retained for. |
-| `schema_version` | integer | yes | Take record format version (1). |
 | `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision used. |
