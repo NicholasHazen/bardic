@@ -43,6 +43,24 @@ def test_storage_never_rewrites_a_terminal_status_or_message(client):
     assert store.job(job['id'])['progress'] == 1
 
 
+def test_jobs_stored_with_pre_0_2_audio_are_listed_without_internal_fields(client):
+    # A listen job saved by an earlier version kept the whole take, recipe hashes and cache marker included.
+    store = client.app.state.runtime.store
+    asset = 'a' * 64
+    job = store.create_job('book-legacy', 'listen', 1)
+    legacy = {'mode': 'simple', 'available': True, 'url': f'/api/books/book-legacy/listen/audio/{asset}',
+              'asset_id': asset, 'duration': 1.5, 'provider': 'system', 'model': 'macos-say', 'voice': 'Fred',
+              'session_id': 's' * 64, 'segment_id': 'p1', 'created_at': '2026-09-01T00:00:00+00:00',
+              'cache_hit': True, 'fingerprint': 'f' * 64, 'recipe': 'r' * 64, 'synthesis_key': 'k',
+              'source_anchor': {'schema_version': 1}}
+    store.update_job(job['id'], status='completed', audio=legacy)
+    listed = next(j for j in client.get('/api/jobs', params={'book_id': 'book-legacy'}).json() if j['id'] == job['id'])
+    assert listed['audio']['url'] == legacy['url'] and listed['audio']['asset_id'] == asset
+    for name in ('mode', 'available', 'cache_hit', 'fingerprint', 'recipe', 'synthesis_key', 'source_anchor'):
+        assert name not in listed['audio']
+    assert store.job(job['id'])['audio']['fingerprint'] == 'f' * 64  # storage keeps it
+
+
 @pytest.mark.parametrize('stopping', [False, True])
 def test_a_job_cancelled_while_queued_is_not_settled_again_by_its_worker(client, stopping):
     runtime = client.app.state.runtime

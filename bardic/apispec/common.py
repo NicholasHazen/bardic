@@ -147,8 +147,7 @@ class Job(View):
     session_id: str | None = Field(None, description='`listen`, `listen_chapter`: the narrator session (64 hex).')
     audio: ListeningAudio | VoicePreviewAudio | None = Field(
         None, description='The finished audio, set just before a `listen` job (a passage take or chunk clip) or a '
-                          '`voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained '
-                          'audio was found by the worker. Absent until then and after a failure.')
+                          '`voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure.')
     resume_after: str | None = Field(
         None, description='`quota_limited` only: when the daily quota resets (next midnight Pacific time), as ' + TIME)
 

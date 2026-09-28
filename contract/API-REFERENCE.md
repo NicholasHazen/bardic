@@ -20,7 +20,10 @@ reference is `contract/API-REFERENCE.md`.
   another browser origin (`Origin` differs from `Host`, or
   `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such
   as command-line clients, are accepted. There is no CORS support.
-- Every `/api/` response carries `Cache-Control: no-store`.
+- Every `/api/` response carries `Cache-Control: no-store`, except a
+  successful cover image (`getBookCover`), which sets its own caching
+  headers: a strong `ETag`, and `immutable` at its content-addressed `?v=`
+  URL.
 - URLs returned inside responses (audio, covers, auditions) are
   root-relative. Resolve them against the server's base URL.
 
@@ -34,17 +37,31 @@ reference is `contract/API-REFERENCE.md`.
   offsets into the chapter text, with an exclusive end. They are not UTF-8
   byte offsets or JavaScript UTF-16 indices.
 - "Passage" and "segment" name the same reader unit.
-- GET requests never start paid generation. Some build local caches or
-  record local measurements; `x-bardic-cost` on each operation says whether
-  it can reach a provider: `none`, `network` (contacts a provider or
-  self-hosted server without billed generation) or `may_charge`.
+- GET requests never start paid generation and never create or change
+  library records (books, jobs, runs, artifacts, decisions or resource
+  measurements). A few write a disposable derived cache, such as the
+  analysis census cache or the passage search index, which can be deleted
+  without loss; those operations say so. `x-bardic-cost` on each operation
+  says whether it can reach a provider: `none`, `network` (contacts a
+  provider or self-hosted server without billed generation) or
+  `may_charge`.
+- Out-of-range paging parameters are clamped to the allowed range; the
+  response reports the values used.
 
 ## Work and errors
 
 - Long work is queued as a job and returned immediately. A queued or
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
-  job, while polling itself still returns 200.
+  job, while polling itself still returns 200. A terminal status is final.
+- Statuses mean the same thing on every operation: 400 for a request that
+  is well-formed but not acceptable, including an unknown ID inside a
+  request body; 404 for an unknown resource named in the path; 409 for a
+  conflict with current state (an active job or series run, a stale
+  previewed plan, an archived book or series); 413 for a body that is too
+  large; 429 for a request or quota limit; 502 when a provider or
+  self-hosted server fails; 503 when the server is shutting down. Archiving
+  or restoring something already in that state succeeds without change.
 - Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
   sentence, or a list of issues for 422 request validation. Display it; do
   not parse it. `code` is a stable snake_case identifier: branch on it.
@@ -67,8 +84,8 @@ reference is `contract/API-REFERENCE.md`.
   default. Configure generators accordingly (openapi-typescript:
   `defaultNonNullable: false`). Response schemas carry no defaults; a response
   field is always present exactly when it is listed in `required`.
-- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later
-  version may remove.
+- Avoid any field marked `x-bardic-internal`: bookkeeping that a later
+  version may remove. This version has none.
 - `info.version` follows the rules in `contract/CHANGELOG.md`.
 
 ## Operations
@@ -3812,7 +3829,7 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
 | `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |
@@ -5804,7 +5821,7 @@ A series parent job with its child book jobs.
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
 | `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |

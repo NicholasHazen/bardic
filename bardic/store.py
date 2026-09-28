@@ -36,8 +36,22 @@ def upgrade_job(job: dict) -> dict:
 
 
 def public_job(job: dict) -> dict:
-    """The job as the API presents it: without internal bookkeeping."""
-    return {name: value for name, value in job.items() if name not in INTERNAL_JOB_FIELDS}
+    """The job as the API presents it: without internal bookkeeping.
+
+    Audio stored inside jobs by versions before contract 0.2.0 still carries
+    recipe hashes and transient markers; it is presented again through the
+    current audio whitelist.
+    """
+    public = {name: value for name, value in job.items() if name not in INTERNAL_JOB_FIELDS}
+    audio = public.get('audio')
+    if isinstance(audio, dict) and audio.get('asset_id'):
+        if public.get('kind') == 'listen':
+            from .listening import present_audio
+            public['audio'] = present_audio(public['book_id'], audio)
+        elif public.get('kind') == 'voice_preview':
+            from .voice_previews import present_take
+            public['audio'] = present_take(public['book_id'], audio)
+    return public
 
 
 class Store:

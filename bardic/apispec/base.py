@@ -69,10 +69,9 @@ class Op:
     ``conditional`` marks a response with a strong ``ETag`` that honors
     ``If-None-Match`` (304 Not Modified, empty body).
 
-    Each ``errors`` value is either a sentence (legacy) or a mapping from
-    error code to when that code is returned; see :mod:`bardic.errors`.
-    Responses with a mapping are checked: a code the mapping does not list
-    fails the test suite.
+    Each ``errors`` value maps every error code returned with that status to
+    when it is returned; see :mod:`bardic.errors`. The test suite fails on a
+    response whose code is not listed (global codes excepted).
     """
     method: Method
     path: str
@@ -83,7 +82,7 @@ class Op:
     response: Any = None
     media: str | None = None
     response_description: str = ''
-    errors: dict[int, str | dict[str, str]] = field(default_factory=dict)
+    errors: dict[int, dict[str, str]] = field(default_factory=dict)
     params: dict[str, str] = field(default_factory=dict)
     cost: Cost = 'none'
     ranges: bool = False
@@ -99,10 +98,11 @@ class Op:
         if self.ranges and not self.media:
             raise ValueError(f'{self.method} {self.path}: only binary responses can honor Range requests')
         for status, documented in self.errors.items():
-            if isinstance(documented, dict):
-                bad = [code for code in documented if not re.fullmatch(r'[a-z][a-z0-9]*(?:_[a-z0-9]+)*', code)]
-                if bad or not documented or not all(documented.values()):
-                    raise ValueError(f'{self.method} {self.path}: {status} needs described snake_case codes: {bad}')
+            if not isinstance(documented, dict):
+                raise ValueError(f'{self.method} {self.path}: {status} must map error codes to when they occur')
+            bad = [code for code in documented if not re.fullmatch(r'[a-z][a-z0-9]*(?:_[a-z0-9]+)*', code)]
+            if bad or not documented or not all(documented.values()):
+                raise ValueError(f'{self.method} {self.path}: {status} needs described snake_case codes: {bad}')
 
 
 @dataclass(frozen=True)
