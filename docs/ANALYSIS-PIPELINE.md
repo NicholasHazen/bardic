@@ -160,7 +160,7 @@ and implements:
 
 ## Series runs
 
-Rebuilt on the step pipeline on 2026-09-28 (the owner decided to discard the phase engine and its data). Code: [series_processing.py](../bardic/series_processing.py); API: [series preview and execution](API.md#series-preview-and-execution).
+Rebuilt on the step pipeline on 2026-09-28 (the owner decided to discard the phase engine and its data). Code: [series_processing.py](../bardic/series_processing.py); API: the `planSeriesProcessing`, `startSeriesProcessing` and `listSeriesRuns` operations in the [API reference](../contract/API-REFERENCE.md).
 
 ### What the phase-engine series run did
 
