@@ -166,6 +166,27 @@ def test_development_environment_blanks_keys_and_network_settings(tmp_path):
     assert base["GEMINI_API_KEY"] == "test-key"
 
 
+def test_development_keys_come_only_from_the_service_checkouts_provider_settings(tmp_path, isolated, monkeypatch):
+    live = tmp_path / "live"
+    (isolated["checkout"] / ".env").write_text(
+        f"GEMINI_API_KEY=test-key-not-real\nOPENAI_API_KEY=\nBREEZE_TTS_URL=http://gpu:7860\n"
+        f"BARDIC_DATA_DIR={live}\nBARDIC_PORT=8765\nBARDIC_LAN_NAME=bardic\nBARDIC_HOST=0.0.0.0\n")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "the-calling-agents-key")
+    providers = service.provider_settings(isolated["checkout"])
+    assert providers == {"GEMINI_API_KEY": "test-key-not-real", "BREEZE_TTS_URL": "http://gpu:7860"}
+
+    env = service.dev_environment({"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "the-calling-agents-key"},
+                                  8771, tmp_path / "scratch", providers)
+    assert env["GEMINI_API_KEY"] == "test-key-not-real" and env["BREEZE_TTS_URL"] == "http://gpu:7860"
+    assert env["ANTHROPIC_API_KEY"] == "" and env["OPENAI_API_KEY"] == ""
+    assert env["BARDIC_LAN_NAME"] == env["BARDIC_HOST"] == env["BARDIC_ALLOWED_HOSTS"] == ""
+    assert env["BARDIC_PORT"] == "8771" and env["BARDIC_DATA_DIR"] == str(tmp_path / "scratch")
+
+    (isolated["checkout"] / ".env").write_text("OPENAI_API_KEY=\nBARDIC_PORT=8765\n")
+    with pytest.raises(service.CommandError, match="no provider keys"):
+        service.provider_settings(isolated["checkout"])
+
+
 def test_library_overlap_ignores_spelling_links_and_nesting(tmp_path):
     live = tmp_path / "live"
     (live / "audio").mkdir(parents=True)
@@ -419,6 +440,35 @@ def test_development_server_runs_isolated_and_restarts_with_its_library(tmp_path
     record = service.dev_record("t1")
     assert not service.dev_running(record) and not service.port_in_use(record["port"])
     assert "stopped" in capsys.readouterr().out
+
+
+def test_development_server_with_keys_is_live_only_until_restarted_without_them(tmp_path, isolated, monkeypatch, capsys):
+    monkeypatch.setattr(service, "wait_for", REAL_WAIT)
+    monkeypatch.setattr(service, "alive", REAL_ALIVE)
+    monkeypatch.setattr(service, "listener", REAL_LISTENER)
+    (isolated["checkout"] / ".env").write_text("GEMINI_API_KEY=test-key-not-real\nBARDIC_LAN_NAME=bardic-test-unused\n")
+
+    def has_key(record):
+        with urllib.request.urlopen(f"http://127.0.0.1:{record['port']}/api/status", timeout=10) as response:
+            return json.load(response)["has_api_key"]
+
+    try:
+        assert service.main(["dev", "start", "--name", "k", "--keys"]) == 0
+        output = capsys.readouterr().out
+        assert "GEMINI_API_KEY from" in output and "test-key-not-real" not in output
+        first = service.dev_record("k")
+        assert first["keys"] == ["GEMINI_API_KEY"] and has_key(first)
+        assert "*:" not in listening_addresses(first["port"])  # Keys do not bring the network settings.
+        assert service.main(["dev", "start", "--name", "k"]) == 0
+        assert "Its keys are live" in capsys.readouterr().out
+        assert service.main(["dev", "list"]) == 0
+        assert "live" in capsys.readouterr().out
+
+        assert service.main(["dev", "restart", "--name", "k"]) == 0
+        second = service.dev_record("k")
+        assert second["keys"] == [] and not has_key(second)
+    finally:
+        assert service.main(["dev", "stop", "--name", "k"]) == 0
 
 
 def test_concurrent_development_starts_get_distinct_ports_and_records(tmp_path, monkeypatch):
