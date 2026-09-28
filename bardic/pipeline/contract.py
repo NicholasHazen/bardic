@@ -172,7 +172,7 @@ class Step:
         raise NotImplementedError
 
     def validate(self, ctx: StepContext, unit: Unit, result: dict) -> dict:
-        """Validate an LLM or service result. For an LLM, EvidenceValidationError allows one
+        """Validate an LLM or service result. For an LLM, a RepairableValidationError allows one
         repair; a service result is rejected outright on any ValueError."""
         return result
 

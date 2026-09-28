@@ -260,3 +260,29 @@ def test_cancellation_between_attempts_stops_before_another_paid_request():
     with pytest.raises(analysis.AnalysisCancelled):
         analysis._repairable_request(call, validate, cancelled=lambda: stop)
     assert calls == ['']
+
+
+def test_passage_id_note_names_only_bardic_ids_and_counts_the_rest():
+    error = analysis.PassageIdError(['segment_a1'], ['segment_a2', 'Mara lit the lamp by the harbor.'], [])
+    assert '(1 missing, 2 unknown)' in str(error)
+    note = error.repair_note()
+    assert 'PASSAGE ID CORRECTION' in note and 'segment_a1' in note and 'segment_a2' in note
+    assert 'Mara lit the lamp' not in note and '1 other ID values' in note
+    assert 'single repair attempt also failed' in str(error.after_repair())
+
+
+def test_passage_id_errors_share_the_single_bounded_repair():
+    calls = []
+
+    def call(note):
+        calls.append(note)
+        return {'segments': []}
+
+    def validate(response):
+        if not response['segments']:
+            raise analysis.PassageIdError(['segment_a1'], [], [])
+        return response
+
+    with pytest.raises(analysis.PassageIdError, match='single repair attempt also failed'):
+        analysis._repairable_request(call, validate)
+    assert len(calls) == 2 and 'segment_a1' in calls[1]
