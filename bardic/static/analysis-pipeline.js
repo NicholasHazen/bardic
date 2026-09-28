@@ -724,7 +724,7 @@
     const problem = blocked(panel);
     const missing = missingKeys(panel, plan.body.configs);
     if (problem || missing.length) { plan.error = problem || `Add in Providers & settings first: ${missing.join(', ')}.`; paint(panel); return; }
-    const body = {...plan.body, gates:plan.gates, mode:'serial',
+    const body = {...plan.body, gates:plan.gates, scheduling:'serial',
       concurrency:Number(panel.run.concurrency) || 1, expected_fingerprint:plan.value.fingerprint};
     const bookId = panel.bookId;
     const seq = panel.seq.plan;

@@ -183,7 +183,7 @@ class RunExecutor:
         failure = None
         try:
             with httpx.Client(timeout=httpx.Timeout(180, connect=15)) as self.client:
-                if self.run.get('mode') == 'parallel':
+                if self.run.get('scheduling') == 'parallel':
                     failure = self._parallel(steps)
                 else:
                     for step in steps:

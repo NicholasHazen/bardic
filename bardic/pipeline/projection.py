@@ -6,10 +6,12 @@ applying a step's accepted versions through the step's own projector, inside
 one short transaction guarded by the book revision.
 
 Anything that changes the projection outside the pipeline (older analysis
-controls, series runs, structure repair) is recorded by :func:`sync` as an
-``external`` version before the next pipeline decision, so it can be restored
-later. The first sync of a book records ``baseline`` versions of its existing
-state. Both are marked as legacy provenance: their producer is not known.
+controls, series runs, structure repair, manual edits) first records the state
+it replaces (:func:`record_before_outside_write`), and its own result is
+recorded by :func:`sync` as an ``external`` version before the next pipeline
+decision, so both can be restored later. The first sync of a book records
+``baseline`` versions of its existing state. Both are marked as legacy
+provenance: their producer is not known.
 """
 from __future__ import annotations
 
@@ -77,6 +79,21 @@ def sync(repository: PipelineRepository, registry, conn, book, *, force=False):
             recorded.append({'step_id': step.id, 'origin': origin, 'scopes': sorted(chosen), 'step_run_id': step_run['id']})
     repository.set_state(conn, book_id, fingerprint=current_fingerprint)
     return recorded
+
+
+def record_before_outside_write(store, book_id, registry=None):
+    """Record the stored projection before a writer outside the pipeline replaces it.
+
+    Classic analysis, series runs, structure repair and manual edits call this
+    (under the store lock) before they change the book, so the state they replace
+    stays restorable as a ``baseline`` or ``external`` version. It is a no-op
+    when the pipeline already explains the stored projection.
+    """
+    from . import default_registry
+    with store.lock:
+        book = store.book(book_id)
+        with store.connect() as conn:
+            return sync(PipelineRepository(store), registry or default_registry(), conn, book)
 
 
 def stale_scopes(repository, registry, conn, book_id):

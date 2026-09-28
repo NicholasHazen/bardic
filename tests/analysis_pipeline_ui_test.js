@@ -279,7 +279,7 @@ test('Run this step previews a plan and runs only after Confirm, with the plan f
   const run = env.calls.find(call => call.url.endsWith('/runs'));
   assert.equal(run.method, 'POST');
   assert.deepEqual(run.body, {steps:['discovery'], chapter_ids:['c1'], configs:{discovery:{provider:'openai', model:'gpt-a'}},
-    gates:{discovery:'auto'}, mode:'serial', concurrency:3, fresh:true, expected_fingerprint:'fp-123'});
+    gates:{discovery:'auto'}, scheduling:'serial', concurrency:3, fresh:true, expected_fingerprint:'fp-123'});
   assert.deepEqual(started.map(job => job.id), ['job-1']);
   assert.equal(container.regions.plan.innerHTML, '');
   assert.equal(env.calls.filter(call => call.url.endsWith('/runs')).length, 1);

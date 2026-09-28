@@ -195,8 +195,8 @@ class AnalysisPlanLimits(View):
     budget_usd: float | None = Field(description='Cumulative tracked analysis allowance for the book in USD; null means no dollar guard.')
 
 
-class AnalysisPlan(View):
-    """Preview of currently known classic-analysis work. No provider is contacted."""
+class AnalysisPlanBase(View):
+    """The fields shared by the classic per-book plan and each book of a series plan."""
     phase: Literal['scan', 'profiles', 'direct', 'full'] = Field(description='Requested phase.')
     provider: str = Field(description='Resolved provider: the request value, or the saved default analysis provider.')
     scan_model: str | None = Field(description='Configured discovery (fast) model for this provider, or null when none is configured '
@@ -215,6 +215,10 @@ class AnalysisPlan(View):
     future_work_unknown: bool = Field(description='True for `full`: discovery can add profiles and change direction prompts, '
                                                   'so the estimate is incomplete.')
     note: str = Field(description='Interpretation caveat. Display only.')
+
+
+class AnalysisPlan(AnalysisPlanBase):
+    """Preview of currently known classic-analysis work. No provider is contacted."""
     limits: AnalysisPlanLimits
 
 
@@ -249,10 +253,11 @@ class PipelineAttempt(View):
     The pipeline inspector lists the newest 100 for the book; the analysis
     export's `analysis-attempts.json` lists all of them in this same shape.
     Fields come from the stored attempt through a fixed allowlist and may be
-    absent on records from older versions. Prompts, responses, credentials,
-    price rates and server process IDs are never included.
+    absent on records from older versions. Prompts, responses, credentials
+    and server process IDs are never included.
     """
     id: str = Field(description='Attempt ID.')
+    book_id: str | None = Field(default=None, description='Book the attempt was made for.')
     run_id: str | None = Field(default=None, description='Job ID of the run that sent it.')
     stage: str | None = Field(default=None, description='Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID.')
     unit_key: str | None = Field(default=None, description='Opaque cache key of the unit of work.')
@@ -276,6 +281,13 @@ class PipelineAttempt(View):
     charged_estimate_usd: float | None = Field(default=None, description='Conservative USD estimate for this attempt; null when unknown.')
     cost_basis: str | None = Field(default=None, description='How `charged_estimate_usd` was made, e.g. `reservation`, '
                                                             '`usage_estimate_with_guard_uplift`, `not_sent` or `unknown`.')
+    input_rate: float | None = Field(default=None, description='Input price used for the estimate, in USD per million input '
+                                                               'tokens; null when the model has no known price.')
+    output_rate: float | None = Field(default=None, description='Output price used for the estimate, in USD per million output '
+                                                                'tokens; null when the model has no known price. '
+                                                                '`charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + '
+                                                                'output tokens × `output_rate`) / 1,000,000, using reported '
+                                                                'usage when present and the reservation otherwise.')
     price_as_of: str | None = Field(default=None, description='Date of the price table used for the estimate, or null.')
     price_source: str | None = Field(default=None, description='URL of the price source used, or null.')
     elapsed_seconds: float | None = Field(default=None, description='Measured wall time of the request in seconds; null when unknown.')
@@ -450,7 +462,7 @@ class ResourceSummary(View):
     total_operations: int = Field(description='Rows in scope.')
     unmeasured_runs: int = Field(description='Runs with no recorded rows.')
     limit: int = Field(description='Effective page size after clamping to 1–200.')
-    offset: int = Field(description='Effective offset after clamping to >= 0.')
+    offset: int = Field(description='Effective offset after clamping to 0–9007199254740991 (2^53 − 1).')
     price_sources: list[str] = Field(description='Distinct price-source URLs referenced by rows in scope.')
     notes: list[str] = Field(description='Interpretation notes. Display only.')
 
@@ -491,7 +503,7 @@ class ArtifactPage(View):
     items: list[ArtifactSummary] = Field(description='This page of artifact versions matching the filters, newest first (by creation time). '
                                                      'Empty past the end.')
     total: int = Field(description='Versions matching the filters.')
-    offset: int = Field(description='Effective offset after clamping to >= 0 (versions skipped).')
+    offset: int = Field(description='Effective offset (versions skipped) after clamping to 0–9007199254740991 (2^53 − 1).')
     limit: int = Field(description='Effective page size after clamping to 1–200.')
 
 
@@ -712,7 +724,9 @@ OPS: list[Op] = [
        'affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan '
        'coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is '
        'updated (new revision) as each chapter stage is published. The run retains the census and any validated '
-       'discovery imported from an older checkpoint as artifacts.\n\n'
+       'discovery imported from an older checkpoint as artifacts. When the job is queued, the current projection is '
+       "recorded in the step pipeline's version history (as `baseline` or `external` versions) when the history "
+       'does not already explain it, so the state the analysis replaces stays restorable.\n\n'
        'The classic engine may be retired in favor of the step pipeline.',
        response=Job, response_description='The queued `analyze` job.',
        errors={404: BOOK_404,
@@ -746,7 +760,8 @@ OPS: list[Op] = [
        '(with defaults applied; the preview does not enforce them).\n\n'
        'The estimate covers currently known work before retries and evidence repairs; `full` can discover more '
        'work. Cost is approximate (null when a model has no known price); the run\'s request guard reserves more '
-       'conservatively. Unlike `analyze`, the preview works on archived books and while a job is running.\n\n'
+       'conservatively. Unlike `analyze`, the preview works while a job is running. Because it retains records '
+       '(below), an archived book is refused (409 `book_archived`).\n\n'
        'Side effects, all local and none of them changing the book: it caches and retains the census (a `census` '
        'artifact, and a `census` resource operation when computed fresh), imports validated discovery found only '
        'in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for '
@@ -754,7 +769,8 @@ OPS: list[Op] = [
        + ANALYSIS_BODY_NOTE,
        response=AnalysisPlan,
        errors={404: BOOK_404,
-               400: {'unknown_chapter': UNKNOWN_CHAPTER, 'unknown_provider': UNKNOWN_PROVIDER}},
+               400: {'unknown_chapter': UNKNOWN_CHAPTER, 'unknown_provider': UNKNOWN_PROVIDER},
+               409: {'book_archived': 'The book is archived. Restore it first.'}},
        params={'book_id': BOOK_ID}),
 
     op('GET', '/api/books/{book_id}/pipeline', 'getPipelineInspector', 'Inspection',
@@ -777,7 +793,7 @@ OPS: list[Op] = [
        'book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, '
        '`total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source '
        'URLs and interpretation notes.\n\n'
-       '`limit` and `offset` are clamped (to 1–200 and at least 0), as for every paged operation. Aggregates cover '
+       '`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1), as for every paged operation. Aggregates cover '
        'the entire selected scope, not just the current page. The run summary list is bounded to 100; the total '
        'run count is reported separately.\n\n'
        'Operations distinguish request count, reported tokens and cache tokens, retained estimates and '
@@ -790,7 +806,7 @@ OPS: list[Op] = [
        response=ResourceSummary, errors={404: BOOK_404},
        params={'book_id': BOOK_ID,
                'limit': 'Page size for `operations`; default 100, clamped to 1–200.',
-               'offset': 'Rows to skip in `operations`; default 0, negative values become 0.',
+               'offset': 'Rows to skip in `operations`; default 0, clamped to 0–9007199254740991 (2^53 − 1).',
                'run_id': 'Only rows (and the run) with this job ID. Optional.'}),
 
     op('GET', '/api/books/{book_id}/artifacts', 'listBookArtifacts', 'Inspection',
@@ -799,7 +815,7 @@ OPS: list[Op] = [
        'not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, '
        'creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. '
        'Historical or rejected outputs remain inspectable without becoming accepted knowledge.\n\n'
-       '`limit` and `offset` are clamped (to 1–200 and at least 0); an offset past the end returns an empty page. '
+       '`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1); an offset past the end returns an empty page. '
        'No provider is contacted. ' + READ_ONLY + ' Legacy data is retained as artifacts (marked '
        '`legacy_provenance`) once, when the server starts.',
        response=ArtifactPage,
@@ -809,7 +825,7 @@ OPS: list[Op] = [
                'stage': 'Only this artifact stage (exact match). Optional.',
                'current': '`true` for current selections only, `false` for non-current versions only; omit for all versions.',
                'limit': 'Page size; default 30, clamped to 1–200.',
-               'offset': 'Versions to skip; default 0, negative values become 0.'}),
+               'offset': 'Versions to skip; default 0, clamped to 0–9007199254740991 (2^53 − 1).'}),
 
     op('GET', '/api/books/{book_id}/artifacts/{artifact_id}', 'getBookArtifact', 'Inspection',
        'Get one artifact version with its payload',

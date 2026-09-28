@@ -126,7 +126,7 @@ class Store:
     def require_active(self, book_id: str):
         self.book(book_id)
         if self.is_archived(book_id):
-            raise Conflict('book_archived', 'This book is archived. Restore it first.')
+            raise Conflict('book_archived', 'This book is archived.')
 
     def _hydrate(self, book, conn):
         takes = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT segment_id,body FROM takes WHERE book_id=?", (book["id"],))}

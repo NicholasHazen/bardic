@@ -303,6 +303,11 @@ def _metadata(row):
     return item
 
 
+# The largest paging offset honored: larger ones are clamped to it. It is the largest integer every JSON client
+# represents exactly, and fits SQLite's 64-bit OFFSET.
+MAX_OFFSET = 2 ** 53 - 1
+
+
 class ArtifactRepository:
     def __init__(self, store):
         # Store construction initializes the schema; constructing a repository writes nothing.
@@ -316,10 +321,10 @@ class ArtifactRepository:
             return output_head(conn, book_id, kind, logical_key)
 
     def list(self, book_id, kind=None, stage=None, limit=30, offset=0, current=None):
-        """A page of metadata, newest first. ``limit`` is clamped to 1–200 and ``offset`` to at least 0."""
+        """A page of metadata, newest first. ``limit`` is clamped to 1–200 and ``offset`` to 0–``MAX_OFFSET``."""
         if type(limit) is not int or type(offset) is not int:
             raise ValueError('Artifact page size and offset must be integers.')
-        limit, offset = max(1, min(200, limit)), max(0, offset)
+        limit, offset = max(1, min(200, limit)), max(0, min(MAX_OFFSET, offset))
         if current is not None and type(current) is not bool:
             raise ValueError('Current must be true, false or null.')
         filters, args = ['v.book_id=?'], [book_id]

@@ -12,7 +12,7 @@ def test_version_tables_diffs_and_decision_errors(client, monkeypatch):  # noqa:
     book = import_book(client)
     base = f"/api/books/{book['id']}/analysis-pipeline"
 
-    job, _ = run(client, book['id'], ['structure', 'census'], mode='parallel')
+    job, _ = run(client, book['id'], ['structure', 'census'], scheduling='parallel')
     assert job['status'] == 'completed'
     structure = client.get(f'{base}/steps/structure/versions/accepted').json()
     assert structure['rows'] and {'title', 'kind', 'source'} <= set(structure['rows'][0])

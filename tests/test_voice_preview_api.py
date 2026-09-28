@@ -106,7 +106,7 @@ def test_duplicate_active_requests_join_but_other_auditions_and_book_edits_confl
         same = begin(client, book).json()
         assert same['job']['id'] == first['job']['id']
         assert begin(client, book, voice='Puck').status_code == 409
-        assert client.patch(f"/api/books/{book['id']}/characters/{book['characters'][0]['id']}", json={'voice': 'Puck'}).status_code == 409
+        assert client.patch(f"/api/books/{book['id']}/characters/{book['characters'][0]['id']}", json={'voices': {'gemini': {'id': 'Puck'}}}).status_code == 409
     finally:
         release.set()
     assert wait_job(client, first['job']['id'])['status'] == 'completed'

@@ -257,7 +257,7 @@ class PipelineRun(View):
                                           'before the run settled). If the job ended before work began, the run takes '
                                           'the job\'s final status (so `quota_limited` is theoretically possible).')
     steps: list[StepId] = Field(description='Requested steps, deduplicated, in pipeline order.')
-    mode: Literal['serial', 'parallel'] = Field(description='`serial`: steps run one after another in pipeline order. '
+    scheduling: Literal['serial', 'parallel'] = Field(description='`serial`: steps run one after another in pipeline order. '
                                                             '`parallel`: each step starts as soon as the in-run inputs '
                                                             'it reads have finished, so independent steps overlap.')
     chapter_ids: list[str] | None = Field(description='Sorted chapter selection, or null for all eligible chapters.')
@@ -503,7 +503,7 @@ class PipelineVersionDetail(View):
     columns: list[PipelineResultColumn] = Field(description='Columns to display, in order.')
     diff: PipelineVersionDiff
     total_rows: int = Field(description='Rows after the `scope` and `changed_only` filters, before paging.')
-    offset: int = Field(description='Rows skipped: the `offset` query parameter, raised to 0 when negative.')
+    offset: int = Field(description='Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1).')
     limit: int = Field(description='The page size used: the `limit` query parameter clamped to 1–1000.')
     rows: list[PipelineResultRowAny] = Field(
         description='The requested page of rows. Most cell values reflect the book\'s current names and passages; census rows use the names stored in the result and structure rows use the version\'s own titles. The row '
@@ -557,7 +557,8 @@ NO_BOOK = {'book_not_found': 'No book has this ID.'}
 NO_STEP = {'step_not_found': 'The step ID in the path is unknown.'}
 NO_VERSION = {**NO_BOOK, **NO_STEP,
               'step_version_not_found': 'The version does not exist, or belongs to another book or another step.'}
-UNKNOWN_STEP = {'unknown_step': '`steps` names a step ID the server does not know.'}
+UNKNOWN_STEP = {'unknown_step': '`steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server '
+                                 'does not know.'}
 CONFIG = {'step_config_invalid': 'A `configs` entry does not fit its step: a local step was given a provider other '
                                  'than `local` or a model, the provider is not one of the step\'s `providers`, a '
                                  'service provider was given a model, or the model ID is missing or malformed.',
@@ -622,9 +623,11 @@ OPS: list[Op] = [
        'request is estimated from the input\'s current accepted result.\n\n'
        'Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` '
        'entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings '
-       'name no model is refused. A removed book can be planned.\n\n'
+       'name no model is refused. A removed book can be planned. Checks, in order: every step ID in `steps` and '
+       '`configs` must be known (400 `unknown_step`), the book must exist (404), then `configs` and `chapter_ids` '
+       'are validated (400).\n\n'
        'The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step\'s version, '
-       'provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or '
+       'provider, model and exact unit identities. It does not cover `scheduling`, `gates`, `concurrency`, `limits` or '
        'which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because '
        'they are part of the fingerprint.\n\n'
        f'Not purely read-only: {SYNC_NOTE} Building units may also store free local census caches.',
@@ -640,7 +643,8 @@ OPS: list[Op] = [
        '`auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step '
        'left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken '
        'when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.\n\n'
-       'Checks, in order: every step ID must be known (400 `unknown_step`, before anything else); the worker must '
+       'Checks, in order: every step ID in `steps`, `configs` and `gates` must be known (400 `unknown_step`, before '
+       'anything else); the worker must '
        'not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active '
        'series run; `chapter_ids` and `configs` must be valid, and each step\'s saved or default settings must name '
        'a model when its provider needs one; every provider the run contacts must have an API key or server URL '
@@ -701,7 +705,7 @@ OPS: list[Op] = [
                'compare': 'What to diff against: `accepted` (default), another step version ID of this step, or `none`.',
                'scope': 'Return only rows of this scope (a chapter ID, character ID or `book`). Filters rows, not `diff` counts.',
                'changed_only': 'When true, return only rows whose `_diff` is `changed` or `added` (none without a comparison). Default false.',
-               'offset': 'Rows to skip (default 0). A negative value is treated as 0.',
+               'offset': 'Rows to skip (default 0), clamped to 0–9007199254740991 (2^53 − 1).',
                'limit': 'Page size (default 200), clamped to 1–1000.'}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/preview',
        'previewAnalysisPipelineStepVersion', TAG,
@@ -793,8 +797,8 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                  'ignored. An unknown ID is refused (400 `unknown_step`).',
         'chapter_ids': 'Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). '
                        'Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`).',
-        'configs': '`{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not '
-                   'requested are ignored.',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model for this request. An unknown step ID is '
+                   'refused (400 `unknown_step`); entries for known steps that are not requested are ignored.',
         'fresh': 'When true, cached validated units are not reused: new samples are requested (for comparing a model '
                  'with itself). Part of the plan fingerprint. Default false.',
     },
@@ -804,11 +808,13 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                  '(400 `unknown_step`).',
         'chapter_ids': 'Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every '
                        'eligible chapter. An empty list is refused (400 `chapter_ids_empty`).',
-        'configs': '`{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored.',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model. An unknown step ID is refused (400 '
+                   '`unknown_step`); entries for known steps that are not requested are ignored.',
         'fresh': 'Request new samples instead of reusing cached validated units (default false). Part of the fingerprint.',
-        'mode': '`serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose '
+        'scheduling': '`serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose '
                 'in-run inputs have finished, so independent steps overlap.',
-        'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run.',
+        'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run. An unknown step ID is refused '
+                 '(400 `unknown_step`); entries for known steps that are not requested are ignored.',
         'concurrency': 'Maximum model requests in flight across the run, 1–4 (default 2). Each step also has its own `parallel` cap.',
         'limits': 'Optional caps; see Limits. Uncapped when omitted.',
         'expected_fingerprint': 'The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the '

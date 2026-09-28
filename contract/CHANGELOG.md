@@ -23,7 +23,7 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
 ## 0.2.0 — 2026-09-28
-<!-- contract-sha256: f9956106c59ba31a4c0f87296c8473b30a1c9e01516449d54ea0030279860563 -->
+<!-- contract-sha256: eb2e550d41bf9131b89142d29954ddafb90183fddd866e21b4343e9cb473460e -->
 
 **BREAKING.** Resolves every known issue recorded with 0.1.0 ([issue #17](https://github.com/NicholasHazen/bardic/issues/17); decisions in [docs/API-KNOWN-ISSUES.md](../docs/API-KNOWN-ISSUES.md)). Regenerate clients and review each section below. Stored libraries need no migration: old stored shapes are read and presented in the new form.
 
@@ -54,6 +54,9 @@ The generator records the version but does not classify the change: the author a
   - `Job.plan_fingerprint` is removed. Series plan responses keep their own `plan_fingerprint`.
   - Jobs stored by earlier versions are read with the new names, and their audio is presented through the new audio shape.
 - **BREAKING** Aliases removed:
+  - `RunRequest.mode` and `PipelineRun.mode` (renamed `scheduling`, matching `Job.scheduling`; runs stored earlier are presented with it);
+  - `CharacterEdit.voice` and `CharacterEdit.system_voice` (send `voices: {gemini|system: {id}}`);
+  - `SeriesBookAnalysisPlan.limits`, which was never present (use `SeriesPlan.limits_per_book`);
   - search `results` (use `items`);
   - library `passage_count` (use `segment_count`);
   - pipeline provider `has_api_key` (use `configured`);
@@ -79,12 +82,13 @@ The generator records the version but does not classify the change: the author a
   - The preprocessing and pipeline inspector views write only the census cache, and search writes only its full-text index. Both are disposable caches.
   - Search, the audiobook export and the analysis export record no resource measurements.
   - Retaining legacy artifacts happens once per book at server start.
-- Additive: `PipelineAttempt` gains `chapter_id`, `cached_input_tokens`, `cache_write_input_tokens`, `cost_basis`, `price_as_of`, `price_source` and `elapsed_seconds`.
+- Additive: `PipelineAttempt` gains `book_id`, `chapter_id`, `cached_input_tokens`, `cache_write_input_tokens`, `input_rate` and `output_rate` (USD per million tokens), `cost_basis`, `price_as_of`, `price_source` and `elapsed_seconds`, all optional. The analysis export includes them.
+- Paging `offset` values are clamped to at most 2^53−1 instead of failing (`listBookArtifacts`, `getBookResourceUsage`, pipeline step versions).
 
 ### Library
 
 - **BREAKING** Library lists are ordered by import time (`created_at`, newest first), not by the most recent save. Books without `created_at` come last.
-- **BREAKING** `audio_count` counts only current, playable enhanced takes.
+- **BREAKING** `audio_count` counts only current, playable enhanced takes, in both `listBooks` and `getLibrary`.
 - **BREAKING** `getBookCover`: the `ETag` is quoted, a matching `If-None-Match` returns 304 (documented), and `Cache-Control` is `private, max-age=31536000, immutable` at the `?v={sha256}` URL, `private, no-cache` otherwise.
 - **BREAKING** `updateBookMetadata` locks only the fields that changed against refresh. An unchanged edit does not bump `revision`.
 - `importBook`: an oversized upload is refused with 413 `upload_too_large` before its body is read, and a failed import leaves no original file or resource record.
@@ -95,6 +99,7 @@ The generator records the version but does not classify the change: the author a
 - **BREAKING** An edit that changes nothing (`editCharacter`, `editPassage`, `editScene`, `updatePronunciation`) returns the current book without saving and without bumping `revision`. A real edit locks only the fields it changed.
 - **BREAKING** Voice choices follow one rule for every provider: a blank `id` clears the choice, so Default applies. A blank Breeze `id` no longer pins the server's default voice. A `seed` where it does not apply is 400 `seed_not_applicable`, instead of being ignored. `SegmentEdit.seed: null` clears the seed.
 - `addCharacter` assigns a device voice the same way import does.
+- **BREAKING** `updatePronunciation` takes `PronunciationPatch`: every field is optional and `id` is not accepted. Omitted fields keep their saved values, and `null` clears a field (400 `pronunciation_invalid` for `term` or `respelling`).
 - `listCharacterReferences` is derived from the current book on every call, so manual edits and pipeline acceptance show at once.
 
 ### Series and analysis pipeline
@@ -105,6 +110,9 @@ The generator records the version but does not classify the change: the author a
   - a saved step choice that no longer validates reports `saved: false` with the new `saved_invalid: true`;
   - reject returns 404 for an unknown book and 409 for an archived one, and can decline a `same_as_accepted` candidate; rejecting an accepted version is 409 `version_accepted`;
   - an accept with a stale `expected_revision` is 409 `plan_stale`.
+- **BREAKING** An unknown step ID in `steps`, `configs` or `gates` is 400 `unknown_step` on plan and run. Known steps that were not requested are still ignored. A plan for an unknown book is 404 before its configs are validated.
+- **BREAKING** `previewClassicAnalysis` on an archived book is 409 `book_archived`, like the other previews. `createSeries` refuses control characters in a name (400 `text_invalid`), like rename.
+- Classic analysis, series runs, structure repair and manual edits record the projection they are about to replace as a pipeline `baseline` or `external` version first, so it can be restored from the pipeline history even if the Analysis tab was never opened.
 - The run-start response is a snapshot, never the object the worker is changing.
 
 ### Listening, narration and voices

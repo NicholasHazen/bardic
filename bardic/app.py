@@ -45,6 +45,7 @@ from .lan import allowed_hosts
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .pipeline import default_registry
 from .pipeline.api import build_router as pipeline_router
+from .pipeline.projection import record_before_outside_write
 from .pipeline.repository import PipelineRepository
 from .series import SeriesRepository, require_active_book
 from .structure import repair_structure, transform_checkpoint_structure
@@ -168,6 +169,16 @@ class PronunciationEntry(StrictModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class PronunciationPatch(StrictModel):
+    """Fields to change in a saved pronunciation; fields left out keep their saved values."""
+    term: str | None = Field(default=None, max_length=200)
+    respelling: str | None = Field(default=None, max_length=300)
+    providers: dict[Literal['system', 'gemini', 'breeze'], str | None] | None = None
+    match_case: bool | None = None
+    character_id: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class VoicePreviewRequest(StrictModel):
     provider: Literal['system', 'gemini', 'breeze'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
@@ -253,9 +264,6 @@ class CharacterEdit(StrictModel):
     description: str | None = Field(default=None, max_length=3000)
     # One saved choice per narration provider; null removes that provider's choice.
     voices: dict[str, VoiceChoice | None] | None = None
-    # Earlier single-provider fields, accepted and stored as voices.gemini/voices.system.
-    voice: str | None = Field(default=None, max_length=200)
-    system_voice: str | None = Field(default=None, max_length=200)
     direction: str | None = Field(default=None, max_length=3000)
 
 
@@ -765,14 +773,11 @@ class Runtime:
     def merge_voices(self, item, fields):
         """Apply per-provider voice choices to a character; call under the store lock.
 
-        Earlier single-provider fields are accepted and saved as voices entries,
-        leaving one stored source for each provider's choice. Breeze choices are
-        pinned to the voice revision from the last server check.
+        Saving replaces a stored character's earlier single-provider fields with
+        the voices map, leaving one stored source for each provider's choice.
+        Breeze choices are pinned to the voice revision from the last server check.
         """
         changes = dict(fields.pop("voices", None) or {})
-        for provider, legacy in (("gemini", "voice"), ("system", "system_voice")):
-            if legacy in fields:
-                changes.setdefault(provider, {"id": fields.pop(legacy)})
         if not changes:
             return
         if set(changes) - set(NARRATION_PROVIDERS):
@@ -970,7 +975,7 @@ class Runtime:
         with self.store.lock:
             book = self.store.book(book_id)
             if self.store.is_archived(book_id):
-                raise Conflict("book_archived", "The book is archived. Restore it before analyzing it.")
+                raise Conflict("book_archived", "This book is archived.")
             self.require_idle(book_id)
             if chapter_id is not None and chapter_id not in {c["id"] for c in book["chapters"]}:
                 raise Invalid("unknown_chapter", "The book has no chapter with this ID.")
@@ -986,6 +991,8 @@ class Runtime:
                 raise Unavailable("shutting_down", "The server is shutting down and cannot start new work.")
             model = self.preferences["analysis_models_by_provider"].get(provider)
             scan_model = self.preferences["preprocess_models_by_provider"].get(provider)
+            # The analysis will replace the projection: keep the current one restorable in the pipeline history.
+            record_before_outside_write(self.store, book_id)
             job = self.store.create_job(book_id, "analyze")
             job = self.store.update_job(job["id"], provider=provider, model=model, scan_model=scan_model, phase=phase, chapter_id=chapter_id)
 
@@ -1393,6 +1400,7 @@ def create_app(data_dir: Path | None = None):
                 except (ValueError, zipfile.BadZipFile) as exc:
                     raise Invalid("original_unreadable", "The saved original could not be read. Existing book work was preserved.") from exc
                 updated["revision"] = book.get("revision", 0) + 1
+                record_before_outside_write(runtime.store, book_id)
                 summary = runtime.store.analysis_status(book_id)
                 checkpoint = runtime.store.analysis_checkpoint(book_id, summary["fingerprint"]) if summary else None
                 if checkpoint:
@@ -1501,7 +1509,7 @@ def create_app(data_dir: Path | None = None):
     def require_editable(runtime, book_id):
         """Changes need a known (404), non-archived (409 book_archived) and idle (409) book."""
         if runtime.store.is_archived(book_id):
-            raise Conflict("book_archived", "The book is archived. Restore it before changing it.")
+            raise Conflict("book_archived", "This book is archived.")
         runtime.require_idle(book_id)
 
     ITEM_NOT_FOUND = {"characters": ("character_not_found", "No character has this ID in the book."),
@@ -1557,6 +1565,7 @@ def create_app(data_dir: Path | None = None):
             for scene in book["scenes"]:
                 scene["character_ids"] = sorted({s["speaker_id"] for s in book["segments"] if s["scene_id"] == scene["id"]})
             book["revision"] = book.get("revision", 0) + 1
+            record_before_outside_write(runtime.store, book_id)  # Reads the stored (unedited) book.
             runtime.store.save_book(book)
             return runtime.present(book)
 
@@ -1578,7 +1587,7 @@ def create_app(data_dir: Path | None = None):
     def add_character(book_id: str, body: CharacterEdit, request: Request):
         runtime = rt(request)
         # Like imported characters, a new one gets a device voice unless the request chose Default.
-        device_voices = [] if "system" in (body.voices or {}) or body.system_voice is not None else runtime.local_voice_choices()
+        device_voices = [] if "system" in (body.voices or {}) else runtime.local_voice_choices()
         with runtime.store.lock:
             require_editable(runtime, book_id)
             book = runtime.store.book(book_id)
@@ -1596,6 +1605,7 @@ def create_app(data_dir: Path | None = None):
             character["edited_fields"] = sorted(set(fields) | {"name"})
             book["characters"].append(character)
             book["revision"] = book.get("revision", 0) + 1
+            record_before_outside_write(runtime.store, book_id)  # Reads the stored book, without the new character.
             runtime.store.save_book(book)
             return runtime.present(book)
 
@@ -1669,10 +1679,9 @@ def create_app(data_dir: Path | None = None):
         return save_lexicon(rt(request), book_id, lambda entries: [*entries, entry])
 
     @app.patch("/api/books/{book_id}/pronunciations/{entry_id}")
-    def edit_pronunciation(book_id: str, entry_id: str, body: PronunciationEntry, request: Request):
+    def edit_pronunciation(book_id: str, entry_id: str, body: PronunciationPatch, request: Request):
         # Fields left out keep their saved values; send null (or {} for providers) to clear one.
         changes = body.model_dump(exclude_unset=True)
-        changes.pop("id", None)
 
         def change(entries):
             current = next((item for item in entries if item["id"] == entry_id), None)
@@ -1716,6 +1725,8 @@ def create_app(data_dir: Path | None = None):
         runtime = rt(request)
         with runtime.store.lock:
             book = runtime.store.book(book_id)
+            if runtime.store.is_archived(book_id):  # The preview retains artifacts, so a removed book is refused.
+                raise Conflict('book_archived', 'This book is archived.')
             if body.chapter_id and body.chapter_id not in {c['id'] for c in book['chapters']}:
                 raise Invalid('unknown_chapter', 'The book has no chapter with this ID.')
             provider = body.provider or runtime.preferences['analysis_provider']
@@ -1850,8 +1861,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.get('/api/library')
     def library(request: Request, include_archived: bool = False):
-        from .library import LibraryRepository
-        return LibraryRepository(rt(request).store).snapshot(include_archived=include_archived)
+        return library_repository(rt(request)).snapshot(include_archived=include_archived)
 
     @app.patch('/api/books/{book_id}/metadata')
     def metadata(book_id: str, body: BookMetadataRequest, request: Request):
@@ -1862,24 +1872,22 @@ def create_app(data_dir: Path | None = None):
 
     @app.post('/api/books/{book_id}/archive')
     def archive_book(book_id: str, request: Request):
-        from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
             runtime.store.book(book_id)
             if not runtime.store.is_archived(book_id):  # Archiving an archived book is a no-op.
                 runtime.require_idle(book_id)
-            return LibraryRepository(runtime.store).archive_book(book_id)
+            return library_repository(runtime).archive_book(book_id)
 
     @app.post('/api/books/{book_id}/restore')
     def restore_book(book_id: str, request: Request):
-        from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
             runtime.store.book(book_id)
             if runtime.store.is_archived(book_id):  # Restoring an active book is a no-op.
                 membership = SeriesRepository(runtime.store).membership(book_id, include_archived=True)
                 require_series_not_running(runtime, membership['series_id'] if membership else None)
-            return LibraryRepository(runtime.store).archive_book(book_id, archived=False)
+            return library_repository(runtime).archive_book(book_id, archived=False)
 
     @app.post('/api/books/{book_id}/refresh-metadata')
     def refresh_book_metadata(book_id: str, request: Request):
@@ -1901,8 +1909,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.get('/api/books/{book_id}/cover')
     def book_cover(book_id: str, request: Request):
-        from .library import LibraryRepository
-        data, media_type, digest = LibraryRepository(rt(request).store).cover(book_id)
+        data, media_type, digest = library_repository(rt(request)).cover(book_id)
         etag = f'"{digest}"'
         # The summary's cover URL carries ?v={sha256}: that exact URL always names these bytes, so it
         # may be kept. Any other URL must be revalidated, which the strong ETag makes cheap.
@@ -1931,16 +1938,14 @@ def create_app(data_dir: Path | None = None):
 
     @app.patch('/api/series/{series_id}')
     def rename_series(series_id: str, body: SeriesNameRequest, request: Request):
-        from .library import LibraryRepository
         from .series import _name
         runtime = rt(request)
         with runtime.store.lock:
             editable_series(runtime, series_id)
-            return LibraryRepository(runtime.store).rename_series(series_id, _name(body.name, 'series name'))
+            return library_repository(runtime).rename_series(series_id, _name(body.name, 'series name'))
 
     def set_series_archived(request, series_id, archived):
         # Idempotent: a series already in the requested state is returned unchanged, with no checks or records.
-        from .library import LibraryRepository
         from .series_processing import series_view
         runtime = rt(request)
         with runtime.store.lock:
@@ -1948,7 +1953,7 @@ def create_app(data_dir: Path | None = None):
             if series['archived'] == archived:
                 return {'id': series_id, 'archived': archived, 'retained': True}
             require_series_idle(runtime, series)
-            return LibraryRepository(runtime.store).archive_series(series_id, archived=archived)
+            return library_repository(runtime).archive_series(series_id, archived=archived)
 
     @app.post('/api/series/{series_id}/archive')
     def archive_series(series_id: str, request: Request):
@@ -1960,19 +1965,17 @@ def create_app(data_dir: Path | None = None):
 
     @app.put('/api/series/{series_id}/volumes')
     def add_series_volume(series_id: str, body: SeriesVolumeRequest, request: Request):
-        from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
             editable_series(runtime, series_id)
-            return LibraryRepository(runtime.store).add_volume(series_id, body.position, body.title, body.status)
+            return library_repository(runtime).add_volume(series_id, body.position, body.title, body.status)
 
     @app.delete('/api/series/{series_id}/volumes/{position}')
     def remove_series_volume(series_id: str, position: float, request: Request):
-        from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
             editable_series(runtime, series_id)
-            return LibraryRepository(runtime.store).remove_volume(series_id, position)
+            return library_repository(runtime).remove_volume(series_id, position)
 
     @app.post('/api/series/{series_id}/plan')
     def plan_series(series_id: str, body: SeriesProcessingRequest, request: Request):

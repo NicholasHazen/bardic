@@ -123,9 +123,13 @@ def _references(book, units, provider, model, previous, only=None):
     for s in book["segments"]:
         if s["kind"] == "dialogue" and s["speaker_id"] in characters:
             old = old_dialogue.get((s["speaker_id"], s["chapter_id"], s["start"], s["end"]), {})
-            # A person reviewed the attribution when the speaker is edit-locked (older items: any edit).
+            # A person reviewed the attribution when the speaker is edit-locked (older items: any edit). Before
+            # per-field locks recorded confirmations, confirming an unchanged speaker set only `edited` and
+            # confidence 1.0; that marker still counts.
             edited = s.get("edited_fields")
             reviewed = ("*" in edited or "speaker_id" in edited) if isinstance(edited, list) else bool(s.get("edited"))
+            confidence = s.get("confidence")
+            reviewed = reviewed or bool(s.get("edited")) and isinstance(confidence, (int, float)) and confidence >= 1.0
             add(s["speaker_id"], s["chapter_id"], s["start"], s["end"], "dialogue",
                 confidence=s.get("confidence"), provider="reviewed" if reviewed else s.get("analysis_provider", old.get("provider")),
                 model=None if reviewed else s.get("analysis_model", old.get("model")))

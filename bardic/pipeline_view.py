@@ -19,11 +19,13 @@ from .store import now, public_job
 
 
 # The public fields of a stored analysis attempt, shared by the inspector and the export.
-# Stored rows also hold process IDs, price rates and anything older versions saved.
-ATTEMPT_FIELDS = ('id', 'run_id', 'stage', 'unit_key', 'chapter_id', 'provider', 'model', 'status', 'created_at',
+# Stored rows also hold process IDs and anything older versions saved. The price rates stay public:
+# they explain `charged_estimate_usd`.
+ATTEMPT_FIELDS = ('id', 'book_id', 'run_id', 'stage', 'unit_key', 'chapter_id', 'provider', 'model', 'status', 'created_at',
                   'completed_at', 'http_status', 'input_tokens', 'output_tokens', 'cached_input_tokens',
                   'cache_write_input_tokens', 'reserved_input_tokens', 'reserved_output_tokens', 'charged_estimate_usd',
-                  'cost_basis', 'price_as_of', 'price_source', 'elapsed_seconds', 'input_artifact_id')
+                  'cost_basis', 'input_rate', 'output_rate', 'price_as_of', 'price_source', 'elapsed_seconds',
+                  'input_artifact_id')
 
 
 def prepare(store, book_id):

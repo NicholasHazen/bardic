@@ -321,7 +321,7 @@ An artifact snapshot captures a supported scope at a point in its content histor
 
 ### Portable analysis bundle
 
-The manifest's format identifier remains `spintails-analysis`. It is a retained interchange contract, independent of the Bardic display/package name, so the rename required no format migration. Schema version `2` (contract 0.2.0) changed `analysis-attempts.json`: it holds the allowlisted attempt shape that the pipeline inspector shows (`PipelineAttempt`, with `validation_state`), not raw stored rows, so process IDs, price rates and unknown stored fields are no longer exported. Version `1` exports remain readable as before; nothing rewrites them.
+The manifest's format identifier remains `spintails-analysis`. It is a retained interchange contract, independent of the Bardic display/package name, so the rename required no format migration. Schema version `2` (contract 0.2.0) changed `analysis-attempts.json`: it holds the allowlisted attempt shape that the pipeline inspector shows (`PipelineAttempt`, with `validation_state`), not raw stored rows, so process IDs and unknown stored fields are no longer exported. The price rates (`input_rate`, `output_rate`) and `book_id` are kept, because the rates explain `charged_estimate_usd`. Version `1` exports remain readable as before; nothing rewrites them.
 
 `/api/books/{book_id}/analysis-export` includes:
 

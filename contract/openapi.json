@@ -840,7 +840,7 @@
             }
           },
           "400": {
-            "description": "- `unknown_step`: `steps` names a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.",
+            "description": "- `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.",
             "content": {
               "application/json": {
                 "schema": {
@@ -909,7 +909,7 @@
             ]
           }
         },
-        "description": "Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.\n\nMissing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned.\n\nThe `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.\n\nNot purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.",
+        "description": "Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.\n\nMissing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned. Checks, in order: every step ID in `steps` and `configs` must be known (400 `unknown_step`), the book must exist (404), then `configs` and `chapter_ids` are validated (400).\n\nThe `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `scheduling`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.\n\nNot purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -954,7 +954,7 @@
             }
           },
           "400": {
-            "description": "- `unknown_step`: `steps` names a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.\n- `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL).\n- `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured.\n- `step_inputs_missing`: A step's required input has no accepted result and is not in this run.\n- `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent.",
+            "description": "- `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.\n- `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL).\n- `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured.\n- `step_inputs_missing`: A step's required input has no accepted result and is not in this run.\n- `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1056,7 +1056,7 @@
             ]
           }
         },
-        "description": "Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.\n\nChecks, in order: every step ID must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.\n\nProvider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.",
+        "description": "Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.\n\nChecks, in order: every step ID in `steps`, `configs` and `gates` must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.\n\nProvider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -1242,7 +1242,7 @@
               "default": 0,
               "title": "Offset"
             },
-            "description": "Rows to skip (default 0). A negative value is treated as 0."
+            "description": "Rows to skip (default 0), clamped to 0–9007199254740991 (2^53 − 1)."
           },
           {
             "name": "limit",
@@ -1841,6 +1841,19 @@
               "book_not_found"
             ]
           },
+          "409": {
+            "description": "- `book_archived`: The book is archived. Restore it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived"
+            ]
+          },
           "422": {
             "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
             "content": {
@@ -1868,7 +1881,7 @@
             ]
           }
         },
-        "description": "Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without provider inference. Returns the requested phase, provider and configured models, pending requests, cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` (with defaults applied; the preview does not enforce them).\n\nThe estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works on archived books and while a job is running.\n\nSide effects, all local and none of them changing the book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.\n\nThe request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from\nruntime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for\nthe fast discovery model), not from this request. A typical body:\n\n```json\n{\"provider\": \"openai\", \"phase\": \"scan\", \"resume\": true,\n \"limits\": {\"max_requests\": 25, \"max_input_tokens\": 1000000, \"max_output_tokens\": 100000, \"budget_usd\": 1.0}}\n```\n\nCloud phases (`provider` = `gemini`, `openai` or `anthropic`):\n\n| `phase` | Scope |\n| --- | --- |\n| `scan` | Discover characters over eligible source sections using the fast model. |\n| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |\n| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |\n| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |\n\n`provider: \"local\"` runs the free heuristic draft instead, without semantic model discovery; `phase` and\n`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when\nsupplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names\nsuch a section. The main UI uses whole-book scan/profiles and selected-chapter direction.\n",
+        "description": "Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without provider inference. Returns the requested phase, provider and configured models, pending requests, cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` (with defaults applied; the preview does not enforce them).\n\nThe estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works while a job is running. Because it retains records (below), an archived book is refused (409 `book_archived`).\n\nSide effects, all local and none of them changing the book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.\n\nThe request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from\nruntime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for\nthe fast discovery model), not from this request. A typical body:\n\n```json\n{\"provider\": \"openai\", \"phase\": \"scan\", \"resume\": true,\n \"limits\": {\"max_requests\": 25, \"max_input_tokens\": 1000000, \"max_output_tokens\": 100000, \"budget_usd\": 1.0}}\n```\n\nCloud phases (`provider` = `gemini`, `openai` or `anthropic`):\n\n| `phase` | Scope |\n| --- | --- |\n| `scan` | Discover characters over eligible source sections using the fast model. |\n| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |\n| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |\n| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |\n\n`provider: \"local\"` runs the free heuristic draft instead, without semantic model discovery; `phase` and\n`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when\nsupplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names\nsuch a section. The main UI uses whole-book scan/profiles and selected-chapter direction.\n",
         "tags": [
           "Classic analysis"
         ],
@@ -2009,7 +2022,7 @@
             ]
           }
         },
-        "description": "Queues an `analyze` job and returns it immediately. Poll `GET /api/jobs` until it is terminal; failures, cancellation and allowance stops (`budget_limited`) appear in the job, not as HTTP errors. Cancel with `POST /api/jobs/{job_id}/cancel`; a remote request already sent can still complete and be billed. To resume after a stop, failure or restart, call this endpoint again (an old job ID is never revived).\n\nSend the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud provider may incur charges; `provider: \"local\"` never contacts a provider. There is no server-enforced preview fingerprint for per-book runs (series runs have one); the UI invalidates its preview when local inputs change.\n\nThe request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from\nruntime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for\nthe fast discovery model), not from this request. A typical body:\n\n```json\n{\"provider\": \"openai\", \"phase\": \"scan\", \"resume\": true,\n \"limits\": {\"max_requests\": 25, \"max_input_tokens\": 1000000, \"max_output_tokens\": 100000, \"budget_usd\": 1.0}}\n```\n\nCloud phases (`provider` = `gemini`, `openai` or `anthropic`):\n\n| `phase` | Scope |\n| --- | --- |\n| `scan` | Discover characters over eligible source sections using the fast model. |\n| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |\n| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |\n| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |\n\n`provider: \"local\"` runs the free heuristic draft instead, without semantic model discovery; `phase` and\n`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when\nsupplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names\nsuch a section. The main UI uses whole-book scan/profiles and selected-chapter direction.\n\nThe provider and configured models are snapshotted when the job is queued; the job carries `provider`, `model`, `scan_model`, `phase` and `chapter_id`.\n\nResuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published. The run retains the census and any validated discovery imported from an older checkpoint as artifacts.\n\nThe classic engine may be retired in favor of the step pipeline.",
+        "description": "Queues an `analyze` job and returns it immediately. Poll `GET /api/jobs` until it is terminal; failures, cancellation and allowance stops (`budget_limited`) appear in the job, not as HTTP errors. Cancel with `POST /api/jobs/{job_id}/cancel`; a remote request already sent can still complete and be billed. To resume after a stop, failure or restart, call this endpoint again (an old job ID is never revived).\n\nSend the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud provider may incur charges; `provider: \"local\"` never contacts a provider. There is no server-enforced preview fingerprint for per-book runs (series runs have one); the UI invalidates its preview when local inputs change.\n\nThe request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from\nruntime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for\nthe fast discovery model), not from this request. A typical body:\n\n```json\n{\"provider\": \"openai\", \"phase\": \"scan\", \"resume\": true,\n \"limits\": {\"max_requests\": 25, \"max_input_tokens\": 1000000, \"max_output_tokens\": 100000, \"budget_usd\": 1.0}}\n```\n\nCloud phases (`provider` = `gemini`, `openai` or `anthropic`):\n\n| `phase` | Scope |\n| --- | --- |\n| `scan` | Discover characters over eligible source sections using the fast model. |\n| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |\n| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |\n| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |\n\n`provider: \"local\"` runs the free heuristic draft instead, without semantic model discovery; `phase` and\n`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when\nsupplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names\nsuch a section. The main UI uses whole-book scan/profiles and selected-chapter direction.\n\nThe provider and configured models are snapshotted when the job is queued; the job carries `provider`, `model`, `scan_model`, `phase` and `chapter_id`.\n\nResuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published. The run retains the census and any validated discovery imported from an older checkpoint as artifacts. When the job is queued, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions) when the history does not already explain it, so the state the analysis replaces stays restorable.\n\nThe classic engine may be retired in favor of the step pipeline.",
         "tags": [
           "Classic analysis"
         ],
@@ -2203,7 +2216,7 @@
               "default": 0,
               "title": "Offset"
             },
-            "description": "Versions to skip; default 0, negative values become 0."
+            "description": "Versions to skip; default 0, clamped to 0–9007199254740991 (2^53 − 1)."
           }
         ],
         "responses": {
@@ -2257,7 +2270,7 @@
             ]
           }
         },
-        "description": "`{items, total, offset, limit}` page of artifact metadata owned by the book, newest first. Payloads are not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge.\n\n`limit` and `offset` are clamped (to 1–200 and at least 0); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.",
+        "description": "`{items, total, offset, limit}` page of artifact metadata owned by the book, newest first. Payloads are not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge.\n\n`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.",
         "tags": [
           "Inspection"
         ],
@@ -2571,7 +2584,7 @@
             ]
           }
         },
-        "description": "Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as `{\"gemini\": {\"id\": \"Kore\"}}` plus a device (`system`) voice chosen from the installed voices the same way imported characters get one (none when no suitable voice is installed), then any `voices` sent are applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always including `name`) are locked against generated analysis, so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a non-archived, idle book (409). Returns the full, presented book.",
+        "description": "Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as `{\"gemini\": {\"id\": \"Kore\"}}` plus a device (`system`) voice chosen from the installed voices the same way imported characters get one (none when no suitable voice is installed), then any `voices` sent are applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always including `name`) are locked against generated analysis, so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a non-archived, idle book (409). Returns the full, presented book.\n\nBefore it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Books"
         ],
@@ -2710,7 +2723,7 @@
             ]
           }
         },
-        "description": "Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` and `VoiceChoice` for the forms. For every provider, `null` or a blank `id` clears the choice, so Default applies. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` and `VoiceChoice` for the forms. For every provider, `null` or a blank `id` clears the choice, so Default applies. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.\n\nBefore it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Books"
         ],
@@ -4891,7 +4904,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PronunciationEntry"
+                "$ref": "#/components/schemas/PronunciationPatch"
               }
             }
           }
@@ -4992,7 +5005,7 @@
             ]
           }
         },
-        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nThe body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).",
+        "description": "Changing pronunciations requires an idle book. A render recipe records only the entries a passage used, so a change alters the audio identity of the passages containing that word and no others. Studio takes that no longer match are unselected (`retired_takes`); their WAVs stay archived and are reused without a request if the recipe returns. Simple listening, including simple saved performances, always uses the current entries: affected passages and chunks become uncached and are narrated again on demand. A cast performance keeps the entries it was created with (`pronunciation_count`); its plan notes when the book's entries have changed since, or that a performance made before pronunciations existed does not use them. Voice examples apply them too; `POST /api/books/{book_id}/voice-preview` can audition an unsaved respelling.\n\nLimits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.\n\nA partial update (body `PronunciationPatch`): every field is optional, fields left out keep their saved values, and `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling` (so `null` for either is 400), and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).",
         "tags": [
           "Pronunciations"
         ],
@@ -5484,7 +5497,7 @@
             ]
           }
         },
-        "description": "Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.\n\nRefused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.",
+        "description": "Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.\n\nRefused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.\n\nBefore it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Books"
         ],
@@ -5526,7 +5539,7 @@
               "default": 0,
               "title": "Offset"
             },
-            "description": "Rows to skip in `operations`; default 0, negative values become 0."
+            "description": "Rows to skip in `operations`; default 0, clamped to 0–9007199254740991 (2^53 − 1)."
           },
           {
             "name": "run_id",
@@ -5597,7 +5610,7 @@
             ]
           }
         },
-        "description": "Recorded work for the book: analysis HTTP attempts (the analysis ledger), local and narration operations (which supplement it without double-counting), and cache reuse. Returns `schema_version`, the book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, `total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source URLs and interpretation notes.\n\n`limit` and `offset` are clamped (to 1–200 and at least 0), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.\n\nOperations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts a provider or backfills guessed usage. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.",
+        "description": "Recorded work for the book: analysis HTTP attempts (the analysis ledger), local and narration operations (which supplement it without double-counting), and cache reuse. Returns `schema_version`, the book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, `total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source URLs and interpretation notes.\n\n`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.\n\nOperations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts a provider or backfills guessed usage. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.",
         "tags": [
           "Inspection"
         ],
@@ -5821,7 +5834,7 @@
             ]
           }
         },
-        "description": "Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.\n\nBefore it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Books"
         ],
@@ -6077,7 +6090,7 @@
             ]
           }
         },
-        "description": "Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending `speaker_id` sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` clears it so the speaker's voice seed applies; like other performance edits this deselects the current take while retaining its history.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.",
+        "description": "Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending `speaker_id` sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` clears it so the speaker's voice seed applies; like other performance edits this deselects the current take while retaining its history.\n\nA manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\nA request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\nAfter a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.\n\nOmitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.\n\nBefore it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Books"
         ],
@@ -7516,7 +7529,7 @@
             }
           },
           "400": {
-            "description": "- `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters.\n- `series_name_taken`: Another series (active or removed) already has this name, ignoring case.",
+            "description": "- `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters.\n- `series_name_taken`: Another series (active or removed) already has this name, ignoring case.\n- `text_invalid`: The name contains control characters other than tab and newlines.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7526,7 +7539,8 @@
             },
             "x-bardic-error-codes": [
               "name_invalid",
-              "series_name_taken"
+              "series_name_taken",
+              "text_invalid"
             ]
           },
           "403": {
@@ -7569,7 +7583,7 @@
             ]
           }
         },
-        "description": "Creates an empty series. Whitespace in the name is collapsed. Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).",
+        "description": "Creates an empty series. Whitespace in the name is collapsed. The name is validated as for a rename (control characters other than tab and newlines are refused). Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).",
         "tags": [
           "Series"
         ],
@@ -8193,7 +8207,7 @@
             ]
           }
         },
-        "description": "Previews staged analysis over the supplied, active books of an active series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.\n\nThe response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill disposable local caches; it creates no jobs or records.",
+        "description": "Previews staged analysis over the supplied, active books of an active series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.\n\nThe response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). The preview creates no jobs.\n\nSide effects, all local and none of them changing a book, the same as `POST /api/books/{book_id}/analysis-plan` for each planned book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.",
         "tags": [
           "Series"
         ],
@@ -8334,7 +8348,7 @@
             ]
           }
         },
-        "description": "Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.\n\nThe server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns 409 `plan_stale` (as the step pipeline does) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.\n\n**Jobs.** The parent job has `kind: \"series\"` and `book_id: \"series:SERIES_ID\"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.\n\n**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book.",
+        "description": "Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.\n\nThe server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns 409 `plan_stale` (as the step pipeline does) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.\n\n**Jobs.** The parent job has `kind: \"series\"` and `book_id: \"series:SERIES_ID\"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.\n\n**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book. When the run is queued, each supplied book's current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions) when the history does not already explain it, so the replaced state stays restorable.",
         "tags": [
           "Series"
         ],
@@ -11949,7 +11963,7 @@
             "type": "integer"
           },
           "offset": {
-            "description": "Effective offset after clamping to >= 0 (versions skipped).",
+            "description": "Effective offset (versions skipped) after clamping to 0–9007199254740991 (2^53 − 1).",
             "type": "integer"
           },
           "limit": {
@@ -14173,30 +14187,6 @@
               }
             ],
             "description": "Per-provider voice choices: `{provider: VoiceChoice | null}` where provider is `system`, `gemini` or `breeze` (another key is 400 `voice_provider_unknown`). Only the providers present change; `null`, or a choice whose `id` is empty or blank, removes that provider's choice, which means Default. This rule is the same for every provider. The stored map is returned in `characters[].voices` (library references stay references)."
-          },
-          "voice": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is treated as `voices.gemini = {id}`, with the same rules (an empty or blank string removes it). Ignored for Gemini when `voices` also names `gemini`."
-          },
-          "system_voice": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for the device (`system`) choice, with the same rules as `voice`."
           },
           "direction": {
             "anyOf": [
@@ -18206,11 +18196,22 @@
         "type": "object"
       },
       "PipelineAttempt": {
-        "description": "One recorded analysis HTTP attempt (classic or step pipeline).\n\nThe pipeline inspector lists the newest 100 for the book; the analysis\nexport's `analysis-attempts.json` lists all of them in this same shape.\nFields come from the stored attempt through a fixed allowlist and may be\nabsent on records from older versions. Prompts, responses, credentials,\nprice rates and server process IDs are never included.",
+        "description": "One recorded analysis HTTP attempt (classic or step pipeline).\n\nThe pipeline inspector lists the newest 100 for the book; the analysis\nexport's `analysis-attempts.json` lists all of them in this same shape.\nFields come from the stored attempt through a fixed allowlist and may be\nabsent on records from older versions. Prompts, responses, credentials\nand server process IDs are never included.",
         "properties": {
           "id": {
             "description": "Attempt ID.",
             "type": "string"
+          },
+          "book_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Book the attempt was made for."
           },
           "run_id": {
             "anyOf": [
@@ -18416,6 +18417,28 @@
               }
             ],
             "description": "How `charged_estimate_usd` was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent` or `unknown`."
+          },
+          "input_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Input price used for the estimate, in USD per million input tokens; null when the model has no known price."
+          },
+          "output_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Output price used for the estimate, in USD per million output tokens; null when the model has no known price. `charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + output tokens × `output_rate`) / 1,000,000, using reported usage when present and the reservation otherwise."
           },
           "price_as_of": {
             "anyOf": [
@@ -19884,7 +19907,7 @@
             },
             "type": "array"
           },
-          "mode": {
+          "scheduling": {
             "description": "`serial`: steps run one after another in pipeline order. `parallel`: each step starts as soon as the in-run inputs it reads have finished, so independent steps overlap.",
             "enum": [
               "serial",
@@ -20004,7 +20027,7 @@
           "job_id",
           "status",
           "steps",
-          "mode",
+          "scheduling",
           "chapter_ids",
           "configs",
           "gates",
@@ -20999,7 +21022,7 @@
             "type": "integer"
           },
           "offset": {
-            "description": "Rows skipped: the `offset` query parameter, raised to 0 when negative.",
+            "description": "Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1).",
             "type": "integer"
           },
           "limit": {
@@ -21205,7 +21228,7 @@
                 "type": "null"
               }
             ],
-            "description": "`{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not requested are ignored."
+            "description": "`{step ID: StepConfig}` overriding the saved provider/model for this request. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored."
           },
           "fresh": {
             "type": "boolean",
@@ -21263,7 +21286,7 @@
                 "type": "null"
               }
             ],
-            "description": "Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved version replaces; omit it for a new word."
+            "description": "Ignored when adding (the server assigns one). In a voice example, the entry this unsaved version replaces; omit it for a new word."
           },
           "term": {
             "type": "string",
@@ -21340,7 +21363,7 @@
           "respelling"
         ],
         "title": "PronunciationEntry",
-        "description": "A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left out keep their saved values. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example."
+        "description": "A pronunciation entry. For adding, `term` and `respelling` are required. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example. Changing a saved entry uses `PronunciationPatch`."
       },
       "PronunciationExample": {
         "description": "One occurrence of a term in chapter text.",
@@ -21387,6 +21410,101 @@
         ],
         "title": "PronunciationList",
         "type": "object"
+      },
+      "PronunciationPatch": {
+        "properties": {
+          "term": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "New word or phrase, with the same rules as when adding. `null` is refused: an entry needs a term."
+          },
+          "respelling": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "New respelling, with the same rules as when adding. `null` is refused: an entry needs one."
+          },
+          "providers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "propertyNames": {
+                  "enum": [
+                    "system",
+                    "gemini",
+                    "breeze"
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replacement per-narrator overrides keyed by `system`, `gemini` or `breeze`; `{}` or `null` removes them all, and an empty or null value drops that override."
+          },
+          "match_case": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True: match exact case. False: match any case. `null` restores the default (true)."
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Book-local character the word belongs to; must be in the current cast. `null` removes the link."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free-text note, at most 500 characters. `null` or an empty string removes it."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PronunciationPatch",
+        "description": "Changes to a saved pronunciation. Every field is optional: a field left out keeps its saved value, and `null` clears it. The path names the entry, so there is no `id`."
       },
       "PronunciationSaved": {
         "description": "The result of adding, changing or removing a pronunciation.",
@@ -22615,7 +22733,7 @@
             "type": "integer"
           },
           "offset": {
-            "description": "Effective offset after clamping to >= 0.",
+            "description": "Effective offset after clamping to 0–9007199254740991 (2^53 − 1).",
             "type": "integer"
           },
           "price_sources": {
@@ -22690,14 +22808,14 @@
                 "type": "null"
               }
             ],
-            "description": "`{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored."
+            "description": "`{step ID: StepConfig}` overriding the saved provider/model. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored."
           },
           "fresh": {
             "type": "boolean",
             "default": false,
             "description": "Request new samples instead of reusing cached validated units (default false). Part of the fingerprint."
           },
-          "mode": {
+          "scheduling": {
             "type": "string",
             "enum": [
               "serial",
@@ -22722,7 +22840,7 @@
                 "type": "null"
               }
             ],
-            "description": "`{step ID: \"auto\" | \"review\"}` overriding the saved gate for this run."
+            "description": "`{step ID: \"auto\" | \"review\"}` overriding the saved gate for this run. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored."
           },
           "concurrency": {
             "type": "integer",
@@ -23044,7 +23162,7 @@
         "type": "object"
       },
       "SeriesBookAnalysisPlan": {
-        "description": "The per-book analysis preview inside a series plan.\n\nSame fields as the classic per-book plan (`AnalysisPlan`) except that `limits` is absent: a series plan states\nits limits once, in `limits_per_book`.",
+        "description": "The per-book analysis preview inside a series plan.\n\nSame fields as the classic per-book plan (`AnalysisPlan`) except `limits`: a series plan states its limits\nonce, in `limits_per_book`.",
         "properties": {
           "phase": {
             "description": "Requested phase.",
@@ -23124,17 +23242,6 @@
           "note": {
             "description": "Interpretation caveat. Display only.",
             "type": "string"
-          },
-          "limits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AnalysisPlanLimits"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Never present in a series plan; see `SeriesPlan.limits_per_book`."
           }
         },
         "required": [

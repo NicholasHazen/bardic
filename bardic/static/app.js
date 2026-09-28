@@ -35,7 +35,11 @@ const ERROR_HINTS = {
   breeze_voice_unavailable:'Refresh Breeze voices in Settings.',
   breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.',
   book_archived:'It is listed under Removed items.',
+  job_active:'Let it finish or cancel it first.',
+  series_run_active:'Wait for the series run to finish or stop it.',
 };
+// Panels with their own request helpers show the same hints.
+globalThis.BardicErrorHints = ERROR_HINTS;
 async function request(path, options = {}) {
   const headers = {...options.headers};
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';

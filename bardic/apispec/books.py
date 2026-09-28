@@ -34,7 +34,8 @@ _EDIT_COMMON = (
     'the previous values and rendering again reuses the archived take without a provider request. Every '
     'scene\'s `character_ids` is then recomputed (sorted) from its passages\' speakers.\n\n'
     'Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty '
-    'string or array to clear a value. Returns the full, presented book document.')
+    'string or array to clear a value. Returns the full, presented book document.\n\n'
+    "Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.")
 
 _BOOK_NOT_FOUND = {'book_not_found': 'No book has this ID.'}
 _BOOK_ERRORS = {404: _BOOK_NOT_FOUND}
@@ -492,7 +493,8 @@ OPS: list[Op] = [
        'exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; '
        'these preconditions are checked first and a refused precondition records nothing. Runs locally with no '
        'provider request; every attempt that passes them, including one refused with 400, records a local '
-       '`structure_repair` resource measurement. Returns the full, presented book.',
+       '`structure_repair` resource measurement. Returns the full, presented book.\n\n'
+       "Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
        response=Book, params={'book_id': 'Book ID.'},
        errors={400: {'original_missing': 'The book has no saved original EPUB or TXT, or the saved file is missing.',
                      'original_too_large': 'The saved original is larger than 30 MiB (the import limit).',
@@ -522,7 +524,10 @@ OPS: list[Op] = [
        'applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always '
        'including `name`) are locked against generated analysis, so generated profile text may still fill the '
        'rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a '
-       'non-archived, idle book (409). Returns the full, presented book.',
+       'non-archived, idle book (409). Returns the full, presented book.\n\n'
+       "Before it changes the book, the current projection is recorded in the step pipeline's version history (as "
+       '`baseline` or `external` versions of the capturable steps) when the history does not already explain it, '
+       'so the replaced state stays restorable.',
        response=Book, params={'book_id': 'Book ID.'},
        errors={400: {'character_name_required': '`name` is missing.', **_VOICE_ERRORS},
                404: _BOOK_NOT_FOUND, 409: _BUSY}),
@@ -570,10 +575,11 @@ OPS: list[Op] = [
        errors={400: _PRONUNCIATION_INVALID, 404: _BOOK_NOT_FOUND, 409: _BUSY}),
     op('PATCH', '/api/books/{book_id}/pronunciations/{entry_id}', 'updatePronunciation', 'Pronunciations',
        'Change a pronunciation',
-       _PRONUNCIATION_EFFECTS + "\n\nThe body has the same fields as for adding. Fields left out keep their saved "
-       "values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a "
-       "`respelling`, and is validated like a new one. A change that leaves the entry as it was saves nothing and "
-       "does not change the book `revision`. Requires a non-archived, idle book (409).",
+       _PRONUNCIATION_EFFECTS + "\n\nA partial update (body `PronunciationPatch`): every field is optional, fields "
+       "left out keep their saved values, and `null` (or `{}` for `providers`) clears one. The merged entry must "
+       "still have a `term` and a `respelling` (so `null` for either is 400), and is validated like a new one. A "
+       "change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a "
+       "non-archived, idle book (409).",
        response=PronunciationSaved, params={'book_id': 'Book ID.', 'entry_id': 'Pronunciation entry ID (`pr_…`).'},
        errors={400: _PRONUNCIATION_INVALID, 404: {**_BOOK_NOT_FOUND, **_PRONUNCIATION_NOT_FOUND}, 409: _BUSY}),
     op('DELETE', '/api/books/{book_id}/pronunciations/{entry_id}', 'deletePronunciation', 'Pronunciations',
@@ -586,11 +592,11 @@ OPS: list[Op] = [
 
 REQUEST_DOCS: dict[str, dict[str, str]] = {
     'PronunciationEntry': {
-        '__doc__': 'A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left '
-                   'out keep their saved values. Also used, with the `id` of the entry it edits, to audition an '
-                   'unsaved respelling in a voice example.',
-        'id': 'Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved '
-              'version replaces; omit it for a new word.',
+        '__doc__': 'A pronunciation entry. For adding, `term` and `respelling` are required. Also used, with the `id` '
+                   'of the entry it edits, to audition an unsaved respelling in a voice example. Changing a saved '
+                   'entry uses `PronunciationPatch`.',
+        'id': 'Ignored when adding (the server assigns one). In a voice example, the entry this unsaved version '
+              'replaces; omit it for a new word.',
         'term': 'The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one '
                 'letter or digit (the request accepts up to 200 before normalization).',
         'respelling': 'How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, '
@@ -600,6 +606,17 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'match_case': 'True (default): match exact case. False: match any case.',
         'character_id': 'Optional book-local character the word belongs to; must be in the current cast.',
         'note': 'Optional free-text note, at most 500 characters.',
+    },
+    'PronunciationPatch': {
+        '__doc__': 'Changes to a saved pronunciation. Every field is optional: a field left out keeps its saved value, '
+                   'and `null` clears it. The path names the entry, so there is no `id`.',
+        'term': 'New word or phrase, with the same rules as when adding. `null` is refused: an entry needs a term.',
+        'respelling': 'New respelling, with the same rules as when adding. `null` is refused: an entry needs one.',
+        'providers': 'Replacement per-narrator overrides keyed by `system`, `gemini` or `breeze`; `{}` or `null` removes '
+                     'them all, and an empty or null value drops that override.',
+        'match_case': 'True: match exact case. False: match any case. `null` restores the default (true).',
+        'character_id': 'Book-local character the word belongs to; must be in the current cast. `null` removes the link.',
+        'note': 'Free-text note, at most 500 characters. `null` or an empty string removes it.',
     },
     'CharacterEdit': {
         '__doc__': 'Character fields to change (edit) or set (create). Omitted or null fields are ignored; send "" '
@@ -612,10 +629,6 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                   '`null`, or a choice whose `id` is empty or blank, removes that provider\'s choice, which means '
                   'Default. This rule is the same for every provider. The stored map is returned in '
                   '`characters[].voices` (library references stay references).',
-        'voice': 'Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is treated as '
-                 '`voices.gemini = {id}`, with the same rules (an empty or blank string removes it). Ignored for '
-                 'Gemini when `voices` also names `gemini`.',
-        'system_voice': 'Compatibility alias for the device (`system`) choice, with the same rules as `voice`.',
         'direction': 'Standing performance direction, at most 3,000 characters.',
     },
     'VoiceChoice': {

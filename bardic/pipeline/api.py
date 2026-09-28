@@ -24,6 +24,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..analysis import PIPELINE_LLM_LABELS, PROVIDER_LABELS
+from ..artifacts import MAX_OFFSET
 from ..errors import Conflict, Invalid, NotFound, Unavailable
 from ..series import require_active_book
 from ..local_services import SERVICES
@@ -73,7 +74,7 @@ class PlanRequest(Strict):
 
 
 class RunRequest(PlanRequest):
-    mode: Literal['serial', 'parallel'] = 'serial'
+    scheduling: Literal['serial', 'parallel'] = 'serial'
     gates: dict[str, Literal['auto', 'review']] | None = None
     concurrency: int = Field(default=2, ge=1, le=4)
     limits: Limits = Field(default_factory=Limits)
@@ -258,12 +259,16 @@ def build_router(registry: Registry):
         """A step named in the path: 404 ``step_not_found`` when unknown."""
         return registry.get(step_id)
 
-    def body_steps(step_ids):
-        """Steps named in a request body: 400 ``unknown_step`` when any is unknown."""
-        unknown = sorted({s for s in step_ids if s not in registry})
+    def body_steps(body):
+        """Steps a request body names: 400 ``unknown_step`` when ``steps``, ``configs`` or ``gates`` names an unknown one.
+
+        Entries of ``configs`` and ``gates`` for known steps that are not requested are ignored.
+        """
+        named = [*body.steps, *(body.configs or {}), *(getattr(body, 'gates', None) or {})]
+        unknown = sorted({s for s in named if s not in registry})
         if unknown:
             raise Invalid('unknown_step', f'Unknown pipeline step: {", ".join(unknown)}.')
-        return [registry.get(s) for s in step_ids]
+        return [registry.get(s) for s in body.steps]
 
     @router.get('/api/analysis-pipeline')
     def definitions(request: Request):
@@ -347,7 +352,8 @@ def build_router(registry: Registry):
     @router.post('/api/books/{book_id}/analysis-pipeline/plan')
     def plan_run(book_id: str, body: PlanRequest, request: Request):
         runtime = runtime_of(request)
-        steps = body_steps(body.steps)
+        steps = body_steps(body)
+        runtime.store.book(book_id)  # An unknown book is 404 before its configs are validated.
         configs = configs_for(runtime, body, steps)
         # Read and sync under one lock: a stale snapshot would be recorded as an outside change.
         with runtime.store.lock:
@@ -360,7 +366,7 @@ def build_router(registry: Registry):
     @router.post('/api/books/{book_id}/analysis-pipeline/runs')
     def start_run(book_id: str, body: RunRequest, request: Request):
         runtime = runtime_of(request)
-        steps = body_steps(body.steps)
+        steps = body_steps(body)
         with runtime.store.lock:
             if runtime.stopping.is_set():
                 raise Unavailable('shutting_down', 'The local worker is stopping and accepts no new runs.')
@@ -397,9 +403,9 @@ def build_router(registry: Registry):
             secrets = {p: credentials[p] for p in providers_needed}
             job = runtime.store.create_job(book_id, 'pipeline')
             run = repository.create_run(book_id, job_id=job['id'], steps=[s.id for s in registry.closure(body.steps)],
-                                        mode=body.mode, chapter_ids=chapter_ids, configs=configs, gates=gates,
+                                        scheduling=body.scheduling, chapter_ids=chapter_ids, configs=configs, gates=gates,
                                         concurrency=body.concurrency, fresh=body.fresh, limits=body.limits.model_dump())
-            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], scheduling=body.mode,
+            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], scheduling=body.scheduling,
                                            message='Waiting for the local worker')
 
             def accept(step, versions, step_run_id):
@@ -466,7 +472,7 @@ def build_router(registry: Registry):
             if step.method == 'llm' and run and run.get('origin') == 'run':
                 # The reader and Cast summarize who produced the current analysis.
                 work['analysis'] = {'provider': run['provider'], 'model': run['model'], 'status': 'partial',
-                                    'phase': step.id, 'notes': f'{step.label} accepted in the Analysis tab.'}
+                                    'phase': step.id, 'notes': f'{step.label} accepted from a pipeline run.'}
         return projection.accept(runtime.store, repository, registry, book_id, step, versions,
                                  mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime),
                                  prepare=prepare, expected_revision=expected_revision)
@@ -507,7 +513,7 @@ def build_router(registry: Registry):
         runtime = runtime_of(request)
         step = step_of(step_id)
         # Out-of-range paging is clamped, never an error; the response echoes the values used.
-        offset, limit = max(0, offset), max(1, min(ROW_LIMIT, limit))
+        offset, limit = max(0, min(MAX_OFFSET, offset)), max(1, min(ROW_LIMIT, limit))
         repository = PipelineRepository(runtime.store)
         scopes, run = version_scopes(runtime, book_id, step, version_id)
         other = {}

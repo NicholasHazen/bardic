@@ -144,7 +144,7 @@ def test_series_parent_carries_analysis_limits_and_keeps_its_fingerprint_private
 def test_pipeline_job_reports_scheduling_not_mode(client):
     book = import_text(client)
     response = client.post(f"/api/books/{book['id']}/analysis-pipeline/runs",
-                           json={'steps': ['structure'], 'mode': 'parallel', 'limits': {'max_requests': 1}})
+                           json={'steps': ['structure'], 'scheduling': 'parallel', 'limits': {'max_requests': 1}})
     assert response.status_code == 200, response.text
     job = response.json()['job']
     assert job['scheduling'] == 'parallel' and 'mode' not in job

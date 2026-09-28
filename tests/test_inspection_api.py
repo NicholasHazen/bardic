@@ -166,7 +166,7 @@ def test_analysis_export_attempts_use_the_inspector_allowlist(client):
     assert exported == inspector
     first = exported[0]
     assert first['validation_state'] == 'accepted' and first['cost_basis'] == 'usage_estimate_with_guard_uplift'
-    assert not {'process_id', 'input_rate', 'output_rate', 'api_key', 'private_response'} & set(first)
+    assert not {'process_id', 'api_key', 'private_response'} & set(first)
     assert exported[1]['status'] == 'interrupted_unknown'
     assert b'must-not-leak' not in response.content and b'a-server-process' not in response.content
 
@@ -340,6 +340,8 @@ def test_classic_analysis_errors_have_codes(client):
     assert [job['id'] for job in store.jobs(book['id'])] == [busy['id']]  # No refused request queued a job.
 
     plan = f"/api/books/{book['id']}/analysis-plan"
+    error(client.post(plan, json={'provider': 'local'}), 409, 'book_archived')  # The preview retains records.
+    assert client.post(f"/api/books/{book['id']}/restore").status_code == 200
     error(client.post(plan, json={'provider': 'local', 'chapter_id': 'no-such-chapter'}), 400, 'unknown_chapter')
     error(client.post(plan, json={'provider': 'mystery'}), 400, 'unknown_provider')
     error(client.post('/api/books/missing/analysis-plan', json={}), 404, 'book_not_found')

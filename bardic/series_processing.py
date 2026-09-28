@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import copy
 
 from .artifacts import record
+from .pipeline.projection import record_before_outside_write
 from .processing import BudgetReached, digest, source_hash
 from .series import SeriesRepository
 from .store import now
@@ -79,7 +80,10 @@ def start(runtime, series_id, *, provider=None, phase='scan', concurrency=2, lim
         book_ids = [b['book_id'] for b in preview['books']]
         for book_id in book_ids:
             runtime.require_idle(book_id)
-        parent = runtime.store.create_job('series:' + series_id, 'series', len(book_ids))
+        for book_id in book_ids:
+            # Each child's analysis replaces its book's projection: keep the current one restorable first.
+            record_before_outside_write(runtime.store, book_id)
+        parent =runtime.store.create_job('series:' + series_id, 'series', len(book_ids))
         children = []
         for entry in preview['books']:
             child = runtime.store.create_job(entry['book_id'], 'analyze')
