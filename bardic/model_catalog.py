@@ -59,6 +59,21 @@ _CATALOG = {
     ],
 }
 ANALYSIS_CATALOG = {provider: [item["id"] for item in models] for provider, models in _CATALOG.items()}
+# Self-hosted analysis providers (see local_services). Kept out of ANALYSIS_CATALOG,
+# which lists the cloud accounts that Settings, account checks and the phase controls use.
+SELF_HOSTED = frozenset({"local_llm", "booknlp", "novel_analyzer"})
+
+
+def local_llm_catalog(base_url):
+    """The model the owner's server is known to serve. Listing it does not prove it is loaded."""
+    from .local_services import LOCAL_LLM_DEFAULT_MODEL
+    return {"provider": "local_llm", "state": "curated" if base_url else "unconfigured", "catalog_date": CATALOG_DATE,
+            "message": "Models on your own server. Enter another model ID if the server serves a different one.",
+            "checked_at": None, "cached": False, "source_url": None,
+            "models": [{"id": LOCAL_LLM_DEFAULT_MODEL, "label": "Qwen3.6 35B-A3B (self-hosted)", "tier": "balanced",
+                        "roles": ["preprocess", "analysis"], "structured_output": True, "context_tokens": 262144,
+                        "max_output_tokens": 16384, "input_usd_per_million": 0.0, "output_usd_per_million": 0.0,
+                        "availability": "unverified"}]}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 
 
@@ -73,6 +88,11 @@ def catalog(provider):
 
 def model_price(provider, model, *, input_tokens=None, today=None):
     """Published standard text prices, never a provider bill or exact estimate."""
+    if provider in SELF_HOSTED:
+        # The owner's own server: no per-request charge, whatever model it serves.
+        return {"input_usd_per_million": 0.0, "output_usd_per_million": 0.0, "as_of": None,
+                "source_url": None, "price_valid_until": None, "price_input_token_limit": None,
+                "cost_basis": "self_hosted"}
     item = next((m for m in _CATALOG.get(provider, []) if m["id"] == model), {})
     result = {"input_usd_per_million": item.get("input_usd_per_million"),
               "output_usd_per_million": item.get("output_usd_per_million"),

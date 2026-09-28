@@ -22,12 +22,17 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..analysis import PROVIDER_LABELS
+from ..analysis import PIPELINE_LLM_LABELS, PROVIDER_LABELS
+from ..local_services import SERVICES
+from ..model_catalog import local_llm_catalog
 from ..preprocessing import eligible_chapters
 from . import projection
+from .contract import LLM_PROVIDERS, SERVICE_PROVIDERS
 from .registry import Registry
 from .repository import ACTIVE, PipelineRepository
-from .runner import LLM_PROVIDERS, RunExecutor, plan
+from .runner import RunExecutor, plan
+
+LABELS = {**PIPELINE_LLM_LABELS, **{p: SERVICES[p]['label'] for p in SERVICE_PROVIDERS}}
 
 SETTINGS_ID = 'analysis_pipeline'
 MODEL_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,199}')
@@ -89,9 +94,11 @@ def _save(runtime, value):
 def _default_config(runtime, step):
     if step.method == 'plain':
         return {'provider': 'local', 'model': None}
+    if step.method == 'service':
+        return {'provider': step.allowed_providers()[0], 'model': None}
     preferred = runtime.preferences.get('analysis_provider')
-    provider = preferred if preferred in LLM_PROVIDERS else next(
-        (p for p in LLM_PROVIDERS if runtime.api_keys.get(p)), LLM_PROVIDERS[0])
+    provider = preferred if preferred in PROVIDER_LABELS else next(
+        (p for p in PROVIDER_LABELS if runtime.api_keys.get(p)), next(iter(PROVIDER_LABELS)))
     models = runtime.preferences['preprocess_models_by_provider' if step.default_model_role == 'scan' else 'analysis_models_by_provider']
     return {'provider': provider, 'model': models.get(provider)}
 
@@ -102,11 +109,32 @@ def _validate_config(step, config):
         if provider != 'local' or model:
             raise HTTPException(400, f'{step.label} runs locally without a model.')
         return {'provider': 'local', 'model': None}
-    if provider not in LLM_PROVIDERS:
-        raise HTTPException(400, f'Choose Gemini, OpenAI or Anthropic for {step.label}.')
+    allowed = step.allowed_providers()
+    if provider not in allowed:
+        raise HTTPException(400, f'Choose {", ".join(LABELS[p] for p in allowed)} for {step.label}.')
+    if provider in SERVICE_PROVIDERS:
+        if model:
+            raise HTTPException(400, f'{LABELS[provider]} runs on your server without a model choice.')
+        return {'provider': provider, 'model': None}
     if not isinstance(model, str) or not MODEL_ID.fullmatch(model):
         raise HTTPException(400, f'Choose a valid model ID for {step.label}.')
     return {'provider': provider, 'model': model}
+
+
+def provider_views(runtime):
+    """Every pipeline provider; each step lists which of these it accepts."""
+    credentials = runtime.analysis_credentials()
+    views = []
+    for provider in (*LLM_PROVIDERS, *SERVICE_PROVIDERS):
+        self_hosted = provider not in PROVIDER_LABELS
+        view = {'id': provider, 'label': LABELS[provider], 'kind': 'service' if provider in SERVICE_PROVIDERS else 'model',
+                'self_hosted': self_hosted, 'needs': 'url' if self_hosted else 'api_key',
+                # A key or URL is set; it does not prove the server answers. has_api_key is the older name.
+                'configured': bool(credentials.get(provider)), 'has_api_key': bool(credentials.get(provider))}
+        if provider == 'local_llm':
+            view['models'] = local_llm_catalog(credentials.get(provider))['models']
+        views.append(view)
+    return views
 
 
 def step_settings(runtime, registry):
@@ -206,14 +234,11 @@ def build_router(registry: Registry):
         except KeyError as exc:
             raise HTTPException(404, str(exc).strip("'")) from exc
 
-    def providers(runtime):
-        return [{'id': p, 'label': PROVIDER_LABELS[p], 'has_api_key': bool(runtime.api_keys.get(p))} for p in LLM_PROVIDERS]
-
     @router.get('/api/analysis-pipeline')
     def definitions(request: Request):
         runtime = runtime_of(request)
         settings = step_settings(runtime, registry)
-        return {'schema_version': 1, 'providers': providers(runtime),
+        return {'schema_version': 1, 'providers': provider_views(runtime),
                 'steps': [{**step.describe(), 'settings': settings[step.id]} for step in registry]}
 
     @router.put('/api/analysis-pipeline/steps/{step_id}/settings')
@@ -298,10 +323,13 @@ def build_router(registry: Registry):
             book = runtime.store.book(book_id)
             chapter_ids = chapters_for(book, body)
             configs = configs_for(runtime, body, steps)
-            providers_needed = {c['provider'] for c in configs.values() if c['provider'] != 'local'}
-            missing = [PROVIDER_LABELS[p] for p in sorted(providers_needed) if not runtime.api_keys.get(p)]
+            providers_needed = {c['provider'] for step_id, c in configs.items()
+                                if c['provider'] != 'local' and c['provider'] not in registry.get(step_id).offline_providers}
+            credentials = runtime.analysis_credentials()
+            missing = [p for p in sorted(providers_needed) if not credentials.get(p)]
             if missing:
-                raise HTTPException(400, 'Add an API key in Settings first: ' + ', '.join(missing))
+                raise HTTPException(400, 'Add in Settings first: ' + ', '.join(
+                    f"the {LABELS[p]} server URL" if p not in PROVIDER_LABELS else f"an {LABELS[p]} API key" for p in missing))
             if body.expected_fingerprint:
                 current = plan(runtime.store, registry, book_id, [s.id for s in steps], configs, chapter_ids=chapter_ids,
                                fresh=body.fresh)
@@ -309,8 +337,8 @@ def build_router(registry: Registry):
                     raise HTTPException(409, 'The plan changed since the preview. Review the new estimate before running.')
             settings = step_settings(runtime, registry)
             gates = {s.id: (body.gates or {}).get(s.id) or settings[s.id]['gate'] for s in steps}
-            # Snapshot provider credentials now; a later settings change must not alter queued work.
-            secrets = {p: runtime.api_keys[p] for p in providers_needed}
+            # Snapshot provider credentials and server URLs now; a later settings change must not alter queued work.
+            secrets = {p: credentials[p] for p in providers_needed}
             job = runtime.store.create_job(book_id, 'pipeline')
             repository = PipelineRepository(runtime.store)
             run = repository.create_run(book_id, job_id=job['id'], steps=[s.id for s in registry.closure(body.steps)],

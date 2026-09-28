@@ -41,7 +41,9 @@ DEV_PORTS = range(8770, 8800)
 # Blank in development servers: no cloud provider, self-hosted narration server or network exposure.
 # `dev start --keys` fills the providers from the service checkout's `.env`; the network settings stay blank.
 DEV_PROVIDERS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BREEZE_TTS_URL",
-                 "BREEZE_API_KEY")
+                 "BREEZE_API_KEY",
+                 # Self-hosted analysis servers: free per request, but they share the owner's GPU.
+                 "BARDIC_LOCAL_LLM_URL", "BARDIC_BOOKNLP_URL", "BARDIC_NOVEL_ANALYZER_URL")
 DEV_BLANK = (*DEV_PROVIDERS, "BARDIC_LAN_NAME", "BARDIC_HOST", "BARDIC_ALLOWED_HOSTS")
 ACTIVE = {"queued", "running"}  # Same as bardic.app.ACTIVE, without importing the application.
 BARDIC_COMMAND = re.compile(r"\s-m\s+(bardic|spintails)(\s|$)")

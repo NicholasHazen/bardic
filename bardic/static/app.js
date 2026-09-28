@@ -68,6 +68,7 @@ function fillSettings() {
   $('#tts-model').value = state.status?.tts_model || '';
   fillNarrationLimits();
   fillBreezeSettings();
+  fillLocalAnalysisSettings();
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
@@ -95,6 +96,22 @@ function narrationLimitValues() {
 // Breeze is a self-hosted narration server on the local network. Checking it
 // reads health and the voice library only; it never generates audio.
 const breezeStates = {unconfigured:'Not set up', unchecked:'Not checked', ready:'Connected', loading:'Model loading', unreachable:'Unreachable', error:'Error'};
+// Self-hosted analysis servers: a URL each, chosen per step in the Analysis tab.
+const localAnalysisServices = ['local_llm', 'booknlp', 'novel_analyzer'];
+function fillLocalAnalysisSettings() {
+  const urls = state.status?.local_service_urls || {};
+  for (const id of localAnalysisServices) $(`#local-service-${id}`).value = urls[id] || '';
+  const configured = localAnalysisServices.filter(id => urls[id]).length;
+  $('#local-analysis-status').textContent = configured ? `${configured} of 3 set` : 'Not set up';
+}
+function localServiceChanges() {
+  const urls = state.status?.local_service_urls || {}, changes = {};
+  for (const id of localAnalysisServices) {
+    const value = $(`#local-service-${id}`).value.trim();
+    if (value !== (urls[id] || '')) changes[id] = value;
+  }
+  return changes;
+}
 function fillBreezeSettings() {
   $('#breeze-url').value = state.status?.breeze?.base_url || '';
   $('#breeze-api-key').value = '';
@@ -1918,6 +1935,8 @@ $('#settings-form').addEventListener('submit', async event => {
   const breezeUrl = $('#breeze-url').value.trim(), breezeKey = $('#breeze-api-key').value.trim();
   if (breezeUrl !== (state.status?.breeze?.base_url || '')) values.breeze_url = breezeUrl;
   if (breezeKey) values.breeze_api_key = breezeKey;
+  const serviceUrls = localServiceChanges();
+  if (Object.keys(serviceUrls).length) values.local_service_urls = serviceUrls;
   try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); await loadVoiceLibrary(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
 });
 $('#settings-form').addEventListener('invalid', event => revealSetting(event.target), true);

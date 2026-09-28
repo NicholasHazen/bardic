@@ -11,36 +11,69 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 import json
 import threading
+import time
 
 import httpx
 
 from .. import analysis as a
+from .. import local_services
 from ..artifacts import output_head, record
 from ..processing import BudgetReached, ProcessingStore, RequestBudget, digest, price_for, request_context, token_estimate
 from ..store import now
-from .contract import StepContext, Unit
+from .contract import LLM_PROVIDERS, SERVICE_PROVIDERS, StepContext, Unit
 from .projection import sync
 from .repository import PipelineRepository
 
 IDENTITY_VERSION = 1
 ADAPTER_VERSION = 1
-LLM_PROVIDERS = ('gemini', 'openai', 'anthropic')
+SERVICE_ADAPTER_VERSION = 1
+# Service response fields not retained: the analyzer's script restates the chapter text.
+UNRETAINED_SERVICE_FIELDS = ('script',)
 
 
 def _adapter(provider):
     # Resolved per call so tests and integrations can substitute an adapter.
-    return {'gemini': a._request, 'openai': a._openai_request, 'anthropic': a._anthropic_request}[provider]
+    return {'gemini': a._request, 'openai': a._openai_request, 'anthropic': a._anthropic_request,
+            'local_llm': a._local_llm_request}[provider]
+
+
+def _service_call(client, provider, base_url, body, cancelled):
+    # Resolved per call so tests can substitute a fake service.
+    return local_services.analyze(client, provider, base_url, body, cancelled)
 
 
 def unit_identity(step, unit: Unit, provider, model):
     """The effective request and validation recipe, and the cache key it implies."""
     request = unit.request
     recipe = {'identity_version': IDENTITY_VERSION, 'adapter_version': ADAPTER_VERSION, 'step_id': step.id,
-              'step_version': step.version, 'provider': provider, 'model': model,
+              'step_version': step.request_version or step.version, 'provider': provider, 'model': model,
               'system_instruction': a.DIRECTOR_INSTRUCTION, 'prompt': request.prompt,
               'response_schema': deepcopy(request.schema), 'output_token_limit': request.output_cap,
-              'temperature': .2 if provider == 'gemini' else None, 'locator': unit.key}
+              'temperature': .2 if provider in ('gemini', 'local_llm') else None, 'locator': unit.key}
     return recipe, f'{step.id}:{digest(recipe)}'
+
+
+def service_identity(step, unit: Unit, provider):
+    """A service call's exact body and its cache key.
+
+    The server's own model string is recorded with the result but is not part of
+    the key, because planning never contacts the network. At run time a cached
+    result from a different server model is treated as a miss, so a plan made
+    after a service upgrade can undercount its service calls.
+    """
+    recipe = {'identity_version': IDENTITY_VERSION, 'service_adapter_version': SERVICE_ADAPTER_VERSION,
+              'step_id': step.id, 'step_version': step.request_version or step.version, 'provider': provider, 'path': '/v1/analyze',
+              'body': deepcopy(unit.service.body), 'locator': unit.key}
+    return recipe, f'{step.id}:{digest(recipe)}'
+
+
+def identity(step, unit, provider, model):
+    """(recipe, key) for a model or service unit; (None, None) for a local computation."""
+    if unit.service is not None:
+        return service_identity(step, unit, provider)
+    if unit.request is not None:
+        return unit_identity(step, unit, provider, model)
+    return None, None
 
 
 def context_for(store, repository, step, book, conn, *, chapter_ids=None, provider='local', model=None, cancelled=lambda: False):
@@ -68,11 +101,19 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
             units = step.units(ctx)
             item = {'step_id': step.id, 'label': step.label, 'method': step.method, 'provider': config['provider'],
                     'model': config.get('model'), 'units': len(units), 'cached_units': 0, 'requests': 0,
-                    'estimated_input_tokens': 0, 'output_token_allowance': 0, 'estimated_cost_usd': 0.0,
+                    'service_calls': 0, 'estimated_input_tokens': 0, 'output_token_allowance': 0, 'estimated_cost_usd': 0.0,
                     'inputs_pending': sorted(requested.intersection(step.inputs)),
                     'scopes': len({u.scope for u in units})}
             keys = []
             for unit in units:
+                if unit.service is not None:
+                    _, key = service_identity(step, unit, config['provider'])
+                    keys.append(key)
+                    if not fresh and repository.unit(book_id, key):
+                        item['cached_units'] += 1
+                    else:
+                        item['service_calls'] += 1
+                    continue
                 if unit.request is None:
                     keys.append(unit.key)
                     continue
@@ -100,6 +141,7 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
     costs = [s['estimated_cost_usd'] for s in result]
     return {'book_id': book_id, 'steps': result, 'chapter_ids': sorted(chapter_ids) if chapter_ids else None,
             'requests': sum(s['requests'] for s in result), 'cached_units': sum(s['cached_units'] for s in result),
+            'service_calls': sum(s['service_calls'] for s in result),
             'estimated_input_tokens': sum(s['estimated_input_tokens'] for s in result),
             'output_token_allowance': sum(s['output_token_allowance'] for s in result),
             'estimated_cost_usd': None if any(c is None for c in costs) else round(sum(costs), 6),
@@ -128,6 +170,8 @@ class RunExecutor:
         self.counter_lock = threading.Lock()
         self.total = self.done = 0
         self.outcomes = {}
+        # What each self-hosted service reports it runs (asked once per run). local_services serializes the calls.
+        self.served = {}
 
     # --- orchestration -----------------------------------------------------------------
     def execute(self):
@@ -242,6 +286,8 @@ class RunExecutor:
             if stop.is_set():
                 return None
             self._check()
+            if unit.service is not None:
+                return self._service(step, ctx, unit, provider)
             if unit.request is None:
                 return step.execute(ctx, unit), False
             return self._llm(step, ctx, unit, provider, model)
@@ -301,7 +347,7 @@ class RunExecutor:
         with self.store.lock, self.store.connect() as conn:
             unit_outputs = {}
             for unit, _ in complete:
-                _, key = unit_identity(step, unit, provider, model) if unit.request else (None, None)
+                _, key = identity(step, unit, provider, model)
                 if key:
                     identifier = output_head(conn, self.book_id, 'analysis_output', key)
                     if identifier:
@@ -309,8 +355,8 @@ class RunExecutor:
             flat_inputs = [i for scopes in ctx.input_heads.values() for i in scopes.values()]
             for scope, payload in payloads.items():
                 identifier = self.repository.record_version(
-                    conn, self.book_id, step, scope, payload, origin='run', provider=provider if step.method == 'llm' else 'local',
-                    model=model if step.method == 'llm' else None, inputs=ctx.input_heads,
+                    conn, self.book_id, step, scope, payload, origin='run', provider=provider if step.method != 'plain' else 'local',
+                    model=model if step.method != 'plain' else None, inputs=ctx.input_heads,
                     dependencies=[*flat_inputs, *unit_outputs.get(scope, [])])
                 versions[scope] = identifier
                 if self.repository.head(conn, self.book_id, step.id, scope) == identifier:
@@ -385,6 +431,80 @@ class RunExecutor:
                  'model': model, 'result': deepcopy(result), 'producing_attempt_id': attempt, 'created_at': now()}
         artifact_id = self.repository.save_unit(self.book_id, step.id, key, value, dependencies=[input_id])
         self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'accepted', artifact_id=artifact_id, attempt_id=attempt)
+        return result, False
+
+    # --- self-hosted chapter service --------------------------------------------------------------------
+    def _served(self, provider, base_url):
+        """What the service says it runs, asked once per run (provenance, not identity)."""
+        with self.counter_lock:
+            if provider in self.served:
+                return self.served[provider]
+        value = local_services.health(self.client, provider, base_url)
+        with self.counter_lock:
+            return self.served.setdefault(provider, value)
+
+    def _service(self, step, ctx, unit, provider):
+        """One free service call. Not metered (no charge), but retained and cached like a model unit.
+
+        The exact body is recorded as the request recipe; a result that fails
+        validation is retained as a rejection and never retried automatically.
+        """
+        base_url = self.secrets.get(provider)
+        if provider not in SERVICE_PROVIDERS or not base_url:
+            raise ValueError(f'Add the {local_services.SERVICES[provider]["label"] if provider in local_services.SERVICES else provider} '
+                             'server URL in Settings first.')
+        recipe, key = service_identity(step, unit, provider)
+        cached = None if self.fresh else self.repository.unit(self.book_id, key)
+        served = self._served(provider, base_url)
+        # A server that now reports a different model gives different results: not a cache hit.
+        # (A server that does not answer keeps its cached results usable.)
+        if cached and served and (cached.get('service') or {}).get('model') not in (None, served.get('model')):
+            self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'cache_superseded')
+            cached = None
+        if cached:
+            try:
+                result = step.validate(ctx, unit, deepcopy(cached['result']))
+            except (ValueError, KeyError, TypeError) as exc:
+                self.repository.forget_unit(self.book_id, key)
+                self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'cache_rejected', error=self._safe(exc))
+            else:
+                self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'cache_hit')
+                return result, True
+        with self.store.lock, self.store.connect() as conn:
+            dependencies = list(unit.dependencies)
+            if unit.chapter_id:
+                source = output_head(conn, self.book_id, 'source', unit.chapter_id)
+                if source:
+                    dependencies.append(source)
+            dependencies = [d for d in dependencies if conn.execute('SELECT 1 FROM artifact_versions WHERE id=?', (d,)).fetchone()]
+            input_id = record(conn, self.book_id, 'analysis_input', key, recipe, label=f'{step.id} service request',
+                              stage=step.id, provider=provider, dependencies=dependencies)
+        self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'started', artifact_id=input_id)
+        started = time.perf_counter()
+        try:
+            self._check()
+            result = _service_call(self.client, provider, base_url, unit.service.body, self.cancelled)
+        except Exception as exc:
+            self.processing.event(self.book_id, self.run['job_id'], step.id, key,
+                                  'cancelled' if isinstance(exc, InterruptedError) else 'failed', error=self._safe(exc))
+            raise
+        elapsed = round(time.perf_counter() - started, 3)
+        result = {k: v for k, v in result.items() if k not in UNRETAINED_SERVICE_FIELDS}
+        try:
+            result = step.validate(ctx, unit, result)
+        except Exception as exc:
+            with self.store.lock, self.store.connect() as conn:
+                rejection = record(conn, self.book_id, 'analysis_rejection', key,
+                                   {'result': result, 'validation_error': self._safe(exc), 'unit_key': key},
+                                   label=f'{step.id} rejected service result', stage=step.id, provider=provider,
+                                   dependencies=[input_id])
+            self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'validation_rejected',
+                                  artifact_id=rejection, error=self._safe(exc))
+            raise
+        value = {'step_id': step.id, 'unit_key': key, 'locator': unit.key, 'scope': unit.scope, 'provider': provider,
+                 'model': None, 'service': served, 'elapsed_seconds': elapsed, 'result': deepcopy(result), 'created_at': now()}
+        artifact_id = self.repository.save_unit(self.book_id, step.id, key, value, dependencies=[input_id])
+        self.processing.event(self.book_id, self.run['job_id'], step.id, key, 'accepted', artifact_id=artifact_id)
         return result, False
 
     # --- helpers ---------------------------------------------------------------------------------------

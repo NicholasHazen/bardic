@@ -8,8 +8,9 @@ from .census import CensusStep
 from .directing import DirectingStep
 from .discovery import DiscoveryStep
 from .profiles import ProfilesStep
+from .quotes import QuotesStep
 from .structure import StructureStep
 
 
 def builtin_steps():
-    return [StructureStep(), CensusStep(), DiscoveryStep(), ProfilesStep(), DirectingStep()]
+    return [StructureStep(), CensusStep(), DiscoveryStep(), QuotesStep(), ProfilesStep(), DirectingStep()]

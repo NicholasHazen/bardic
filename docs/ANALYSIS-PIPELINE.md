@@ -30,8 +30,11 @@ Thoroughness is the model choice. There is no separate effort parameter: an econ
 | Chapters & titles (`structure`) | Local: re-reads the saved original's EPUB navigation/headings | book | — | chapter title, kind, title source, logical sections, narrative order | — |
 | Name & dialogue census (`census`) | Local counts | book | — | nothing (informational; guides profile effort) | — |
 | Character discovery (`discovery`) | LLM, ~24,000-character ranges, exact quotations | chapter | — | new characters, added aliases, evidence | economy (scan model) |
+| Quote attribution (`quotes`) | Service: your BookNLP server, one request per section | chapter | discovery (cast names become aliases) | nothing (read by directing; its table compares with the current speakers) | — |
 | Character profiles (`profiles`) | LLM per character, tiered evidence, earlier-series context via confirmed links | character | discovery | description, direction, profile metadata | analysis model |
-| Speakers & delivery (`directing`) | LLM per scene batch (the existing fused request) | chapter | discovery, profiles | speaker, confidence, evidence, delivery, cues, scene breaks and notes | analysis model |
+| Speakers & delivery (`directing`) | LLM per scene batch (the existing fused request), or your Novel Analyzer server per section, or BookNLP (speakers only, from `quotes`) | chapter | discovery, profiles, quotes | speaker, confidence, evidence, delivery, cues, BookNLP check, scene breaks and notes | analysis model |
+
+Every LLM step can also use the **Local LLM** provider, an OpenAI-compatible server on your network. See [self-hosted providers](#self-hosted-providers).
 
 Import (canonical text, passage split and passage IDs) is not a step. Those identities are frozen after import because assignments, edits, takes and references are keyed by them.
 
@@ -59,6 +62,26 @@ Model requests use the same metered adapters as the rest of analysis:
 A validated unit is cached in `pipeline_units` under a key hashing the step ID and version, provider, model, system instruction, prompt, schema, output cap, adapter version and unit locator. Re-running identical work reuses it for free; `fresh: true` requests new samples instead, for comparing a model with itself.
 
 A candidate version records as dependencies the accepted input versions it read and the unit outputs it was assembled from.
+
+### Self-hosted providers
+
+Implemented 2026-09-28. Three optional servers on the owner's network are configured by their root URL (Settings → **Your analysis servers**, or `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL`, `BARDIC_NOVEL_ANALYZER_URL`; a saved URL wins). A URL is configuration, not a credential: it is snapshotted with a run like a key, and it is never written to artifacts. Saving a URL does not check that the server answers. See [`local_services.py`](../bardic/local_services.py).
+
+| Provider | Kind | Offered on | What it does |
+| --- | --- | --- | --- |
+| Local LLM (`local_llm`) | Model | discovery, profiles, directing | The same Responses request, JSON schema, validators and evidence repair as the OpenAI adapter, sent to `{url}/v1/responses` without a key. Metered like any model (request and token limits apply) at a known price of $0, so the dollar guard is satisfied. |
+| BookNLP (`booknlp`) | Service | quotes; directing (speakers only) | Quotation offsets, speaker, the dialogue tag or beat beside it, a tag-conflict flag, pronoun-based gender and places, in about a second per chapter. |
+| Novel Analyzer (`novel_analyzer`) | Service | directing | An LLM pipeline returning, per chapter, speakers, emotion, delivery (a TTS instruction), cues and scene breaks with a setting. |
+
+**Service units.** A service step plans one unit per section with dialogue, carrying a `ServiceRequest` whose exact JSON body (chapter text plus BookNLP aliases or the analyzer's character sheet) forms the cache key, with the step ID and version. Service calls are free, so they are not reserved against the request budget; the plan reports them as `service_calls`. BookNLP and analyzer requests run one at a time per server host across every run in the process, since those services usually share one GPU. Local LLM requests follow the run's concurrency (vLLM batches them), and nothing coordinates with Breeze narration on the same machine. A connection failure or a 503 (loading or busy, no work done) is retried, up to three attempts in all. An analyzer 502 means its LLM ran and failed, so it is retried once. A section over the service's size limit (analyzer 250,000 characters) is refused before sending. The timeout grows with section length (BookNLP from 10 minutes, the analyzer from 15 up to 60; the Local LLM 15) and a timed-out request is not repeated. A request in flight cannot be cancelled; cancellation takes effect before the next request. The runner records the body as an `analysis_input`, the validated response as the unit output, and a response that fails validation as an `analysis_rejection`; a rejected service result is never repaired or retried automatically. The server's `/health` model string (not its backend address) is stored with each result. It is not part of the cache key, because planning never contacts the network. At run time, a cached result whose recorded model differs from what the server now reports is requested again, so a plan made after an upgrade can undercount service calls. The analyzer's `script`, which restates the chapter, is not retained.
+
+**Mapping onto the source.** Every quotation a service returns must equal the chapter text at its offsets (Python code points), or the whole result is rejected. Quotations then map to dialogue passages by exact span, by the several passages a long quotation was split into, or by the passage containing it; the rest are counted as unmatched. Service tag text is not exact source (BookNLP joins tokens with spaces and may skip words). Evidence is therefore the longest leading run of the tag's words, of at least two, that appears contiguously in the same paragraph, copied from the source; otherwise a line has no evidence. Speaker names map to cast IDs through names, aliases and former names that identify exactly one character; an ambiguous name maps to nothing. A cast character named or aliased as the first-person narrator ("I", "Narrator (I)", "Miss Vance (Narrator)") is sent to BookNLP merged with its `NARRATOR` cluster and marked as the analyzer's narrator; if none or several match, first-person lines are left unmapped rather than guessed.
+
+**Novel Analyzer as the directing provider.** The request carries a character sheet built from the cast, so speakers can only be cast characters; a line whose speaker is unknown stays unassigned. A result that labels fewer than 90% of a section's dialogue passages is rejected rather than used: the analyzer does not detect single-quoted or dash-introduced dialogue, which the importer does, and using it would silently unassign those lines. It is also rejected when a section has many dialogue passages but few blank-line paragraphs, because the analyzer gives one speaker per paragraph. Two lines landing on one passage with different speakers leave it unassigned. The version sets scene tone and direction to empty for the chapter, since it proposes none. Delivery is the analyzer's `instruction`; cues are its own words. Confidence, which the service does not report, is 0.85 for a line with a tag and 0.70 for an untagged line inferred from context. Its scene breaks are used only when every line's paragraph number matches Bardic's paragraph count, and then only to add breaks, as model directing does; a break's setting is stored as `Setting (unverified): …` because the service documents settings as unreliable. Narration passages get no delivery.
+
+**BookNLP as the directing provider.** It reads the accepted `quotes` version and makes no request, so it needs no URL (`offline_providers`). A section without dialogue gives an empty result; a section with dialogue needs an accepted `quotes` version covering 90% of its dialogue passages. It sets speakers (0.85 with a speech tag, 0.75 beside an action beat, 0.70 untagged), leaves a tag-conflict line unassigned, and writes as delivery only what a speech tag states (a non-plain verb, manner adverbs and "with …" phrases, such as "Whispered softly."). Scenes and their notes are left as they are.
+
+**The BookNLP check.** When `quotes` is accepted for a section, directing compares every provider's proposed speaker with it (except BookNLP's own proposal, which would count one opinion twice) and records `speaker_check` on each dialogue passage: `agrees`, `differs`, `suggests` (the proposal is unassigned), `not_in_cast`, `narrator` (first-person, not comparable) or `no_quote`. The book's narration voice speaking a first-person narrator's line counts as agreeing. Agreement raises confidence to at least 0.9 when BookNLP saw a tag or beat, and 0.8 when both inferred the speaker from turn-taking. A disagreement keeps the proposed speaker, caps its confidence at 0.65 (the lowest assigned value) and records BookNLP's speaker. When BookNLP's own tag contradicts its speaker (`tag_conflict`), the comparison is recorded without changing confidence. These values are rankings chosen to fit the 0.65 assignment rule, not measured probabilities. BookNLP is not trusted over the model, and an unassigned line is not filled from it. A manual speaker change drops `speaker_check`, as does the phase pipeline writing a speaker; the Quote attribution table always compares with current speakers. The Speakers & delivery table adds a **BookNLP check** column and `booknlp_agrees/differs/suggests` counts; the Quote attribution table compares BookNLP with the book's current speakers. Directing's `same_speaker_as_book` stat counts dialogue whose proposed speaker equals the current one. Use it to compare providers: the version diff counts every delivery wording change.
 
 ## Acceptance, rollback and manual edits
 
@@ -92,11 +115,14 @@ A step subclasses `bardic.pipeline.Step` ([contract](../bardic/pipeline/contract
 | Attribute | Purpose |
 | --- | --- |
 | `id`, `label`, `summary` | Stable identifier (`[a-z][a-z0-9_]{1,39}`) and UI text. |
-| `method` | `plain` (local) or `llm`. |
+| `method` | `plain` (local), `llm` (prompt + schema to a chosen model) or `service` (a self-hosted chapter service). |
+| `providers` | Providers the owner may choose. Default: `local` for plain steps, the LLM providers (cloud and Local LLM) for llm steps. An llm step may add service providers; its `units()` then reads `ctx.provider` and plans service units (`Unit.service = ServiceRequest(body)`) or plain units instead of `LLMRequest`s. Service providers take no model. |
 | `scope` | `book`, `chapter` or `character`. |
 | `inputs` | Upstream step IDs whose **accepted** payloads it reads. Must be declared earlier in the registry. |
 | `owns` | Projection fields it writes (`collection.field`). The registry rejects two steps claiming one field. |
 | `version` | Bump when prompts, schemas or logic change. New cache keys; old versions stay readable. |
+| `request_version` | Optional. When only assembly or projection changed, set it to the previous version so unit cache keys, and therefore paid results, stay valid. |
+| `offline_providers` | Providers the step reads accepted results from instead of calling, so a run needs no key or URL for them. |
 | `parallel`, `default_gate`, `default_model_role`, `chapter_scoped` | Execution defaults. |
 | `capturable` | `capture()` can rebuild the step's projection; enables baseline/external versions and rollback to them. |
 | `accumulative` | `apply()` only adds (discovery). Accepting applies just the scopes whose version changes, so unchanged scopes are not re-merged. |
@@ -105,9 +131,9 @@ and implements:
 
 | Hook | Contract |
 | --- | --- |
-| `units(ctx)` | Plan the work from `ctx.book` (a copy of the projection) and `ctx.inputs` (accepted input payloads). LLM units carry an `LLMRequest(prompt, schema, output_cap)` and optionally `chapter_id` (source dependency) and `dependencies` (other retained artifact IDs the request read). |
-| `execute(ctx, unit)` | Plain steps only: compute the unit result. |
-| `validate(ctx, unit, result)` | LLM steps: raise `EvidenceValidationError` to allow one repair, any `ValueError` to reject. Must not mutate shared state. |
+| `units(ctx)` | Plan the work from `ctx.book` (a copy of the projection) and `ctx.inputs` (accepted input payloads). LLM units carry an `LLMRequest(prompt, schema, output_cap)`, service units a `ServiceRequest(body)`, and either may set `chapter_id` (source dependency) and `dependencies` (other retained artifact IDs the request read). |
+| `execute(ctx, unit)` | Units with neither a request nor a service call: compute the unit result. |
+| `validate(ctx, unit, result)` | LLM units: raise `EvidenceValidationError` to allow one repair, any `ValueError` to reject. Service units: any `ValueError` rejects. Must not mutate shared state. |
 | `assemble(ctx, done)` | Group validated unit results into `{scope: payload}`. Payloads are JSON and self-contained. |
 | `capture(book, scope)` | The payload that reproduces the current projection for a scope, or `None` if not recoverable. Must satisfy `apply(book, capture(book)) == book`. |
 | `apply(book, payloads)` | Idempotently write owned fields for the given scopes, honor `locked(item, field)`, and return `Conflict`s. Scopes not given are untouched. |
@@ -131,7 +157,7 @@ These recommendations came from reviewing the codebase and red-teaming the desig
 | Step | Method | Scope | Suggested tier | Notes |
 | --- | --- | --- | --- | --- |
 | Cast identity (alias clustering, groups, unnamed speakers) | LLM | book | deep | One request over discovery candidates. Wrong splits give one person two voices across the whole book. Must redirect, never delete, character IDs, and treat confirmed series links and reviewed characters as locks. Review gate recommended. |
-| Speaker attribution (split from directing) | Local tags and turn alternation first, then LLM | chapter | balanced; deep for a targeted re-fix of unassigned/low-confidence lines | The most audible error class. Re-running only uncertain lines must keep neighboring context. |
+| Speaker attribution (split from directing) | Local tags and turn alternation first, then LLM | chapter | balanced; deep for a targeted re-fix of unassigned/low-confidence lines | The most audible error class. Re-running only uncertain lines must keep neighboring context. The BookNLP `quotes` step now provides the tag-and-alternation pass and a disagreement list; a targeted re-fix of `differs`/`suggests` lines is the natural next use. |
 | Line delivery (emotion from a fixed vocabulary with intensity, subtext, vocal cues, pace/pauses/emphasis) | LLM, one fused request | chapter | balanced | Fusing these avoids 2–3 extra whole-book passes. Cues stay metadata; the source is never rewritten (see R2). |
 | Pronunciation lexicon | Local candidate extraction, then LLM respellings, then review | book | economy | Verify each narration provider honors hints before investing in UI. Reusable across a series. |
 | Utterance type (thought, written text, verse) | Local: retain italics/emphasis spans at import as source-coordinate metadata; LLM only for leftovers | chapter | economy | A label on existing passages, never a re-split. |
@@ -146,4 +172,8 @@ These recommendations came from reviewing the codebase and red-teaming the desig
 - Rollback does not reattach previously valid audio takes.
 - A cancellation received while a response is in flight discards that response after it is paid for, as elsewhere in analysis.
 - The same provider adapters are used for every step, with the shared director system instruction; a per-step system instruction would need an adapter change and a recipe version bump.
+- Self-hosted services: a service upgrade does not change the cache key (use fresh samples); service calls are bounded per unit but not by the run's request limit; the analyzer detects only double-quoted dialogue and at most 250,000 characters per chapter (a longer chapter fails with the server's 413); the analyzer can only name cast characters, so directing with it depends on discovery having found everyone, including a first-person narrator. In a live check the Local LLM's discovery named the narrator differently on each run and once omitted it.
+- Adding the BookNLP check bumped directing to version 2 with `request_version = 1`: model requests did not change, so validated version-1 units are reused and not paid for again. A step sets `request_version` when only assembly or projection changes.
+- A single failed section (timeout, size limit, rejected result) keeps the whole step from auto-accepting, as for model steps; accept the completed sections from the version view.
+- The services' optional API keys are not supported; a server that requires one answers 401.
 - Pipeline and phase controls share the book dollar guard, but pipeline runs are not yet visible in the Studio production summary.

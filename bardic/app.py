@@ -30,7 +30,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .analysis import analyze_book
 from .processing import BudgetReached
 from .account_checks import check_account
-from . import breeze
+from . import breeze, local_services
 from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, assemble_audio, list_system_voices,
                     providers_status, render_fingerprint, synthesize, validate_audio, voice_id, voice_selection)
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
@@ -184,6 +184,8 @@ class SettingsRequest(StrictModel):
     listen_chunking: ChunkingOptions | None = None
     breeze_url: str | None = Field(default=None, max_length=500)
     breeze_api_key: str | None = Field(default=None, max_length=500)
+    # Self-hosted analysis servers by provider ID (see local_services.SERVICES); "" clears one.
+    local_service_urls: dict[str, Annotated[str, Field(max_length=500)]] | None = None
 
 
 def valid_analysis_model(model):
@@ -296,6 +298,7 @@ class Runtime:
             "tts_limits": self._saved_tts_limits(saved.get("tts_limits")),
             "listen_chunking": self._saved_chunking(saved.get("listen_chunking")),
             "breeze_url": self._saved_breeze_url(saved.get("breeze_url")),
+            "local_service_urls": self._saved_service_urls(saved.get("local_service_urls")),
             # The last voice check survives restarts so pinned sessions and
             # cached audio resolve while the server is offline.
             "breeze_catalog": saved.get("breeze_catalog") if isinstance(saved.get("breeze_catalog"), dict) else None,
@@ -317,6 +320,39 @@ class Runtime:
                 except ValueError:
                     continue
         return ""
+
+    @staticmethod
+    def _saved_service_urls(saved):
+        """Only URLs set in Settings ("" = cleared there). The environment is resolved at use and never saved,
+        so a development server's `--keys` URLs do not outlive its restart."""
+        saved = saved if isinstance(saved, dict) else {}
+        result = {}
+        for provider in local_services.SERVICES:
+            value = saved.get(provider)
+            if isinstance(value, str):
+                try:
+                    result[provider] = local_services.normalize_url(value, provider)
+                except ValueError:
+                    continue
+        return result
+
+    def service_urls(self):
+        """Each self-hosted server's URL: the Settings value if one was saved (even ""), else the environment."""
+        saved = self.preferences["local_service_urls"]
+        result = {}
+        for provider, service in local_services.SERVICES.items():
+            if provider in saved:
+                result[provider] = saved[provider]
+                continue
+            try:
+                result[provider] = local_services.normalize_url(os.environ.get(service["env"]) or "", provider)
+            except ValueError:
+                result[provider] = ""
+        return result
+
+    def analysis_credentials(self):
+        """What a pipeline job snapshots per provider: a cloud API key, or a self-hosted server URL."""
+        return {**self.api_keys, **self.service_urls()}
 
     def breeze_config(self):
         return {"base_url": self.preferences["breeze_url"], "api_key": self.narration_keys["breeze"]}
@@ -917,6 +953,8 @@ def create_app(data_dir: Path | None = None):
                                   {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
                                    "reason": None if breeze_ready else breeze_view["message"]}],
                     "narration_providers": providers_status(), "breeze": breeze_view,
+                    # Resolved (Settings, else environment); the saved-only values are not shown.
+                    "local_service_urls": runtime.service_urls(),
                     "analysis_providers": [{"id": provider, "label": label,
                                             "available": provider == "local" or bool(runtime.api_keys.get(provider)),
                                             "has_api_key": bool(runtime.api_keys.get(provider)),
@@ -1002,6 +1040,14 @@ def create_app(data_dir: Path | None = None):
                 breeze_url = breeze.normalize_base_url(body.breeze_url)
             except ValueError as error:
                 raise HTTPException(400, str(error)) from None
+        service_urls = {}
+        for provider, value in (body.local_service_urls or {}).items():
+            if provider not in local_services.SERVICES:
+                raise HTTPException(400, "Unknown local analysis service")
+            try:
+                service_urls[provider] = local_services.normalize_url(value, provider)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from None
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
@@ -1013,6 +1059,7 @@ def create_app(data_dir: Path | None = None):
                 preferences["listen_chunking"] = chunking
             if breeze_url is not None:
                 preferences["breeze_url"] = breeze_url
+            preferences["local_service_urls"].update(service_urls)
             if body.tts_model is not None:
                 preferences["tts_model"] = body.tts_model
             if body.analysis_provider is not None:
@@ -1209,6 +1256,9 @@ def create_app(data_dir: Path | None = None):
             item["edited"] = True
             if collection == "segments" and "speaker_id" in fields:
                 item["confidence"] = 1.0
+                if "speaker_id" in changed:
+                    # A BookNLP check judged the replaced speaker; the Quote attribution table still compares live.
+                    item.pop("speaker_check", None)
             cast = runtime.resolved_cast(book)
             for s in book["segments"]:
                 if s.get("audio") and not runtime.valid_audio(book, s, cast):

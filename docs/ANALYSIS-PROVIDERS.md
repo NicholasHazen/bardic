@@ -9,6 +9,16 @@ Implemented September 27, 2026. Literary analysis and audio generation have sepa
 | OpenAI | `gpt-6-sol` | `OPENAI_API_KEY` | Responses API |
 | Anthropic | `claude-sonnet-5` | `ANTHROPIC_API_KEY` | Messages API |
 
+The step pipeline (Analysis tab) also offers three self-hosted servers on the owner's network, set by URL in Settings → **Your analysis servers** or `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL` and `BARDIC_NOVEL_ANALYZER_URL`:
+
+| Choice | Default model | Credential | Transport | Offered on |
+| --- | --- | --- | --- | --- |
+| Local LLM | `qwen3.6-35b-a3b` (any ID the server serves) | Server URL, no key | OpenAI Responses (`/v1/responses`) with a strict JSON schema | discovery, profiles, directing |
+| BookNLP | — | Server URL | `POST /v1/analyze` per chapter | quote attribution; directing (speakers only) |
+| Novel Analyzer | — | Server URL | `POST /v1/analyze` per chapter | directing |
+
+They cost nothing per request (Bardic records a $0 price for the Local LLM), but they share the server's GPU, often with Breeze narration. The phase controls and series runs still offer only the cloud providers. Details, confidence rules and limits: [self-hosted providers](ANALYSIS-PIPELINE.md#self-hosted-providers). Dated live results: [validation](VALIDATION.md#self-hosted-analysis-servers).
+
 Settings accepts another model ID for each cloud provider, so model access and future versions do not require a code change. A custom model must support its provider's structured-output contract. Credentials, endpoints, and request formats are isolated by provider; a failed or unavailable provider never triggers a fallback to another company. Narration keeps its own Gemini model setting.
 
 ## Shared pipeline

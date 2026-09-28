@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from .contract import GATES, METHODS, SCOPES, Step
+from .contract import GATES, LLM_PROVIDERS, METHODS, SCOPES, SERVICE_PROVIDERS, Step
 
 STEP_ID = re.compile(r'[a-z][a-z0-9_]{1,39}')
 
@@ -31,6 +31,16 @@ class Registry:
                 raise ValueError(f'Step {step.id} has an invalid default model role.')
             if type(step.version) is not int or step.version < 1 or type(step.parallel) is not int or not 1 <= step.parallel <= 8:
                 raise ValueError(f'Step {step.id} needs a positive integer version and 1–8 parallel units.')
+            if step.request_version is not None and (type(step.request_version) is not int or not 1 <= step.request_version <= step.version):
+                raise ValueError(f'Step {step.id} needs a request version from 1 to its version.')
+            providers = step.allowed_providers()
+            known = {'local', *LLM_PROVIDERS, *SERVICE_PROVIDERS}
+            if not providers or len(set(providers)) != len(providers) or not set(providers) <= known or \
+                    ('local' in providers) != (step.method == 'plain') or \
+                    (step.method == 'service' and not set(providers) <= set(SERVICE_PROVIDERS)):
+                raise ValueError(f'Step {step.id} declares invalid providers for its method.')
+            if not set(step.offline_providers) <= set(providers) - {'local'}:
+                raise ValueError(f'Step {step.id} lists offline providers it does not offer.')
             for dependency in step.inputs:
                 if dependency not in self._steps:
                     raise ValueError(f'Step {step.id} reads {dependency}, which must be declared earlier.')

@@ -6,7 +6,7 @@ This document describes the implementation in this repository as of 2026-09-27. 
 
 Bardic is a local web application for importing an ebook, developing an evidence-backed performance script, generating narration, and reading along with passage highlighting. It also supports simple single-narrator listening without completing story analysis first.
 
-The server is Python with FastAPI and SQLite. The browser uses HTML, CSS, and plain JavaScript; no frontend build system or JavaScript framework is required. Original ebooks and WAV assets are files on the local machine. Text analysis can call Gemini, OpenAI, or Anthropic. Narration uses Gemini, installed macOS voices, or a self-hosted Breeze TTS server that the owner runs on the local network. Provider calls are explicit processing actions; browsing saved work does not generate narration or run cloud story analysis.
+The server is Python with FastAPI and SQLite. The browser uses HTML, CSS, and plain JavaScript; no frontend build system or JavaScript framework is required. Original ebooks and WAV assets are files on the local machine. Text analysis can call Gemini, OpenAI, or Anthropic and, in the step pipeline, the owner's self-hosted servers: an OpenAI-compatible LLM, BookNLP and a Novel Analyzer. Narration uses Gemini, installed macOS voices, or a self-hosted Breeze TTS server that the owner runs on the local network. Provider calls are explicit processing actions; browsing saved work does not generate narration or run cloud story analysis.
 
 The application has a single local owner. It is not a multiuser service, hosted library, DRM-removal tool, or general workflow scheduler. The default server binds to loopback. An opt-in local-network mode (`BARDIC_LAN_NAME`) binds the network and advertises a `.local` name for the same single owner's other devices; it adds no authentication and treats everyone on that network as the owner. Public or multiuser deployment would require authentication, authorization, and operational design.
 
@@ -21,6 +21,7 @@ flowchart TD
     Worker --> Listen[Simple listening]
     Worker --> Narration[Enhanced narration]
     Analysis --> Providers[Gemini / OpenAI / Anthropic text APIs]
+    Analysis --> SelfHosted[Self-hosted: local LLM, BookNLP, Novel Analyzer]
     Listen --> TTS[Gemini TTS / macOS say / Breeze server]
     Narration --> TTS
     Import --> Store[SQLite current state and checkpoints]
@@ -47,7 +48,8 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`importer.py`](../bardic/importer.py) | Safe EPUB/TXT ingestion, canonical text extraction, initial scenes/passages, bounded cover thumbnails. |
 | [`structure.py`](../bardic/structure.py) | EPUB navigation/NCX/headings/section classification, metadata-only structure repair and checkpoint transformation. |
 | [`preprocessing.py`](../bardic/preprocessing.py) | Local census, frequency/spread/ambiguity heuristics, processing priorities, source coverage. No LLM calls. |
-| [`analysis.py`](../bardic/analysis.py) | Provider adapters, schemas, evidence validation, local draft rules, annotation application, dispatch to the appropriate pipeline. |
+| [`analysis.py`](../bardic/analysis.py) | Provider adapters (including the self-hosted Local LLM, used only by the step pipeline), schemas, evidence validation, local draft rules, annotation application, dispatch to the appropriate pipeline. |
+| [`local_services.py`](../bardic/local_services.py) | Self-hosted analysis servers: URL validation, the BookNLP and Novel Analyzer HTTP calls with bounded retries, and pure mapping of their output onto passages, cast IDs and exact source excerpts. |
 | [`staged_analysis.py`](../bardic/staged_analysis.py) | Older chapter-checkpoint implementation, local draft processing, and shared compatibility/reference helpers. Still used; not dead code. |
 | [`progressive.py`](../bardic/progressive.py) | Current cloud scan/profile/direct/full planning and execution, request recipes, validated unit reuse, profile freshness, progressive publication. |
 | [`processing.py`](../bardic/processing.py) | Accepted-unit cache, local census cache, attempt/event ledger, per-request reservations and budget enforcement. |
@@ -129,7 +131,7 @@ Evidence validation accepts only a short contiguous source quotation, with const
 
 ### Step pipeline
 
-The Analysis tab drives the same analysis work as named steps: chapters & titles, census, discovery, profiles, and speakers & delivery. Each step has its own provider and model and produces candidate versions per scope. The reader sees a result only after it is accepted, either automatically by the step's gate or by the owner. Accepting an older version rolls back. Manual edits are per-field locks. Changes made by the phase controls are recorded as `external` versions before the next pipeline decision. Details and the extension contract: [analysis pipeline](ANALYSIS-PIPELINE.md).
+The Analysis tab drives the same analysis work as named steps: chapters & titles, census, discovery, quote attribution (BookNLP), profiles, and speakers & delivery. Each step has its own provider and model and produces candidate versions per scope. The reader sees a result only after it is accepted, either automatically by the step's gate or by the owner. Accepting an older version rolls back. Manual edits are per-field locks. Changes made by the phase controls are recorded as `external` versions before the next pipeline decision. Details and the extension contract: [analysis pipeline](ANALYSIS-PIPELINE.md).
 
 ## Reuse, invalidation, and failure
 
@@ -202,7 +204,7 @@ Settings loaded from `.env` remain environment configuration; keys entered throu
 | Area | Current boundary |
 | --- | --- |
 | Import | EPUB/TXT only; retained EPUB containers can have multiple logical sections; no PDF/MOBI/DRM workflow. |
-| Semantic analysis | Structured cloud annotations plus local rules. No local LLM adapter, automatic identity reconciliation, or certainty guarantee after full coverage. |
+| Semantic analysis | Structured cloud or self-hosted annotations plus local rules. The self-hosted providers exist only in the step pipeline, not the phase controls or series runs. No automatic identity reconciliation or certainty guarantee after full coverage. |
 | Search | Literal-word FTS5 retrieval. No embeddings, vector ranking, or retrieval-driven automatic character linking. |
 | Provenance | Exact inputs are retained for the current progressive path. Legacy data is explicitly incomplete; snapshot edges are not fabricated generation lineage. |
 | Scheduling | Explicit bounded jobs with reusable work. No automatic restart continuation or distributed queue. |

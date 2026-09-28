@@ -79,6 +79,7 @@ For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` 
 | `OPENAI_API_KEY` | OpenAI text-analysis credential. |
 | `ANTHROPIC_API_KEY` | Anthropic text-analysis credential. |
 | `BREEZE_TTS_URL` | Breeze narration server root, for example `http://host.local:7860`. Used when no URL has been saved in Settings. |
+| `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL`, `BARDIC_NOVEL_ANALYZER_URL` | Self-hosted analysis server roots, for example `http://host.local:8100`. Used when no URL has been saved in Settings → Your analysis servers; a URL cleared there stays cleared (it does not fall back). The environment value is never saved. |
 | `BREEZE_API_KEY` | Optional bearer key, only if the Breeze server requires one. |
 | `BARDIC_DATA_DIR` | Library root; defaults to `.bardic` relative to the launch working directory, with existing `.spintails` fallback described above. Prefer an absolute path for alternate libraries. |
 | `BARDIC_PORT` | Port for `python -m bardic`; defaults to `8765`. |

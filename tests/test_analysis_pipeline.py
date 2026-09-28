@@ -169,7 +169,7 @@ def test_locks_are_per_field_and_legacy_edits_lock_everything():
 
 def test_definitions_expose_steps_and_validated_settings(client):
     body = client.get('/api/analysis-pipeline').json()
-    assert [s['id'] for s in body['steps']] == ['structure', 'census', 'discovery', 'profiles', 'directing']
+    assert [s['id'] for s in body['steps']] == ['structure', 'census', 'discovery', 'quotes', 'profiles', 'directing']
     discovery = next(s for s in body['steps'] if s['id'] == 'discovery')
     assert discovery['settings'] == {'provider': 'openai', 'model': MODEL, 'gate': 'auto', 'saved': False}
     assert client.put('/api/analysis-pipeline/steps/structure/settings', json={'provider': 'openai', 'model': MODEL}).status_code == 400
