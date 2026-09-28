@@ -335,7 +335,7 @@ The bundle contains source text and may contain earlier-book input evidence thro
 
 ### Audiobook bundle
 
-The separate audiobook export contains current selected enhanced takes, `production.json`, source chapter text, and `timeline.json`. It assembles a chapter WAV only when every required passage has valid audio and includes individually completed takes for partial chapters. Timings identify passage boundaries; missing passage IDs are explicit. It does not export the independent simple-listening library or saved performances, perform word alignment, or package M4B.
+The separate audiobook export contains current selected enhanced takes, `production.json` (the book as `GET /api/books/{id}` presents it, not the stored row), source chapter text, and `timeline.json`. It is a download only: it records no resource operation or other history. It assembles a chapter WAV only when every required passage has valid audio and includes individually completed takes for partial chapters. Timings identify passage boundaries; missing passage IDs are explicit. It does not export the independent simple-listening library or saved performances, perform word alignment, or package M4B.
 
 ### Full backup boundary
 

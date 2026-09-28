@@ -576,13 +576,14 @@ class Runtime:
                     character.setdefault("voices", {})["system"] = {"id": choices[index % len(choices)]}
 
     def require_idle(self, book_id):
+        from .errors import Conflict
         self.store.require_active(book_id)
         # Every active job counts: a long run can have more than 100 newer child jobs.
         if any(j["status"] in ACTIVE for j in self.store.jobs(book_id, limit=None, active=True)):
-            raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
+            raise Conflict("job_active", "A job is working on this book.")
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
                for j in self.store.jobs(limit=None)):
-            raise HTTPException(409, 'This book is reserved by an active series run. Stop the series run before editing.')
+            raise Conflict('series_run_active', 'An active series run has reserved this book.')
 
     def audio_path(self, book_id, audio_id):
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", book_id) or not re.fullmatch(r"[a-f0-9]{32,128}", audio_id):
@@ -651,6 +652,11 @@ class Runtime:
             return expected == metadata.get("fingerprint") and self.take_path(book["id"], metadata).is_file()
         except (ValueError, KeyError, TypeError):
             return False
+
+    def playable_count(self, book):
+        """Passages whose selected enhanced take is current and on disk (the ones `present` gives a URL)."""
+        cast = self.resolved_cast(book)
+        return sum(self.valid_audio(book, s, cast) for s in book["segments"])
 
     def present(self, book):
         result = copy.deepcopy(book)
@@ -905,6 +911,62 @@ class Runtime:
             return job
 
 
+class UploadLimit:
+    """Refuse an oversized book upload without reading the rest of it (413 `upload_too_large`).
+
+    A declared Content-Length over the limit is refused before any body is read.
+    Otherwise the body is counted as it streams, and reading stops at the limit.
+    The route still checks the exact file size.
+    """
+
+    def __init__(self, app, limit: int):
+        self.app, self.limit = app, limit
+
+    async def refuse(self, send):
+        body = json.dumps({"detail": "The upload is larger than 30 MiB.", "code": "upload_too_large"}).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/books":
+            return await self.app(scope, receive, send)
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None and declared.strip().isdigit() and int(declared) > self.limit:
+            return await self.refuse(send)
+        state = {"received": 0, "exceeded": False, "started": False}
+
+        async def limited_receive():
+            if state["exceeded"]:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                state["received"] += len(message.get("body", b""))
+                if state["received"] > self.limit:
+                    state["exceeded"] = True
+                    raise ValueError("upload exceeds the size limit")
+            return message
+
+        async def guarded_send(message):
+            if state["exceeded"]:
+                # Whatever the parser made of the aborted body, the answer is 413.
+                if not state["started"]:
+                    state["started"] = True
+                    await self.refuse(send)
+                return
+            state["started"] = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not state["exceeded"]:
+                raise
+            if not state["started"]:
+                state["started"] = True
+                await self.refuse(send)
+
+
 def create_app(data_dir: Path | None = None):
     @asynccontextmanager
     async def lifespan(app):
@@ -913,6 +975,9 @@ def create_app(data_dir: Path | None = None):
         app.state.runtime.close()
 
     app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
+    from .importer import MAX_UPLOAD
+    # Multipart framing adds a few hundred bytes around the file; allow 64 KiB.
+    app.add_middleware(UploadLimit, limit=MAX_UPLOAD + 64 * 1024)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver", *allowed_hosts()])
 
     @app.middleware("http")
@@ -924,7 +989,8 @@ def create_app(data_dir: Path | None = None):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+            # A route that chooses its own caching (the content-addressed cover) keeps it.
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -1116,11 +1182,24 @@ def create_app(data_dir: Path | None = None):
                     del runtime.account_checks[provider]
         return status(runtime)
 
+    def library_repository(runtime):
+        from .library import LibraryRepository
+        return LibraryRepository(runtime.store, playable=runtime.playable_count)
+
     @app.get("/api/books")
     def list_books(request: Request):
-        from .library import LibraryRepository
-        store = rt(request).store
-        return [LibraryRepository(store).summary(book['id']) for book in store.books()]
+        runtime = rt(request)
+        repository = library_repository(runtime)
+        return [repository.summary(book['id']) for book in runtime.store.books()]
+
+    def discard_failed_import(store, book_id):
+        """Remove what a failed import wrote, unless its book was already committed."""
+        with store.lock, store.connect() as conn:
+            if conn.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
+                return
+            # The ID is new and unused, so these rows belong only to this failed import.
+            conn.execute("DELETE FROM resource_operations WHERE book_id=?", (book_id,))
+        shutil.rmtree(store.root / "originals" / book_id, ignore_errors=True)
 
     def persist_import(runtime, book, data=None, filename=None):
         runtime.assign_local_voices(book)
@@ -1134,22 +1213,28 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/books")
     async def import_book(request: Request, file: UploadFile = File(...)):
-        data = await file.read(30 * 1024 * 1024 + 1)
+        from .errors import Invalid, TooLarge
+        from .importer import MAX_UPLOAD
+        data = await file.read(MAX_UPLOAD + 1)
         await file.close()
-        if len(data) > 30 * 1024 * 1024:
-            raise HTTPException(413, "Please use an EPUB or TXT smaller than 30 MB")
+        if len(data) > MAX_UPLOAD:
+            raise TooLarge("upload_too_large", "The upload is larger than 30 MiB.")
         from .resources import ResourceLedger
         runtime = rt(request)
         import_id = str(uuid4())
-        with ResourceLedger(runtime.store).operation(import_id, 'import', measure_cpu=True) as metrics:
-            try:
-                book = parse_book(file.filename or "book.txt", data)
-                book['id'] = import_id
-            except (ValueError, zipfile.BadZipFile) as exc:
-                raise HTTPException(400, str(exc)) from exc
-            result = persist_import(runtime, book, data, file.filename)
-            metrics['output_bytes'] = len(data)
-            return result
+        try:
+            with ResourceLedger(runtime.store).operation(import_id, 'import', measure_cpu=True) as metrics:
+                try:
+                    book = parse_book(file.filename or "book.txt", data)
+                    book['id'] = import_id
+                except (ValueError, zipfile.BadZipFile) as exc:
+                    raise Invalid("book_file_invalid", str(exc)) from exc
+                result = persist_import(runtime, book, data, file.filename)
+                metrics['output_bytes'] = len(data)
+                return result
+        except BaseException:
+            discard_failed_import(runtime.store, import_id)
+            raise
 
     @app.post("/api/demo")
     def demo(request: Request):
@@ -1201,8 +1286,9 @@ def create_app(data_dir: Path | None = None):
         return SeriesRepository(rt(request).store).create_series(body.name)
 
     def require_series_not_running(runtime, series_id):
+        from .errors import Conflict
         if series_id and any(job['status'] in ACTIVE for job in runtime.store.jobs('series:' + series_id)):
-            raise HTTPException(409, 'Wait for this series run to finish or stop it first.')
+            raise Conflict('series_run_active', 'A run of this series is queued or running.')
 
     def book_series(runtime, book_id):
         repository = SeriesRepository(runtime.store)
@@ -1521,39 +1607,42 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/books/{book_id}/export")
     def export(book_id: str, request: Request):
-        from .resources import ResourceLedger
+        from .errors import Invalid
         runtime = rt(request)
         book = runtime.store.book(book_id)
         cast = runtime.resolved_cast(book)
         available = [s for s in book["segments"] if runtime.valid_audio(book, s, cast)]
         available_ids = {s["id"] for s in available}
         if not available:
-            raise HTTPException(400, "Generate some audio before exporting")
+            raise Invalid("export_audio_missing", "No passage has a current enhanced take to export.")
         temp = Path(tempfile.mkdtemp(prefix="bardic-export-"))
         try:
             export_path = temp / "audiobook.zip"
             manifest = {"title": book["title"], "timing_kind": "segment", "complete": len(available) == len(book["segments"]), "chapters": [], "missing_segment_ids": [s["id"] for s in book["segments"] if s["id"] not in available_ids]}
-            with ResourceLedger(runtime.store).operation(book_id, 'audio_export', measure_cpu=True) as metrics:
-                with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                    archive.writestr("production.json", json.dumps(book, ensure_ascii=False, indent=2))
-                    archive.writestr("README.txt", "Bardic audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
-                    for s in available:
-                        archive.write(runtime.take_path(book_id, s["audio"]), f"takes/{s['id']}.wav")
-                    for index, chapter in enumerate(book["chapters"]):
-                        chapter_segments = [s for s in book["segments"] if s["chapter_id"] == chapter["id"]]
-                        prefix = f"chapters/{index+1:03d}"
-                        archive.writestr(f"{prefix}.txt", chapter["text"])
-                        complete = all(s["id"] in available_ids for s in chapter_segments)
-                        entry = {"id": chapter["id"], "title": chapter["title"], "complete": complete, "segments": []}
-                        if chapter_segments and complete:
-                            wav_path = temp / f"chapter-{index}.wav"
-                            clips = [(s, runtime.take_path(book_id, s["audio"])) for s in chapter_segments]
+            # A GET records nothing: the export is a derived download, not a domain record.
+            with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                # The same presentation as GET /api/books/{book_id}, not the stored book.
+                archive.writestr("production.json", json.dumps(runtime.present(book), ensure_ascii=False, indent=2))
+                archive.writestr("README.txt", "Bardic audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
+                for s in available:
+                    archive.write(runtime.take_path(book_id, s["audio"]), f"takes/{s['id']}.wav")
+                for index, chapter in enumerate(book["chapters"]):
+                    chapter_segments = [s for s in book["segments"] if s["chapter_id"] == chapter["id"]]
+                    prefix = f"chapters/{index+1:03d}"
+                    archive.writestr(f"{prefix}.txt", chapter["text"])
+                    complete = all(s["id"] in available_ids for s in chapter_segments)
+                    entry = {"id": chapter["id"], "title": chapter["title"], "complete": complete, "segments": []}
+                    if chapter_segments and complete:
+                        wav_path = temp / f"chapter-{index}.wav"
+                        clips = [(s, runtime.take_path(book_id, s["audio"])) for s in chapter_segments]
+                        try:
                             entry["segments"] = assemble_audio(clips, wav_path)
-                            entry["audio"] = f"{prefix}.wav"
-                            archive.write(wav_path, entry["audio"])
-                        manifest["chapters"].append(entry)
-                    archive.writestr("timeline.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-                metrics['output_bytes'] = export_path.stat().st_size
+                        except AudioError as error:
+                            raise Invalid("take_unreadable", str(error)) from error
+                        entry["audio"] = f"{prefix}.wav"
+                        archive.write(wav_path, entry["audio"])
+                    manifest["chapters"].append(entry)
+                archive.writestr("timeline.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             name = re.sub(r"[^\w .-]", "", book["title"])[:80] or "audiobook"
             return FileResponse(export_path, media_type="application/zip", filename=f"{name}.zip", background=BackgroundTask(shutil.rmtree, temp))
         except Exception:
@@ -1583,18 +1672,19 @@ def create_app(data_dir: Path | None = None):
 
     @app.patch('/api/books/{book_id}/metadata')
     def metadata(book_id: str, body: BookMetadataRequest, request: Request):
-        from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
             runtime.require_idle(book_id)
-            return LibraryRepository(runtime.store).update_book(book_id, title=body.title, author=body.author)
+            return library_repository(runtime).update_book(book_id, title=body.title, author=body.author)
 
     @app.post('/api/books/{book_id}/archive')
     def archive_book(book_id: str, request: Request):
         from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
-            runtime.require_idle(book_id)
+            runtime.store.book(book_id)
+            if not runtime.store.is_archived(book_id):  # Archiving an archived book is a no-op.
+                runtime.require_idle(book_id)
             return LibraryRepository(runtime.store).archive_book(book_id)
 
     @app.post('/api/books/{book_id}/restore')
@@ -1602,24 +1692,42 @@ def create_app(data_dir: Path | None = None):
         from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
-            membership = SeriesRepository(runtime.store).membership(book_id, include_archived=True)
-            require_series_not_running(runtime, membership['series_id'] if membership else None)
+            runtime.store.book(book_id)
+            if runtime.store.is_archived(book_id):  # Restoring an active book is a no-op.
+                membership = SeriesRepository(runtime.store).membership(book_id, include_archived=True)
+                require_series_not_running(runtime, membership['series_id'] if membership else None)
             return LibraryRepository(runtime.store).archive_book(book_id, archived=False)
 
     @app.post('/api/books/{book_id}/refresh-metadata')
     def refresh_book_metadata(book_id: str, request: Request):
-        from .library import LibraryRepository
         from .resources import ResourceLedger
         runtime = rt(request)
-        with runtime.store.lock, ResourceLedger(runtime.store).operation(book_id, 'metadata_refresh', measure_cpu=True):
+        with runtime.store.lock:
+            # Refused requests (unknown, archived or busy book) record nothing; only real refresh work is measured.
             runtime.require_idle(book_id)
-            return LibraryRepository(runtime.store).refresh_metadata(book_id)
+            with ResourceLedger(runtime.store).operation(book_id, 'metadata_refresh', measure_cpu=True):
+                return library_repository(runtime).refresh_metadata(book_id)
+
+    def etag_matches(header, etag):
+        if header is None:
+            return False
+        if header.strip() == '*':
+            return True
+        # If-None-Match uses weak comparison: W/"x" matches "x".
+        return any(tag.strip().removeprefix('W/') == etag for tag in header.split(','))
 
     @app.get('/api/books/{book_id}/cover')
     def book_cover(book_id: str, request: Request):
         from .library import LibraryRepository
-        data, media_type, etag = LibraryRepository(rt(request).store).cover(book_id)
-        return Response(data, media_type=media_type, headers={'ETag': etag, 'Cache-Control': 'private, max-age=300'})
+        data, media_type, digest = LibraryRepository(rt(request).store).cover(book_id)
+        etag = f'"{digest}"'
+        # The summary's cover URL carries ?v={sha256}: that exact URL always names these bytes, so it
+        # may be kept. Any other URL must be revalidated, which the strong ETag makes cheap.
+        cache = 'private, max-age=31536000, immutable' if request.query_params.get('v') == digest else 'private, no-cache'
+        headers = {'ETag': etag, 'Cache-Control': cache}
+        if etag_matches(request.headers.get('if-none-match'), etag):
+            return Response(status_code=304, headers=headers)
+        return Response(data, media_type=media_type, headers=headers)
 
     def require_series_idle(runtime, series_id):
         from .series_processing import series_view

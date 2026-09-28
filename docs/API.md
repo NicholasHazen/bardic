@@ -50,7 +50,7 @@ The reference groups operations by family:
 - **No authentication.** There is no account or token layer, including on the network. Anyone who can reach the port is the owner.
 - **Trusted hosts.** A request with an unexpected `Host` header is rejected before any route runs, with status 400 and the plain-text body `Invalid host header`. Apart from this and unexpected server errors (500, which have plain-text bodies), error bodies are JSON.
 - **Write guard.** A write (anything other than GET, HEAD or OPTIONS) is rejected with 403 `{"detail":"Cross-origin writes are not allowed"}` in either of two cases: the browser sends `Sec-Fetch-Site: cross-site`, or `Origin` names a host other than `Host`. A request without an `Origin` header, such as from `curl` or a native client, is accepted. There is no CORS support, so a browser page served from another origin cannot write.
-- **No caching.** Every `/api/` response carries `Cache-Control: no-store`, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- **No caching, except covers.** Every `/api/` response carries `Cache-Control: no-store`, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The exception is a successful cover image (`getBookCover`): it has a strong `ETag`, answers a matching `If-None-Match` with 304, and may be cached indefinitely at its content-addressed `?v=` URL.
 - **Returned URLs.** Media URLs returned in responses (takes, clips, covers, auditions) are root-relative. Resolve them against the base URL you called.
 
 Serving a client from another origin, or reaching the server beyond a trusted network, needs authentication, CORS and a threat model that do not exist yet. See [the client/server proposal](CLIENT-SERVER-CONTRACT.md).
@@ -81,7 +81,7 @@ An error body is JSON `{"detail": ...}`, except for the trusted-host rejection a
 | `403` | A cross-origin or cross-site write was rejected. |
 | `404` | Missing book, item, job, session, artifact or voice; wrong book scope; unavailable audio. |
 | `409` | Busy book, conflicting in-flight operation, stale pipeline fingerprint or revision, or settings changed during a check. |
-| `413` | The uploaded file exceeds the import limit. |
+| `413` | The uploaded file exceeds the import limit. An oversized import is refused before its body is read. |
 | `422` | Missing required field, wrong type, forbidden extra field, or a violated validation bound. |
 | `429`, `502`, `503` | Provider quota, provider failure, or a busy or unavailable self-hosted server or worker, where the operation documents them. |
 

@@ -25,7 +25,7 @@ function submit(container, kind, id, values) {
 
 (async () => {
   const calls = [];
-  const sample = {books:[{id:'book/1',title:'The <Lantern>',author:'A & B',word_count:4,text_character_count:20,chapter_count:1,section_count:2,passage_count:3,
+  const sample = {books:[{id:'book/1',title:'The <Lantern>',author:'A & B',word_count:4,text_character_count:20,chapter_count:1,section_count:2,segment_count:3,
     cover:{sha256:'cover'},storage:{original_bytes:100,audio_bytes:0,simple_listen_bytes:20,database_payload_bytes:800},archived:false}],
     series:[{id:'series/1',name:'The <Saga>',archived:false,character_count:0,volumes:[{position:1,title:'First',book_id:null,status:'missing'}]}],
     storage:{data_directory_bytes:4000,shared_database_bytes:3000,note:'Shared database <note>'}};
@@ -47,6 +47,7 @@ function submit(container, kind, id, values) {
   assert.ok(container.innerHTML.includes('A &amp; B'));
   assert.ok(container.innerHTML.includes('/api/books/book%2F1/cover?v=cover'));
   assert.ok(!container.innerHTML.includes('<Lantern>'));
+  assert.ok(container.innerHTML.includes('3 passages'));
   assert.ok(container.innerHTML.includes('Create a series'));
   assert.ok(container.innerHTML.includes('Shared database &lt;note&gt;'));
   assert.ok(container.innerHTML.includes('Its source, audio, analysis and series links stay saved'));
@@ -64,6 +65,13 @@ function submit(container, kind, id, values) {
   await settle();
   mutation = calls.find(call => call.url.endsWith('/volumes'));
   assert.deepEqual(JSON.parse(mutation.body),{position:1.5,title:'Novella',status:'planned'});
+  // A refused request shows the server's detail plus the UI's hint for its code.
+  const plain = respond;
+  respond = () => ({ok:false,status:409,json:async () => ({detail:'A job is working on this book.',code:'job_active'})});
+  submit(container,'metadata','book/1',{title:'Busy',author:''});
+  await settle();
+  assert.equal(container.message.textContent,'A job is working on this book. Let it finish or cancel it first.');
+  respond = plain;
   const before = calls.length;
   submit(container,'volume','series/1',{position:'',title:'Invalid',status:'missing'});
   await settle();

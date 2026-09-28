@@ -174,7 +174,7 @@ def test_book_and_session_scopes_invalid_inputs_archive_and_busy_guards(client, 
     runtime.store.update_job(busy['id'],status='cancelled')
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
     archived = client.post(base,json={'provider':'gemini','segment_id':book['segments'][0]['id']})
-    assert archived.status_code == 400
+    assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
     assert client.get(audio['url']).status_code == 200, 'Archiving retains readable saved assets'
 
 
