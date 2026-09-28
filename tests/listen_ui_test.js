@@ -26,7 +26,7 @@ const book = {id:'book-9',revision:1,chapters:[{id:'chapter-1'},{id:'chapter-2'}
 ],characters:[{id:'mara',voice:'Puck'}],scenes:[{id:'scene-1',tone:'Tense'}]};
 const status = {providers:[{id:'system',available:true},{id:'gemini',available:true}],
   system_voices:[{id:'Samantha',name:'Samantha',locale:'en-US'}],tts_models:['gemini-3.8-flash-tts','gemini-3.8-flash-lite-tts'],tts_model:'gemini-3.8-flash-tts'};
-const simpleAudio = {url:'/api/books/book-9/listen/audio/simple',duration:2,available:true,asset_id:'simple',mode:'simple'};
+const simpleAudio = {url:'/api/books/book-9/listen/audio/simple',duration:2,asset_id:'simple'};
 const session = {id:'session-1',provider:'system',voice:'',model:'macos-say'};
 function environment(handler, prior={}){
   const calls=[];

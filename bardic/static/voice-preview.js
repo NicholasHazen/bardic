@@ -5,7 +5,7 @@
   const encode = value => encodeURIComponent(value);
   const wait = () => new Promise(resolve => setTimeout(resolve, 400));
   const busy = job => ['queued', 'running'].includes(job?.status);
-  const playable = audio => Boolean(audio?.url && audio.available !== false && !audio.stale && !audio.is_stale);
+  const playable = audio => Boolean(audio?.url);
   const idle = () => ({status:'idle', label:'', preview:null, error:'', jobId:null, bookId:null});
   let hooks = {}, state = idle(), active = null, knownJob = null;
   let serial = Promise.resolve();

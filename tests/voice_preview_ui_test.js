@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const book = {id:'book-1', revision:1, characters:[{id:'mara', voice:'Kore'}], segments:[{id:'segment-1', text:'Mara opened the window.'}]};
 const config = {provider:'gemini', voice:'Leda', model:'tts-model', segment_id:'segment-1', character_id:'mara', direction:'Warm.', segment_direction:'Quietly.'};
 const preview = {id:'preview-1', source:'passage', text:'Mara opened the window.', segment_id:'segment-1', character_id:'mara', voice:'Leda'};
-const audio = {url:'/api/books/book-1/voice-preview/audio/asset', asset_id:'asset', duration:2, available:true};
+const audio = {url:'/api/books/book-1/voice-preview/audio/asset', asset_id:'asset', duration:2};
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) { for (let i=0;i<50;i++) { if (predicate()) return; await tick(); } assert.fail('Expected asynchronous step did not occur.'); }
 function deferred() { let resolve, reject; const promise = new Promise((yes,no) => {resolve=yes; reject=no;}); return {promise, resolve, reject}; }
@@ -277,10 +277,9 @@ test('poll failures log operational identifiers only and a broken logger cannot 
   assert.equal(broken.api.getState().error, 'Unavailable.');
 });
 
-test('failed jobs and invalid completed audio never trigger a second sample', async () => {
+test('failed jobs never trigger a second sample', async () => {
   for (const outcome of [
     {status:'failed', error:'Quota exhausted.'},
-    {status:'completed', preview, audio:{...audio, available:false}},
   ]) {
     const env = environment(call => call.method === 'POST' ? {data:{preview, job:{id:'job-1', status:'queued'}}} :
       {data:[{id:'job-1', ...outcome}]});

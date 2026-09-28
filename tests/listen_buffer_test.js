@@ -18,7 +18,7 @@ function environment({book=story(),duration=12,handler,records,continuous}={}) {
   const calls=[], container=new Container(), storage=new Map();
   if (continuous !== undefined) storage.set(`bardic:listen:${book.id}`,JSON.stringify({continuous}));
   let plays=0;
-  const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id,available:true});
+  const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id});
   const normal=call=>call.url.endsWith('/cancel') ? {status:'cancelled'} : {
     session:{id:'session-buffer'},audio:audio(call.body.segment_id),cached:false,
   };

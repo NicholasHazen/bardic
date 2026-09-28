@@ -6,7 +6,7 @@
   const books = new Map();
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const encode = value => encodeURIComponent(value);
-  const valid = audio => Boolean(audio?.url && !audio.stale && !audio.is_stale);
+  const valid = audio => Boolean(audio?.url);
   // Server details state the condition; the hint says where to fix it.
   const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.'};
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
@@ -814,8 +814,9 @@
       })
       .catch(error => {
         report(state,'listen_request_failed',error,'request',target.id);
-        // A busy book (409) sent nothing; try again shortly instead of giving up.
-        if (error.status === 409) { intent.queued.delete(target.chapter_id); state.chapter.retryAt = Date.now() + 20000; }
+        // A busy book (409) sent nothing; try again shortly instead of giving up. An archived book stays
+        // archived until the owner restores it, so retrying would only repeat the refusal.
+        if (error.status === 409 && error.code !== 'book_archived') { intent.queued.delete(target.chapter_id); state.chapter.retryAt = Date.now() + 20000; }
         if (state.intent === intent) state.message = `The next chapter could not be queued: ${error.message}`;
       })
       .finally(() => { state.chapter.autoStarting = null; paint(state.panel); });

@@ -59,7 +59,7 @@ const currentChapter = () => state.book?.chapters.find(c => c.id === state.chapt
 const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === state.chapterId) || [];
 const segmentById = (id) => state.book?.segments.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
-const playable = (segment) => Boolean(segment?.audio?.url && !segment.audio.stale && !segment.audio.is_stale);
+const playable = (segment) => Boolean(segment?.audio?.url);
 const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
 const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.BardicListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
 const listeningReady = segment => Boolean(listeningAudio(segment)?.url);
