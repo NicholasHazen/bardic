@@ -22,6 +22,17 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.1 — 2026-09-28
+<!-- contract-sha256: f73d1d60f6928bb4abde88034d9a50acfa90dc7124bce5e182fae80664ca41be -->
+
+Documentation only: descriptions updated for the Classic data drop (stage 4 of the Classic removal). No field, parameter, status or error code changes.
+
+- `repairBookStructure` no longer mentions a saved analysis checkpoint: none exists any more, so none is transformed, and `structure_mismatch` means only that the re-parsed source does not match the saved chapters.
+- `ArtifactSummary.kind` lists `analysis_checkpoint`, a saved checkpoint of the removed Classic engine retained when its table was dropped. The kinds remain an open set.
+- `LibraryBookStorage.database_payload_bytes` no longer counts analysis checkpoints (the table is gone).
+- In the `exportBookAnalysis` bundle, `observations.json` is empty for books analyzed by the removed Classic engine: their observations are `character_observation` artifacts in the same bundle.
+- `SeriesContextObservation`: a reference the removed Classic engine wrote counts while its observation is retained as a `character_observation` artifact, which is the same check as before on the same content hash.
+
 ## 0.3.0 — 2026-09-28
 <!-- contract-sha256: c28bd7cd1cef4f73c647f5e94526f74310e9bbc5b69ac47541e8c3b16c4a4448 -->
 

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
+from classic_fixtures import classic_references
 
 
 @pytest.fixture
@@ -261,7 +262,7 @@ def test_stored_profile_evidence_is_kept_while_it_still_matches(client):
                 'kind': 'profile_evidence', 'confidence': None, 'provider': 'gemini', 'model': 'm',
                 'profile_description': 'Watchful.', 'profile_direction': 'Low.'}
     stale = {**evidence, 'id': 'e2', 'start': start + 1}
-    runtime(client).store.save_analysis_checkpoint(book['id'], 'fp', {'references': [evidence, stale]})
+    classic_references(runtime(client).store, book['id'], [evidence, stale])
     refs = client.get(f"/api/books/{book['id']}/characters/{mara_id}/references").json()
     kept = [r for r in refs if r['kind'] == 'profile_evidence']
     assert [r['id'] for r in kept] == ['e1'] and kept[0]['profile_description'] == 'Watchful.'

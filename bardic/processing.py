@@ -2,8 +2,8 @@
 attempt and event records, the census cache, and content digests.
 
 The step pipeline, series runs and performances use this module. It neither
-creates nor reads the removed Classic engine's unit cache table, which existing
-libraries keep until the stage 4 migration (docs/CLASSIC-REMOVAL.md).
+creates nor reads the removed Classic engine's unit cache table, which the
+Classic data drop (:mod:`bardic.migrations`, docs/CLASSIC-REMOVAL.md) removes.
 """
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ def price_for(provider, model, *, input_tokens=None):
 def initialize_schema(conn):
     """Create the processing tables. The Store runs this once when it opens a library.
 
-    The removed Classic engine's ``analysis_units`` table is not created here: existing
-    libraries keep it until the stage 4 migration, and a new library never has it.
+    The removed Classic engine's unit cache table is never created: the Classic
+    data drop (:mod:`bardic.migrations`) removes it from older libraries.
     """
     conn.execute('CREATE TABLE IF NOT EXISTS analysis_attempts (id TEXT PRIMARY KEY, book_id TEXT, run_id TEXT, body TEXT NOT NULL)')
     conn.execute('CREATE INDEX IF NOT EXISTS analysis_attempts_book ON analysis_attempts(book_id,run_id)')

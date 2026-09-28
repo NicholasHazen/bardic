@@ -49,7 +49,7 @@ from .pipeline.projection import record_before_outside_write
 from .pipeline.repository import PipelineRepository
 from .series_processing import SeriesPlanRequest, SeriesRunRequest
 from .series import SeriesRepository, require_active_book
-from .structure import repair_structure, transform_checkpoint_structure
+from .structure import repair_structure
 from .store import InstanceLock, Store, public_job
 from .take_archive import produce_take
 from .chapter_listening import ChapterCoordinator, QuotaReached
@@ -353,8 +353,11 @@ class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
         self.store = Store(root)
-        # Legacy data becomes artifacts here, once per book, so that GET views never create artifacts.
+        # One-time data migrations (the Classic data drop retains that data as artifacts first),
+        # then legacy projections become artifacts, once per book, so that GET views never create artifacts.
         from .artifacts import backfill_library
+        from .migrations import run_startup_migrations
+        run_startup_migrations(self.store)
         backfill_library(self.store)
         PipelineRepository(self.store).recover_interrupted()
         self.voices = VoiceLibrary(self.store)
@@ -1402,7 +1405,6 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/books/{book_id}/repair-structure")
     def repair_book_structure(book_id: str, request: Request):
-        from .analysis_common import fingerprint
         from .resources import ResourceLedger
 
         runtime = rt(request)
@@ -1428,14 +1430,7 @@ def create_app(data_dir: Path | None = None):
                     raise Invalid("original_unreadable", "The saved original could not be read. Existing book work was preserved.") from exc
                 updated["revision"] = book.get("revision", 0) + 1
                 record_before_outside_write(runtime.store, book_id)
-                summary = runtime.store.analysis_status(book_id)
-                checkpoint = runtime.store.analysis_checkpoint(book_id, summary["fingerprint"]) if summary else None
-                if checkpoint:
-                    transformed = transform_checkpoint_structure(checkpoint, updated)
-                    new_fingerprint = fingerprint(updated, checkpoint["provider"], checkpoint.get("model"))
-                    runtime.store.commit_analysis(updated, new_fingerprint, transformed)
-                else:
-                    runtime.store.save_book(updated)
+                runtime.store.save_book(updated)
                 return runtime.present(updated)
 
     @app.get("/api/series")

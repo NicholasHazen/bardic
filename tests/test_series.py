@@ -1,12 +1,13 @@
 """Explicit cross-book identities, durable provenance and spoiler-scoped retrieval."""
 from copy import deepcopy
 import json
-import sqlite3
 
 import pytest
 
-from bardic.series import SeriesRepository, source_hash
+from bardic.artifacts import ArtifactRepository
+from bardic.series import SeriesRepository, retain_observations, source_hash
 from bardic.store import Store
+from classic_fixtures import classic_references
 
 
 def book(book_id, text="Mira spoke softly."):
@@ -25,8 +26,11 @@ def reference(text="Mira spoke softly.", description="A soft voice", **fields):
             "provider": "test", "model": "test-model", "confidence": .9, **fields}
 
 
-def checkpoint(refs):
-    return {"status": "completed", "references": refs, "chapters": [], "units": {}}
+def retained(store, book_id):
+    """Payloads of the book's retained ``character_observation`` artifacts."""
+    repository = ArtifactRepository(store)
+    items = repository.list(book_id, kind="character_observation", limit=200)["items"]
+    return [repository.get(book_id, item["id"])["payload"] for item in items]
 
 
 @pytest.fixture
@@ -73,7 +77,7 @@ def test_duplicate_reading_order_rejected_and_decimal_side_stories_supported(set
 
 def test_same_name_and_same_book_character_id_never_create_identity_links(setup):
     store, repo, _, identity = setup
-    store.save_analysis_checkpoint("one", "v1", checkpoint([reference()]))
+    classic_references(store, "one", [reference()])
     assert repo.context_for_book("nine")["characters"] == []
     repo.link_character("one", "mira", identity["id"])
     assert repo.context_for_book("nine")["characters"] == []
@@ -102,7 +106,7 @@ def test_context_uses_only_earlier_explicitly_linked_books_and_preserves_provena
     store, repo, saga, identity = setup
     for bid in ("one", "nine", "ten"):
         repo.link_character(bid, "mira", identity["id"])
-        store.save_analysis_checkpoint(bid, "v1", checkpoint([reference(description=f"Observation in {bid}")]))
+        classic_references(store, bid, [reference(description=f"Observation in {bid}")])
     context = repo.context_for_book("nine")
     assert context["included_observations"] == context["available_observations"] == 1
     item = context["characters"][0]
@@ -126,20 +130,20 @@ def test_membership_move_or_removal_clears_only_that_books_identity_links(setup)
     store, repo, _, identity = setup
     for bid in ("one", "nine"):
         repo.link_character(bid, "mira", identity["id"])
-    store.save_analysis_checkpoint("nine", "v1", checkpoint([reference()]))
+    classic_references(store, "nine", [reference()])
     other = repo.create_series("Another saga")
     repo.set_membership("nine", other["id"], 1)
     assert repo.links_for_book("nine") == []
     assert len(repo.links_for_book("one")) == 1
-    assert len(repo.observations("nine")) == 1
+    assert len(retained(store, "nine")) == 1
     assert repo.set_membership("nine") is None
     assert repo.membership("nine") is None
-    assert repo.observations("nine")
+    assert len(retained(store, "nine")) == 1  # retained history is not erased with a membership
 
 
 def test_repeat_link_is_idempotent_unlink_changes_context_fingerprint(setup):
     store, repo, _, identity = setup
-    store.save_analysis_checkpoint("one", "v1", checkpoint([reference()]))
+    classic_references(store, "one", [reference()])
     for bid in ("one", "nine"):
         repo.link_character(bid, "mira", identity["id"])
     first = repo.context_for_book("nine")
@@ -157,7 +161,7 @@ def test_reading_order_and_source_changes_invalidate_context_and_stale_anchors_a
     store, repo, saga, identity = setup
     for bid in ("one", "nine"):
         repo.link_character(bid, "mira", identity["id"])
-    store.save_analysis_checkpoint("one", "v1", checkpoint([reference()]))
+    classic_references(store, "one", [reference()])
     first = repo.context_for_book("nine")
     repo.set_membership("one", saga["id"], 11)
     later = repo.context_for_book("nine")
@@ -170,22 +174,25 @@ def test_reading_order_and_source_changes_invalidate_context_and_stale_anchors_a
     stale = repo.context_for_book("nine")
     assert stale["included_observations"] == 0
     assert stale["fingerprint"] != first["fingerprint"]
-    assert len(repo.observations("one")) == 1
+    assert len(retained(store, "one")) == 1
 
 
-def test_observations_survive_checkpoint_replacement_deletion_and_restart(setup):
+def retain(store, book_id, refs):
+    with store.lock, store.connect() as conn:
+        retain_observations(conn, book_id, refs)
+
+
+def test_retained_observations_are_append_only_content_addressed_and_survive_restart(setup):
+    # retain_observations is the switchable history writer (bardic.pipeline.evidence.retain_history).
     store, repo, _, _ = setup
     before = deepcopy(store.book("one"))
-    saved = checkpoint([reference()])
-    store.save_analysis_checkpoint("one", "v1", saved)
-    store.save_analysis_checkpoint("one", "v1", saved)
+    retain(store, "one", [reference()])
+    retain(store, "one", [reference()])
     assert len(repo.observations("one")) == 1
-    store.save_analysis_checkpoint("one", "v2", checkpoint([reference(description="A strained voice")]))
+    retain(store, "one", [reference(description="A strained voice")])
     observations = repo.observations("one")
     assert {o["description"] for o in observations} == {"A soft voice", "A strained voice"}
-    store.delete_analysis_checkpoint("one")
-    assert store.character_references("one") == []
-    assert repo.observations("one") == observations
+    assert {o["id"] for o in retained(store, "one")} == {o["id"] for o in observations}
     assert store.book("one") == before
     restored = SeriesRepository(Store(store.root))
     assert restored.observations("one") == observations
@@ -196,28 +203,17 @@ def test_invalid_references_do_not_become_observations(setup):
     refs = [reference(quote="Invented evidence"), reference(id="bad-span", start=-1),
             reference(id="unknown", character_id="unknown"), reference(id="unknown-chapter", chapter_id="missing"),
             reference(id="bad-kind", kind="unsupported"), reference(id="bad-bool", start=False)]
-    store.save_analysis_checkpoint("one", "v1", checkpoint(refs))
+    retain(store, "one", refs)
     assert repo.observations("one") == []
-
-
-def test_observations_are_atomic_with_book_and_checkpoint_transaction(setup):
-    store, repo, _, _ = setup
-    original = store.book("one")
-    changed = deepcopy(original)
-    changed["title"] = "Must roll back"
-    with pytest.raises(sqlite3.IntegrityError):
-        store.commit_analysis(changed, "v1", checkpoint([reference(), reference()]))
-    assert store.book("one") == original
-    assert repo.observations("one") == []
-    assert store.analysis_status("one") is None
+    assert retained(store, "one") == []
 
 
 def test_mentions_are_retained_but_not_sent_as_profile_context(setup):
     store, repo, _, identity = setup
     for bid in ("one", "nine"):
         repo.link_character(bid, "mira", identity["id"])
-    store.save_analysis_checkpoint("one", "v1", checkpoint([reference(kind="mention")]))
-    assert len(repo.observations("one")) == 1
+    classic_references(store, "one", [reference(kind="mention")])
+    assert len(retained(store, "one")) == 1
     assert repo.context_for_book("nine")["included_observations"] == 0
 
 
@@ -232,7 +228,7 @@ def test_context_limits_are_real_and_sampling_keeps_early_and_late_observations(
         quote = f"Mira line {i}."
         start = text.index(quote)
         refs.append(reference(id=f"ref-{i}", start=start, end=start + len(quote), quote=quote))
-    store.save_analysis_checkpoint("one", "v1", checkpoint(refs))
+    classic_references(store, "one", refs)
     context = repo.context_for_book("nine", max_observations_per_character=3)
     assert context["available_observations"] == 12 and context["included_observations"] == 3
     assert context["truncated"] is True
@@ -248,7 +244,7 @@ def test_removed_book_character_is_visible_as_stale_link_but_not_used_in_context
     store, repo, _, identity = setup
     for bid in ("one", "nine"):
         repo.link_character(bid, "mira", identity["id"])
-    store.save_analysis_checkpoint("one", "v1", checkpoint([reference()]))
+    classic_references(store, "one", [reference()])
     source = store.book("one")
     source["characters"] = source["characters"][:2]
     store.save_book(source)

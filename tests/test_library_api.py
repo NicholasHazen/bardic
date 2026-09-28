@@ -1,5 +1,4 @@
 """Offline HTTP coverage for library metadata, covers and reversible removal."""
-from copy import deepcopy
 import io
 
 from fastapi.testclient import TestClient
@@ -7,6 +6,7 @@ from PIL import Image
 import pytest
 
 from bardic.app import create_app
+from classic_fixtures import classic_references
 from test_library import illustrated_epub
 
 
@@ -39,23 +39,26 @@ def test_imported_epub_language_is_presented_and_txt_has_none(client):
     assert client.get(f"/api/books/{book['id']}").json()['language'] is None
 
 
-def test_metadata_api_preserves_source_ids_takes_and_checkpoint(client):
+def test_metadata_api_preserves_source_ids_takes_and_references(client):
     book = imported(client)
     store = client.app.state.runtime.store
     book = store.book(book['id'])
     book['segments'][0]['audio'] = {'fingerprint': 'retained-take', 'duration': 3, 'provider': 'system', 'model': 'macos-say'}
     store.save_book(book)
-    checkpoint = {'status': 'failed', 'stage': 'discovery', 'chapters': [], 'references': [],
-                  'units': {'retained': {'result': {'characters': []}}}, 'working_book': deepcopy(book)}
-    store.save_analysis_checkpoint(book['id'], 'saved-fingerprint', checkpoint)
-    before_checkpoint = store.analysis_checkpoint(book['id'], 'saved-fingerprint')
+    segment = book['segments'][0]
+    # A reference row the removed Classic engine wrote (kept after the Classic data drop).
+    classic_references(store, book['id'], [{'id': 'retained', 'character_id': segment.get('speaker_id') or 'narrator',
+                                            'chapter_id': segment['chapter_id'], 'segment_id': segment['id'],
+                                            'start': segment['start'], 'end': segment['end'], 'quote': segment['text'],
+                                            'kind': 'dialogue', 'provider': 'test', 'model': None}])
+    before_references = store.character_references(book['id'])
     response = client.patch(f"/api/books/{book['id']}/metadata", json={'title': '  A new title  ', 'author': '  A Writer  '})
     assert response.status_code == 200, response.text
     assert response.json()['title'] == 'A new title' and response.json()['author'] == 'A Writer'
     updated = store.book(book['id'])
     for field in ('id', 'chapters', 'scenes', 'segments', 'characters'):
         assert updated[field] == book[field]
-    assert store.analysis_checkpoint(book['id'], 'saved-fingerprint') == before_checkpoint
+    assert store.character_references(book['id']) == before_references and before_references
     assert client.get('/api/books').json()[0]['title'] == 'A new title'
     assert client.patch(f"/api/books/{book['id']}/metadata", json={'title': 'bad', 'source_name': '../other.txt'}).status_code == 422
     assert client.patch(f"/api/books/{book['id']}/metadata", json={'title': '   '}).status_code == 400

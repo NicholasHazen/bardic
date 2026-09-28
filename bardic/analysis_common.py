@@ -1,28 +1,12 @@
 """Analysis helpers that outlived the removed Classic (phase) engine.
 
 ``split_chapter`` publishes the scene boundaries a directing result proposes;
-the step pipeline's Directing step uses it. ``fingerprint`` is the identity of
-a saved ``analysis_checkpoints`` record, which structure repair re-keys while
-that legacy table exists (docs/CLASSIC-REMOVAL.md, stage 4).
-
-Both moved here unchanged from that engine's chapter runner.
+the step pipeline's Directing step uses it. It moved here unchanged from that
+engine's chapter runner (docs/CLASSIC-REMOVAL.md).
 """
 from __future__ import annotations
 
 from . import analysis as a
-from .processing import digest
-
-PIPELINE_VERSION = 1
-
-
-def fingerprint(book, provider, model):
-    # Audio and automatic annotations are outputs, not reasons to lose a checkpoint.
-    return digest({"version": PIPELINE_VERSION, "provider": provider, "model": model,
-                   "chapters": book["chapters"],
-                   "spans": [(s["id"], s["chapter_id"], s["start"], s["end"], s["kind"]) for s in book["segments"]],
-                   "reviewed": {name: [{k: v for k, v in item.items() if k != "audio"}
-                                        for item in book[name] if item.get("edited")]
-                                for name in ("characters", "scenes", "segments")}})
 
 
 def split_chapter(book, chapter_id, boundaries):

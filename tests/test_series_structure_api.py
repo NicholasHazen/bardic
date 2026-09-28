@@ -1,11 +1,9 @@
 """Reviewable series links and lossless refresh of existing library structure."""
-from copy import deepcopy
-
 import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
-from bardic.analysis_common import fingerprint
+from classic_fixtures import classic_references
 from test_structure import epub, toc
 
 
@@ -89,14 +87,13 @@ def legacy_saved(client):
     book["segments"][0]["audio"] = {"fingerprint":"retained-take","duration":2.}
     ref = {"id":"ref","character_id":"mara","chapter_id":book["chapters"][0]["id"],"segment_id":book["segments"][0]["id"],
            "start":0,"end":4,"quote":"Mara","kind":"profile_evidence"}
-    checkpoint = {"provider":"openai","model":"gpt-6-sol","status":"failed","stage":"discovery", "working_book":deepcopy(book),
-                  "chapters":[{"id":book["chapters"][0]["id"],"title":"Chapter 4"}],"units":{"paid-result":{"stage":"discovery","result":{"characters":[]}}},"references":[ref]}
-    store.commit_analysis(book,fingerprint(book,"openai","gpt-6-sol"),checkpoint)
-    return book,checkpoint
+    store.save_book(book)
+    classic_references(store,book["id"],[ref])
+    return store.book(book["id"]),ref
 
 
-def test_structure_refresh_preserves_source_audio_profiles_and_paid_checkpoint(client):
-    book, checkpoint = legacy_saved(client)
+def test_structure_refresh_preserves_source_audio_profiles_and_classic_references(client):
+    book, ref = legacy_saved(client)
     response = client.post(f"/api/books/{book['id']}/repair-structure")
     assert response.status_code == 200, response.text
     store = client.app.state.runtime.store
@@ -105,22 +102,19 @@ def test_structure_refresh_preserves_source_audio_profiles_and_paid_checkpoint(c
     assert updated["chapters"][0]["kind"] == "recap"
     assert updated["chapters"][0]["text"] == book["chapters"][0]["text"]
     assert updated["segments"] == book["segments"] and updated["characters"] == book["characters"]
-    migrated = store.analysis_checkpoint(book["id"],fingerprint(updated,"openai","gpt-6-sol"))
-    assert migrated["units"] == checkpoint["units"]
-    assert migrated["references"] == checkpoint["references"]
-    assert migrated["working_book"]["chapters"][0]["title"] == "The Story Thus Far"
-    assert store.character_references(book["id"]) == checkpoint["references"]
+    # The Classic engine's evidence row stays in the projection (carried until discovery is accepted).
+    assert ref in store.character_references(book["id"])
 
 
 def test_structure_refresh_refuses_changed_source_without_losing_saved_work(client):
-    book, checkpoint = legacy_saved(client)
+    book, ref = legacy_saved(client)
     store = client.app.state.runtime.store
-    old_fingerprint = store.analysis_status(book["id"])["fingerprint"]
+    references = store.character_references(book["id"])
     (store.root/"originals"/book["id"]/"source.epub").write_bytes(epub({"recap":"<p>Different source.</p>"}))
     response = client.post(f"/api/books/{book['id']}/repair-structure")
     assert response.status_code == 400 and "preserved" in response.text
     assert store.book(book["id"]) == book
-    assert store.analysis_status(book["id"])["fingerprint"] == old_fingerprint
+    assert store.character_references(book["id"]) == references == [ref]
 
 
 def test_structure_refresh_requires_original_and_local_origin(client):

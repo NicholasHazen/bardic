@@ -177,7 +177,8 @@ class SeriesContextObservation(View):
     text at `start`/`end` (zero-based Unicode code-point offsets, exclusive end),
     and a row whose chapter text changed since it was produced is left out. A row
     the removed Classic engine wrote counts only while the observation that engine
-    retained with it (same content hash, so the same chapter text) still exists.
+    retained with it (same content hash, so the same chapter text) is retained as a
+    `character_observation` artifact of that book.
     """
     id: str = Field(description='Stable observation ID: a content hash of the evidence, its location, reading and '
                                 'producer. A reference the removed Classic engine wrote keeps the ID of the observation '

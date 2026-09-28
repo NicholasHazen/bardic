@@ -32,14 +32,15 @@ run start and preview calls inside its transaction. GET views (the Analyze
 overview, the Details explorer and ``listCharacterReferences``) run the same
 sync in a transaction they roll back: they show what the next write records,
 and record nothing. It is skipped when a digest of its inputs and of the stored rows
-is unchanged. Any other writer of ``character_references`` (structure repair of
-a legacy Classic checkpoint) changes the stored rows, so the next sync rebuilds them.
+is unchanged; a change to the stored rows from anywhere else is rebuilt at the next sync.
 
 A book without any accepted discovery, profiles or directing version is left
-untouched. Rows the removed Classic engine wrote as ``profile_evidence`` (no
-``projection`` field) are carried, revalidated, until a discovery version is
-accepted: discovery cannot be captured as a baseline, so they are its only
-record in the current projection. They stay in ``character_observations``.
+untouched: it keeps the rows the removed Classic engine wrote. Rows that engine
+wrote as ``profile_evidence`` (no ``projection`` field) are carried, revalidated,
+until a discovery version is accepted: discovery cannot be captured as a
+baseline, so they are its only record in the current projection. Their
+history is the ``character_observation`` artifacts the Classic data drop
+retained (:mod:`bardic.migrations`).
 
 These rows are also the series memory: a later volume's profiles read an
 earlier volume's current rows through confirmed links
@@ -53,7 +54,8 @@ more; the history of accepted evidence is its step_output versions, and each
 earlier-volume entry a profile request sends is retained as a
 ``character_observation`` artifact. :func:`retain_history` still does the append
 (tested) and stays disabled by :data:`RETAIN_OBSERVATIONS`; enabling it would
-only duplicate that history. Legacy rows stay until the owner-gated data drop.
+only duplicate that history. The Classic engine's rows were retained as
+artifacts and deleted by the Classic data drop; the table stays for this switch.
 """
 from __future__ import annotations
 

@@ -66,6 +66,36 @@ The project is now **Bardic**, with source in `bardic/` and the preferred launch
 
 Use the regular full-library backup procedure before any separate data move or repair. A renamed display/package alone is not a reason to alter retained source or paid outputs.
 
+## Upgrading past the Classic data drop
+
+**Take a full backup before upgrading past this version** (the version with contract 0.3.1, 2026-09-28). Stop the service with `./bardicctl stop` and copy the whole data directory as described in [full backup](#full-backup-and-safe-restore). A copy of `library.sqlite3` alone omits originals and audio.
+
+The owner approved stage 4 of the [Classic removal](CLASSIC-REMOVAL.md#stage-4-what-was-dropped) as a one-time migration, `classic_removal_v1`, that runs the first time the new version starts. It needs no command. It:
+
+1. Retains every book's data from the removed Classic engine as immutable artifacts, archived books included: unit-cache rows, checkpoint units, each whole checkpoint (`analysis_checkpoint`) and each `character_observations` row. It checks that every row has its artifact.
+2. Deletes the `character_observations` rows. The table stays.
+3. Drops the `analysis_units` and `analysis_checkpoints` tables and records the result in the `schema_migrations` table.
+
+It keeps `analysis_attempts` (the spending guard sums them), `pipeline_events`, every `pipeline_*` table, all artifacts, `book_preprocessing`, `character_references`, historical `analyze` jobs and book JSON. Cast references and series context work as before.
+
+On a library analysed only through the step pipeline, with empty Classic tables, the service log (`./bardicctl logs`) shows exactly these two lines:
+
+```text
+INFO:     Classic removal (classic_removal_v1): 1 book(s) in the library; legacy rows: analysis_units 0, analysis_checkpoints 0 (0 checkpoint units), character_observations 0, in 0 book(s). Tables present: analysis_units, analysis_checkpoints.
+INFO:     Classic removal: done. Dropped tables: analysis_units, analysis_checkpoints. Deleted 0 character_observations row(s) (the table is kept; their history is in character_observation artifacts). Kept 0 Classic-written character_references row(s), 0 of them in series context. Recorded as classic_removal_v1 in schema_migrations.
+```
+
+The book count and the table list follow the library; a library without `analysis_units` lists only `analysis_checkpoints`. A library with Classic data also logs one `Classic removal: book …: retained …` line per book. Later starts log nothing: the migration is recorded as done.
+
+To check the record without changing anything, open the database read-only:
+
+```sh
+sqlite3 -readonly "$BARDIC_DATA_DIR/library.sqlite3" \
+  "SELECT status, updated_at, body FROM schema_migrations WHERE id='classic_removal_v1'"   # or your library path
+```
+
+`body` holds the per-book counts, `dropped_tables` and `deleted_observations`. If a book's data cannot be retained, the log shows the error with an `ERROR:` line starting `Classic removal postponed:`, the record says `failed` with the reason, nothing is deleted or dropped, and the server starts normally. The migration runs again at the next start. Keep the backup until you have checked the record and opened a few books.
+
 ## Configuration and credentials
 
 The supported launcher loads the `.env` beside `pyproject.toml`, through [config.py](../bardic/config.py), before importing the application. It does not search parent folders. An unrelated working directory does not change which `.env` file is loaded, although a **relative data path is still relative to the working directory**.
@@ -217,7 +247,7 @@ Paths below are relative to the configured data directory:
 
 | Path / store | Contents |
 | --- | --- |
-| `library.sqlite3` | Books/projections, jobs, settings preferences, checkpoints, references, series identities, covers, immutable artifacts/dependencies, listening and voice-example metadata and resource records. |
+| `library.sqlite3` | Books/projections, jobs, settings preferences, character references, series identities, covers, immutable artifacts/dependencies, listening and voice-example metadata and resource records. |
 | `library.sqlite3-wal`, `library.sqlite3-shm` when present | SQLite WAL state/coordination files. Do not discard these around a running database. |
 | `originals/<book-id>/source.epub` or `source.txt` | Retained upload used for metadata/structure refresh and recovery. |
 | `audio/<book-id>/` | Enhanced audio assets, including retained alternatives and readable legacy recipe-named files. |
@@ -307,7 +337,7 @@ Logs exclude book text, API keys, URLs, stack traces and free-form browser messa
 | “Invalid character evidence” / quoted text not in source | Inspect the rejected output and request recipe in Pipeline explorer. Evidence must be a contiguous passage in that request's supplied source, not a paraphrase or a quotation from a different chapter. One repair is automatic; a repeated failure stops safely. Resume the relevant stage/chapter after reviewing model/output/context; do not weaken source validation or repeatedly force the entire book. |
 | “Missing, duplicate, or unknown source IDs” | The model skipped a passage, annotated one twice, or mistyped an ID (small models do this on 30-passage batches). One repair naming the IDs is automatic; a repeated failure fails only that unit, and its section gets no version. Run the step again **without Fresh samples** to reuse every validated unit and request only the failed ones, or use a larger model for those sections. |
 | Profile is provisional or stale | Check whole-book semantic coverage, current observations, confirmed series links and the profile's effective input/model. A completed scan is not a completed refinement. Run only the required stage and review its preview. |
-| Chapter title is wrong | Use source-preserving structure repair when an original upload exists. The operation rejects source text/unit mismatches; do not manually rewrite canonical prose to make an old checkpoint fit. Metadata refresh and structure repair are different actions. |
+| Chapter title is wrong | Use source-preserving structure repair when an original upload exists. The operation rejects source text/unit mismatches; do not manually rewrite canonical prose to make old results fit. Metadata refresh and structure repair are different actions. |
 | Book title/author/cover is wrong | Edit metadata or refresh from the saved original. Manual title/author edits are preserved. Some EPUBs have no usable cover; no online lookup is performed. |
 | Job stopped at an allowance | Inspect saved work and tracked attempts. Raise the intended allowance or reduce the scope, then resume. A new run refreshes run-scoped request/token allowances but not cumulative book analysis spend. Unknown earlier cost requires an explicit decision about using token/request-only limits. |
 | 401/403, billing failure, 429 or timeout | Follow the specific category. Authentication/billing errors are not repaired by repeated requests. Rate limits and billing limits differ. A timeout may have incurred usage; the app does not blindly retry it. Check the provider dashboard before resuming uncertain work. |

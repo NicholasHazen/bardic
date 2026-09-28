@@ -13,6 +13,7 @@ from bardic.pipeline import evidence
 from bardic.pipeline.repository import PipelineRepository
 from bardic.series import source_hash
 from bardic.store import Store
+from classic_fixtures import classic_references, write_references
 from test_analysis_pipeline import FakeProvider, STORY, client, import_book, latest, run  # noqa: F401  (fixture)
 
 # Alternative evidence, each present in only one chapter's excerpt.
@@ -116,8 +117,8 @@ def test_accepted_steps_project_exact_evidence_to_the_cast_endpoint(api):
     assert len({r['id'] for r in mara}) == len(mara)
     assert all(r['character_id'] == names['Mara'] for r in mara)
     assert state(api, book['id'])['counts'].get('invalid', 0) == 0
-    # The book was analysed only through the pipeline.
-    assert api.app.state.runtime.store.analysis_status(book['id']) is None
+    # The book was analysed only through the pipeline: every row is a projection row.
+    assert all(r['projection'] == evidence.PROJECTION_VERSION for r in references(api, book['id']))
 
 
 def test_rollback_removes_rolled_back_evidence_and_set_aside_adds_nothing(api):
@@ -200,7 +201,7 @@ def test_rebuild_is_idempotent_and_writes_no_observations(api):
     assert len(observations(api, book['id'])) == len(retained)
 
 
-def test_a_legacy_checkpoint_write_is_replaced_by_the_next_sync(api):
+def test_classic_rows_written_over_accepted_evidence_are_replaced_by_the_next_sync(api):
     book = import_book(api)
     run(api, book['id'], ['discovery', 'profiles', 'directing'])
     rows = references(api, book['id'])
@@ -210,7 +211,8 @@ def test_a_legacy_checkpoint_write_is_replaced_by_the_next_sync(api):
               'segment_id': None, 'start': start, 'end': start + 8, 'quote': 'Mara lit', 'kind': 'profile_evidence',
               'confidence': None, 'provider': 'openai', 'model': 'older', 'profile_description': 'Legacy.'}
     store = api.app.state.runtime.store
-    store.save_analysis_checkpoint(book['id'], 'legacy-fingerprint', {'references': [legacy]})
+    # Rows the removed Classic engine wrote over the projection (kept by the Classic data drop).
+    classic_references(store, book['id'], [legacy])
     assert references(api, book['id']) == [legacy]
     # Reads show the rebuilt projection at once and record nothing.
     mara = cast(api, book['id'])['Mara']
@@ -220,8 +222,12 @@ def test_a_legacy_checkpoint_write_is_replaced_by_the_next_sync(api):
     # The next write syncs. Discovery has an accepted version, so legacy discovery evidence is not carried.
     assert api.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={'steps': ['census']}).status_code == 200
     assert references(api, book['id']) == rows
-    # It remains in retained history.
-    assert any(o['quote'] == 'Mara lit' for o in observations(api, book['id']))
+    # It remains in retained history: its observation artifact, not the (empty) observation table.
+    assert observations(api, book['id']) == []
+    with store.connect() as conn:
+        retained = [json.loads(p) for (p,) in conn.execute(
+            "SELECT payload FROM artifact_versions WHERE book_id=? AND kind='character_observation'", (book['id'],))]
+    assert any(o['quote'] == 'Mara lit' for o in retained)
 
 
 # --- direct projector tests --------------------------------------------------------------------
@@ -288,7 +294,7 @@ def test_books_without_accepted_evidence_keep_their_references(library):
     store, repository, _ = library
     legacy = {'id': 'legacy', 'character_id': 'character_mara', 'chapter_id': store.book('book')['chapters'][0]['id'],
               'start': 0, 'end': 4, 'quote': 'Mara', 'kind': 'mention'}
-    store.save_analysis_checkpoint('book', 'fingerprint', {'references': [legacy]})
+    classic_references(store, 'book', [legacy])
     assert rebuild(store, repository) is None
     assert store.character_references('book') == [legacy]
 
@@ -302,7 +308,7 @@ def test_legacy_discovery_evidence_is_carried_until_discovery_is_accepted(librar
             'start': start, 'end': start + 10, 'quote': 'Stay close', 'kind': 'profile_evidence'}
     broken = {**kept, 'id': 'legacy-broken', 'quote': 'Stay closer'}
     mention = {**kept, 'id': 'legacy-mention', 'kind': 'mention'}
-    store.save_analysis_checkpoint('book', 'fingerprint', {'references': [kept, broken, mention]})
+    classic_references(store, 'book', [kept, broken, mention])
     with store.lock, store.connect() as conn:
         projection.sync(repository, registry, conn, book)  # baseline capture makes the projection authoritative
     rows = store.character_references('book')
@@ -349,7 +355,8 @@ def test_set_aside_repairs_references_another_writer_replaced(api):
     run(api, book['id'], ['discovery'], gates={'discovery': 'review'}, fresh=True)
     candidate = latest(api, book['id'], 'discovery')
     store = api.app.state.runtime.store
-    store.save_analysis_checkpoint(book['id'], 'legacy-fingerprint', {'references': []})
+    with store.lock, store.connect() as conn:
+        write_references(conn, book['id'], [])
     assert references(api, book['id']) == []
     # No read path runs in between: the set-aside decision itself restores the projection.
     assert api.post(f"{base}/steps/discovery/versions/{candidate['id']}/reject", json={}).status_code == 200

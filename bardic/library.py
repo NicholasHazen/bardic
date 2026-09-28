@@ -102,8 +102,8 @@ def _payload_bytes(conn, book_id):
     # indexes, freelists or SQLite compression/physical allocation.
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     total = conn.execute('SELECT COALESCE(length(CAST(body AS BLOB)),0) FROM books WHERE id=?', (book_id,)).fetchone()[0]
-    for table, field in (('takes', 'body'), ('analysis_checkpoints', 'body'), ('character_references', 'body'),
-                         ('character_observations', 'body'), ('analysis_units', 'body'), ('analysis_attempts', 'body'),
+    for table, field in (('takes', 'body'), ('character_references', 'body'),
+                         ('character_observations', 'body'), ('analysis_attempts', 'body'),
                          ('book_preprocessing', 'body'), ('pipeline_events', 'body'), ('artifact_versions', 'payload'),
                          ('book_covers', 'body'), ('resource_operations', 'body'), ('listening_sessions', 'body'),
                          ('listening_takes', 'body'), ('listening_chunks', 'body'), ('voice_preview_requests', 'body'), ('voice_preview_takes', 'body')):

@@ -295,7 +295,8 @@ ARTIFACT_KINDS = (
     '`source` (chapter text), `structure` (book structure), `scene_map` (per-chapter scenes and passages), '
     '`character_profile`, `voice_assignment`, `audio_take` (passage audio metadata), `census`, '
     '`character_observation`, `series_context`, `series_run`, `library_state`, `analysis_input` (request recipe), '
-    '`analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error) and '
+    '`analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error), '
+    '`analysis_checkpoint` (a saved checkpoint of the removed Classic engine, retained when its table was dropped) and '
     '`step_output` (step-pipeline version)')
 
 
@@ -630,7 +631,8 @@ OPS: list[Op] = [
        '(not the API presentation of `GET /api/books/{book_id}`). |\n'
        '| `story-map.json` | Same body as `GET /api/books/{book_id}/story-map`. |\n'
        '| `series.json` | `{membership, links, series_characters}` for the book\'s series (nulls/empty when none). |\n'
-       '| `observations.json` | Retained character observations of the book. |\n'
+       '| `observations.json` | Rows of the book\'s observation history table. Empty for most books: the removed Classic '
+       'engine\'s observations are `character_observation` artifacts since contract 0.3.1. |\n'
        '| `references.json` | Saved character references (as in the story map). |\n'
        '| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, oldest first, each in the '
        '`PipelineAttempt` shape of `GET /api/books/{book_id}/pipeline` (the same field allowlist, with '

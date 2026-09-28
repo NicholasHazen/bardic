@@ -220,16 +220,3 @@ def repair_structure(book, filename, data):
         new["id"] = old["id"]
     _apply_structure(result, parsed)
     return result
-
-
-def transform_checkpoint_structure(checkpoint, updated_book):
-    """Refresh labels/baseline only; caller recomputes and commits fingerprint."""
-    result = deepcopy(checkpoint)
-    if "working_book" in result:
-        _apply_structure(result["working_book"], updated_book)
-    titles = {chapter["id"]: chapter["title"] for chapter in updated_book["chapters"]}
-    for row in result.get("chapters", []):
-        if row["id"] not in titles:
-            raise Invalid("structure_mismatch", "Structure refresh cannot match saved chapter progress.")
-        row["title"] = titles[row["id"]]
-    return result

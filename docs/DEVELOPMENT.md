@@ -112,7 +112,7 @@ Useful targeted suites:
 | Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
 | Evidence, request builders, census and budgets | `pytest -q tests/test_evidence.py tests/test_evidence_projection.py tests/test_prompt_identity.py tests/test_processing.py tests/test_preprocessing.py tests/test_analysis.py` |
 | Analysis pipeline steps, versions and acceptance | `pytest -q tests/test_analysis_pipeline.py tests/test_analysis_pipeline_ui.py`; also run `node tests/analysis_pipeline_ui_test.js` |
-| Classic removal (the engine stays gone; legacy rows stay readable until stage 4) | `pytest -q tests/test_legacy_isolation.py tests/test_artifacts.py` |
+| Classic removal (the engine stays gone; the startup migration retains, then drops, its data) | `pytest -q tests/test_legacy_isolation.py tests/test_classic_data_drop.py tests/test_artifacts.py` |
 | Artifacts, graph, search and export | `pytest -q tests/test_artifacts.py tests/test_pipeline_view_api.py tests/test_search.py`; also run `node --test tests/pipeline_ui_test.js` |
 | Series identities and execution | `pytest -q tests/test_series.py tests/test_series_lifecycle.py tests/test_series_processing.py tests/test_series_processing_ui.py` |
 | Simple listening and reader playback | `pytest -q tests/test_listening.py tests/test_listen_api.py tests/test_listen_ui.py tests/test_listen_player.py` |

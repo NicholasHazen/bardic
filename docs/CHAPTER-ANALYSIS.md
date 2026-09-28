@@ -1,6 +1,6 @@
 # Chapter analysis and character references
 
-> **Historical record.** The engine this page describes was removed in Classic removal stage 3 (2026-09-28): its modules, routes and panel are gone. Analysis now runs only on the step pipeline; see the [analysis pipeline](ANALYSIS-PIPELINE.md) and [Classic removal](CLASSIC-REMOVAL.md). File and route names below refer to code that no longer exists.
+> **Historical record.** The engine this page describes was removed in Classic removal stage 3 (2026-09-28): its modules, routes and panel are gone. Analysis now runs only on the step pipeline; see the [analysis pipeline](ANALYSIS-PIPELINE.md) and [Classic removal](CLASSIC-REMOVAL.md). File and route names below refer to code that no longer exists, and stage 4 dropped the `analysis_checkpoints` and `analysis_units` tables it describes after retaining their rows as artifacts.
 
 Implemented September 27, 2026 after a real-book analysis stopped on an invalid evidence quotation in its first discovery request. The original failed response was not retained, so its exact mismatch cannot be reconstructed. The former pipeline required a literal substring match and saved book annotations only after the complete run.
 

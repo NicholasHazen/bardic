@@ -366,7 +366,7 @@ class ArtifactRepository:
         return {'kinds': kinds, 'stages': stages, 'total': sum(stages.values()), 'current': current}
 
     def backfill(self, book_id):
-        """Retain currently available legacy data without inventing lost inputs."""
+        """Retain a book's current projections, census and series links, without inventing lost inputs."""
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute('SELECT body FROM books WHERE id=?', (book_id,)).fetchone()
             if not row:
@@ -379,43 +379,8 @@ class ArtifactRepository:
                     segment['audio'] = takes.get(segment['id'])
             before = conn.execute('SELECT COUNT(*) FROM artifact_versions WHERE book_id=?', (book_id,)).fetchone()[0]
             capture_book(conn, book, legacy_provenance=True, only_missing=True)
-            chapters = {c['id']: c for c in book.get('chapters', []) if isinstance(c.get('text'), str)}
-
-            def save_unit(key, unit, source=None):
-                if output_head(conn, book_id, 'analysis_output', key):
-                    return
-                dependencies = _source_dependency(conn, book_id, unit, chapters, source)
-                recipe = unit.get('input_recipe')
-                if isinstance(recipe, dict):
-                    input_id = output_head(conn, book_id, 'analysis_input', key) or record(
-                        conn, book_id, 'analysis_input', key, recipe, label='Saved analysis input', stage=unit.get('stage', ''),
-                        provider=unit.get('provider'), model=unit.get('model'), dependencies=dependencies,
-                        legacy_provenance=True)
-                    dependencies.append(input_id)
-                payload = {k: deepcopy(v) for k, v in unit.items() if k not in {'input_recipe', 'dependency_artifact_ids'}}
-                record(conn, book_id, 'analysis_output', key, payload, label='Saved analysis output', stage=unit.get('stage', ''),
-                       provider=unit.get('provider'), model=unit.get('model'), dependencies=dependencies, legacy_provenance=True)
-
-            if 'analysis_units' in tables:
-                for key, source, body in conn.execute('SELECT unit_key,source_hash,body FROM analysis_units WHERE book_id=? ORDER BY rowid', (book_id,)).fetchall():
-                    save_unit(key, json.loads(body), source)
-            if 'analysis_checkpoints' in tables:
-                row = conn.execute('SELECT body FROM analysis_checkpoints WHERE book_id=?', (book_id,)).fetchone()
-                checkpoint = json.loads(row[0]) if row else {}
-                baseline = {c['id']: c.get('text') for c in checkpoint.get('working_book', {}).get('chapters', [])}
-                for key, value in checkpoint.get('units', {}).items():
-                    unit = deepcopy(value)
-                    unit.setdefault('provider', checkpoint.get('provider'))
-                    unit.setdefault('model', checkpoint.get('model'))
-                    chapter_id = unit.get('chapter_id')
-                    same_source = chapter_id in chapters and baseline.get(chapter_id) == chapters[chapter_id]['text']
-                    save_unit(unit.get('unit_key') or key, unit, None if same_source else 'unverified-legacy-source')
-            if 'character_observations' in tables:
-                for identifier, body in conn.execute('SELECT id,body FROM character_observations WHERE book_id=? ORDER BY rowid', (book_id,)).fetchall():
-                    if output_head(conn, book_id, 'character_observation', identifier):
-                        continue
-                    observation = json.loads(body)
-                    capture_observation(conn, book_id, observation, chapters)
+            # The removed Classic engine's units, checkpoints and observations were retained
+            # by the one-time migration that dropped them (bardic.migrations.retain_legacy).
             if 'book_preprocessing' in tables:
                 row = conn.execute('SELECT fingerprint,body FROM book_preprocessing WHERE book_id=?', (book_id,)).fetchone()
                 if row and not output_head(conn, book_id, 'census', 'book'):

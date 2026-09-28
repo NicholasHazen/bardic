@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.3.0
+# Bardic 0.3.1
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -1098,7 +1098,7 @@ Returns every source reference to this current cast member, unpaginated, in read
 
 **Refresh structure metadata from the saved original** · operation `repairBookStructure` · cost `none`
 
-Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.
+Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. Increments `revision`.
 
 Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.
 
@@ -1111,7 +1111,7 @@ Before it changes the book, the current projection is recorded in the step pipel
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | - `original_missing`: The book has no saved original EPUB or TXT, or the saved file is missing. - `original_too_large`: The saved original is larger than 30 MiB (the import limit). - `original_unreadable`: The saved original could not be parsed (for example an unreadable EPUB). - `structure_mismatch`: The re-parsed source does not match the saved chapters or the saved analysis checkpoint. |
+| 400 | [Error](#schema-error) | - `original_missing`: The book has no saved original EPUB or TXT, or the saved file is missing. - `original_too_large`: The saved original is larger than 30 MiB (the import limit). - `original_unreadable`: The saved original could not be parsed (for example an unreadable EPUB). - `structure_mismatch`: The re-parsed source does not match the saved chapters. |
 | 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
@@ -1555,7 +1555,7 @@ Contents:
 | `book.json` | The stored book document, including chapter text, passage IDs and stored take metadata (not the API presentation of `GET /api/books/{book_id}`). |
 | `story-map.json` | Same body as `GET /api/books/{book_id}/story-map`. |
 | `series.json` | `{membership, links, series_characters}` for the book's series (nulls/empty when none). |
-| `observations.json` | Retained character observations of the book. |
+| `observations.json` | Rows of the book's observation history table. Empty for most books: the removed Classic engine's observations are `character_observation` artifacts since contract 0.3.1. |
 | `references.json` | Saved character references (as in the story map). |
 | `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, oldest first, each in the `PipelineAttempt` shape of `GET /api/books/{book_id}/pipeline` (the same field allowlist, with `validation_state`). |
 | `artifacts.jsonl` | One artifact per line, as `GET …/artifacts/{artifact_id}` returns it (metadata, `dependency_links`, `payload`), oldest first. |
@@ -2813,7 +2813,7 @@ One artifact version with its payload.
 | --- | --- | --- | --- |
 | `id` | string | yes | Artifact version ID (`artifact_` + content hash). |
 | `book_id` | string | yes | Owning book. |
-| `kind` | string | yes | Artifact kind. Known kinds: `source` (chapter text), `structure` (book structure), `scene_map` (per-chapter scenes and passages), `character_profile`, `voice_assignment`, `audio_take` (passage audio metadata), `census`, `character_observation`, `series_context`, `series_run`, `library_state`, `analysis_input` (request recipe), `analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error) and `step_output` (step-pipeline version). Treat as an open set. |
+| `kind` | string | yes | Artifact kind. Known kinds: `source` (chapter text), `structure` (book structure), `scene_map` (per-chapter scenes and passages), `character_profile`, `voice_assignment`, `audio_take` (passage audio metadata), `census`, `character_observation`, `series_context`, `series_run`, `library_state`, `analysis_input` (request recipe), `analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error), `analysis_checkpoint` (a saved checkpoint of the removed Classic engine, retained when its table was dropped) and `step_output` (step-pipeline version). Treat as an open set. |
 | `logical_key` | string | yes | Scope within the kind (e.g. chapter ID, character ID, unit key, `book`). One version per (book, kind, logical_key) can be current. |
 | `label` | string | yes | Display label. |
 | `stage` | string | yes | Producing stage, e.g. `import`, `structure`, `census`, `discovery`, `profiles`, `directing`, `voices`, `narration`, `series`, `library`, a pipeline step ID, or empty for some legacy records. |
@@ -2849,7 +2849,7 @@ Metadata of one immutable artifact version.
 | --- | --- | --- | --- |
 | `id` | string | yes | Artifact version ID (`artifact_` + content hash). |
 | `book_id` | string | yes | Owning book. |
-| `kind` | string | yes | Artifact kind. Known kinds: `source` (chapter text), `structure` (book structure), `scene_map` (per-chapter scenes and passages), `character_profile`, `voice_assignment`, `audio_take` (passage audio metadata), `census`, `character_observation`, `series_context`, `series_run`, `library_state`, `analysis_input` (request recipe), `analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error) and `step_output` (step-pipeline version). Treat as an open set. |
+| `kind` | string | yes | Artifact kind. Known kinds: `source` (chapter text), `structure` (book structure), `scene_map` (per-chapter scenes and passages), `character_profile`, `voice_assignment`, `audio_take` (passage audio metadata), `census`, `character_observation`, `series_context`, `series_run`, `library_state`, `analysis_input` (request recipe), `analysis_output` (validated result), `analysis_rejection` (rejected result with its validation error), `analysis_checkpoint` (a saved checkpoint of the removed Classic engine, retained when its table was dropped) and `step_output` (step-pipeline version). Treat as an open set. |
 | `logical_key` | string | yes | Scope within the kind (e.g. chapter ID, character ID, unit key, `book`). One version per (book, kind, logical_key) can be current. |
 | `label` | string | yes | Display label. |
 | `stage` | string | yes | Producing stage, e.g. `import`, `structure`, `census`, `discovery`, `profiles`, `directing`, `voices`, `narration`, `series`, `library`, a pipeline step ID, or empty for some legacy records. |
@@ -3762,7 +3762,7 @@ File sizes are regular-file lengths measured on disk at request time
 | `simple_listen_bytes` | integer | yes | Bytes of retained simple-listening audio. |
 | `voice_preview_bytes` | integer | yes | Bytes of retained voice-example audio. |
 | `file_bytes` | integer | yes | Sum of the four file sizes above. |
-| `database_payload_bytes` | integer | yes | Exact byte length of this book's rows' bodies in the shared SQLite database (book JSON, takes, analysis checkpoints, artifacts, cover, resource records, listening and preview records, ...). It is not a disk allocation: it excludes shared pages, indexes, free space and compression. |
+| `database_payload_bytes` | integer | yes | Exact byte length of this book's rows' bodies in the shared SQLite database (book JSON, takes, character references, artifacts, cover, resource records, listening and preview records, ...). It is not a disk allocation: it excludes shared pages, indexes, free space and compression. |
 | `note` | string | yes | Human-readable caveat about these measurements. Display only. |
 
 <a id="schema-librarybooksummary"></a>
@@ -5494,7 +5494,8 @@ evidence). Its quote was rechecked against the earlier book's current chapter
 text at `start`/`end` (zero-based Unicode code-point offsets, exclusive end),
 and a row whose chapter text changed since it was produced is left out. A row
 the removed Classic engine wrote counts only while the observation that engine
-retained with it (same content hash, so the same chapter text) still exists.
+retained with it (same content hash, so the same chapter text) is retained as a
+`character_observation` artifact of that book.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

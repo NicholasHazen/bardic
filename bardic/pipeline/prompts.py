@@ -99,8 +99,8 @@ def _earlier_entries(store, book, series, skip):
         for character_id, entries in previous.items():
             identifiers = {linked[bid] for bid in {book['id'], *(o['book_id'] for o in entries)}} if entries else set()
             for entry in entries:
-                # A book from before artifact records has no retained source yet; its
-                # history is backfilled from the legacy observation table instead.
+                # A book from before artifact records has no retained source until the
+                # startup backfill captures it; nothing is recorded for it without one.
                 if output_head(conn, entry['book_id'], 'source', entry['chapter_id']):
                     payload = {field: entry.get(field) for field in OBSERVATION_FIELDS}
                     identifiers.add(capture_observation(conn, entry['book_id'], payload, chapters[entry['book_id']],

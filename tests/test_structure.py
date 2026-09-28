@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 from bardic.importer import _resolve, _xhtml_content, parse_book
-from bardic.structure import repair_structure, transform_checkpoint_structure
+from bardic.structure import repair_structure
 
 
 def epub(documents, *, nav=None, ncx=None, spine=None):
@@ -176,12 +176,10 @@ def legacy_book(data):
     return book
 
 
-def test_repair_is_metadata_only_and_checkpoint_retains_paid_outputs():
+def test_repair_is_metadata_only():
     data = epub({"one": '<p>Story so far.</p>'}, nav=toc([("one.xhtml", "The Story Thus Far")]))
     book = legacy_book(data)
     before = deepcopy(book)
-    checkpoint = {"working_book": deepcopy(book), "chapters": [{"id": book["chapters"][0]["id"], "title": "Chapter 1", "status": "completed"}],
-                  "units": {"paid-unit": {"result": {"characters": []}}}, "references": [{"id": "ref", "start": 0, "end": 5}]}
     repaired = repair_structure(book, "book.epub", data)
     assert book == before
     assert repaired["segments"] == book["segments"]
@@ -189,11 +187,6 @@ def test_repair_is_metadata_only_and_checkpoint_retains_paid_outputs():
     assert repaired["chapters"][0]["text"] == book["chapters"][0]["text"]
     assert repaired["scenes"][0]["id"] == book["scenes"][0]["id"]
     assert repaired["scenes"][0]["title"] == "The Story Thus Far · Scene 1"
-    transformed = transform_checkpoint_structure(checkpoint, repaired)
-    assert transformed["chapters"][0]["title"] == "The Story Thus Far"
-    assert transformed["chapters"][0]["status"] == "completed"
-    assert transformed["units"] == checkpoint["units"] and transformed["references"] == checkpoint["references"]
-    assert checkpoint["working_book"] == book
 
 
 @pytest.mark.parametrize("change", ["text", "count"])
@@ -207,22 +200,9 @@ def test_repair_refuses_source_changes_before_modifying_original(change):
     assert book == before
 
 
-def test_repair_retains_custom_scene_title_and_rejects_mismatched_checkpoint():
+def test_repair_retains_custom_scene_title():
     data = epub({"one": '<p>Original.</p>'}, nav=toc([("one.xhtml", "Chapter 8")]))
     book = legacy_book(data)
     book["scenes"][0].update(title="Reviewed title", edited=True)
     repaired = repair_structure(book, "book.epub", data)
     assert repaired["scenes"][0]["title"] == "Reviewed title"
-    checkpoint = {"working_book": deepcopy(book)}
-    checkpoint["working_book"]["chapters"][0]["text"] = "Different"
-    with pytest.raises(ValueError, match="saved source text"):
-        transform_checkpoint_structure(checkpoint, repaired)
-
-
-def test_checkpoint_with_missing_chapter_is_not_migrated_as_complete():
-    data = epub({"one": '<p>One.</p>', "two": '<p>Two.</p>'})
-    book = parse_book("book.epub", data)
-    checkpoint = {"working_book": deepcopy(book)}
-    checkpoint["working_book"]["chapters"].pop()
-    with pytest.raises(ValueError, match="chapter identities"):
-        transform_checkpoint_structure(checkpoint, book)

@@ -53,7 +53,7 @@ def production_snapshot(store):
     with store.connect() as conn:
         return {table: conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
                 for table in ('books','takes','artifact_versions','artifact_heads','artifact_dependencies',
-                              'analysis_checkpoints','character_references')}
+                              'character_references')}
 
 
 def test_one_voice_verbatim_transcript_and_no_enhanced_production_mutation(setup):
