@@ -17,7 +17,29 @@ uv run --frozen python -m bardic
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). There is no frontend compilation step. The launcher binds to loopback unless [local-network access](#local-network-access) is enabled; this version has no user account system and is intended for a single owner. The application checks request origins for writes. A publicly hosted deployment is not configured or promised by this setup.
 
-Use **Stop** on active work when convenient, then Ctrl+C in the server terminal. Shutdown waits for running worker work to finish or reach a cancellation boundary. A request already sent to a provider can still complete and be charged. Do not start another server against the same data directory while the first is shutting down.
+### Run as a service
+
+On macOS, `./bardicctl` runs Bardic as a LaunchAgent. It then starts at login, restarts after a crash and belongs to launchd rather than to whichever terminal or agent session started it:
+
+```sh
+./bardicctl install    # once, from any checkout of this repository
+./bardicctl status     # what serves the port, who owns it, active jobs
+./bardicctl restart    # after pulling code or editing .env
+./bardicctl stop       # until `start` or the next login
+./bardicctl start
+./bardicctl logs -f    # ~/Library/Logs/bardic.log
+./bardicctl uninstall  # stop, and no longer start at login
+```
+
+- `install` writes `~/Library/LaunchAgents/local.bardic.plist` for the repository's **main checkout**, never a linked worktree. `install`, `start` and `restart` run `uv sync --frozen` there first; a failed sync stops nothing. launchd then runs the checkout's `.venv/bin/python -m bardic` directly, so its signals reach the server itself rather than a `uv` wrapper. That launch reads the checkout's `.env` as usual. launchd passes no shell variables, so keep the port, library and network settings in `.env`. The job's PATH includes Homebrew, so ffmpeg is found; `say` and `dns-sd` are in `/usr/bin`.
+- The service runs whatever the main checkout contains. Work in another worktree is not served until it is merged there and the service restarts.
+- `stop`, `restart`, `install` (when reloading) and `uninstall` refuse while jobs are queued or running and name them, or when the server cannot report its jobs; `--force` proceeds. Shutdown waits for a safe boundary, which lets a request already sent finish. After 5 minutes launchd sends SIGKILL, which cuts off a long Gemini chapter chunk that can take up to 15 minutes. A request already sent can still be charged, and unfinished jobs are marked interrupted. The commands return only after the server process has exited.
+- Run from a linked worktree, those four commands also require `--yes`, so an agent cannot interrupt the owner's server by confusing `stop` with `dev stop`.
+- A server started by hand (for example with `nohup`) is not managed. `status` lists its parent processes; when they lead straight to launchd, whatever started it has exited and no session owns it. `install`, `start` and `restart` refuse while it holds the port. `./bardicctl stop` sends it SIGTERM, but only when its command line is a Bardic launch; then run `./bardicctl install`.
+- After a crash or failed start, launchd tries again every 30 seconds. A port held by another program therefore adds a log line every 30 seconds until it is freed or the service is stopped. The log records every request, about 2 MB a day with the app open. When it passes 10 MB, the next `install`, `start` or `restart` moves it to `bardic.log.1`; it is not rotated while the server runs.
+- The service commands need macOS. The [development servers](DEVELOPMENT.md#configuration-and-data-isolation) work on any POSIX system.
+
+For a server started in a terminal, use **Stop** on active work when convenient, then Ctrl+C in the server terminal. Shutdown waits for running worker work to finish or reach a cancellation boundary. A request already sent to a provider can still complete and be charged. Do not start another server against the same data directory while the first is shutting down.
 
 An operating-system lock on `server.lock` enforces one application instance per data directory. The file may remain after a clean exit; its mere presence is not an active lock. Do not delete it to bypass a running process. Open the existing app or stop the process using that directory.
 
@@ -27,7 +49,7 @@ An alternate launch can use another port and a separate data directory:
 BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library BARDIC_LAN_NAME='' uv run --frozen python -m bardic
 ```
 
-The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access.
+The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access. `./bardicctl dev start --library /absolute/path/to/test-library` does the same in the background with provider keys blank; it refuses the service's own library.
 
 This is useful for testing a restored **copy**. Changing the port alone does not allow two servers to share one library. Keep the primary database on a local filesystem; SQLite WAL relies on same-host coordination. See [SQLite WAL](https://sqlite.org/wal.html).
 

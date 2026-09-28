@@ -20,7 +20,7 @@ uv sync --frozen --group dev
 uv run --frozen python -m bardic
 ```
 
-Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
+Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. To keep the owner's library running in the background instead, use the [service](OPERATIONS.md#run-as-a-service). Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
 
 Node.js is required to execute the JavaScript tests. The tests use Node built-ins; no npm dependencies are needed. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
 
@@ -46,7 +46,23 @@ The old `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain aliases. Shell s
 
 Changing `.env` requires a server restart. Settings saves model preferences in SQLite but keeps changed API keys only in the current runtime's memory. Settings does not rewrite `.env`; restarting reloads configured environment/file keys. Never copy `.env`, user ebooks, generated audio, library databases, or provider response dumps into fixtures or documentation.
 
-Use an isolated data directory and port for manual development. The following starts with cloud keys explicitly blank, even if the checkout has a configured `.env`:
+Use an isolated development server for manual checks. From the checkout or worktree you are changing:
+
+```sh
+./bardicctl dev start      # prints http://127.0.0.1:87xx
+./bardicctl dev restart    # after Python edits; keeps the port and library
+./bardicctl dev list       # development servers from every checkout
+./bardicctl dev logs -f
+./bardicctl dev stop
+```
+
+It runs this checkout's code in the background on the first free port from 8770 to 8799, with a scratch library in `~/.cache/bardic-dev/<name>/library`. The name defaults to the checkout's directory name; `--name` runs a second server, and `BARDIC_DEV_HOME` moves the root. If another checkout already uses that name, the command stops and asks for `--name`. Provider keys, the Breeze URL and the network settings are blank and the bind is loopback, even when the checkout has a `.env`. `--library` points at a restored copy. A restored copy keeps its own saved settings, including a Breeze server URL. A library that is, contains or lies inside the service's library is refused, as is the service's port. `dev start` and `dev restart` reuse the previous port and library, so the browser origin and its saved reading position stay the same. The start succeeds only when its own process holds the port and answers; otherwise it stops that process and prints the log. Starts are serialized, so concurrent sessions get distinct ports. The library and `server.log` remain after `stop` for inspection; delete that directory when you are finished. Any session can list or stop any development server. Each record includes the process start time, so a reused process ID is never signalled.
+
+The owner's library is served separately by the [service](OPERATIONS.md#run-as-a-service) from the main checkout. `./bardicctl status` is read-only and shows what serves its port, who owns the process and whether jobs are active.
+
+Development servers are processes, not containers. Worktrees already isolate code, and the port, library and blank keys isolate runtime state. A Linux container would lose macOS `say` voices and `dns-sd`. With Docker Desktop, the library would also cross a VM boundary. SQLite WAL needs every process to share memory on one host, and `server.lock` is not guaranteed to exclude a host process across that boundary, so a container mounting the real library could run beside the service. Reconsider this if the project gains Linux-only dependencies or a CI image.
+
+The manual equivalent starts with cloud keys explicitly blank, even if the checkout has a configured `.env`:
 
 ```sh
 scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/bardic-dev.XXXXXX")
@@ -59,7 +75,7 @@ Keep that shell's printed/assigned `scratch_dir` available if you want to inspec
 
 The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `bardic.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably. Network settings are read when `create_app()` runs; [test_lan.py](../tests/test_lan.py) covers them with a fake `dns-sd`, plus real-process checks that the helper cannot outlive a killed server.
 
-The ordinary launch command deliberately has no reload flag. For Python edits, stop and restart the isolated server. Browser files are served directly; refresh the browser after edits. Launching `uvicorn bardic.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
+The ordinary launch command deliberately has no reload flag. For Python edits, restart the isolated server (`./bardicctl dev restart`). Browser files are served directly; refresh the browser after edits. Launching `uvicorn bardic.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
 
 Sources: [Runtime and create_app](../bardic/app.py), [Store and InstanceLock](../bardic/store.py).
 
@@ -136,6 +152,7 @@ For manual checks, load the original story from the welcome screen, use a short 
 | Local lexical passage index | [search.py](../bardic/search.py) |
 | Per-operation resource measurements | [resources.py](../bardic/resources.py) |
 | Bounded operational diagnostics and redacted browser events | [diagnostics.py](../bardic/diagnostics.py), [static/diagnostics.js](../bardic/static/diagnostics.js) |
+| launchd service and development-server control for `./bardicctl`; not imported by the app | [service.py](../bardic/service.py), [bardicctl](../bardicctl) |
 
 One runtime worker schedules normal analysis, enhanced narration, simple-listen and voice-preview jobs. Series execution is coordinated separately and allows at most two independent discovery workers; later interpretation follows reading order. Busy-book and active-series guards protect edits and membership changes. Cancellation is cooperative at request/unit boundaries; it is not a guarantee that a remote request or speech subprocess stops immediately.
 

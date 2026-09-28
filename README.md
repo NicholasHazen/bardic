@@ -22,7 +22,7 @@ uv sync --frozen --group dev
 uv run --frozen python -m bardic
 ```
 
-Open **http://127.0.0.1:8765**. The server binds only to your computer. Stop it with Ctrl+C. Set `BARDIC_PORT` to choose another port. To open it from a phone or another computer on your network as `http://bardic.local:8765`, set `BARDIC_LAN_NAME=bardic`; there is no login, so read [local-network access](docs/OPERATIONS.md#local-network-access) first. The Python virtual environment and lockfile keep dependencies reproducible.
+Open **http://127.0.0.1:8765**. The server binds only to your computer. Stop it with Ctrl+C. On macOS, `./bardicctl install` instead runs it in the background under launchd, starting at login; `./bardicctl status`, `restart`, `stop`, `start` and `logs` manage it (see [run as a service](docs/OPERATIONS.md#run-as-a-service)). Set `BARDIC_PORT` to choose another port. To open it from a phone or another computer on your network as `http://bardic.local:8765`, set `BARDIC_LAN_NAME=bardic`; there is no login, so read [local-network access](docs/OPERATIONS.md#local-network-access) first. The Python virtual environment and lockfile keep dependencies reproducible.
 
 **Upgrading from Spin Tails:** keep your existing checkout and `.env`. The preferred launcher is now `python -m bardic`; `python -m spintails` remains a compatibility launcher. Existing `SPINTAILS_PORT` and `SPINTAILS_DATA_DIR` settings still work. If no data directory is configured, Bardic uses an existing `.spintails/` in place when `.bardic/` is absent. No library move or database migration is required for the rename. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
 

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Start, stop and inspect the Bardic service and development servers: ./bardicctl --help
+# See docs/OPERATIONS.md (service) and docs/DEVELOPMENT.md (development servers).
+root=$(cd "$(dirname "$(realpath "$0")")" && pwd) || exit 1
+# -P keeps the caller's directory, possibly another checkout, off the import path.
+PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec uv run --quiet --frozen --project "$root" python -P -m bardic.service "$@"
