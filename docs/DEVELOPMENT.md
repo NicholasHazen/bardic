@@ -70,6 +70,8 @@ rg --files bardic/static -g '*.js' | xargs -n 1 node --check
 
 Run the Node command explicitly: the CommonJS model-picker suite and `browser_storage_test.js` are separate from pytest. Pytest invokes the `*_ui_test.js` and player harnesses through Python wrappers when Node is installed; the full Node command also reruns those harnesses.
 
+For workspace navigation and the compact listening controls, run `node --test tests/workspace_ui_test.js tests/listen_ui_test.js tests/listen_player_test.js`. The workspace suite is part of the explicit Node command, not a pytest wrapper; it covers local search, home navigation without interrupting playback, keyboard tabs, shortcuts, provider setup focus, and Play opening narrator setup without generation when an enhanced take is absent. A browser check is still needed for the responsive layout and native disclosures.
+
 For an already installed environment with no dependency resolution:
 
 ```sh
@@ -102,7 +104,7 @@ BARDIC_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
 
 Run that only on a machine with the speech services and ffmpeg available. It is a local audio test, not a Gemini test. A default test run should not inherit that opt-in unintentionally.
 
-For manual checks, import the built-in original sample with **Try a sample**, use a short synthetic TXT, or construct a temporary book through `parse_book`. Verify the relevant flow, errors, and keyboard/player behavior. Cloud account checks, cloud analysis, and Gemini narration are explicit provider actions and are not necessary to test the surrounding application.
+For manual checks, load the original story from the welcome screen, use a short synthetic TXT, or construct a temporary book through `parse_book`. Verify the relevant flow, errors, and keyboard/player behavior. Cloud account checks, cloud analysis, and Gemini narration are explicit provider actions and are not necessary to test the surrounding application.
 
 ## Code map and execution boundaries
 
@@ -137,6 +139,10 @@ SQLite uses WAL and foreign keys. Store operations share an `RLock`; connections
 
 [app.js](../bardic/static/app.js) owns the selected book/chapter/passage, shared `Audio` element, reader highlighting, settings, and main job polling. [index.html](../bardic/static/index.html) loads the independent scripts before the application module. Each component owns only its mount container and scoped CSS.
 
+The workspace separates the library landing view from the selected book. Returning to **Library** preserves playback; reopening the selected book does not create a new listening session. Title/author filtering is local. The **Read & listen**, **Cast & voices**, and **Studio** views use linked tab/tabpanel semantics, a single tab stop, and Left/Right/Home/End navigation. The chapter selector above the reader and the contents list share the same chapter-selection path. Keep these controls available on narrow layouts.
+
+Use progressive disclosure for secondary controls: **Story analysis** holds stage planning, coverage and spending allowances; **Plan analysis** reveals it before scrolling and focusing the controls. Series membership/identity tools follow the cast in **Series & continuity**, and pipeline/resource inspectors follow the script in **Production details**. Each provider's settings and optional account checks also have their own disclosures. Opening settings for a missing provider key must reveal that provider before focusing its key field; native validation must also reveal the disclosure containing an invalid field. Disclosure changes must preserve existing feature mount IDs, unsaved input values and explicit generation boundaries.
+
 Browser storage writes use the `bardic:` prefix and fall back to old `spintails:` values on reads. Preserve that compatibility when changing preference or reading-position storage. JavaScript feature interfaces use the `Bardic` prefix shown below.
 
 | Namespace and source | Public interface |
@@ -156,6 +162,10 @@ Listening exposes `isSimple(book)`/`enabled(book)`, `resolve(book, segment)`/`ta
 The resolver reads the selected mode's saved audio. `ensure` serializes one passage request, deduplicates matching pending work and polls its job; it can cause paid generation. The main player uses `prepare` for a warmup of 10 listening seconds capped at three passages, then `updatePlayback` to drive a 45-listening-second rolling buffer capped at 12 future passages. These stay within the current chapter. `prepareChapter` is a separate explicit action for the remaining chapter and does not autoplay. `getBuffer` reports measured contiguous seconds at the current speed, passage count, target and preparation/error state. Merely rendering the panel loads saved metadata and must not start generation.
 
 `getSelection` returns a copy of the effective mode/provider/voice/model. The simple panel delegates transport to `onToggle` (or `onPlay` for initial mode selection), validated speed changes to `onRateChange`, and explicit examples to `onPreview({provider,voice,model,segment_id})`. Speed changes preserve queue intent; a valid existing warmup can update its rate during render without starting rolling lookahead. `playing`/`preparing`/`previewing` come from the shared player. Rendering and dropdown changes never start an audition.
+
+The outer **Listen your way** disclosure (`#listening-drawer`) starts closed to prioritize reading. Its summary keeps the selected playback mode, narrator setup, provider, charging status and chapter-preparation progress visible. A new preparation error opens the drawer once; later renders respect an explicit close while the same error remains. Normal playback updates do not open it. The footer's **Voice & listening settings** and reader's **Choose a narrator** actions open it and focus the voice selector. With enhanced mode selected, pressing Play with no take also reveals it without generating audio; a stale enhanced take keeps the regenerate-in-Studio guidance.
+
+Inside, narrator selection, auditions and explicit playback are visible, while **More listening options** holds speed, speech model, remaining-chapter preparation and buffer details. The inner disclosure's open state survives parent renders; active preparation progress, retryable errors and provider cost/privacy information stay outside that inner disclosure. **One narrator** and **Studio voices** are display labels for the existing `simple` and `enhanced` modes. A fresh selection still defaults to enhanced mode; **Start simple listening** explicitly selects simple mode and starts playback. Opening either disclosure or rendering a compact panel must not generate audio.
 
 Voice auditions use the shared audio element without moving the reader passage or persisting sample elapsed time as the book bookmark. Starting one pauses reading and cancels lookahead. Closing it restores the paused offset; finishing does not autoplay the book. The controller serializes sample requests, coalesces identical pending intent, waits for a known cancelled job to settle, calls `beforeRequest` before submitting the sample, and ignores late success/error after Stop or replacement. Cast requests read unsaved voice/direction form fields; Studio requests read the unsaved speaker and passage direction. Do not save/restore cast edits to implement an audition. Contextual source and the 400-code-point cap are enforced server-side. Cache lookup precedes provider availability; new synthesis is a single explicit request with no automatic POST retry.
 
