@@ -91,7 +91,7 @@ def test_executor_submission_failure_releases_books_redacts_error_and_preserves_
     with monkeypatch.context() as scoped:
         scoped.setattr(runtime.series_pool, 'submit', rejected)
         response = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai'})
-    assert response.status_code == 400 and 'could not start' in response.text
+    assert response.status_code == 503 and response.json()['code'] == 'shutting_down'
     jobs = runtime.store.jobs(limit=None)
     assert all(job['status'] not in {'queued', 'running'} for job in jobs)
     assert 'private-test-key' not in str(jobs)
@@ -125,7 +125,7 @@ def test_preview_fingerprint_is_stable_and_rejects_changed_scope_before_jobs(cli
     other = import_text(client, 'Chapter 1\n\nA new member.')
     client.put(f"/api/books/{other['id']}/series", json={'series_id': series['id'], 'position': 2})
     response = client.post(url + '/process', json={**body, 'expected_plan_fingerprint': first['plan_fingerprint']})
-    assert response.status_code == 400 and 'changed' in response.text
+    assert response.status_code == 409 and response.json()['code'] == 'plan_stale'
     assert client.get('/api/jobs').json() == []
     current = client.post(url + '/plan', json=body).json()
     assert current['plan_fingerprint'] != first['plan_fingerprint']

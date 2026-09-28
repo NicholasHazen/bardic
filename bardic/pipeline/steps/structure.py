@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from ..contract import Step, Unit
+from ...errors import Invalid
 from ...structure import CHAPTER_FIELDS, STRUCTURE_VERSION, repair_structure
 
 MAX_ORIGINAL_BYTES = 30 * 1024 * 1024
@@ -49,7 +50,7 @@ class StructureStep(Step):
             return []
         updated = {c['id']: c for c in payload['chapters']}
         if set(updated) != {c['id'] for c in book['chapters']}:
-            raise ValueError('The structure version does not match this book\'s chapters.')
+            raise Invalid('version_incompatible', 'The structure version does not match this book\'s chapters.')
         for chapter in book['chapters']:
             for name in CHAPTER_FIELDS:
                 chapter.pop(name, None)

@@ -17,7 +17,7 @@ from copy import deepcopy
 
 from ..processing import digest
 from .repository import PipelineRepository
-from ..errors import NotFound
+from ..errors import Conflict, Invalid, NotFound
 
 
 class RevisionConflict(ValueError):
@@ -114,7 +114,7 @@ def preview(repository, registry, conn, book, step, versions, valid_audio=None, 
     for scope, identifier in versions.items():
         payload = payloads.get(identifier)
         if not payload or payload.get('step_id') != step.id or payload.get('scope') != scope:
-            raise ValueError('A selected version does not belong to this step and scope.')
+            raise Invalid('version_incompatible', 'A selected version does not belong to this step and scope.')
         accepted[scope] = payload['result']
     if step.accumulative:
         # Additive steps (discovery) only apply what changes; re-merging every
@@ -144,7 +144,7 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
     with store.lock, store.connect() as conn:
         book = store._hydrate(_book_row(conn, book_id), conn)
         if expected_revision is not None and book.get('revision', 0) != expected_revision:
-            raise RevisionConflict('The book changed since this preview. Review the impact again before accepting.')
+            raise RevisionConflict('The book changed since this preview (its revision differs from `expected_revision`).')
         sync(repository, registry, conn, book)
         impact = preview(repository, registry, conn, book, step, versions, valid_audio, prepare)
         work = impact.pop('book')
@@ -161,10 +161,19 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
 
 
 def reject(store, repository, book_id, step, versions, *, step_run_id=None):
+    """Decline a step version. Only the decision log changes: heads, the book and retained results do not.
+
+    Acceptance is a decision, not content equality. A version whose results merely equal the
+    accepted content (``same_as_accepted``, content-addressed to the same artifact) can be
+    declined; the identical accepted content stays accepted through the version that was
+    accepted. Refused only for scopes this very version made current.
+    """
     with store.lock, store.connect() as conn:
         heads = repository.heads(conn, book_id, step.id)
-        if any(heads.get(scope) == identifier for scope, identifier in versions.items()):
-            raise ValueError('An accepted version cannot be rejected. Accept another version to replace it.')
+        current = [scope for scope, identifier in versions.items() if heads.get(scope) == identifier]
+        if current and repository.was_accepted(conn, book_id, step.id, step_run_id):
+            raise Conflict('version_accepted', 'This version is the accepted one for a selected scope. '
+                                               'Accept another version to replace it.')
         return repository.decide(conn, book_id, step.id, 'reject', versions, mode='user', step_run_id=step_run_id)
 
 

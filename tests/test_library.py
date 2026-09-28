@@ -193,7 +193,7 @@ def test_missing_and_planned_slots_are_explicit_and_replaced_by_real_book(librar
     series.set_membership(book['id'], saga['id'], 1)
     volumes = series.list_series()[0]['volumes']
     assert len(volumes) == 2 and volumes[0]['book_id'] == book['id'] and volumes[0]['status'] == 'available'
-    with pytest.raises(ValueError, match='already occupies'):
+    with pytest.raises(ValueError, match='already has this reading order'):
         repository.add_volume(saga['id'], 1, status='missing')
     repository.remove_volume(saga['id'], 1.5)
     assert len(series.list_series()[0]['volumes']) == 1

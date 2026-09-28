@@ -35,17 +35,21 @@ def price_for(provider, model, *, input_tokens=None):
     return model_price(provider, model, input_tokens=input_tokens)
 
 
+def initialize_schema(conn):
+    """Create the processing tables. The Store runs this once when it opens a library."""
+    conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
+    conn.execute('CREATE INDEX IF NOT EXISTS analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
+    conn.execute('CREATE TABLE IF NOT EXISTS analysis_attempts (id TEXT PRIMARY KEY, book_id TEXT, run_id TEXT, body TEXT NOT NULL)')
+    conn.execute('CREATE INDEX IF NOT EXISTS analysis_attempts_book ON analysis_attempts(book_id,run_id)')
+    conn.execute('CREATE TABLE IF NOT EXISTS book_preprocessing (book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL)')
+    conn.execute('CREATE TABLE IF NOT EXISTS pipeline_events (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, run_id TEXT, unit_key TEXT, stage TEXT, body TEXT NOT NULL)')
+    conn.execute('CREATE INDEX IF NOT EXISTS pipeline_events_book ON pipeline_events(book_id,run_id)')
+
+
 class ProcessingStore:
     def __init__(self, store):
+        # Tables are created once by Store.__init__ (initialize_schema), not per construction.
         self.store = store
-        with store.lock, store.connect() as conn:
-            conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
-            conn.execute('CREATE INDEX IF NOT EXISTS analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
-            conn.execute('CREATE TABLE IF NOT EXISTS analysis_attempts (id TEXT PRIMARY KEY, book_id TEXT, run_id TEXT, body TEXT NOT NULL)')
-            conn.execute('CREATE INDEX IF NOT EXISTS analysis_attempts_book ON analysis_attempts(book_id,run_id)')
-            conn.execute('CREATE TABLE IF NOT EXISTS book_preprocessing (book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL)')
-            conn.execute('CREATE TABLE IF NOT EXISTS pipeline_events (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, run_id TEXT, unit_key TEXT, stage TEXT, body TEXT NOT NULL)')
-            conn.execute('CREATE INDEX IF NOT EXISTS pipeline_events_book ON pipeline_events(book_id,run_id)')
 
     def unit(self, book_id, key):
         with self.store.lock, self.store.connect() as conn:

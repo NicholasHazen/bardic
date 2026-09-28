@@ -127,7 +127,7 @@ def test_archived_books_and_placeholders_are_not_scheduled(client,monkeypatch):
     assert wait_job(client,result['id'])['status']=='completed'
     assert calls==[books[1]['id']]
     assert client.post(f"/api/series/{series['id']}/archive").status_code==200
-    assert client.post(f"/api/series/{series['id']}/plan",json={'provider':'openai'}).status_code==404
+    assert client.post(f"/api/series/{series['id']}/plan",json={'provider':'openai'}).status_code==409
 
 
 @pytest.mark.parametrize('body',[{'provider':'local'},{'provider':'unknown'},{'concurrency':3},{'limits':{'max_requests':0}}])

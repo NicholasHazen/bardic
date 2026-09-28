@@ -54,9 +54,8 @@ def initialize_schema(conn):
 
 class PipelineRepository:
     def __init__(self, store):
+        # The tables are created once, when the Store opens the library (see Store.__init__).
         self.store = store
-        with store.lock, store.connect() as conn:
-            initialize_schema(conn)
 
     def recover_interrupted(self):
         """At startup, no pipeline work is running: mark leftovers interrupted."""
@@ -199,6 +198,14 @@ class PipelineRepository:
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute(query + ' ORDER BY rowid DESC LIMIT ?', [*args, limit]).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def was_accepted(self, conn, book_id, step_id, step_run_id):
+        """True when an accept decision (by anyone) names this step version."""
+        if step_run_id is None:
+            return False
+        rows = conn.execute('SELECT body FROM pipeline_decisions WHERE book_id=? AND step_id=?', (book_id, step_id))
+        return any((value := json.loads(body))['action'] == 'accept' and value.get('step_run_id') == step_run_id
+                   for (body,) in rows)
 
     def head(self, conn, book_id, step_id, scope):
         return output_head(conn, book_id, KIND, version_key(step_id, scope))

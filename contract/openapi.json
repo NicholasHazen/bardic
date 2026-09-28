@@ -104,7 +104,7 @@
             }
           }
         },
-        "description": "Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured`/`has_api_key` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.\n\nRead-only; contacts no server.",
+        "description": "Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved, saved_invalid}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.\n\nRead-only; contacts no server.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -124,7 +124,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           }
         ],
         "requestBody": {
@@ -149,14 +149,17 @@
             }
           },
           "400": {
-            "description": "The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed.",
+            "description": "- `step_config_invalid`: The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "step_config_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -169,14 +172,17 @@
             }
           },
           "404": {
-            "description": "The step ID is unknown (`Unknown pipeline step: …`).",
+            "description": "- `step_not_found`: The step ID in the path is unknown.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "step_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -603,14 +609,17 @@
             }
           },
           "404": {
-            "description": "The book does not exist (`Book not found`).",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -623,7 +632,7 @@
             }
           }
         },
-        "description": "Per-step accepted and total scopes, `has_accepted` (any accepted version), accepted origins, stale scopes, pending candidates and the latest version; the active run and the 5 most recent runs; and the chapter list.\n\n**This GET writes.** Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Contacts no server.",
+        "description": "Per-step accepted and total scopes, `has_accepted` (any accepted version), accepted origins, stale scopes, pending candidates and the latest version; the active run and the 5 most recent runs; and the chapter list.\n\nRead-only: it records nothing and contacts no server. When the book changed outside the pipeline since the pipeline last recorded it, the accepted counts, origins and stale scopes already reflect those changes as the next plan, run, preview or accept will record them (as `baseline`/`external` versions). Those capture versions are not listed in `latest` or the version history until they are recorded.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -668,14 +677,21 @@
             }
           },
           "400": {
-            "description": "A `configs` entry is invalid for its step, `chapter_ids` is empty or names a chapter not in this book, or a step could not plan its units.",
+            "description": "- `unknown_step`: `steps` names a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "unknown_step",
+              "step_config_invalid",
+              "step_model_missing",
+              "chapter_ids_empty",
+              "unknown_chapter"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -688,14 +704,17 @@
             }
           },
           "404": {
-            "description": "The book does not exist, or `steps` names an unknown step (an unknown step ID in the body is a 404, not a 400).",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -708,7 +727,7 @@
             }
           }
         },
-        "description": "Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.\n\nMissing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings.\n\nThe `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.\n\nNot purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.",
+        "description": "Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.\n\nMissing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned.\n\nThe `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.\n\nNot purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -753,14 +772,25 @@
             }
           },
           "400": {
-            "description": "The book is removed (restore it first); `chapter_ids` is empty or names a chapter not in this book; a `configs` entry is invalid; a needed API key or server URL is missing (`Add in Settings first: …`); a step's required input has no accepted result and is not in this run; or neither `expected_fingerprint` nor any limit was sent.",
+            "description": "- `unknown_step`: `steps` names a step ID the server does not know.\n- `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed.\n- `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`.\n- `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter).\n- `unknown_chapter`: `chapter_ids` names a chapter that is not in this book.\n- `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL).\n- `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured.\n- `step_inputs_missing`: A step's required input has no accepted result and is not in this run.\n- `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "unknown_step",
+              "step_config_invalid",
+              "step_model_missing",
+              "chapter_ids_empty",
+              "unknown_chapter",
+              "api_key_missing",
+              "server_url_missing",
+              "step_inputs_missing",
+              "run_unconfirmed"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -773,24 +803,33 @@
             }
           },
           "404": {
-            "description": "The book does not exist, or `steps` names an unknown step.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is already working on this book, the book is reserved by an active series run, or the plan changed since the preview (`expected_fingerprint` does not match; preview again).",
+            "description": "- `book_archived`: The book is removed (archived). Restore it first.\n- `series_run_active`: An active series run reserves this book.\n- `job_active`: A job is already working on this book.\n- `plan_stale`: The plan changed since the preview (`expected_fingerprint` does not match). Preview again; nothing was queued.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "series_run_active",
+              "job_active",
+              "plan_stale"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -801,9 +840,22 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "- `shutting_down`: The local worker is stopping and accepts no new runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "shutting_down"
+            ]
           }
         },
-        "description": "Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped.\n\nChecks, in order: every step ID must be known (404 otherwise, before anything else); the book must exist, not be removed, and have no active job (and not be reserved by an active series run); `chapter_ids` and `configs` must be valid; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.\n\nProvider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.",
+        "description": "Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.\n\nChecks, in order: every step ID must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.\n\nProvider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -833,7 +885,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           },
           {
             "name": "limit",
@@ -859,14 +911,18 @@
             }
           },
           "404": {
-            "description": "The book does not exist, or the step ID is unknown.",
+            "description": "- `book_not_found`: No book has this ID.\n- `step_not_found`: The step ID in the path is unknown.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "step_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -879,7 +935,7 @@
             }
           }
         },
-        "description": "Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes `baseline`/`external` captures. Read-only (does not record outside changes).",
+        "description": "Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes recorded `baseline`/`external` captures. Read-only (does not record outside changes).",
         "tags": [
           "Analysis pipeline"
         ],
@@ -909,7 +965,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           },
           {
             "name": "version_id",
@@ -969,7 +1025,7 @@
               "default": 0,
               "title": "Offset"
             },
-            "description": "Rows to skip (default 0, must be nonnegative)."
+            "description": "Rows to skip (default 0). A negative value is treated as 0."
           },
           {
             "name": "limit",
@@ -980,7 +1036,7 @@
               "default": 200,
               "title": "Limit"
             },
-            "description": "Page size, 1–1000 (default 200)."
+            "description": "Page size (default 200), clamped to 1–1000."
           }
         ],
         "responses": {
@@ -995,24 +1051,32 @@
             }
           },
           "400": {
-            "description": "The offset is negative or the page size is outside 1–1000.",
+            "description": "- `unknown_version`: `compare` names a version that does not exist, or belongs to another book or another step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "unknown_version"
+            ]
           },
           "404": {
-            "description": "The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. Also when `compare` names a version that does not exist or belongs to another step.",
+            "description": "- `book_not_found`: No book has this ID.\n- `step_not_found`: The step ID in the path is unknown.\n- `step_version_not_found`: The version does not exist, or belongs to another book or another step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "step_not_found",
+              "step_version_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1025,7 +1089,7 @@
             }
           }
         },
-        "description": "The step's generic result table (`stats`, `columns`, paged `rows`) for a version, diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{version_id}` may be `accepted`. With a comparison, each row gains `_diff` (`added`, `changed` or `same`) and, unless added, `_changed` (changed column keys) and `_previous` (the compared values of those keys); rows only in the compared version are counted as `removed` but not returned. `diff` reports `same/changed/added/removed` and an `agreement` ratio, a cheap signal when comparing models. No comparison happens when `compare` is `none`, equals `{version_id}`, or resolves to no results (for example `accepted` when nothing is accepted); then `diff.compared_with` is null and rows carry no diff fields.\n\nRows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Read-only.",
+        "description": "The step's generic result table (`stats`, `columns`, paged `rows`) for a version, diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{version_id}` may be `accepted`. With a comparison, each row gains `_diff` (`added`, `changed` or `same`) and, unless added, `_changed` (changed column keys) and `_previous` (the compared values of those keys); rows only in the compared version are counted as `removed` but not returned. `diff` reports `same/changed/added/removed` and an `agreement` ratio, a cheap signal when comparing models. No comparison happens when `compare` is `none`, equals `{version_id}`, or resolves to no results (for example `accepted` when nothing is accepted); then `diff.compared_with` is null and rows carry no diff fields.\n\nRows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Paging is clamped, never an error. Read-only.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -1055,7 +1119,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           },
           {
             "name": "version_id",
@@ -1090,14 +1154,20 @@
             }
           },
           "400": {
-            "description": "The book is removed (restore it first); the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected result does not fit the book.",
+            "description": "- `scopes_empty`: `scopes` is an empty list (send null for every scope of the version).\n- `unknown_scope`: `scopes` names a scope this version does not contain.\n- `version_empty`: The version has no results.\n- `version_incompatible`: A selected result does not fit the book.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "scopes_empty",
+              "unknown_scope",
+              "version_empty",
+              "version_incompatible"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -1110,24 +1180,36 @@
             }
           },
           "404": {
-            "description": "The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step.",
+            "description": "- `book_not_found`: No book has this ID.\n- `step_not_found`: The step ID in the path is unknown.\n- `step_version_not_found`: The version does not exist, or belongs to another book or another step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "step_not_found",
+              "step_version_not_found"
+            ]
           },
           "409": {
-            "description": "The version is still running; another (non-pipeline) job is changing this book; the book is reserved by an active series run; or the book revision differs from `expected_revision` (review the impact again).",
+            "description": "- `version_running`: The version is still running.\n- `book_archived`: The book is removed (archived). Restore it first.\n- `series_run_active`: An active series run reserves this book.\n- `job_active`: Another job (not a pipeline run) is changing this book.\n- `plan_stale`: The book revision differs from `expected_revision`: the book changed after the preview. Preview again.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "version_running",
+              "book_archived",
+              "series_run_active",
+              "job_active",
+              "plan_stale"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1170,7 +1252,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           },
           {
             "name": "version_id",
@@ -1205,14 +1287,19 @@
             }
           },
           "400": {
-            "description": "`scopes` is empty or names a scope this version does not contain, or a selected result does not fit the book (for example a structure version for different chapters).",
+            "description": "- `scopes_empty`: `scopes` is an empty list (send null for every scope of the version).\n- `unknown_scope`: `scopes` names a scope this version does not contain.\n- `version_incompatible`: A selected result does not fit the book (for example a structure version for different chapters).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "scopes_empty",
+              "unknown_scope",
+              "version_incompatible"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -1225,14 +1312,19 @@
             }
           },
           "404": {
-            "description": "The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step.",
+            "description": "- `book_not_found`: No book has this ID.\n- `step_not_found`: The step ID in the path is unknown.\n- `step_version_not_found`: The version does not exist, or belongs to another book or another step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "step_not_found",
+              "step_version_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1275,7 +1367,7 @@
               "type": "string",
               "title": "Step Id"
             },
-            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404."
+            "description": "Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`."
           },
           {
             "name": "version_id",
@@ -1310,14 +1402,19 @@
             }
           },
           "400": {
-            "description": "`{version_id}` is `accepted`; the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected scope is the currently accepted version.",
+            "description": "- `scopes_empty`: `scopes` is an empty list (send null for every scope of the version).\n- `unknown_scope`: `scopes` names a scope this version does not contain.\n- `version_empty`: The version has no results.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "scopes_empty",
+              "unknown_scope",
+              "version_empty"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -1330,24 +1427,34 @@
             }
           },
           "404": {
-            "description": "The step is unknown, or the version does not exist, belongs to another book or belongs to another step.",
+            "description": "- `book_not_found`: No book has this ID.\n- `step_not_found`: The step ID in the path is unknown.\n- `step_version_not_found`: The version does not exist, or belongs to another book or another step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "step_not_found",
+              "step_version_not_found"
+            ]
           },
           "409": {
-            "description": "The version is still running.",
+            "description": "- `version_running`: The version is still running.\n- `book_archived`: The book is removed (archived). Restore it first.\n- `version_accepted`: `{version_id}` is `accepted`, or this version was accepted and is still the accepted version of a selected scope.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "version_running",
+              "book_archived",
+              "version_accepted"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1360,7 +1467,7 @@
             }
           }
         },
-        "description": "`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, accepted versions and retained results are unchanged, and the version remains inspectable. An accepted version cannot be rejected; accept another version to replace it. Because identical results share one artifact, a candidate whose selected scopes equal the accepted content (`same_as_accepted`) cannot be rejected either. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run or when the book is removed; the book's existence is not checked separately.",
+        "description": "`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, the accepted versions and retained results are unchanged, and the version remains inspectable (its state becomes `rejected`). The book must exist and not be removed. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run.\n\nAcceptance is a decision, not content equality: a version that was accepted and is still current for a selected scope cannot be rejected (accept another version to replace it), but a never-accepted version whose results equal the accepted content (`same_as_accepted`) can be. Rejecting it declines that run; the identical accepted content stays accepted through the version that was accepted.",
         "tags": [
           "Analysis pipeline"
         ],
@@ -5041,14 +5148,17 @@
             }
           },
           "404": {
-            "description": "The book does not exist.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -5104,14 +5214,20 @@
             }
           },
           "400": {
-            "description": "The book is removed; the target series is removed; `series_id` is given without a valid `position`; `position` is given without `series_id`; or another supplied book already has that position.",
+            "description": "- `unknown_series`: No series has the `series_id` in the body.\n- `position_invalid`: `series_id` is given without a finite `position` from 0 through 1,000,000.\n- `position_without_series`: `position` is given without `series_id`.\n- `position_taken`: Another supplied book of the series already has that position.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "unknown_series",
+              "position_invalid",
+              "position_without_series",
+              "position_taken"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -5124,24 +5240,33 @@
             }
           },
           "404": {
-            "description": "The book or the target series does not exist.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on this book, a series run holds it, or the target series has an active run.",
+            "description": "- `book_archived`: The book is removed (archived). Restore it first.\n- `job_active`: A job is working on this book. Wait for it or cancel it.\n- `series_run_active`: An active series run reserves this book, or the target series has an active run.\n- `series_archived`: The target series is removed (archived). Restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "job_active",
+              "series_run_active",
+              "series_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -5154,7 +5279,7 @@
             }
           }
         },
-        "description": "Places the book in a series at a reading order, moves it, or detaches it, and returns the refreshed `getBookSeries` envelope.\n\nSend `{\"series_id\": \"SERIES_ID\", \"position\": 9}` with a JSON number, not a numeric string. Send `{\"series_id\": null}` (position null or omitted) to detach.\n\n- Positions are finite numbers from 0 through 1,000,000; decimals support prequels and side stories. A position already used by another supplied book of the series is rejected.\n- Assigning a book at a placeholder position replaces that placeholder.\n- Detaching, or moving to another series, deletes the book's identity links. Moving within the same series keeps them.\n- Removed (archived) membership and history are retained for restoration.\n\nRefused while the book has an active job, while a series run holds the book, or while the target series has an active run. Each change is recorded in the book's series provenance.",
+        "description": "Places the book in a series at a reading order, moves it, or detaches it, and returns the refreshed `getBookSeries` envelope.\n\nSend `{\"series_id\": \"SERIES_ID\", \"position\": 9}` with a JSON number, not a numeric string. Send `{\"series_id\": null}` (position null or omitted) to detach.\n\n- Positions are finite numbers from 0 through 1,000,000; decimals support prequels and side stories. A position already used by another supplied book of the series is rejected.\n- Assigning a book at a placeholder position replaces that placeholder.\n- Detaching, or moving to another series, deletes the book's identity links. Moving within the same series keeps them.\n- Removed (archived) membership and history are retained for restoration.\n\nRefused while the book is removed, has an active job or is held by a series run, and while the target series is removed or has an active run. Each change is recorded in the book's series provenance.",
         "tags": [
           "Series"
         ],
@@ -5216,14 +5341,20 @@
             }
           },
           "400": {
-            "description": "The book is removed; the character is `narrator` or `unassigned`; the book is in no active series; or the identity belongs to another series.",
+            "description": "- `character_not_linkable`: The character is `narrator` or `unassigned`.\n- `book_not_in_series`: Linking: the book is in no series.\n- `unknown_series_character`: No series character has the `series_character_id` in the body.\n- `series_character_mismatch`: The identity belongs to another series than the book's.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "character_not_linkable",
+              "book_not_in_series",
+              "unknown_series_character",
+              "series_character_mismatch"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -5236,24 +5367,34 @@
             }
           },
           "404": {
-            "description": "The book, the book character (when linking) or the series character does not exist.",
+            "description": "- `book_not_found`: No book has this ID.\n- `character_not_found`: Linking: the book has no character with `character_id`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "character_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on this book, or a series run holds it.",
+            "description": "- `book_archived`: The book is removed (archived). Restore it first.\n- `job_active`: A job is working on this book. Wait for it or cancel it.\n- `series_run_active`: An active series run reserves this book, or the target series has an active run.\n- `series_archived`: The book's series is removed (archived). Restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "job_active",
+              "series_run_active",
+              "series_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -5266,7 +5407,7 @@
             }
           }
         },
-        "description": "With `{\"series_character_id\": \"ID\"}`, confirms that the book character is that series identity (replacing any previous link for the character) and returns the link. Re-linking the same identity keeps the original `confirmed_at`. With `{\"series_character_id\": null}` (or an empty body `{}`), removes any link and returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character exists.\n\nThe book must be in an active series and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book has an active job or is held by a series run. Each change is recorded in the book's series provenance.",
+        "description": "With `{\"series_character_id\": \"ID\"}`, confirms that the book character is that series identity (replacing any previous link for the character) and returns the link. Re-linking the same identity keeps the original `confirmed_at`. With `{\"series_character_id\": null}` (or an empty body `{}`), removes any link and returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character exists.\n\nThe book must be in a series, the series must not be removed (for unlinking too: removal retains links for restoration), and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book is removed, has an active job or is held by a series run. Each change is recorded in the book's series provenance.",
         "tags": [
           "Series"
         ],
@@ -5301,14 +5442,17 @@
             }
           },
           "404": {
-            "description": "The book does not exist.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6109,7 +6253,7 @@
             }
           }
         },
-        "description": "Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to see them.",
+        "description": "Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to list them. A removed series can still be read by ID through `getSeriesMap`, `listSeriesRuns` and `listSeriesCharacters`.",
         "tags": [
           "Series"
         ],
@@ -6140,14 +6284,18 @@
             }
           },
           "400": {
-            "description": "The name is blank after whitespace is trimmed, or another series (active or removed) already has that name ignoring case.",
+            "description": "- `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters.\n- `series_name_taken`: Another series (active or removed) already has this name, ignoring case.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "name_invalid",
+              "series_name_taken"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6215,14 +6363,19 @@
             }
           },
           "400": {
-            "description": "The name is blank or contains control characters, another series already has it ignoring case, or a removed member book still has an active job.",
+            "description": "- `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters.\n- `series_name_taken`: Another series (active or removed) already has this name, ignoring case.\n- `text_invalid`: The name contains control characters other than tab and newlines.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "name_invalid",
+              "series_name_taken",
+              "text_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6235,24 +6388,32 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it.",
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.\n- `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it.\n- `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_archived",
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6265,7 +6426,7 @@
             }
           }
         },
-        "description": "Renames the series when its work is idle: no job on any supplied active book, no series run holding one of its books, and no active run of this series. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.",
+        "description": "Renames an active series when its work is idle: no active run of this series, no job on any of its books (removed ones included), and no series run holding one of its books. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.",
         "tags": [
           "Series"
         ],
@@ -6299,16 +6460,6 @@
               }
             }
           },
-          "400": {
-            "description": "A member book (including a removed one) has an active job.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -6320,24 +6471,31 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it.",
+            "description": "- `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it.\n- `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6350,7 +6508,7 @@
             }
           }
         },
-        "description": "Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, the series is refused by the series routes that look it up (404) and by membership changes (400). Records a library-visibility artifact on each member book. Removing an already removed series returns 404. No request body.",
+        "description": "Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, series edits, processing and membership or identity-link changes are refused with 409 `series_archived`; reads (`getSeriesMap`, `listSeriesRuns`, `listSeriesCharacters`) still work. Removing requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.",
         "tags": [
           "Series"
         ],
@@ -6388,14 +6546,17 @@
             }
           },
           "404": {
-            "description": "The series does not exist.",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6451,14 +6612,17 @@
             }
           },
           "400": {
-            "description": "The name is blank after whitespace is trimmed.",
+            "description": "- `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "name_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6471,14 +6635,31 @@
             }
           },
           "404": {
-            "description": "The series does not exist.",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.\n- `series_run_active`: This series has an active processing run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "series_archived",
+              "series_run_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6491,7 +6672,7 @@
             }
           }
         },
-        "description": "Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Not refused for removed series or during series runs.",
+        "description": "Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Refused for a removed series and while the series has an active run.",
         "tags": [
           "Series"
         ],
@@ -6526,14 +6707,17 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6546,7 +6730,7 @@
             }
           }
         },
-        "description": "Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence.",
+        "description": "Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence. Works for removed series too (`series.archived` is then true).",
         "tags": [
           "Series"
         ],
@@ -6591,14 +6775,17 @@
             }
           },
           "400": {
-            "description": "The provider is not a cloud analysis provider (`gemini`, `openai`, `anthropic`).",
+            "description": "- `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "provider_not_cloud"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6611,14 +6798,30 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "series_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6631,7 +6834,7 @@
             }
           }
         },
-        "description": "Previews staged analysis over the supplied, active books of the series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.\n\nThe response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill local caches.",
+        "description": "Previews staged analysis over the supplied, active books of an active series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.\n\nThe response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill disposable local caches; it creates no jobs or records.",
         "tags": [
           "Series"
         ],
@@ -6676,14 +6879,19 @@
             }
           },
           "400": {
-            "description": "The provider is not a cloud analysis provider; `expected_plan_fingerprint` does not match the recomputed plan; the series has no supplied active book; no API key is configured for the provider; the series already has an active run; or the series worker could not start (the jobs are then marked failed/interrupted and nothing runs).",
+            "description": "- `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`.\n- `series_empty`: The series has no supplied, active book.\n- `api_key_missing`: No API key is configured for the provider.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "provider_not_cloud",
+              "series_empty",
+              "api_key_missing"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6696,24 +6904,33 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on one of the books, or another series run holds one of them.",
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.\n- `plan_stale`: `expected_plan_fingerprint` does not match the recomputed plan. Nothing was queued.\n- `series_run_active`: This series already has an active run, or another series run holds one of its books.\n- `job_active`: A job is working on one of its supplied books.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_archived",
+              "plan_stale",
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6724,9 +6941,22 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "- `shutting_down`: The series worker is not accepting work because the server is shutting down. The jobs just created are marked failed or interrupted and nothing runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "shutting_down"
+            ]
           }
         },
-        "description": "Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.\n\nThe server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns **400** (not 409, which the step pipeline uses for its equivalent) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.\n\n**Jobs.** The parent job has `kind: \"series\"` and `book_id: \"series:SERIES_ID\"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.\n\n**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book.",
+        "description": "Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.\n\nThe server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns 409 `plan_stale` (as the step pipeline does) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.\n\n**Jobs.** The parent job has `kind: \"series\"` and `book_id: \"series:SERIES_ID\"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.\n\n**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book.",
         "tags": [
           "Series"
         ],
@@ -6760,16 +6990,6 @@
               }
             }
           },
-          "400": {
-            "description": "A member book (including a removed one) has an active job.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -6781,14 +7001,31 @@
             }
           },
           "404": {
-            "description": "The series does not exist.",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it.\n- `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6801,7 +7038,7 @@
             }
           }
         },
-        "description": "Restores a removed series. Idempotent: restoring an active series succeeds and changes nothing (a library-visibility artifact is still recorded on each member book). Unlike the other series edits it does not check for an active series run; it only requires that no member book has an active job. No request body.",
+        "description": "Restores a removed series. Restoring requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.",
         "tags": [
           "Series"
         ],
@@ -6836,14 +7073,17 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6856,7 +7096,7 @@
             }
           }
         },
-        "description": "Returns `{\"runs\": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child job records embedded as `children`. The parent uses `book_id: \"series:SERIES_ID\"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run.",
+        "description": "Returns `{\"runs\": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child job records embedded as `children`. The parent uses `book_id: \"series:SERIES_ID\"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run. Works for removed series too.",
         "tags": [
           "Series"
         ],
@@ -6901,14 +7141,18 @@
             }
           },
           "400": {
-            "description": "A supplied book (including a removed one) already occupies that position, or the title contains control characters.",
+            "description": "- `position_taken`: A supplied book (including a removed one) already has this position.\n- `text_invalid`: The title contains control characters other than tab and newlines.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "position_taken",
+              "text_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6921,24 +7165,32 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it.",
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.\n- `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it.\n- `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_archived",
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -6951,7 +7203,7 @@
             }
           }
         },
-        "description": "Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires the series to be idle.",
+        "description": "Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires an active, idle series (as for `renameSeries`).",
         "tags": [
           "Series"
         ],
@@ -6996,14 +7248,17 @@
             }
           },
           "400": {
-            "description": "The position is negative, above 1,000,000 or not finite.",
+            "description": "- `position_invalid`: The position is negative, above 1,000,000 or not finite.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "position_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -7016,24 +7271,32 @@
             }
           },
           "404": {
-            "description": "The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: \"Series not found\".",
+            "description": "- `series_not_found`: No series has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_not_found"
+            ]
           },
           "409": {
-            "description": "A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it.",
+            "description": "- `series_archived`: The series is removed (archived). Restore it first; reads still work.\n- `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it.\n- `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "series_archived",
+              "series_run_active",
+              "job_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -7046,7 +7309,7 @@
             }
           }
         },
-        "description": "Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires the series to be idle.",
+        "description": "Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires an active, idle series (as for `renameSeries`).",
         "tags": [
           "Series"
         ],
@@ -11350,7 +11613,7 @@
             "type": "boolean"
           },
           "context_chars": {
-            "description": "Length in characters of the JSON-serialized `characters` array; at most 12,000 with the current server bound.",
+            "description": "Length in characters of the JSON-serialized `characters` array as analysis receives it; at most 12,000 with the current server bound. Analysis also receives validation bookkeeping that this response omits, so the returned array serializes slightly shorter.",
             "type": "integer"
           },
           "fingerprint": {
@@ -12458,7 +12721,7 @@
                 "type": "null"
               }
             ],
-            "description": "Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list, or a scope the version does not contain, is refused (400)."
+            "description": "Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list (400 `scopes_empty`), or a scope the version does not contain (400 `unknown_scope`), is refused."
           },
           "expected_revision": {
             "anyOf": [
@@ -12469,7 +12732,7 @@
                 "type": "null"
               }
             ],
-            "description": "Accept only: the `revision` returned by preview. The accept is refused (409) when the book revision differs. Ignored by preview and reject."
+            "description": "Accept only: the `revision` returned by preview. The accept is refused (409 `plan_stale`) when the book revision differs. Ignored by preview and reject."
           }
         },
         "additionalProperties": false,
@@ -17625,10 +17888,6 @@
             "description": "A key or URL is set. It does not prove the server answers or the key works.",
             "type": "boolean"
           },
-          "has_api_key": {
-            "description": "Older name for `configured` (also true when a URL is set). Same value.",
-            "type": "boolean"
-          },
           "models": {
             "anyOf": [
               {
@@ -17650,8 +17909,7 @@
           "kind",
           "self_hosted",
           "needs",
-          "configured",
-          "has_api_key"
+          "configured"
         ],
         "title": "PipelineProvider",
         "type": "object"
@@ -18533,12 +18791,6 @@
           "units": {
             "$ref": "#/components/schemas/PipelineUnitCounts"
           },
-          "conflicts": {
-            "description": "Internal; do not rely on it. Always an empty list today; conflicts are reported by preview and accept instead.",
-            "items": {},
-            "type": "array",
-            "x-bardic-internal": true
-          },
           "error": {
             "anyOf": [
               {
@@ -18599,7 +18851,6 @@
           "scopes",
           "unchanged_scopes",
           "units",
-          "conflicts",
           "error",
           "created_at",
           "updated_at",
@@ -18624,10 +18875,10 @@
                 "type": "null"
               }
             ],
-            "description": "Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. A run with a null model for an LLM provider is not refused here; configure one first."
+            "description": "Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. Planning or running an LLM step with a null model is refused (400 `step_model_missing`) unless the request sends a model in `configs`."
           },
           "gate": {
-            "description": "`auto` accepts a completed run of this step immediately; `review` waits for a person.",
+            "description": "`auto` accepts a completed run of this step immediately; `review` waits for a person. A saved gate applies even when `saved_invalid` is true.",
             "enum": [
               "auto",
               "review"
@@ -18635,7 +18886,11 @@
             "type": "string"
           },
           "saved": {
-            "description": "True when the owner saved settings for this step. False means these are computed defaults (the preferred analysis provider and its configured analysis or scan model). A saved choice that no longer validates is silently replaced by the defaults (but `saved` stays true).",
+            "description": "True when `provider` and `model` are the owner's saved choice for this step. False means they are computed defaults (the preferred analysis provider and its configured analysis or scan model).",
+            "type": "boolean"
+          },
+          "saved_invalid": {
+            "description": "True when a saved provider/model choice exists but no longer validates (for example, the step no longer offers that provider). It is ignored: `saved` is false and the defaults apply. Saving new settings replaces it.",
             "type": "boolean"
           }
         },
@@ -18643,7 +18898,8 @@
           "provider",
           "model",
           "gate",
-          "saved"
+          "saved",
+          "saved_invalid"
         ],
         "title": "PipelineStepSettingsView",
         "type": "object"
@@ -18990,11 +19246,11 @@
             "type": "integer"
           },
           "offset": {
-            "description": "Echo of the `offset` query parameter: rows skipped.",
+            "description": "Rows skipped: the `offset` query parameter, raised to 0 when negative.",
             "type": "integer"
           },
           "limit": {
-            "description": "Echo of the `limit` query parameter: the page size.",
+            "description": "The page size used: the `limit` query parameter clamped to 1–1000.",
             "type": "integer"
           },
           "rows": {
@@ -19167,7 +19423,7 @@
             "type": "array",
             "maxItems": 40,
             "minItems": 1,
-            "description": "Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID returns 404."
+            "description": "Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`)."
           },
           "chapter_ids": {
             "anyOf": [
@@ -19182,7 +19438,7 @@
                 "type": "null"
               }
             ],
-            "description": "Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused."
+            "description": "Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`)."
           },
           "configs": {
             "anyOf": [
@@ -20652,7 +20908,7 @@
             "type": "array",
             "maxItems": 40,
             "minItems": 1,
-            "description": "Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID returns 404."
+            "description": "Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`)."
           },
           "chapter_ids": {
             "anyOf": [
@@ -20667,7 +20923,7 @@
                 "type": "null"
               }
             ],
-            "description": "Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused."
+            "description": "Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused (400 `chapter_ids_empty`)."
           },
           "configs": {
             "anyOf": [
@@ -20736,7 +20992,7 @@
                 "type": "null"
               }
             ],
-            "description": "The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409. Required unless a limit is set."
+            "description": "The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409 `plan_stale`. Required unless a limit is set."
           }
         },
         "additionalProperties": false,
@@ -20926,7 +21182,7 @@
             "type": "string"
           },
           "archived": {
-            "description": "True when the series is removed. Series routes list only active series, so this is false there; the library snapshot with `include_archived=true` can include removed ones.",
+            "description": "True when the series is removed. `listSeries` lists only active series, so this is false there; `getSeriesMap` and the library snapshot with `include_archived=true` can return removed ones.",
             "type": "boolean"
           },
           "books": {
@@ -21380,11 +21636,6 @@
             ],
             "description": "Attribution confidence from 0 to 1 when recorded, else null."
           },
-          "source_hash": {
-            "description": "Internal; do not rely on it. SHA-256 of the chapter text the observation was validated against.",
-            "type": "string",
-            "x-bardic-internal": true
-          },
           "book_title": {
             "description": "Title of the earlier book.",
             "type": "string"
@@ -21417,7 +21668,6 @@
           "provider",
           "model",
           "confidence",
-          "source_hash",
           "book_title",
           "position",
           "chapter_title",
@@ -21630,7 +21880,7 @@
             "type": "string",
             "maxLength": 200,
             "minLength": 1,
-            "description": "1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused with 400."
+            "description": "1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused (400 `name_invalid`)."
           }
         },
         "additionalProperties": false,
@@ -21803,7 +22053,7 @@
                 "type": "null"
               }
             ],
-            "description": "Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis provider, which must itself be a cloud provider. Other values are refused with 400."
+            "description": "Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis provider, which must itself be a cloud provider. Other values are refused (400 `provider_not_cloud`)."
           },
           "phase": {
             "type": "string",
@@ -21837,7 +22087,7 @@
                 "type": "null"
               }
             ],
-            "description": "The `plan_fingerprint` from the reviewed preview (at most 64 characters). Used only by the start route; when present and different from the recomputed plan, nothing is queued (400). Omitting it skips the check. Ignored by the preview route."
+            "description": "The `plan_fingerprint` from the reviewed preview (at most 64 characters). Used only by the start route; when present and different from the recomputed plan, nothing is queued (409 `plan_stale`). Omitting it skips the check. Ignored by the preview route."
           }
         },
         "additionalProperties": false,

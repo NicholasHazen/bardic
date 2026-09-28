@@ -86,13 +86,13 @@ def test_series_are_isolated_and_system_speakers_cannot_be_linked(setup):
     other = repo.create_series("Other books")
     other_identity = repo.create_character(other["id"], "Mira")
     repo.set_membership("unrelated", other["id"], 1)
-    with pytest.raises(ValueError, match="this book's series"):
+    with pytest.raises(ValueError, match='belongs to another series'):
         repo.link_character("nine", "mira", other_identity["id"])
     with pytest.raises(ValueError, match="cannot be linked"):
         repo.link_character("nine", "narrator", identity["id"])
-    with pytest.raises(KeyError, match="Character not found"):
+    with pytest.raises(KeyError, match="no character with this ID"):
         repo.link_character("nine", "missing", identity["id"])
-    with pytest.raises(KeyError, match="Series character"):
+    with pytest.raises(ValueError, match="No series character"):
         repo.link_character("nine", "mira", "missing")
     assert repo.links_for_book("nine") == []
     assert len(repo.list_characters(saga["id"])) == 1
@@ -280,7 +280,7 @@ def test_names_are_validated(setup, name):
 
 def test_duplicate_series_names_are_rejected_but_namesake_characters_are_separate(setup):
     _, repo, saga, identity = setup
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(ValueError, match="already has this name"):
         repo.create_series("the lantern books")
     other = repo.create_character(saga["id"], "Mira")
     assert other["id"] != identity["id"]

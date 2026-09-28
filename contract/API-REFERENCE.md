@@ -529,7 +529,7 @@ Returns `{membership, series, links, characters}`. `membership` and `series` are
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="setbookseries"></a>
@@ -546,7 +546,7 @@ Send `{"series_id": "SERIES_ID", "position": 9}` with a JSON number, not a numer
 - Detaching, or moving to another series, deletes the book's identity links. Moving within the same series keeps them.
 - Removed (archived) membership and history are retained for restoration.
 
-Refused while the book has an active job, while a series run holds the book, or while the target series has an active run. Each change is recorded in the book's series provenance.
+Refused while the book is removed, has an active job or is held by a series run, and while the target series is removed or has an active run. Each change is recorded in the book's series provenance.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -557,10 +557,10 @@ Request body (`application/json`): [SeriesMembershipRequest](#schema-seriesmembe
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
-| 400 | [Error](#schema-error) | The book is removed; the target series is removed; `series_id` is given without a valid `position`; `position` is given without `series_id`; or another supplied book already has that position. |
+| 400 | [Error](#schema-error) | - `unknown_series`: No series has the `series_id` in the body. - `position_invalid`: `series_id` is given without a finite `position` from 0 through 1,000,000. - `position_without_series`: `position` is given without `series_id`. - `position_taken`: Another supplied book of the series already has that position. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or the target series does not exist. |
-| 409 | [Error](#schema-error) | A job is active on this book, a series run holds it, or the target series has an active run. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The target series is removed (archived). Restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="linkseriescharacter"></a>
@@ -570,7 +570,7 @@ Request body (`application/json`): [SeriesMembershipRequest](#schema-seriesmembe
 
 With `{"series_character_id": "ID"}`, confirms that the book character is that series identity (replacing any previous link for the character) and returns the link. Re-linking the same identity keeps the original `confirmed_at`. With `{"series_character_id": null}` (or an empty body `{}`), removes any link and returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character exists.
 
-The book must be in an active series and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book has an active job or is held by a series run. Each change is recorded in the book's series provenance.
+The book must be in a series, the series must not be removed (for unlinking too: removal retains links for restoration), and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book is removed, has an active job or is held by a series run. Each change is recorded in the book's series provenance.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -582,10 +582,10 @@ Request body (`application/json`): [SeriesCharacterLinkRequest](#schema-seriesch
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCharacterLinkState](#schema-seriescharacterlinkstate) \| [SeriesCharacterUnlinked](#schema-seriescharacterunlinked) | Success. |
-| 400 | [Error](#schema-error) | The book is removed; the character is `narrator` or `unassigned`; the book is in no active series; or the identity belongs to another series. |
+| 400 | [Error](#schema-error) | - `character_not_linkable`: The character is `narrator` or `unassigned`. - `book_not_in_series`: Linking: the book is in no series. - `unknown_series_character`: No series character has the `series_character_id` in the body. - `series_character_mismatch`: The identity belongs to another series than the book's. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book, the book character (when linking) or the series character does not exist. |
-| 409 | [Error](#schema-error) | A job is active on this book, or a series run holds it. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: Linking: the book has no character with `character_id`. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The book's series is removed (archived). Restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getbookseriescontext"></a>
@@ -604,7 +604,7 @@ The bound (at most 12,000 serialized characters and 8 observations per character
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeriesContext](#schema-bookseriescontext) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="listseries"></a>
@@ -612,7 +612,7 @@ The bound (at most 12,000 serialized characters and 8 observations per character
 
 **List active series** · operation `listSeries` · cost `none`
 
-Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to see them.
+Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to list them. A removed series can still be read by ID through `getSeriesMap`, `listSeriesRuns` and `listSeriesCharacters`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
@@ -630,7 +630,7 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCreated](#schema-seriescreated) | Success. |
-| 400 | [Error](#schema-error) | The name is blank after whitespace is trimmed, or another series (active or removed) already has that name ignoring case. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -639,7 +639,7 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 
 **Rename a series** · operation `renameSeries` · cost `none`
 
-Renames the series when its work is idle: no job on any supplied active book, no series run holding one of its books, and no active run of this series. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.
+Renames an active series when its work is idle: no active run of this series, no job on any of its books (removed ones included), and no series run holding one of its books. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -650,10 +650,10 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesRenamed](#schema-seriesrenamed) | Success. |
-| 400 | [Error](#schema-error) | The name is blank or contains control characters, another series already has it ignoring case, or a removed member book still has an active job. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. - `text_invalid`: The name contains control characters other than tab and newlines. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="archiveseries"></a>
@@ -661,7 +661,7 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 
 **Remove a series** · operation `archiveSeries` · cost `none`
 
-Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, the series is refused by the series routes that look it up (404) and by membership changes (400). Records a library-visibility artifact on each member book. Removing an already removed series returns 404. No request body.
+Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, series edits, processing and membership or identity-link changes are refused with 409 `series_archived`; reads (`getSeriesMap`, `listSeriesRuns`, `listSeriesCharacters`) still work. Removing requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -670,10 +670,9 @@ Removes (archives) the series from normal views. Nothing is deleted: memberships
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | A member book (including a removed one) has an active job. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="listseriescharacters"></a>
@@ -690,7 +689,7 @@ Returns the explicit cross-book identities of a series, ordered by name (case-in
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [SeriesCharacter](#schema-seriescharacter) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="createseriescharacter"></a>
@@ -698,7 +697,7 @@ Returns the explicit cross-book identities of a series, ordered by name (case-in
 
 **Create a series character identity** · operation `createSeriesCharacter` · cost `none`
 
-Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Not refused for removed series or during series runs.
+Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Refused for a removed series and while the series has an active run.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -709,9 +708,10 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCharacter](#schema-seriescharacter) | Success. |
-| 400 | [Error](#schema-error) | The name is blank after whitespace is trimmed. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getseriesmap"></a>
@@ -719,7 +719,7 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 
 **Get the series map** · operation `getSeriesMap` · cost `none`
 
-Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence.
+Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence. Works for removed series too (`series.archived` is then true).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -728,7 +728,7 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesMap](#schema-seriesmap) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="planseriesprocessing"></a>
@@ -736,9 +736,9 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 
 **Preview a series analysis run** · operation `planSeriesProcessing` · cost `none`
 
-Previews staged analysis over the supplied, active books of the series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.
+Previews staged analysis over the supplied, active books of an active series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.
 
-The response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill local caches.
+The response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill disposable local caches; it creates no jobs or records.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -749,9 +749,10 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesPlan](#schema-seriesplan) | Success. |
-| 400 | [Error](#schema-error) | The provider is not a cloud analysis provider (`gemini`, `openai`, `anthropic`). |
+| 400 | [Error](#schema-error) | - `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="startseriesprocessing"></a>
@@ -761,7 +762,7 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 
 Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.
 
-The server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns **400** (not 409, which the step pipeline uses for its equivalent) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.
+The server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns 409 `plan_stale` (as the step pipeline does) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.
 
 **Jobs.** The parent job has `kind: "series"` and `book_id: "series:SERIES_ID"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.
 
@@ -776,18 +777,19 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued parent series job. |
-| 400 | [Error](#schema-error) | The provider is not a cloud analysis provider; `expected_plan_fingerprint` does not match the recomputed plan; the series has no supplied active book; no API key is configured for the provider; the series already has an active run; or the series worker could not start (the jobs are then marked failed/interrupted and nothing runs). |
+| 400 | [Error](#schema-error) | - `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`. - `series_empty`: The series has no supplied, active book. - `api_key_missing`: No API key is configured for the provider. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of the books, or another series run holds one of them. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `plan_stale`: `expected_plan_fingerprint` does not match the recomputed plan. Nothing was queued. - `series_run_active`: This series already has an active run, or another series run holds one of its books. - `job_active`: A job is working on one of its supplied books. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The series worker is not accepting work because the server is shutting down. The jobs just created are marked failed or interrupted and nothing runs. |
 
 <a id="restoreseries"></a>
 ### `POST /api/series/{series_id}/restore`
 
 **Restore a removed series** · operation `restoreSeries` · cost `none`
 
-Restores a removed series. Idempotent: restoring an active series succeeds and changes nothing (a library-visibility artifact is still recorded on each member book). Unlike the other series edits it does not check for an active series run; it only requires that no member book has an active job. No request body.
+Restores a removed series. Restoring requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -796,9 +798,9 @@ Restores a removed series. Idempotent: restoring an active series succeeds and c
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | A member book (including a removed one) has an active job. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="listseriesruns"></a>
@@ -806,7 +808,7 @@ Restores a removed series. Idempotent: restoring an active series succeeds and c
 
 **List recent series runs** · operation `listSeriesRuns` · cost `none`
 
-Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child job records embedded as `children`. The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run.
+Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child job records embedded as `children`. The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run. Works for removed series too.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -815,7 +817,7 @@ Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newes
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesRuns](#schema-seriesruns) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="putseriesvolume"></a>
@@ -823,7 +825,7 @@ Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newes
 
 **Add or update a volume placeholder** · operation `putSeriesVolume` · cost `none`
 
-Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires the series to be idle.
+Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires an active, idle series (as for `renameSeries`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -834,10 +836,10 @@ Request body (`application/json`): [SeriesVolumeRequest](#schema-seriesvolumereq
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesVolumeSlot](#schema-seriesvolumeslot) | Success. |
-| 400 | [Error](#schema-error) | A supplied book (including a removed one) already occupies that position, or the title contains control characters. |
+| 400 | [Error](#schema-error) | - `position_taken`: A supplied book (including a removed one) already has this position. - `text_invalid`: The title contains control characters other than tab and newlines. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="deleteseriesvolume"></a>
@@ -845,7 +847,7 @@ Request body (`application/json`): [SeriesVolumeRequest](#schema-seriesvolumereq
 
 **Remove a volume placeholder** · operation `deleteSeriesVolume` · cost `none`
 
-Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires the series to be idle.
+Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires an active, idle series (as for `renameSeries`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -855,10 +857,10 @@ Removes the placeholder at `position`. It never removes or detaches a supplied b
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesVolumeRemoval](#schema-seriesvolumeremoval) | Success. |
-| 400 | [Error](#schema-error) | The position is negative, above 1,000,000 or not finite. |
+| 400 | [Error](#schema-error) | - `position_invalid`: The position is negative, above 1,000,000 or not finite. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Books
@@ -1295,7 +1297,7 @@ The step pipeline: step settings, previewed runs, and versioned results to accep
 
 **List pipeline steps, providers and saved step settings** · operation `getAnalysisPipeline` · cost `none`
 
-Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured`/`has_api_key` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.
+Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved, saved_invalid}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.
 
 Read-only; contacts no server.
 
@@ -1312,16 +1314,16 @@ Saves the library-wide default provider/model and gate (`auto` or `review`) for 
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 
 Request body (`application/json`): [StepSettings](#schema-stepsettings)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineStepSettingsView](#schema-pipelinestepsettingsview) | Success. |
-| 400 | [Error](#schema-error) | The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed. |
+| 400 | [Error](#schema-error) | - `step_config_invalid`: The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The step ID is unknown (`Unknown pipeline step: …`). |
+| 404 | [Error](#schema-error) | - `step_not_found`: The step ID in the path is unknown. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getbookanalysispipeline"></a>
@@ -1331,7 +1333,7 @@ Request body (`application/json`): [StepSettings](#schema-stepsettings)
 
 Per-step accepted and total scopes, `has_accepted` (any accepted version), accepted origins, stale scopes, pending candidates and the latest version; the active run and the 5 most recent runs; and the chapter list.
 
-**This GET writes.** Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Contacts no server.
+Read-only: it records nothing and contacts no server. When the book changed outside the pipeline since the pipeline last recorded it, the accepted counts, origins and stale scopes already reflect those changes as the next plan, run, preview or accept will record them (as `baseline`/`external` versions). Those capture versions are not listed in `latest` or the version history until they are recorded.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1340,7 +1342,7 @@ Per-step accepted and total scopes, `has_accepted` (any accepted version), accep
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineBookOverview](#schema-pipelinebookoverview) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist (`Book not found`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="planbookanalysispipelinerun"></a>
@@ -1350,7 +1352,7 @@ Per-step accepted and total scopes, `has_accepted` (any accepted version), accep
 
 Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.
 
-Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings.
+Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned.
 
 The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.
 
@@ -1365,9 +1367,9 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelinePlan](#schema-pipelineplan) | Success. |
-| 400 | [Error](#schema-error) | A `configs` entry is invalid for its step, `chapter_ids` is empty or names a chapter not in this book, or a step could not plan its units. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book does not exist, or `steps` names an unknown step (an unknown step ID in the body is a 404, not a 400). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="startbookanalysispipelinerun"></a>
@@ -1375,9 +1377,9 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 
 **Queue a pipeline run** · operation `startBookAnalysisPipelineRun` · cost `may_charge`
 
-Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped.
+Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.
 
-Checks, in order: every step ID must be known (404 otherwise, before anything else); the book must exist, not be removed, and have no active job (and not be reserved by an active series run); `chapter_ids` and `configs` must be valid; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
+Checks, in order: every step ID must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
 
 Provider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.
 
@@ -1390,29 +1392,30 @@ Request body (`application/json`): [RunRequest](#schema-runrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineRunStarted](#schema-pipelinerunstarted) | The queued job and run. Not a result: poll the job until it is terminal. |
-| 400 | [Error](#schema-error) | The book is removed (restore it first); `chapter_ids` is empty or names a chapter not in this book; a `configs` entry is invalid; a needed API key or server URL is missing (`Add in Settings first: …`); a step's required input has no accepted result and is not in this run; or neither `expected_fingerprint` nor any limit was sent. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. - `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL). - `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured. - `step_inputs_missing`: A step's required input has no accepted result and is not in this run. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book does not exist, or `steps` names an unknown step. |
-| 409 | [Error](#schema-error) | A job is already working on this book, the book is reserved by an active series run, or the plan changed since the preview (`expected_fingerprint` does not match; preview again). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: A job is already working on this book. - `plan_stale`: The plan changed since the preview (`expected_fingerprint` does not match). Preview again; nothing was queued. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The local worker is stopping and accepts no new runs. |
 
 <a id="listanalysispipelinestepversions"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions`
 
 **List a step's versions and decisions** · operation `listAnalysisPipelineStepVersions` · cost `none`
 
-Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes `baseline`/`external` captures. Read-only (does not record outside changes).
+Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes recorded `baseline`/`external` captures. Read-only (does not record outside changes).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `limit` | query | integer |  | Maximum versions to return. Default 50; values are clamped to 1–200 (never an error). (default `50`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineVersionHistory](#schema-pipelineversionhistory) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist, or the step ID is unknown. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getanalysispipelinestepversion"></a>
@@ -1422,24 +1425,24 @@ Version history, newest first, with each version's review `state` (`candidate`, 
 
 The step's generic result table (`stats`, `columns`, paged `rows`) for a version, diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{version_id}` may be `accepted`. With a comparison, each row gains `_diff` (`added`, `changed` or `same`) and, unless added, `_changed` (changed column keys) and `_previous` (the compared values of those keys); rows only in the compared version are counted as `removed` but not returned. `diff` reports `same/changed/added/removed` and an `agreement` ratio, a cheap signal when comparing models. No comparison happens when `compare` is `none`, equals `{version_id}`, or resolves to no results (for example `accepted` when nothing is accepted); then `diff.compared_with` is null and rows carry no diff fields.
 
-Rows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Read-only.
+Rows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Paging is clamped, never an error. Read-only.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 | `compare` | query | string |  | What to diff against: `accepted` (default), another step version ID of this step, or `none`. (default `"accepted"`) |
 | `scope` | query | string \| null |  | Return only rows of this scope (a chapter ID, character ID or `book`). Filters rows, not `diff` counts. |
 | `changed_only` | query | boolean |  | When true, return only rows whose `_diff` is `changed` or `added` (none without a comparison). Default false. (default `false`) |
-| `offset` | query | integer |  | Rows to skip (default 0, must be nonnegative). (default `0`) |
-| `limit` | query | integer |  | Page size, 1–1000 (default 200). (default `200`) |
+| `offset` | query | integer |  | Rows to skip (default 0). A negative value is treated as 0. (default `0`) |
+| `limit` | query | integer |  | Page size (default 200), clamped to 1–1000. (default `200`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineVersionDetail](#schema-pipelineversiondetail) | Success. |
-| 400 | [Error](#schema-error) | The offset is negative or the page size is outside 1–1000. |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. Also when `compare` names a version that does not exist or belongs to another step. |
+| 400 | [Error](#schema-error) | - `unknown_version`: `compare` names a version that does not exist, or belongs to another book or another step. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="acceptanalysispipelinestepversion"></a>
@@ -1454,7 +1457,7 @@ Send `expected_revision` (from preview) to refuse the accept when the book chang
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1462,10 +1465,10 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineAcceptResult](#schema-pipelineacceptresult) | Success. |
-| 400 | [Error](#schema-error) | The book is removed (restore it first); the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected result does not fit the book. |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. - `version_incompatible`: A selected result does not fit the book. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
-| 409 | [Error](#schema-error) | The version is still running; another (non-pipeline) job is changing this book; the book is reserved by an active series run; or the book revision differs from `expected_revision` (review the impact again). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: Another job (not a pipeline run) is changing this book. - `plan_stale`: The book revision differs from `expected_revision`: the book changed after the preview. Preview again. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="previewanalysispipelinestepversion"></a>
@@ -1480,7 +1483,7 @@ Not purely read-only: Before answering, the server records outside changes (`pro
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1488,9 +1491,9 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineAcceptImpact](#schema-pipelineacceptimpact) | Success. |
-| 400 | [Error](#schema-error) | `scopes` is empty or names a scope this version does not contain, or a selected result does not fit the book (for example a structure version for different chapters). |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_incompatible`: A selected result does not fit the book (for example a structure version for different chapters). |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="rejectanalysispipelinestepversion"></a>
@@ -1498,12 +1501,14 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 
 **Reject a candidate version** · operation `rejectAnalysisPipelineStepVersion` · cost `none`
 
-`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, accepted versions and retained results are unchanged, and the version remains inspectable. An accepted version cannot be rejected; accept another version to replace it. Because identical results share one artifact, a candidate whose selected scopes equal the accepted content (`same_as_accepted`) cannot be rejected either. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run or when the book is removed; the book's existence is not checked separately.
+`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, the accepted versions and retained results are unchanged, and the version remains inspectable (its state becomes `rejected`). The book must exist and not be removed. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run.
+
+Acceptance is a decision, not content equality: a version that was accepted and is still current for a selected scope cannot be rejected (accept another version to replace it), but a never-accepted version whose results equal the accepted content (`same_as_accepted`) can be. Rejecting it declines that run; the identical accepted content stays accepted through the version that was accepted.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1511,10 +1516,10 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineDecision](#schema-pipelinedecision) | Success. |
-| 400 | [Error](#schema-error) | `{version_id}` is `accepted`; the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected scope is the currently accepted version. |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
-| 409 | [Error](#schema-error) | The version is still running. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `version_accepted`: `{version_id}` is `accepted`, or this version was accepted and is still the accepted version of a selected scope. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Inspection
@@ -3307,7 +3312,7 @@ Bounded, source-validated knowledge from strictly earlier volumes, as analysis w
 | `available_observations` | integer | yes | Valid observations found before the per-character cap and the size bound. |
 | `included_observations` | integer | yes | Observations included in `characters`. |
 | `truncated` | boolean | yes | True when `included_observations` < `available_observations`. |
-| `context_chars` | integer | yes | Length in characters of the JSON-serialized `characters` array; at most 12,000 with the current server bound. |
+| `context_chars` | integer | yes | Length in characters of the JSON-serialized `characters` array as analysis receives it; at most 12,000 with the current server bound. Analysis also receives validation bookkeeping that this response omits, so the returned array serializes slightly shorter. |
 | `fingerprint` | string | yes | Stable SHA-256 hex digest of the dependencies (membership, links, earlier sources) and the included context. It changes when anything that would change the context changes; it does not use timestamps. |
 
 <a id="schema-bookspeakercheck"></a>
@@ -3604,8 +3609,8 @@ Which scopes of a version to preview, accept or reject.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `scopes` | list of string \| null |  | Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list, or a scope the version does not contain, is refused (400). |
-| `expected_revision` | integer \| null |  | Accept only: the `revision` returned by preview. The accept is refused (409) when the book revision differs. Ignored by preview and reject. |
+| `scopes` | list of string \| null |  | Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list (400 `scopes_empty`), or a scope the version does not contain (400 `unknown_scope`), is refused. |
+| `expected_revision` | integer \| null |  | Accept only: the `revision` returned by preview. The accept is refused (409 `plan_stale`) when the book revision differs. Ignored by preview and reject. |
 
 <a id="schema-defaultvoice"></a>
 ### DefaultVoice
@@ -4803,7 +4808,6 @@ A provider a pipeline step can use. Each step lists which of these it accepts.
 | `self_hosted` | boolean | yes | True for a server on the owner's network (`local_llm`, `booknlp`, `novel_analyzer`). |
 | `needs` | `"api_key"` \| `"url"` | yes | What must be configured in Settings: an API key (cloud) or a server URL. |
 | `configured` | boolean | yes | A key or URL is set. It does not prove the server answers or the key works. |
-| `has_api_key` | boolean | yes | Older name for `configured` (also true when a URL is set). Same value. |
 | `models` | list of [PipelineProviderModel](#schema-pipelineprovidermodel) \| null |  | Present only for `local_llm`: curated models for the self-hosted server. |
 
 <a id="schema-pipelineprovidermodel"></a>
@@ -4996,7 +5000,6 @@ Returned raw: every field below is always present unless marked optional.
 | `scopes` | map of string → string | yes | The result: `{scope: artifact ID}` of one immutable version per scope. Filled when the run finishes; only scopes whose every unit validated appear. |
 | `unchanged_scopes` | list of string | yes | Scopes whose result is identical to the version already accepted when this run finished (content-addressed: same artifact ID). |
 | `units` | [PipelineUnitCounts](#schema-pipelineunitcounts) | yes |  |
-| `conflicts` | list of any | yes | Internal; do not rely on it. Always an empty list today; conflicts are reported by preview and accept instead. |
 | `error` | string \| null | yes | Human-readable failure text (secrets redacted), or null. Display only. |
 | `created_at` | string | yes | ISO 8601 UTC creation time. |
 | `updated_at` | string | yes | ISO 8601 UTC time of the last change. |
@@ -5011,9 +5014,10 @@ The effective provider, model and gate for one step: the saved choice, or a defa
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider` | string | yes | Provider ID: `local` for plain (local) steps, otherwise one of the step's `providers`. |
-| `model` | string \| null | yes | Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. A run with a null model for an LLM provider is not refused here; configure one first. |
-| `gate` | `"auto"` \| `"review"` | yes | `auto` accepts a completed run of this step immediately; `review` waits for a person. |
-| `saved` | boolean | yes | True when the owner saved settings for this step. False means these are computed defaults (the preferred analysis provider and its configured analysis or scan model). A saved choice that no longer validates is silently replaced by the defaults (but `saved` stays true). |
+| `model` | string \| null | yes | Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. Planning or running an LLM step with a null model is refused (400 `step_model_missing`) unless the request sends a model in `configs`. |
+| `gate` | `"auto"` \| `"review"` | yes | `auto` accepts a completed run of this step immediately; `review` waits for a person. A saved gate applies even when `saved_invalid` is true. |
+| `saved` | boolean | yes | True when `provider` and `model` are the owner's saved choice for this step. False means they are computed defaults (the preferred analysis provider and its configured analysis or scan model). |
+| `saved_invalid` | boolean | yes | True when a saved provider/model choice exists but no longer validates (for example, the step no longer offers that provider). It is ignored: `saved` is false and the defaults apply. Saving new settings replaces it. |
 
 <a id="schema-pipelinestepversion"></a>
 ### PipelineStepVersion
@@ -5087,8 +5091,8 @@ render generically: show `stats` as label/value pairs and each column's
 | `columns` | list of [PipelineResultColumn](#schema-pipelineresultcolumn) | yes | Columns to display, in order. |
 | `diff` | [PipelineVersionDiff](#schema-pipelineversiondiff) | yes |  |
 | `total_rows` | integer | yes | Rows after the `scope` and `changed_only` filters, before paging. |
-| `offset` | integer | yes | Echo of the `offset` query parameter: rows skipped. |
-| `limit` | integer | yes | Echo of the `limit` query parameter: the page size. |
+| `offset` | integer | yes | Rows skipped: the `offset` query parameter, raised to 0 when negative. |
+| `limit` | integer | yes | The page size used: the `limit` query parameter clamped to 1–1000. |
 | `rows` | list of [PipelineDirectingRow](#schema-pipelinedirectingrow) \| [PipelineQuotesRow](#schema-pipelinequotesrow) \| [PipelineProfilesRow](#schema-pipelineprofilesrow) \| [PipelineDiscoveryRow](#schema-pipelinediscoveryrow) \| [PipelineCensusRow](#schema-pipelinecensusrow) \| [PipelineStructureRow](#schema-pipelinestructurerow) | yes | The requested page of rows. Most cell values reflect the book's current names and passages; census rows use the names stored in the result and structure rows use the version's own titles. The row shape depends on the step (one variant per step); every row has `id` and `scope`. |
 | `scopes` | list of [PipelineVersionScope](#schema-pipelineversionscope) | yes | Every scope of the displayed version. |
 | `revision` | integer | yes | The book's current revision. |
@@ -5136,8 +5140,8 @@ Which steps to estimate, over which chapters, with which providers.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `steps` | list of string | yes | Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID returns 404. (min items `1`; max items `40`) |
-| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused. |
+| `steps` | list of string | yes | Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
+| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`). |
 | `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not requested are ignored. |
 | `fresh` | boolean |  | When true, cached validated units are not reused: new samples are requested (for comparing a model with itself). Part of the plan fingerprint. Default false. (default `false`) |
 
@@ -5428,15 +5432,15 @@ A run to queue. Send the same `steps`, `chapter_ids`, `configs` and `fresh` as t
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `steps` | list of string | yes | Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID returns 404. (min items `1`; max items `40`) |
-| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused. |
+| `steps` | list of string | yes | Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
+| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused (400 `chapter_ids_empty`). |
 | `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored. |
 | `fresh` | boolean |  | Request new samples instead of reusing cached validated units (default false). Part of the fingerprint. (default `false`) |
 | `mode` | `"serial"` \| `"parallel"` |  | `serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished, so independent steps overlap. (default `"serial"`) |
 | `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. |
 | `concurrency` | integer |  | Maximum model requests in flight across the run, 1–4 (default 2). Each step also has its own `parallel` cap. (≥ `1.0`; ≤ `4.0`; default `2`) |
 | `limits` | [Limits](#schema-limits) |  | Optional caps; see Limits. Uncapped when omitted. |
-| `expected_fingerprint` | string \| null |  | The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409. Required unless a limit is set. |
+| `expected_fingerprint` | string \| null |  | The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409 `plan_stale`. Required unless a limit is set. |
 
 <a id="schema-saverequest"></a>
 ### SaveRequest
@@ -5485,7 +5489,7 @@ A series with its supplied books, all volume slots and its identity count.
 | `id` | string | yes | Series ID (opaque, currently `series_<hex>`). |
 | `name` | string | yes | Display name, 1–200 characters, whitespace-collapsed. Unique ignoring case. |
 | `created_at` | string | yes | ISO 8601 UTC creation time. |
-| `archived` | boolean | yes | True when the series is removed. Series routes list only active series, so this is false there; the library snapshot with `include_archived=true` can include removed ones. |
+| `archived` | boolean | yes | True when the series is removed. `listSeries` lists only active series, so this is false there; `getSeriesMap` and the library snapshot with `include_archived=true` can return removed ones. |
 | `books` | list of [SeriesBook](#schema-seriesbook) | yes | Supplied, non-removed books in reading order (position, then book ID). |
 | `volumes` | list of [SeriesSuppliedVolume](#schema-seriessuppliedvolume) \| [SeriesVolumeSlot](#schema-seriesvolumeslot) | yes | Every slot in reading order: supplied books (including removed ones, with status `archived`) and placeholders. The two element shapes differ: select on `status`. |
 | `character_count` | integer | yes | Number of series-level character identities. |
@@ -5620,7 +5624,6 @@ Its quote was rechecked against the earlier book's current chapter text at
 | `provider` | string \| null | yes | Provider that produced the observation (`local` for local rules), or null. |
 | `model` | string \| null | yes | Model that produced the observation, or null. |
 | `confidence` | number \| null | yes | Attribution confidence from 0 to 1 when recorded, else null. |
-| `source_hash` | string | yes | Internal; do not rely on it. SHA-256 of the chapter text the observation was validated against. |
 | `book_title` | string | yes | Title of the earlier book. |
 | `position` | number | yes | The earlier book's reading order. |
 | `chapter_title` | string | yes | Title of the chapter in the earlier book. |
@@ -5716,7 +5719,7 @@ A name for a series or a series character identity.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | yes | 1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused with 400. (min length `1`; max length `200`) |
+| `name` | string | yes | 1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused (400 `name_invalid`). (min length `1`; max length `200`) |
 
 <a id="schema-seriesplan"></a>
 ### SeriesPlan
@@ -5759,11 +5762,11 @@ Scope of a series analysis preview or run. Send the same body to preview and to 
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `provider` | string \| null |  | Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis provider, which must itself be a cloud provider. Other values are refused with 400. |
+| `provider` | string \| null |  | Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis provider, which must itself be a cloud provider. Other values are refused (400 `provider_not_cloud`). |
 | `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` |  | `scan` (default): discovery only. `profiles`: refine character profiles from retained evidence and confirmed earlier-series context. `direct`: performance direction. `full`: all three in order. (default `"scan"`) |
 | `concurrency` | integer |  | Parallel discovery workers, 1 or 2 (default 2). Profiles and direction always run one book at a time in reading order. (≥ `1.0`; ≤ `2.0`; default `2`) |
 | `limits` | [AnalysisLimits](#schema-analysislimits) |  | Per-book analysis limits, applied separately to each supplied book. |
-| `expected_plan_fingerprint` | string \| null |  | The `plan_fingerprint` from the reviewed preview (at most 64 characters). Used only by the start route; when present and different from the recomputed plan, nothing is queued (400). Omitting it skips the check. Ignored by the preview route. |
+| `expected_plan_fingerprint` | string \| null |  | The `plan_fingerprint` from the reviewed preview (at most 64 characters). Used only by the start route; when present and different from the recomputed plan, nothing is queued (409 `plan_stale`). Omitting it skips the check. Ignored by the preview route. |
 
 <a id="schema-seriesrenamed"></a>
 ### SeriesRenamed
