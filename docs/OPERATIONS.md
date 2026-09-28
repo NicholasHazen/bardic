@@ -49,7 +49,7 @@ An alternate launch can use another port and a separate data directory:
 BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library BARDIC_LAN_NAME='' uv run --frozen python -m bardic
 ```
 
-The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access. `./bardicctl dev start --library /absolute/path/to/test-library` does the same in the background with provider keys blank; it refuses the service's own library.
+The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access. `./bardicctl dev start --library /absolute/path/to/test-library` does the same in the background with provider keys blank (`--keys` passes the service checkout's provider keys, and nothing else from its `.env`, for a live test); it refuses the service's own library.
 
 This is useful for testing a restored **copy**. Changing the port alone does not allow two servers to share one library. Keep the primary database on a local filesystem; SQLite WAL relies on same-host coordination. See [SQLite WAL](https://sqlite.org/wal.html).
 
