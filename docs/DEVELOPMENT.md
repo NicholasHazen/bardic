@@ -141,11 +141,11 @@ For manual checks, load the original story from the welcome screen, use a short 
 | Exact source extraction, passage IDs, EPUB safety, cover extraction | [importer.py](../bardic/importer.py), [structure.py](../bardic/structure.py) |
 | Mutable reader projection, selected enhanced takes, restart recovery | [store.py](../bardic/store.py) |
 | Immutable versions, dependency edges, current artifact heads | [artifacts.py](../bardic/artifacts.py) |
-| Local census and semantic coverage | [preprocessing.py](../bardic/preprocessing.py) |
-| Discovery/profile/direction recipes and staged execution | [progressive.py](../bardic/progressive.py) |
+| Local census | [preprocessing.py](../bardic/preprocessing.py) |
+| Discovery/profile/direction request builders (prompts, schemas, source locators) | [pipeline/prompts.py](../bardic/pipeline/prompts.py) |
+| Legacy phase execution, its unit cache and coverage (being removed; see [Classic removal](CLASSIC-REMOVAL.md)) | [progressive.py](../bardic/progressive.py), [staged_analysis.py](../bardic/staged_analysis.py), [legacy_phase.py](../bardic/legacy_phase.py) |
 | Structured provider adapters and evidence validation | [analysis.py](../bardic/analysis.py) |
-| Local/legacy checkpoint execution | [staged_analysis.py](../bardic/staged_analysis.py) |
-| Accepted unit cache, request reservations and usage | [processing.py](../bardic/processing.py) |
+| Request reservations, attempts, events and usage | [processing.py](../bardic/processing.py) |
 | Model inventory, roles, dated prices, explicit access checks | [model_catalog.py](../bardic/model_catalog.py), [account_checks.py](../bardic/account_checks.py) |
 | Confirmed series identities and earlier-volume observations | [series.py](../bardic/series.py) |
 | Series planning and parent/child execution | [series_processing.py](../bardic/series_processing.py) |
