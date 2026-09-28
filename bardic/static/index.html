@@ -27,6 +27,7 @@
   <script defer src="/static/listen-status.js"></script>
   <script defer src="/static/player.js"></script>
   <script defer src="/static/performances.js"></script>
+  <script defer src="/static/script.js"></script>
   <link rel="stylesheet" href="/static/resources.css">
   <script defer src="/static/resources.js"></script>
   <link rel="stylesheet" href="/static/series-processing.css">
@@ -335,9 +336,14 @@
           <div id="script-heading" class="script-heading" tabindex="-1">
             <h3>Script</h3>
             <span id="script-meta"></span>
-            <label class="sr-only" for="studio-chapter">Script chapter</label>
-            <select id="studio-chapter"></select>
+            <div class="script-chapter-nav">
+              <button id="script-previous-chapter" type="button" class="button subtle small" aria-label="Previous chapter">← Previous</button>
+              <label class="sr-only" for="studio-chapter">Script chapter</label>
+              <select id="studio-chapter"></select>
+              <button id="script-next-chapter" type="button" class="button subtle small" aria-label="Next chapter">Next →</button>
+            </div>
           </div>
+          <div id="script-review" class="script-review"></div>
           <div id="scene-list" class="scene-list"></div>
         </section>
         <section id="details-view" class="view-panel" role="tabpanel" aria-labelledby="details-tab" hidden>

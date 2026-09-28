@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Script & record at book scale (UI phase 3b).**
+  - The script shows one chapter at a time, with **Previous**/**Next** beside the chapter menu.
+  - **Needs a look** chips filter the chapter: Unassigned speaker, Low confidence (65% or less, as in Analyze), BookNLP disagrees (when the book has BookNLP checks), Your edits and Not recorded. Each shows its count in the chapter; a line gives the whole book's counts, the chapter menu marks chapters with matches, and a link jumps to the next one. A passage you fix stays in view until you change the chips.
+  - No Save buttons: a speaker saves when you choose it, a performance note or scene direction when you pause typing or leave the field. Each save sends only that field, so only it becomes your edit that analysis keeps. A row says Saved or why it did not save, with **Try again**; unsaved text survives chapter changes, and leaving the page asks first.
+  - **Select shown** and **Assign** give several passages one speaker (one request each, with progress; passages that fail stay selected).
+  - Analyze's **Show in text** opens the passage here, scrolled into view with its speaker menu focused, keeping your chips.
+  - Rows are compact: **Hear example** stays on the row; **Record**/**Record again** and playing the recording are under **More**. On phones the note field takes its own line.
 - **Book structure (UI phase 2).**
   - Book tabs follow the work: **Read & listen · Analyze · Cast · Script & record · Details**. **Voices** moved to the sidebar and opens without a book; Cast links to it.
   - A lifecycle strip under the tabs shows Analyze, Cast, Script and Record with one state each and one **Next**, and expands into stage cards. It replaces the book status line and the Studio's 01/02/03 guide.

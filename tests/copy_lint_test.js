@@ -1,5 +1,5 @@
 // Copy lint for the primary surfaces: index.html text and the user-facing strings in app.js,
-// listen.js and lifecycle.js. The Details tab (provenance and inspection) is exempt.
+// listen.js, lifecycle.js and script.js. The Details tab (provenance and inspection) is exempt.
 // Checks: banned terms, headings without a closing period, and step names that match the
 // analysis step registry (bardic/pipeline/steps/*.py `label`).
 const {test} = require('node:test');
@@ -100,7 +100,7 @@ const html = read('bardic/static/index.html');
 const primaryHtml = without(html.replace(/<head>[\s\S]*?<\/head>/, ''), 'details-view');
 const surfaces = [
   {file:'bardic/static/index.html', texts:markupText(primaryHtml)},
-  ...['bardic/static/app.js', 'bardic/static/listen.js', 'bardic/static/lifecycle.js'].map(file => ({file,
+  ...['bardic/static/app.js', 'bardic/static/listen.js', 'bardic/static/lifecycle.js', 'bardic/static/script.js'].map(file => ({file,
     texts:jsStrings(read(file)).flatMap(value => value.includes('<') ? markupText(value) : [clean(value)]).filter(human)})),
 ];
 
@@ -134,7 +134,7 @@ test('headings name a job and do not end with a period', () => {
   const welcome = html.slice(html.indexOf('<section id="welcome"'), html.indexOf('<section id="home-library"'));
   const headingSources = [
     {file:'bardic/static/index.html', source:primaryHtml.replace(welcome, '')},
-    ...['bardic/static/app.js', 'bardic/static/listen.js', 'bardic/static/analysis-pipeline.js'].map(file => ({file, source:jsStrings(read(file)).join('\n')})),
+    ...['bardic/static/app.js', 'bardic/static/listen.js', 'bardic/static/analysis-pipeline.js', 'bardic/static/script.js'].map(file => ({file, source:jsStrings(read(file)).join('\n')})),
   ];
   const problems = [];
   for (const {file, source} of headingSources) {

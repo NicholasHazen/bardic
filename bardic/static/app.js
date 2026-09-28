@@ -1389,15 +1389,8 @@ function renderProduction() {
     onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); if (state.book?.id !== id) return; state.referenceCache.clear(); state.referenceVersion++; applyBook(book); $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences)); await refreshLibrary(); void loadVoiceLibrary(); } });
 }
 function renderStudio() {
-  const segments = chapterSegments();
-  const paidRender = $('#render-provider')?.value === 'gemini';
-  $('#studio-chapter').innerHTML = state.book.chapters.map(chapter => `<option value="${escapeHTML(chapter.id)}" ${chapter.id === state.chapterId ? 'selected' : ''}>${escapeHTML(chapter.title)}</option>`).join('');
-  const scenes = state.book.scenes.filter(scene => scene.chapter_id === state.chapterId);
-  $('#script-meta').textContent = `${scenes.length} ${scenes.length === 1 ? 'scene' : 'scenes'} · ${segments.length} ${segments.length === 1 ? 'passage' : 'passages'}`;
-  $('#scene-list').innerHTML = scenes.map((scene, index) => {
-    const items = segments.filter(s => s.scene_id === scene.id || scene.segment_ids?.includes(s.id));
-    return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><div class="render-confirm" data-render-confirm-host="${escapeHTML(scene.id)}" hidden></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage${paidRender ? ' (paid request)' : ''}">${paidRender ? 'Hear example · paid' : 'Hear example'}</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}${paidRender ? ' · one paid Gemini request' : ''}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
-  }).join('') || '<div class="empty-state">No scenes here yet. Analyze the story to find scenes and speakers.</div>';
+  // The script (one chapter, Needs a look, saves on change, bulk speaker) is script.js's.
+  window.BardicScript?.render();
   renderAnalysisProgress();
   updateBusyControls();
   renderProduction();
@@ -1853,7 +1846,7 @@ function updateAnalysisHint() {
 }
 function updateBusyControls(forceBusy = false) {
   const busy = forceBusy || Boolean(busyJob());
-  $$('#render-button, #analyze-button, #analyze-from-cast, #analysis-provider, #analysis-scope, .render-action, #cast-grid input, #cast-grid textarea, #cast-grid select, #cast-grid button[type="submit"], #scene-list input, #scene-list textarea, #scene-list select, #scene-list button[type="submit"]').forEach(control => { control.disabled = busy; });
+  $$('#render-button, #analyze-button, #analyze-from-cast, #analysis-provider, #analysis-scope, .render-action, #cast-grid input, #cast-grid textarea, #cast-grid select, #cast-grid button[type="submit"], #scene-list input, #scene-list textarea, #scene-list select, #scene-list button[type="submit"], #script-review select, #script-review input, [data-script-assign]').forEach(control => { control.disabled = busy; });
 }
 // Listening jobs report their own progress in the player; a finished one does
 // not need the banner.
@@ -2158,7 +2151,8 @@ $('#cast-grid').addEventListener('submit', async event => {
     try { const book = await post(`/api/books/${encodeURIComponent(state.book.id)}/characters`, Object.fromEntries(new FormData(form))); applyBook(book); toast('Character added. Assign their passages in Script & record.'); } catch (error) { toast(error.message, true); button.disabled = false; }
   }
 });
-$('#scene-list').addEventListener('submit', event => { event.preventDefault(); const form = event.target; if (form.dataset.sceneForm) saveEditor(form,'scenes',form.dataset.sceneForm); else if (form.dataset.segmentForm) saveEditor(form,'segments',form.dataset.segmentForm); });
+// Script rows save on change (script.js); Enter in a text field saves that row now.
+$('#scene-list').addEventListener('submit', event => { event.preventDefault(); void window.BardicScript?.submit(event.target); });
 $('#cast-grid').addEventListener('toggle', event => {
   if (event.target.matches('[data-character-references]') && event.target.open) loadCharacterReferences(event.target.dataset.characterReferences);
 }, true);
@@ -2462,6 +2456,9 @@ document.addEventListener('keydown', event => { if (event.code === 'Space' && !e
 
 // The page glue in shell.js (lifecycle strip, hash routes, breadcrumb, Voices page) reads these.
 globalThis.BardicApp = {state, setTab, selectBook, showLibrary, openListenSheet, renderVoices, scrollMotion};
+// The script in Script & record (script.js): passage edits use the existing PATCH routes.
+window.BardicScript?.attach({$, state, patch, applyBook, playable, setChapter, setTab, scrollMotion, icon, formatTime,
+  busy:() => Boolean(busyJob()), paidRender:() => $('#render-provider')?.value === 'gemini'});
 // Player extras (player.js): the status pill, skips, sleep timer and lock-screen position.
 window.BardicPlayer?.attach({$, audio, timeline:chapterTimeline, position:chapterPosition, seek:seekChapter,
   playing:narrationPlaying, statusInput:() => window.BardicListen?.statusInput?.(state.book),
