@@ -15,7 +15,7 @@ uv sync --frozen --group dev
 uv run --frozen python -m bardic
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765). There is no frontend compilation step. The launcher binds to loopback; this version has no user account system and is intended for local use. The application checks request origins for writes. A publicly hosted deployment is not configured or promised by this setup.
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765). There is no frontend compilation step. The launcher binds to loopback unless [local-network access](#local-network-access) is enabled; this version has no user account system and is intended for a single owner. The application checks request origins for writes. A publicly hosted deployment is not configured or promised by this setup.
 
 Use **Stop** on active work when convenient, then Ctrl+C in the server terminal. Shutdown waits for running worker work to finish or reach a cancellation boundary. A request already sent to a provider can still complete and be charged. Do not start another server against the same data directory while the first is shutting down.
 
@@ -24,8 +24,10 @@ An operating-system lock on `server.lock` enforces one application instance per 
 An alternate launch can use another port and a separate data directory:
 
 ```sh
-BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library uv run --frozen python -m bardic
+BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library BARDIC_LAN_NAME='' uv run --frozen python -m bardic
 ```
+
+The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access.
 
 This is useful for testing a restored **copy**. Changing the port alone does not allow two servers to share one library. Keep the primary database on a local filesystem; SQLite WAL relies on same-host coordination. See [SQLite WAL](https://sqlite.org/wal.html).
 
@@ -55,7 +57,10 @@ For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` 
 | `OPENAI_API_KEY` | OpenAI text-analysis credential. |
 | `ANTHROPIC_API_KEY` | Anthropic text-analysis credential. |
 | `BARDIC_DATA_DIR` | Library root; defaults to `.bardic` relative to the launch working directory, with existing `.spintails` fallback described above. Prefer an absolute path for alternate libraries. |
-| `BARDIC_PORT` | Local port for `python -m bardic`; defaults to `8765`. |
+| `BARDIC_PORT` | Port for `python -m bardic`; defaults to `8765`. |
+| `BARDIC_LAN_NAME` | Opt-in name for other devices, such as `bardic` for `bardic.local`. See [local-network access](#local-network-access). |
+| `BARDIC_HOST` | Bind address. Defaults to `127.0.0.1`, or `0.0.0.0` when `BARDIC_LAN_NAME` is set. |
+| `BARDIC_ALLOWED_HOSTS` | Extra comma-separated Host names or addresses to trust, such as this computer's IP. No ports or wildcards. |
 
 Environment values already present in the launching shell win over the same `.env` entry, including intentionally empty values. File values are loaded literally without variable interpolation. For Gemini, the separate `GOOGLE_API_KEY` fallback can still supply a key if `GEMINI_API_KEY` is empty.
 
@@ -72,6 +77,29 @@ Keys entered in **Settings** replace the current server session's in-memory valu
 **Check API** sends one tiny text-generation request with the selected detailed analysis model. **Check all accounts** performs that check for the configured providers. These actions may incur a small charge, send no book text, have no automatic retry, and cache the same configuration's result for 30 seconds. Results disappear on server restart and are invalidated by changed credentials/models.
 
 A successful text check establishes that one request worked at that time. It does not establish remaining credit, full-book capacity or access to a separate TTS model. A quota/rate-limit error is not automatically exhausted credit. Exact billing and account-wide usage belong in the provider dashboards linked from Settings. See [account check semantics](ACCOUNT-CHECKS.md).
+
+## Local-network access
+
+The launcher binds to loopback unless you opt in. To use Bardic from a phone, tablet or another computer on the same network, add this to `.env` and restart:
+
+```sh
+BARDIC_LAN_NAME=bardic
+```
+
+Then open `http://bardic.local:8765` on the other device, using your `BARDIC_PORT`. The setting:
+
+- binds every IPv4 interface (`0.0.0.0`) unless `BARDIC_HOST` names one address;
+- trusts `bardic.local` as a Host name. DNS-rebinding and same-origin write protection still apply;
+- runs macOS `dns-sd -P` from [lan.py](../bardic/lan.py), so this computer's mDNSResponder answers `bardic.local` with its current IPv4 address. The address is rechecked every 30 seconds. The name is withdrawn when the server stops, including after a forced kill.
+
+**There is no authentication.** Any device that can reach the port can read the library, change settings and session provider keys, edit or remove work, and start paid analysis or narration with the configured keys. Enable this only on a network you trust. On a laptop the setting also applies to every other network it joins, including public Wi-Fi. Unset it, or turn on the macOS firewall, before travelling.
+
+- `http://bardic.local:PORT` and `http://127.0.0.1:PORT` are different browser origins. Reading positions and listening preferences saved in one browser origin do not appear in the other. The library itself is shared.
+- Apple devices and Windows 10+ resolve `.local` names. Android support varies by version and browser, and Linux needs Avahi with nss-mdns. Where the name does not resolve, add this computer's address to `BARDIC_ALLOWED_HOSTS` and open that address instead. The address can change unless the router reserves it.
+- Only one device can own a name. If another device already uses `bardic.local`, the server prints `Name in use`, keeps serving and retries with backoff. Choose another name. Two Bardic instances on one network need different names.
+- The advertised address follows the default route. A full-tunnel VPN can make that the VPN address. In that case set `BARDIC_HOST` to the LAN address, which also stops loopback access; use the name locally too.
+- The computer must be awake. The name is unavailable while it sleeps.
+- `dns-sd` ships with macOS. On other systems the server still binds, but no name is advertised.
 
 ## Choose the workflow before generating
 
@@ -225,7 +253,8 @@ Logs exclude book text, API keys, URLs, stack traces and free-form browser messa
 | Symptom | What to inspect and do |
 | --- | --- |
 | Server says the data directory is already in use | Open the existing instance or stop its process. Confirm the resolved data path; changing only the port does not resolve the directory lock. Do not unlink the lock file to force concurrent access. |
-| Address/port already in use | Stop the service using that port or choose `BARDIC_PORT`. A new port also means a different browser storage origin. |
+| `bardic.local` does not open on another device | Check that the server printed `Advertising http://…` without a later `Name in use` line. Both devices must be on the same network; guest Wi-Fi and access-point client isolation block both mDNS and device-to-device traffic. `Invalid host header` means that name is not trusted: use the configured name or add it to `BARDIC_ALLOWED_HOSTS`. A device that looked up the name while the server was stopped can take a short time to resolve it again. |
+| Address/port already in use | Stop the service using that port or choose `BARDIC_PORT`. The launcher checks `127.0.0.1:PORT` first because macOS would otherwise let a network-bound and a loopback-bound server share a port. A new port also means a different browser storage origin. |
 | Library appears empty after restart | Check launch working directory, `BARDIC_DATA_DIR` / `SPINTAILS_DATA_DIR` and whether both `.bardic/` and `.spintails/` exist. A relative path or the default selection may have chosen another folder. Preserve both folders while locating the intended `library.sqlite3`. |
 | Updated `.env` key appears ignored | Restart the server; inspect inherited variable names and the Gemini alias precedence. Settings changes are session-only. Use an explicit small check only when you want to test inference. |
 | Model refresh succeeds but generation fails | Visibility does not prove structured-output compatibility, permission for a separate TTS model, quota or balance. Read the actual failure and verify the selected model role. |

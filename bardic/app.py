@@ -34,6 +34,7 @@ from .audio import assemble_audio, list_system_voices, render_fingerprint, synth
 from .config import data_directory
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
+from .lan import allowed_hosts
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .series import SeriesRepository
 from .structure import repair_structure, transform_checkpoint_structure
@@ -576,7 +577,7 @@ def create_app(data_dir: Path | None = None):
         app.state.runtime.close()
 
     app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver", *allowed_hosts()])
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):

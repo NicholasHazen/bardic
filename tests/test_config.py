@@ -14,13 +14,16 @@ from bardic.app import create_app
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                 "BARDIC_DATA_DIR", "BARDIC_PORT", "SPINTAILS_DATA_DIR", "SPINTAILS_PORT", "PYTHON_DOTENV_DISABLED"):
+                 "BARDIC_DATA_DIR", "BARDIC_PORT", "SPINTAILS_DATA_DIR", "SPINTAILS_PORT", "PYTHON_DOTENV_DISABLED",
+                 "BARDIC_HOST", "BARDIC_LAN_NAME", "BARDIC_ALLOWED_HOSTS"):
         # Track absent variables too, so values inserted by dotenv are undone.
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name, raising=False)
     root = tmp_path / "project"
     root.mkdir()
     monkeypatch.setattr(config, "PROJECT_ROOT", root)
+    # Never probe real ports here: the owner's own server may be listening on them.
+    monkeypatch.setattr(entrypoint.lan, "port_in_use", lambda port: False)
     return root
 
 
@@ -134,3 +137,57 @@ def test_legacy_module_launches_bardic(project, monkeypatch):
     monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
     runpy.run_module("spintails", run_name="__main__")
     assert calls == [(("bardic.app:app",), {"host": "127.0.0.1", "port": 8765})]
+
+
+def test_lan_name_binds_the_network_and_withdraws_the_name_when_the_server_exits(project, monkeypatch):
+    (project / ".env").write_text("BARDIC_LAN_NAME=bardic\nBARDIC_PORT=8766\n")
+    events = []
+
+    class Advertiser:
+        def __init__(self, name, port, address):
+            events.append(("advertise", name, port, address))
+
+        def start(self):
+            events.append("start")
+
+        def stop(self):
+            events.append("stop")
+
+    def run(app, host, port):
+        events.append(("serve", host, port))
+        raise SystemExit(1)  # uvicorn exits this way when the port is busy.
+
+    monkeypatch.setattr(entrypoint.lan, "Advertiser", Advertiser)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", run)
+    with pytest.raises(SystemExit):
+        entrypoint.main()
+    assert events == [("advertise", "bardic", 8766, None), "start", ("serve", "0.0.0.0", 8766), "stop"]
+
+
+def test_a_server_already_on_the_port_stops_startup(project, monkeypatch):
+    # On macOS a 0.0.0.0 server and a 127.0.0.1 server can share a port, so uvicorn alone would not refuse.
+    (project / ".env").write_text("BARDIC_LAN_NAME=bardic\nBARDIC_PORT=8766\n")
+    monkeypatch.setattr(entrypoint.lan, "port_in_use", lambda port: port == 8766)
+    class Advertiser:
+        def __init__(self, *args):
+            pass
+
+        def start(self):
+            pytest.fail("name advertised")
+
+    monkeypatch.setattr(entrypoint.lan, "Advertiser", Advertiser)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *args, **kwargs: pytest.fail("server started"))
+    with pytest.raises(SystemExit, match="port 8766 is already in use"):
+        entrypoint.main()
+
+
+@pytest.mark.parametrize("settings, message", [
+    ("BARDIC_LAN_NAME=bardic\nBARDIC_HOST=127.0.0.1\n", "network-reachable"),
+    ("BARDIC_LAN_NAME=my_bardic\n", "BARDIC_LAN_NAME"),
+    ("BARDIC_ALLOWED_HOSTS=*\n", "wildcard"),
+])
+def test_invalid_network_settings_stop_before_serving(project, monkeypatch, settings, message):
+    (project / ".env").write_text(settings)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *args, **kwargs: pytest.fail("server started"))
+    with pytest.raises(SystemExit, match=message):
+        entrypoint.main()
