@@ -292,13 +292,13 @@ function studio({provider = 'gemini', quota = {requests_today:95, rpd:100, reset
     refreshStatus:async () => { statusReads++; state.status = {...state.status, tts_quota:quota ? {'gemini-3.8-flash-tts':quota} : undefined}; },
     playable:segment => Boolean(segment?.audio?.url && !segment.audio.stale),
     narrationModel:value => value === 'gemini' ? 'gemini-3.8-flash-tts' : value === 'system' ? 'macos-say' : null,
-    NARRATION_LABELS:{system:'Device', gemini:'Gemini', breeze:'Breeze'}, scrollMotion:() => 'auto',
+    NARRATION_LABELS:{system:'Mac voices', gemini:'Gemini', breeze:'Breeze'}, scrollMotion:() => 'auto',
     renderStudio() {}, updateProviderHint() {}, refreshBreeze() {}, auditionPassage() {}, retakeSegment() {}, startSegment() {},
   };
   vm.runInNewContext([
     line('const escapeHTML ='),
     between('async function startJob(', '// A seeded provider (Breeze)'),
-    between("$('#render-button').addEventListener('click'", "$('#analysis-provider').addEventListener('change'"),
+    between("$('#render-button').addEventListener('click'", "$('#job-banner').addEventListener('click'"),
     line("$('#scene-list').addEventListener('click'"),
     'globalThis.studio = {startJob, renderEstimate};',
   ].join('\n'), context);
@@ -389,7 +389,8 @@ function workspace() {
   const {node} = fakeNodes();
   const state = {jobs:[], book:null};
   const listen = {mode:'simple', ready:new Set()};
-  const context = {state, $:node, $$:() => [], icon:() => '', window:{BardicListen:{getSelection:() => ({mode:listen.mode}), resolve:(_book, segment) => listen.ready.has(segment.id) ? {url:'/a.wav'} : null}},
+  let lifecycle = 0;
+  const context = {state, $:node, $$:() => [], icon:() => '', window:{BardicShell:{renderLifecycle:() => { lifecycle++; }}, BardicListen:{getSelection:() => ({mode:listen.mode}), resolve:(_book, segment) => listen.ready.has(segment.id) ? {url:'/a.wav'} : null}},
     busyJob:() => state.jobs.find(job => ['queued','running'].includes(job.status)), updateBusyControls() {}, renderProduction() {},
     syncWorkspaceNavigation() {}, renderLibrary() {}, renderReader() {}, renderCast() {}, renderStudio() {}, renderVoices() {}, setTab() {}, updatePlayer() {}};
   vm.runInNewContext([
@@ -399,21 +400,19 @@ function workspace() {
     between("$('#job-banner').addEventListener('click'", '\n'),
     'globalThis.ui = {renderBook, renderBookStatus, renderJob};',
   ].join('\n'), context);
-  return {state, node, listen, ui:context.ui};
+  return {state, node, listen, ui:context.ui, lifecycleRenders:() => lifecycle};
 }
 
-test('the Cast badge counts the cards shown and the book status counts listening audio', () => {
+test('the Cast badge counts the cards shown and the book status is the lifecycle strip', () => {
   const env = workspace();
   env.state.book = {...story('book-w'), author:'', characters:[{id:'narrator', name:'Narrator'}, {id:'unassigned', name:'Unassigned'}, {id:'mara', name:'Mara'}, {id:'ivo', name:'Ivo'}]};
   env.ui.renderBook();
   assert.equal(env.node('#cast-count').textContent, 4, 'Narrator and unassigned dialogue have cards too');
-  assert.equal(env.node('#book-status').textContent, 'Not narrated yet');
-  env.listen.ready = new Set(['s1','s2','s3']);
+  // The strip (lifecycle.js, rendered by shell.js; tests/lifecycle_test.js) replaced the #book-status line.
+  assert.equal(env.lifecycleRenders(), 1, 'rendering the book repaints the lifecycle strip once');
   env.ui.renderBookStatus();
-  assert.equal(env.node('#book-status').textContent, '3 of 3 passages ready with your narrator', 'a fully listened book says so');
-  env.state.book.segments[0].audio = {url:'/studio.wav'};
-  env.ui.renderBookStatus();
-  assert.equal(env.node('#book-status').textContent, '3 of 3 passages ready with your narrator · 1 of 3 recorded in the Studio');
+  assert.equal(env.lifecycleRenders(), 2);
+  assert.ok(!env.node('#book-status').textContent, 'nothing writes the old status line');
 });
 
 test('the job banner shows running jobs and unacknowledged outcomes, with distinct stop reasons', () => {

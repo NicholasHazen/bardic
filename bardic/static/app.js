@@ -370,7 +370,7 @@ function startVoicePreview(config, label) {
 // `voices` map; older records may still only have the legacy fields. Choices
 // are encoded as "" (Default), "library:<id>" or "id:<provider voice>" by the
 // shared helpers in voices.js; the voice library comes from /api/voices.
-const NARRATION_LABELS = {system:'Device', gemini:'Gemini', breeze:'Breeze'};
+const NARRATION_LABELS = {system:'Mac voices', gemini:'Gemini', breeze:'Breeze'};
 const NARRATION_PROVIDERS = ['breeze','gemini','system'];
 const voiceHelpers = () => window.BardicVoices?.cast;
 // Only Gemini offers a model choice; Breeze resolves its model on the server.
@@ -702,6 +702,9 @@ function setSheetTab(tab) {
   $('#listen-sheet-body').hidden = state.sheetTab !== 'live';
   $('#listen-sheet-performances').hidden = state.sheetTab !== 'performances';
   $('#listen-sheet-title').textContent = state.sheetTab === 'live' ? 'Choose your narrator' : 'Performances';
+  // More options (the one-narrator and full-cast controls) belongs to the narrator tab.
+  const more = $('#listening-drawer');
+  if (more) more.hidden = state.sheetTab !== 'live';
   if (state.sheetTab === 'performances') renderPerformances();
 }
 function renderPerformances() {
@@ -746,18 +749,18 @@ function renderListenSheet() {
     html = `<div class="listen-sheet-buffering" role="status" aria-live="polite"><span class="listen-spinner" aria-hidden="true"></span>
       <strong>Getting your narrator ready…</strong>
       ${chunkedStart ? '<progress aria-label="Preparing the first audio"></progress>' : `<progress max="${target}" value="${ready}" aria-label="Audio ready before playback"></progress>`}
-      <p>${chunkedStart ? escapeHTML(choice.message || 'Generating the first chunk. Longer chunks follow while you listen.') : `${ready} of ${target} seconds ready`}</p>
+      <p>${chunkedStart ? escapeHTML(choice.message || 'Generating the first audio. Longer stretches follow while you listen.') : `${ready} of ${target} seconds ready`}</p>
       <p class="field-help">The reader opens when the first audio plays.</p>
       <button type="button" class="button subtle" data-sheet-action="cancel">Cancel</button></div>`;
   } else {
     const listening = !audio.paused && simpleActive();
     const previewing = Boolean(state.voicePreview);
     const note = choice.provider === 'gemini'
-      ? `Gemini is paid: it narrates in large chunks paced to your request limits, and Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost.${choice.continuous ? ' While you listen, the next chapter is queued about 10 minutes ahead.' : ''} Pause stops new requests.`
+      ? `Gemini is paid: it narrates long stretches paced to your request limits, and Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost.${choice.continuous ? ' While you listen, the next chapter is queued about 10 minutes ahead.' : ''} Pause stops new requests.`
       : choice.provider === 'breeze' ? 'Breeze narrates at about real-time speed on your server; faster listening may pause to buffer.'
-      : 'Device narration runs on the computer serving Bardic, with no charges.';
+      : 'Mac voices run on the computer serving Bardic, with no charges.';
     const unavailable = choice.provider === 'gemini' ? 'Add a Gemini API key in Providers & settings to generate narration. Saved audio still plays.'
-      : choice.provider === 'breeze' ? 'Connect Breeze and choose a voice to generate narration. Saved audio still plays.' : 'Device voices are unavailable on this server.';
+      : choice.provider === 'breeze' ? 'Connect Breeze and choose a voice to generate narration. Saved audio still plays.' : 'Mac voices are unavailable on this server.';
     const performance = listen.getPerformance?.(state.book);
     // Start is this session's consent for a billed narrator, so its label says so.
     const askConsent = !listening && choice.provider === 'gemini' && choice.available && !paidConsentGiven();
@@ -765,6 +768,7 @@ function renderListenSheet() {
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-provider-label">Narration</span><div class="listen-sheet-providers" role="radiogroup" aria-labelledby="listen-sheet-provider-label">${choice.providers.map(item => `<button type="button" role="radio" data-sheet-provider="${item.id}" aria-checked="${item.id === choice.provider}"><strong>${escapeHTML(item.label)}</strong><small>${escapeHTML(item.available ? SHEET_PROVIDER_NOTES[item.id] : 'Not set up')}</small></button>`).join('')}</div></div>
       <div class="listen-sheet-field"><label class="field-label" for="listen-sheet-voice">Voice</label><div class="listen-sheet-voice"><select id="listen-sheet-voice">${choice.voices.map(voice => `<option value="${escapeHTML(voice.id)}" ${voice.id === choice.voice ? 'selected' : ''} ${voice.usable || voice.id === choice.voice ? '' : 'disabled'}>${escapeHTML(voice.name)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`).join('')}</select><button type="button" class="button subtle" data-sheet-action="example" ${choice.provider === 'breeze' && !choice.breezeVoiceReady ? 'disabled' : ''}>${previewing ? 'Stop example' : choice.provider === 'gemini' ? 'Hear example · paid' : 'Hear example'}</button></div></div>
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-speed-label">Speed</span><div class="listen-sheet-speeds" role="radiogroup" aria-labelledby="listen-sheet-speed-label">${SHEET_SPEEDS.map(rate => `<button type="button" role="radio" data-sheet-speed="${rate}" aria-checked="${rate === audio.playbackRate}">${rate}×</button>`).join('')}</div></div>
+      ${choice.provider === 'system' && (choice.hiddenVoices || choice.showAllVoices) ? `<label class="listen-sheet-toggle"><input type="checkbox" data-sheet-all-voices ${choice.showAllVoices ? 'checked' : ''}> Show all voices${choice.showAllVoices ? '' : ` (${escapeHTML(choice.hiddenVoices)} in other languages or novelty voices hidden)`}</label>` : ''}
       <label class="listen-sheet-toggle"><input type="checkbox" data-sheet-continuous ${choice.continuous ? 'checked' : ''}> Keep going into the next chapter</label>
       <p class="field-help">${escapeHTML(note)}</p>
       ${choice.available ? '' : `<p class="inline-error">${escapeHTML(unavailable)}</p>`}
@@ -778,7 +782,7 @@ function renderListenSheet() {
   // Keep keyboard focus on the same control across repaints.
   const focused = body.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = focused && ['sheetAction','sheetProvider','sheetSpeed'].find(key => focused.dataset[key] !== undefined);
-  const focusSelector = focused?.id === 'listen-sheet-voice' ? '#listen-sheet-voice' : focused?.dataset.sheetContinuous !== undefined ? '[data-sheet-continuous]'
+  const focusSelector = focused?.id === 'listen-sheet-voice' ? '#listen-sheet-voice' : focused?.dataset.sheetContinuous !== undefined ? '[data-sheet-continuous]' : focused?.dataset.sheetAllVoices !== undefined ? '[data-sheet-all-voices]'
     : focusKey ? `[data-${focusKey.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}="${focused.dataset[focusKey]}"]` : null;
   body.innerHTML = html;
   if (focusSelector) $(focusSelector, body)?.focus({preventScroll:true});
@@ -856,11 +860,10 @@ function updateStatusUI({syncSettings = true} = {}) {
   if (syncSettings) fillSettings();
   cloudProviders.forEach(renderAccountCheck);
   updateSettingsControls();
-  $('#analysis-provider').value = state.status.analysis_provider || 'local';
   if (state.book) renderProduction();
   const providers = state.status.providers || [];
   const system = providers.find(p => p.id === 'system');
-  $('#render-provider option[value="system"]').textContent = system?.available === false ? 'Device voices · unavailable' : 'Device voices · local';
+  $('#render-provider option[value="system"]').textContent = system?.available === false ? 'Mac voices · unavailable' : 'Mac voices · free';
   const breeze = providers.find(p => p.id === 'breeze');
   const breezeOption = $('#render-provider option[value="breeze"]');
   if (breezeOption) breezeOption.textContent = breeze?.available ? 'Breeze · local network' : 'Breeze · not connected';
@@ -893,6 +896,7 @@ function renderVoices() {
     onRefreshBreeze:async () => { await refreshBreeze(); },
     onBeforeAudition:() => { if (!audio.paused) audio.pause(); window.BardicVoicePreview?.stop(); },
     onBackToCast:context => returnToCast(context),
+    onOpenSettings:provider => openSettings(provider),
     onSaved:async (result, {provider, assigned, context}) => {
       if (result?.book && result.book.id === state.book?.id) applyBook(result.book);
       if (assigned && context) returnToCast(context, provider);
@@ -926,7 +930,8 @@ async function selectBook(id) {
   // Reopening the selected book is navigation, not a new listening session.
   if (id === state.book?.id) {
     if (state.loading) { state.selectionVersion++; state.loading = false; void pollJobs(false); }
-    setTab(state.tab); return;
+    // Choosing a book from the Voices page returns to that book's last tab.
+    setTab(state.tab === 'voices' ? state.bookTab || 'read' : state.tab); return;
   }
   saveProgress();
   stopAudio({clear:true});
@@ -937,6 +942,7 @@ async function selectBook(id) {
     const book = await request(`/api/books/${encodeURIComponent(id)}`);
     if (version !== state.selectionVersion) return;
     state.libraryView = false;
+    if (state.tab === 'voices') state.tab = state.bookTab || 'read';
     state.book = book;
     state.renderConfirm = null;
     state.analysisSummary = null;
@@ -993,17 +999,10 @@ function renderBook() {
   setTab(state.tab, {reveal:false});
   updatePlayer();
 }
-// One status for the book: audio ready with your narrator and Studio takes.
+// One status for the book: the lifecycle strip under the tabs (lifecycle.js computes it,
+// shell.js renders it). Called on every book and reader render; the strip repaints only on change.
 function renderBookStatus() {
-  const book = state.book;
-  if (!book) return;
-  const total = book.segments.length, listen = window.BardicListen;
-  const studio = book.segments.filter(playable).length;
-  const narrated = listen?.getSelection?.(book)?.mode === 'simple' ? book.segments.filter(segment => listen.resolve(book, segment)).length : 0;
-  const parts = [];
-  if (narrated) parts.push(`${narrated} of ${total} passages ready with your narrator`);
-  if (studio) parts.push(`${studio} of ${total} recorded in the Studio`);
-  $('#book-status').textContent = parts.join(' · ') || 'Not narrated yet';
+  if (state.book) window.BardicShell?.renderLifecycle?.();
 }
 function renderReader() {
   window.BardicListen?.render($('#simple-listen'), state.book, {
@@ -1060,7 +1059,7 @@ function renderReader() {
   renderReaderBar();
   // Tapping text moves your place; it plays from there only while already playing.
   const tapHint = 'Tap a passage (or press Enter) to move your place; press Play or Space to listen from there.';
-  $('#reader-hint').textContent = chunkedListening ? `${tapHint} Play starts or joins the chapter queue: Gemini prepares large chunks at your request limits, and playback begins when your passage is ready. Jumping to a passage that is not ready yet starts a new quick-start chunk, which uses extra requests. Underlines show ready, generating and queued text; timing inside a chunk is estimated.` : simpleActive() ? `${tapHint} Play warms up a short buffer, then keeps preparing the next passages. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. ${tapHint} Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
+  $('#reader-hint').textContent = chunkedListening ? `${tapHint} Play starts or joins the chapter queue: Gemini prepares long stretches of audio at your request limits, and playback begins when your passage is ready. Jumping to a passage that is not ready yet starts a new quick-start request, which uses extra requests. Underlines show ready, generating and queued text; timing inside a stretch is estimated.` : simpleActive() ? `${tapHint} Play warms up a short buffer, then keeps preparing the next passages. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. ${tapHint} Highlighting follows each complete passage.` : 'Read at your own pace, or press Start listening to hear this book with one narrator. For a voice per character, analyze the story first.';
   renderPassageDetail();
 }
 function trackJob(job) {
@@ -1078,7 +1077,7 @@ function trackJob(job) {
 function previewNarrator(config) {
   const voice = config.voice || '';
   const label = voice.startsWith('library:') ? voiceHelpers()?.findVoice(state.voiceLibrary, voice.slice(8))?.name || 'Library voice'
-    : voice || (config.provider === 'breeze' ? 'Default Breeze voice' : 'Default device voice');
+    : voice || (config.provider === 'breeze' ? 'Default Breeze voice' : 'Default Mac voice');
   startVoicePreview(config, `${label} · Narrator example`);
 }
 function renderPassageDetail() {
@@ -1096,10 +1095,12 @@ function castVoiceBlock(character, provider = state.castProvider) {
   const helpers = voiceHelpers();
   const value = characterVoice(character, provider);
   const id = escapeHTML(character.id);
-  const options = helpers ? helpers.castOptions(provider, value, state.voiceLibrary, state.status) : '<option value="">Default</option>';
+  // "Mac voice", not "Mac voices voice".
+  const service = provider === 'system' ? 'Mac' : NARRATION_LABELS[provider] || provider;
+  const options = helpers ? helpers.castOptions(provider, value, state.voiceLibrary, state.status, {language:state.book?.language || state.book?.metadata?.language}) : '<option value="">Default</option>';
   const warnings = helpers ? helpers.castWarnings(provider, value, state.voiceLibrary, state.status) : [];
-  const note = provider === 'gemini' ? 'Each Gemini example is one paid request.' : provider === 'breeze' ? 'Breeze examples run on your Breeze server.' : 'Device examples stay on this computer.';
-  return `<label class="field-label" for="voice-${id}">${escapeHTML(NARRATION_LABELS[provider] || provider)} voice</label><div class="cast-voice-row"><select id="voice-${id}" name="voice_choice" data-cast-voice="${escapeHTML(provider)}">${options}</select><button type="button" class="button subtle voice-example" data-preview-character="${escapeHTML(provider)}" aria-label="Hear ${escapeHTML(character.name)} with this ${escapeHTML(NARRATION_LABELS[provider] || provider)} voice${provider === 'gemini' ? ' (paid request)' : ''}">${provider === 'gemini' ? 'Hear example · paid' : 'Hear example'}</button></div>${warnings.length ? `<ul class="cast-voice-warnings">${warnings.map(text => `<li>${escapeHTML(text)}</li>`).join('')}</ul>` : ''}<p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved choices are included. ${note}</p>`;
+  const note = provider === 'gemini' ? 'Each Gemini example is one paid request.' : provider === 'breeze' ? 'Breeze examples run on your Breeze server.' : 'Mac voice examples stay on the Bardic computer.';
+  return `<label class="field-label" for="voice-${id}">${escapeHTML(service)} voice</label><div class="cast-voice-row"><select id="voice-${id}" name="voice_choice" data-cast-voice="${escapeHTML(provider)}">${options}</select><button type="button" class="button subtle voice-example" data-preview-character="${escapeHTML(provider)}" aria-label="Hear ${escapeHTML(character.name)} with this ${escapeHTML(service)} voice${provider === 'gemini' ? ' (paid request)' : ''}">${provider === 'gemini' ? 'Hear example · paid' : 'Hear example'}</button></div>${warnings.length ? `<ul class="cast-voice-warnings">${warnings.map(text => `<li>${escapeHTML(text)}</li>`).join('')}</ul>` : ''}<p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved choices are included. ${note}</p>`;
 }
 // Cast order: the implicit Narrator and Unassigned dialogue come first.
 function castCharacters(book) {
@@ -1126,7 +1127,7 @@ function updateCastVoiceBlocks() {
 function renderCastProviderSwitch() {
   const node = $('#cast-provider');
   if (!node) return;
-  node.innerHTML = `<span class="cast-provider-label">Voices for</span>${NARRATION_PROVIDERS.map(provider => `<button type="button" data-cast-provider="${provider}" aria-pressed="${state.castProvider === provider}" class="${state.castProvider === provider ? 'active' : ''}">${escapeHTML(NARRATION_LABELS[provider])}</button>`).join('')}<button type="button" class="button text-button" data-open-voices>Manage voices ↗</button>`;
+  node.innerHTML = `<span class="cast-provider-label">Voices for</span>${NARRATION_PROVIDERS.map(provider => `<button type="button" data-cast-provider="${provider}" aria-pressed="${state.castProvider === provider}" class="${state.castProvider === provider ? 'active' : ''}">${escapeHTML(NARRATION_LABELS[provider])}</button>`).join('')}<button type="button" class="button text-button" data-open-voices>Open the voice library</button>`;
 }
 function referenceContent(character) {
   const entry = state.referenceCache.get(character.id);
@@ -1211,7 +1212,7 @@ function renderCast() {
   // A job finishing re-renders Cast; carry over text the owner typed but has not saved.
   const unsaved = new Map($$('#cast-grid [data-character-form]').map(form => [form.dataset.characterForm,
     $$('textarea[name], input[type="text"][name]', form).filter(field => field.value !== field.defaultValue).map(field => [field.name, field.value])]));
-  $('#cast-grid').innerHTML = castCharacters(book).map(character => `<form class="cast-card${state.highlightCharacter === character.id ? ' highlighted' : ''}" data-character-form="${escapeHTML(character.id)}" data-cast-provider="${escapeHTML(state.castProvider)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="cast-voice">${castVoiceBlock(character)}</div><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
+  $('#cast-grid').innerHTML = castCharacters(book).map(character => `<form class="cast-card${state.highlightCharacter === character.id ? ' highlighted' : ''}" data-character-form="${escapeHTML(character.id)}" data-cast-provider="${escapeHTML(state.castProvider)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="cast-voice">${castVoiceBlock(character)}</div><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in Script &amp; record.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
   for (const form of $$('#cast-grid [data-character-form]')) {
     for (const [name, value] of unsaved.get(form.dataset.characterForm) || []) {
       const field = $$('textarea[name], input[type="text"][name]', form).find(node => node.name === name);
@@ -1231,7 +1232,8 @@ function speakerOptions(selected) {
   return state.book.characters.map(character => `<option value="${escapeHTML(character.id)}" ${character.id === selected ? 'selected' : ''}>${escapeHTML(character.name)}</option>`).join('');
 }
 function renderAnalysisProgress() {
-  if (!state.book) return;
+  // Chapter-by-chapter progress of the older phase runner is no longer shown.
+  if (!state.book || !$('#analysis-progress')) return;
   $('#analysis-scope-note').textContent = $('#analysis-scope').value === 'chapter' ? currentChapter()?.title || '' : `${state.book.chapters.length} ${state.book.chapters.length === 1 ? 'chapter' : 'chapters'}, processed one at a time`;
   const panel = $('#analysis-progress');
   const open = Boolean($('details', panel)?.open);
@@ -1267,16 +1269,6 @@ function renderProduction() {
   window.BardicAnalysisPipeline?.render($('#analysis-view'), state.book, {busy: Boolean(busyJob()), status: state.status,
     onJobStarted: async job => { if (!job || job.book_id !== state.book?.id) return; if (!state.jobs.some(j => j.id === job.id)) state.jobs.unshift(job); renderJob(); await pollJobs(true); },
     onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); if (state.book?.id !== id) return; state.referenceCache.clear(); state.referenceVersion++; applyBook(book); $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences)); await refreshLibrary(); void loadVoiceLibrary(); } });
-  window.BardicProduction?.render($('#progressive-production'), state.book, {
-    provider: $('#analysis-provider').value, chapterId: state.chapterId, busy: Boolean(busyJob()),
-    scanModel: state.status?.preprocess_models_by_provider?.[$('#analysis-provider').value],
-    model: state.status?.analysis_models_by_provider?.[$('#analysis-provider').value],
-    onStart: async payload => {
-      const started = await startJob('analyze', payload);
-      if (!started) throw new Error('Processing did not start. Check the provider settings or job error, then preview again.');
-    },
-    onRefresh: async () => { await pollJobs(true); },
-  });
 }
 function renderStudio() {
   const segments = chapterSegments();
@@ -1287,16 +1279,23 @@ function renderStudio() {
   $('#scene-list').innerHTML = scenes.map((scene, index) => {
     const items = segments.filter(s => s.scene_id === scene.id || scene.segment_ids?.includes(s.id));
     return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><div class="render-confirm" data-render-confirm-host="${escapeHTML(scene.id)}" hidden></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage${paidRender ? ' (paid request)' : ''}">${paidRender ? 'Hear example · paid' : 'Hear example'}</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}${paidRender ? ' · one paid Gemini request' : ''}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
-  }).join('') || '<div class="empty-state">No scenes here yet. Run the Analysis tab to draft a performance script.</div>';
+  }).join('') || '<div class="empty-state">No scenes here yet. Analyze the story to find scenes and speakers.</div>';
   renderAnalysisProgress();
   updateBusyControls();
   renderProduction();
   paintRenderConfirm();
 }
 function setTab(tab, {reveal = true, focus = false} = {}) {
-  const WORKSPACE_TABS = ['read','cast','voices','studio','analysis'];
-  state.tab = WORKSPACE_TABS.includes(tab) ? tab : 'read';
-  if (reveal && state.book && state.libraryView) { state.libraryView = false; syncWorkspaceNavigation(); }
+  // Book tabs, in lifecycle order. Voices is an app-level page (sidebar) that setTab also
+  // opens, with or without a book; state.bookTab remembers the book tab to return to.
+  const WORKSPACE_TABS = ['read','analysis','cast','studio','details'];
+  const page = () => state.tab === 'voices' && !state.libraryView ? 'voices' : state.libraryView || !state.book ? 'home' : 'book';
+  const before = page();
+  state.tab = WORKSPACE_TABS.includes(tab) || tab === 'voices' ? tab : 'read';
+  if (state.tab !== 'voices') state.bookTab = state.tab;
+  if (reveal && state.libraryView && (state.book || state.tab === 'voices')) state.libraryView = false;
+  // A change of page (library, book or Voices) repaints the shell; a tab change only the route.
+  if (page() !== before) syncWorkspaceNavigation(); else window.BardicShell?.navigated?.();
   $$('.tab').forEach(button => {
     const active = button.dataset.tab === state.tab;
     button.classList.toggle('active', active);
@@ -1306,25 +1305,31 @@ function setTab(tab, {reveal = true, focus = false} = {}) {
     if (active && focus) button.focus();
   });
   WORKSPACE_TABS.forEach(name => { $(`#${name}-view`).hidden = name !== state.tab; });
+  if (focus && state.tab === 'voices') $('#voices-heading')?.focus?.();
   // Leaving Voices stops any audition playing there.
   if (state.tab !== 'voices') window.BardicVoices?.stop?.();
 }
 function syncWorkspaceNavigation() {
-  const home = state.libraryView || !state.book;
+  const voices = state.tab === 'voices' && !state.libraryView;
+  const home = !voices && (state.libraryView || !state.book);
   $('#welcome').hidden = !home;
-  $('#book-workspace').hidden = home;
+  $('#book-workspace').hidden = home || voices;
+  const voicesPage = $('#voices-view');
+  if (voicesPage) voicesPage.hidden = !voices;
   $('#player').hidden = !state.book;
-  document.title = home ? 'Bardic — Your library' : `${state.book.title || 'Untitled'} — Bardic`;
-  const homeButton = $('#library-home');
-  if (homeButton) {
-    homeButton.classList.toggle('active', home);
-    if (home) homeButton.setAttribute('aria-current', 'page'); else homeButton.removeAttribute('aria-current');
+  document.title = voices ? 'Voices — Bardic' : home ? 'Bardic — Your library' : `${state.book.title || 'Untitled'} — Bardic`;
+  for (const [id, on] of [['#library-home', home], ['#sidebar-voices', voices]]) {
+    const button = $(id);
+    if (!button) continue;
+    button.classList.toggle('active', on);
+    if (on) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   }
   $$('.library-item').forEach(button => {
-    const active = !home && button.dataset.book === state.book?.id;
+    const active = !home && !voices && button.dataset.book === state.book?.id;
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
   });
+  window.BardicShell?.navigated?.();
 }
 function showLibrary() {
   // Home supersedes an unfinished book-open request without discarding the
@@ -1351,22 +1356,10 @@ function navigateTabs(event) {
 function scrollMotion() {
   return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth';
 }
+// One narrator surface: the Choose your narrator sheet. Its More options disclosure holds
+// the one-narrator and full-cast controls that used to sit in a drawer above the text.
 function openListeningSettings() {
-  if (state.readerMode) { openListenSheet(); return; }
-  setTab('read');
-  const panel = $('#simple-listen');
-  const disclosure = panel.closest('details');
-  if (disclosure) disclosure.open = true;
-  panel.scrollIntoView({behavior:scrollMotion(),block:'center'});
-  $('#simple-listen [data-listen-field="voice"]')?.focus({preventScroll:true});
-}
-function openAnalysisPlanning() {
-  renderProduction();
-  const panel = $('#progressive-production');
-  const disclosure = panel.closest('details');
-  if (disclosure) disclosure.open = true;
-  panel.scrollIntoView({behavior:scrollMotion(), block:'start'});
-  $('#progressive-production select')?.focus({preventScroll:true});
+  if (state.book) openListenSheet();
 }
 function setChapter(id, {scroll = true} = {}) {
   if (!state.book?.chapters.some(c => c.id === id)) return;
@@ -1438,10 +1431,10 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
     stopAudio({clear:true});
     updatePlayer(); saveProgress();
     if (!simple && autoplay) {
-      if (segment.audio) toast('This take is out of date. Regenerate it in the studio.');
+      if (segment.audio) toast('This recording is out of date. Record it again in Script & record.');
       else {
         openListeningSettings();
-        toast('Choose a narrator in Listening settings to start listening, or prepare character voices in the Studio.');
+        toast('Choose a narrator to start listening.');
       }
     }
     return;
@@ -1527,7 +1520,7 @@ function paintPaidConsent() {
   const narrator = window.BardicListen?.describe?.(state.book);
   const voice = narrator?.voiceName ? `${narrator.voiceName} · ` : '';
   const ahead = window.BardicListen?.isContinuous?.(state.book) ? ' While you listen, the next chapter is prepared ahead too.' : '';
-  panel.innerHTML = `<div><strong id="paid-consent-title">${escapeHTML(voice)}Gemini · paid narration</strong><p>Play sends the text from your place to the end of the chapter to Google in large chunks, paced to your request limits.${escapeHTML(ahead)} Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost. Pause stops new requests; finished audio is kept.</p><p class="field-help">Confirming covers this book until you close this browser tab.</p></div><div class="paid-consent-actions"><button type="button" class="button subtle" data-paid-consent="cancel">Cancel</button><button type="button" class="button subtle" data-paid-consent="narrator">Change narrator</button><button type="button" class="button primary" data-paid-consent="confirm">Play with Gemini · paid</button></div>`;
+  panel.innerHTML = `<div><strong id="paid-consent-title">${escapeHTML(voice)}Gemini · paid narration</strong><p>Play sends the text from your place to the end of the chapter to Google in long stretches, paced to your request limits.${escapeHTML(ahead)} Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost. Pause stops new requests; finished audio is kept.</p><p class="field-help">Confirming covers this book until you close this browser tab.</p></div><div class="paid-consent-actions"><button type="button" class="button subtle" data-paid-consent="cancel">Cancel</button><button type="button" class="button subtle" data-paid-consent="narrator">Change narrator</button><button type="button" class="button primary" data-paid-consent="confirm">Play with Gemini · paid</button></div>`;
   panel.hidden = false;
   const player = $('#player')?.getBoundingClientRect?.();
   if (player?.height && panel.style) panel.style.bottom = `${Math.round(player.height + 12)}px`;
@@ -1687,7 +1680,7 @@ function updatePlayer() {
   const performance = window.BardicListen?.getPerformance?.(state.book);
   // A resolved voice name, never a raw library id; a billed narrator says so.
   const described = narrator && window.BardicListen?.describe?.(state.book);
-  const voiceLabel = performance ? `Performance · ${performance.name}` : simpleActive() ? (described ? `${described.voiceName} · ${described.providerLabel}${described.paid ? ' · paid' : ''}` : 'One narrator') : `Full cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
+  const voiceLabel = performance ? `Performance · ${performance.name}` : simpleActive() ? (described ? `${described.voiceName}${described.provider === 'system' ? '' : ` · ${described.providerLabel}`}${described.paid ? ' · paid' : ''}` : 'One narrator') : `Full cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
   $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
   const timeline = chapterTimeline();
   const position = chapterPosition(timeline);
@@ -1713,9 +1706,11 @@ function updateProviderHint() {
   const provider = $('#render-provider').value;
   $('#render-description').textContent = provider === 'gemini' ? 'Gemini · paid. Sends passage text to Google, one billed request per passage. Narrate book and Narrate scene show an estimate before anything is sent.'
     : provider === 'breeze' ? 'Directed narration on your Breeze server. Sends passage text and performance notes over your local network; no per-request charge, but it uses that server\'s GPU. Narrate book and Narrate scene show an estimate first. Retake picks a new seed.'
-    : 'Private, on-device narration. Performance notes are used by Gemini and Breeze.';
+    : 'Mac voices: free, on the computer serving Bardic. Direction is used only by Gemini and Breeze.';
 }
 function updateAnalysisHint() {
+  // The Studio analysis controls were removed with the older phase runner.
+  if (!$('#analysis-provider')) return;
   const provider = $('#analysis-provider').value;
   const model = state.status?.analysis_models_by_provider?.[provider] || analysisProvider(provider)?.model;
   $('#analysis-description').textContent = provider === 'local' ? 'A private draft of the cast and scenes, made on this device.' : `Analyze the cast, scenes, and performance with ${analysisLabels[provider] || provider}. Book text is sent to this provider.`;
@@ -1740,7 +1735,7 @@ function renderJob() {
   const active = ['running','queued'].includes(job.status);
   banner.hidden = false;
   banner.classList.toggle('failed', ['failed','interrupted','budget_limited','quota_limited'].includes(job.status));
-  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : job.kind === 'performance' ? 'Processing a performance' : 'Recording your story',completed:'Ready for you',failed:'Failed',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
+  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : job.kind === 'performance' ? 'Processing a performance' : 'Recording your story',completed:job.kind === 'render' ? 'Recording finished' : ['analyze','analysis','pipeline'].includes(job.kind) ? 'Analysis finished' : 'Finished',failed:'Failed',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
   banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job="${escapeHTML(job.id)}" aria-label="Dismiss job status">${icon('close')}</button>`}`;
   updateBusyControls();
   renderProduction();
@@ -1808,7 +1803,7 @@ async function startJob(kind, scope = {}, {confirmed = false} = {}) {
   if (!state.book || busyJob()) return;
   const provider = $(kind === 'analyze' ? '#analysis-provider' : '#render-provider').value;
   if (cloudProviders.includes(provider) && !providerHasKey(provider)) { openSettings(provider); toast(`Add ${provider === 'gemini' ? 'a' : 'an'} ${analysisLabels[provider]} API key to use ${kind === 'analyze' ? 'story analysis' : 'narration'}.`); return; }
-  if (provider === 'system' && state.status?.providers?.find(p => p.id === 'system')?.available === false) { toast('Device narration is unavailable on this server. Connect Gemini or Breeze in settings.', true); return; }
+  if (provider === 'system' && state.status?.providers?.find(p => p.id === 'system')?.available === false) { toast('Mac voices are unavailable on this server. Connect Gemini or Breeze in Providers & settings.', true); return; }
   const breeze = state.status?.providers?.find(p => p.id === 'breeze');
   if (kind === 'render' && provider === 'breeze' && breeze?.available !== true) { openSettings('breeze'); toast(breeze?.reason || 'Connect your Breeze server in Settings to narrate with Breeze.'); return; }
   if (kind === 'render' && !confirmed && renderNeedsConfirm(provider, scope)) { void openRenderConfirm(scope, provider); return null; }
@@ -1990,12 +1985,6 @@ $$('.tab').forEach(button => {
 });
 $('#go-studio').addEventListener('click', () => setTab('studio', {focus:true}));
 $('#reader-listen-setup')?.addEventListener('click', openListeningSettings);
-$('#studio-cast-link')?.addEventListener('click', () => setTab('cast', {focus:true}));
-$('#studio-script-link')?.addEventListener('click', () => {
-  const heading = $('#script-heading');
-  heading?.scrollIntoView({behavior:scrollMotion(),block:'start'});
-  heading?.focus({preventScroll:true});
-});
 $('#chapter-list').addEventListener('click', event => { const button = event.target.closest('[data-chapter]'); if (button) setChapter(button.dataset.chapter); });
 $('#reader-chapter')?.addEventListener('change', event => setChapter(event.target.value, {scroll:false}));
 $('#previous-chapter').addEventListener('click', () => { const index = state.book.chapters.findIndex(c => c.id === state.chapterId); if (index > 0) setChapter(state.book.chapters[index - 1].id); });
@@ -2017,7 +2006,7 @@ $('#cast-grid').addEventListener('submit', async event => {
   if (form.dataset.characterForm) return saveEditor(form, 'characters', form.dataset.characterForm);
   if (form.id === 'add-character-form') {
     const button = $('button[type="submit"]', form); button.disabled = true;
-    try { const book = await post(`/api/books/${encodeURIComponent(state.book.id)}/characters`, Object.fromEntries(new FormData(form))); applyBook(book); toast('Character added. Assign their passages in the studio.'); } catch (error) { toast(error.message, true); button.disabled = false; }
+    try { const book = await post(`/api/books/${encodeURIComponent(state.book.id)}/characters`, Object.fromEntries(new FormData(form))); applyBook(book); toast('Character added. Assign their passages in Script & record.'); } catch (error) { toast(error.message, true); button.disabled = false; }
   }
 });
 $('#scene-list').addEventListener('submit', event => { event.preventDefault(); const form = event.target; if (form.dataset.sceneForm) saveEditor(form,'scenes',form.dataset.sceneForm); else if (form.dataset.segmentForm) saveEditor(form,'segments',form.dataset.segmentForm); });
@@ -2070,10 +2059,6 @@ $('#cast-provider')?.addEventListener('click', event => {
   }
   if (event.target.closest('[data-open-voices]')) { renderVoices(); setTab('voices', {focus:true}); }
 });
-$('#analysis-progress').addEventListener('click', event => {
-  const chapter = event.target.closest('[data-analysis-chapter]');
-  if (chapter) { setChapter(chapter.dataset.analysisChapter, {scroll:false}); $('#studio-chapter').focus(); }
-});
 $('#scene-list').addEventListener('click', event => { const example = event.target.closest('[data-preview-speaker]'); if (example) { auditionPassage(example.closest('[data-segment-form]')); return; } const scene = event.target.closest('[data-render-scene]'); const segment = event.target.closest('[data-render-segment]'); const play = event.target.closest('[data-play-segment]'); if (scene) startJob('render',{scene_id:scene.dataset.renderScene}); else if (segment) retakeSegment(segment.dataset.renderSegment); else if (play) startSegment(play.dataset.playSegment, {enhanced:true}); });
 for (const selector of ['#cast-grid','#scene-list']) {
   $(selector).addEventListener('input', event => {
@@ -2084,10 +2069,7 @@ for (const selector of ['#cast-grid','#scene-list']) {
   });
 }
 $('#export-link').addEventListener('click', event => { const ready = state.book?.segments.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.segments.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
-$('#analyze-button').addEventListener('click', openAnalysisPlanning);
-$('#analysis-scope').addEventListener('change', renderAnalysisProgress);
 $('#analyze-from-cast').addEventListener('click', () => { setTab('analysis', {focus:true}); });
-$('#studio-analysis-link')?.addEventListener('click', () => { setTab('analysis', {focus:true}); });
 $('#render-button').addEventListener('click', () => startJob('render'));
 $('#studio-view').addEventListener('click', event => {
   const action = event.target.closest('[data-render-confirm-action]')?.dataset.renderConfirmAction;
@@ -2102,18 +2084,10 @@ $('#render-provider').addEventListener('change', () => {
   // Choosing an unchecked Breeze server fetches its voice list once; no audio is generated.
   if ($('#render-provider').value === 'breeze' && state.status?.breeze?.state === 'unchecked') void refreshBreeze();
 });
-$('#analysis-provider').addEventListener('change', async event => {
-  const provider = event.target.value;
-  event.target.disabled = true;
-  updateAnalysisHint();
-  try { state.status = await post('/api/settings', {analysis_provider:provider}); }
-  catch (error) { $('#analysis-provider').value = state.status?.analysis_provider || 'local'; toast(error.message, true); }
-  finally { event.target.disabled = false; updateAnalysisHint(); renderProduction(); }
-});
 $('#job-banner').addEventListener('click', async event => { const cancel = event.target.closest('[data-cancel-job]'); if (cancel) { cancel.disabled = true; try { await post(`/api/jobs/${encodeURIComponent(cancel.dataset.cancelJob)}/cancel`); await pollJobs(true); } catch (error) { toast(error.message,true); cancel.disabled = false; } } const dismiss = event.target.closest('[data-dismiss-job]'); if (dismiss) { (state.dismissedJobs ||= new Set()).add(dismiss.dataset.dismissJob); renderJob(); } });
 
 // Import and provider settings.
-['#sidebar-import','#import-button','#welcome-import','#header-import'].forEach(id => $(id).addEventListener('click', openImport));
+['#sidebar-import','#import-button','#welcome-import'].forEach(id => $(id).addEventListener('click', openImport));
 async function libraryChanged() {
   await refreshLibrary();
   if (state.book && state.books.some(b => b.id === state.book.id)) {
@@ -2150,7 +2124,7 @@ $('#import-form').addEventListener('submit', async event => {
     const book = await request('/api/books',{method:'POST',body:data});
     await refreshLibrary(); await selectBook(book.id || book.book?.id);
     $('#import-dialog').close(); $('#import-form').reset(); $('#file-label').textContent = 'Drop your book here';
-    state.tab = 'read'; setTab('read'); toast('Your book is ready to read. Open Listening settings when you want to hear it.');
+    state.tab = 'read'; setTab('read'); toast('Book imported. Press Start listening to hear it with one narrator.');
   } catch (error) { showInlineError('#import-error', error.message); }
   finally { button.disabled = false; button.innerHTML = `Add to library ${icon('arrow')}`; }
 });
@@ -2173,7 +2147,7 @@ $('#settings-form').addEventListener('submit', async event => {
   if (breezeKey) values.breeze_api_key = breezeKey;
   const serviceUrls = localServiceChanges();
   if (Object.keys(serviceUrls).length) values.local_service_urls = serviceUrls;
-  try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); await loadVoiceLibrary(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
+  try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); await loadVoiceLibrary(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
 });
 $('#settings-form').addEventListener('invalid', event => revealSetting(event.target), true);
 $$('[data-clear-key]').forEach(button => button.addEventListener('click', async () => {
@@ -2267,6 +2241,7 @@ $('#listen-sheet-body').addEventListener('change', event => {
   if (!state.book) return;
   if (event.target.id === 'listen-sheet-voice') window.BardicListen?.choose(state.book, 'voice', event.target.value);
   else if (event.target.dataset.sheetContinuous !== undefined) window.BardicListen?.setContinuous(state.book, event.target.checked);
+  else if (event.target.dataset.sheetAllVoices !== undefined) window.BardicListen?.setShowAllVoices?.(state.book, event.target.checked);
   renderListenSheet();
 });
 $$('[data-sheet-tab]').forEach(button => button.addEventListener('click', () => setSheetTab(button.dataset.sheetTab)));
@@ -2321,13 +2296,15 @@ audio.addEventListener('error', () => {
   state.pendingOffset = offset;
   if (simple) window.BardicListen?.forgetAudio?.(state.book, segment);
   updatePlayer(); saveProgress();
-  toast(simple ? 'Saved narration could not be loaded. Press Play to check the local cache and try again.' : 'This audio take could not be loaded. Try regenerating it in the studio.',true);
+  toast(simple ? 'Saved narration could not be loaded. Press Play to check the local cache and try again.' : 'This recording could not be loaded. Record it again in Script & record.',true);
 });
 window.addEventListener('pagehide', () => { saveProgress(); stopAudio(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.readerMode && !document.querySelector('dialog[open]')) { if (!$('#reader-appearance').hidden) toggleReaderAppearance(false); else exitReader(); } });
 document.addEventListener('keydown', event => { if (event.code === 'Space' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.repeat && !event.target.closest('input,textarea,select,button,[role="button"],a,dialog') && state.book) { event.preventDefault(); togglePlayback(); } });
 
+// The page glue in shell.js (lifecycle strip, hash routes, breadcrumb, Voices page) reads these.
+globalThis.BardicApp = {state, setTab, selectBook, showLibrary, openListenSheet, renderVoices, scrollMotion};
 async function init() {
   let restoringReader = false;
   try {
@@ -2335,10 +2312,14 @@ async function init() {
     restoringReader = Boolean(safeRead('bardic:readerMode', false));
     if (restoringReader) { document.body.classList.add('reader-mode'); applyReaderPrefs(); }
     await Promise.all([refreshStatus(), refreshLibrary(), loadVoiceLibrary()]);
+    // A #/book/<id>/<tab> link wins over the last book; shell.js applies the rest of the route.
+    const route = globalThis.BardicShell?.initialRoute?.() || null;
     const saved = safeRead('bardic:lastBook');
-    const book = state.books.find(item => item.id === saved) || state.books[0];
+    const book = state.books.find(item => item.id === route?.book) || state.books.find(item => item.id === saved) || state.books[0];
+    if (route?.tab) state.tab = route.tab;
     if (book) await selectBook(book.id); else renderBook();
-    if (restoringReader && state.book) enterReader();
+    globalThis.BardicShell?.start?.();
+    if (restoringReader && state.book && (!route || route.tab === 'read')) enterReader();
     else if (restoringReader) document.body.classList.remove('reader-mode');
   } catch (error) {
     if (restoringReader) document.body.classList.remove('reader-mode');

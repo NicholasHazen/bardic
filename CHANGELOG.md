@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Book structure (UI phase 2).**
+  - Book tabs follow the work: **Read & listen · Analyze · Cast · Script & record · Details**. **Voices** moved to the sidebar and opens without a book; Cast links to it.
+  - A lifecycle strip under the tabs shows Analyze, Cast, Script and Record with one state each and one **Next**, and expands into stage cards. It replaces the book status line and the Studio's 01/02/03 guide.
+  - **Details** holds resource use and the pipeline explorer (for provenance and inspection), with source search and the analysis export. The older phase runner ("Classic story analysis") and the Studio's **Understand the story** block are gone from the page; the latter's provider select no longer rewrites the app-wide analysis default. Their backend is unchanged.
+  - Read & listen puts the text higher: a compact header, one narrator line with **Change**, and a collapsed phone sidebar. **Choose your narrator** is the one narrator surface; the old drawer's controls are under its **More options**.
+  - Tabs have addresses (`#/book/<id>/<tab>`, `#/voices`, `#/library`) with working Back and Forward, and the breadcrumb follows them. Tab headings name the job. Settings is grouped into Narration, Analysis, Accounts and Troubleshooting.
 - **Listening consent and correctness.**
   - Tapping or pressing Enter on the text moves your reading place; it plays from there only when narration is already playing. Play, Space and media keys start listening.
   - New books start with one narrator (unless they already have Studio takes); saved choices, including Full cast, are kept.

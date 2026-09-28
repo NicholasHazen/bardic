@@ -12,7 +12,7 @@ const functions=[
   between('function renderReader(', 'function castVoiceBlock('),
   between('function setTab(', 'function updateHighlight('),
   between('async function startSegment(', 'function updateProviderHint('),
-  between("$('#cast-grid').addEventListener('click'", "$('#analysis-progress').addEventListener"),
+  between("$('#cast-grid').addEventListener('click'", "$('#scene-list').addEventListener('click'"),
   between("audio.addEventListener('loadedmetadata'", "window.addEventListener('pagehide'"),
   between("\n$('#playback-speed').value = String(audio.playbackRate);", "audio.addEventListener('loadedmetadata'")
 ].join('\n');
@@ -268,7 +268,7 @@ function environment(ensure,previewRequest){
   enhancedError.audio.error={code:4};
   enhancedError.events.error();
   assert.deepEqual(enhancedError.calls.forgotten,[]);
-  assert.match(enhancedError.calls.toasts.at(-1),/regenerating it in the studio/);
+  assert.match(enhancedError.calls.toasts.at(-1),/Record it again in Script & record/);
   assert.equal(enhancedError.calls.diagnostics.at(-1).media_error_code,4);
 
   // Real waiting/stalled/playing event handlers describe a resumable stall.

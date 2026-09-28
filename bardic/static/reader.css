@@ -202,3 +202,39 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 /* The paid-narration question above the player follows the reader's colours. */
 body.reader-mode .paid-consent { left:16px; background:var(--reader-bg); color:var(--reader-ink); border-color:var(--reader-line); box-shadow:inset 3px 0 var(--reader-accent), var(--shadow-2); }
 body.reader-mode .paid-consent .field-help { color:var(--reader-muted); }
+
+/* Read & listen above the fold: one toolbar row with the chapter, a one-line narrator
+   summary (Change opens the narrator sheet) and the two entry points. */
+.reader-toolbar { gap:var(--space-2) var(--space-3); padding-bottom:var(--space-3); }
+.narrator-line { display:flex; align-items:center; gap:var(--space-2); flex:1 1 220px; min-width:0; color:var(--color-text-muted); font-size:var(--text-xs); }
+.narrator-line > svg { width:18px; height:18px; flex:none; color:var(--color-accent); }
+.narrator-line-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.narrator-line-text.has-error { color:var(--tone-warn-text); font-weight:var(--weight-semibold); }
+.narrator-line .button.text-button.small { min-height:var(--control-sm); padding:0; flex:none; font-size:var(--text-xs); }
+.reader-toolbar-actions { margin-left:0; }
+.reader-type-label { line-height:1; }
+@media (min-width:621px) { .reader-paper { padding-top:var(--space-5); } }
+/* The drawer's controls live in the narrator sheet now, under More options. */
+.sheet-more-options { margin:var(--space-4) 0 0; }
+.sheet-more-options > summary { padding:var(--space-3) var(--space-4); }
+.sheet-more-options > summary .listening-drawer-action { font-size:var(--text-xl); }
+.sheet-more-options[hidden] { display:none; }
+.sheet-more-options[open] > summary .listening-drawer-action { transform:rotate(45deg); }
+@media (max-width:620px) {
+  .reader-toolbar { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; }
+  .reader-toolbar > label { grid-column:1; }
+  .reader-toolbar > select { grid-column:2; max-width:100%; }
+  .reader-toolbar-actions { grid-column:3; grid-row:1; width:auto; }
+  .reader-toolbar-actions #start-listening { display:none; }
+  .reader-toolbar-actions .button { flex:none; padding:0 var(--space-3); }
+  .reader-toolbar-actions #open-reader { gap:0; }
+  /* On a phone the player right below already names the narrator and opens the same sheet. */
+  .narrator-line { display:none; }
+  .reader-toolbar { padding-bottom:var(--space-2); }
+  .reader-toolbar > label, .reader-view-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+  .reader-toolbar > select { grid-column:1 / 3; }
+  /* The chapter picker above already names the chapter. */
+  .reader-paper .reader-top { display:none; }
+  .reader-paper { padding-top:var(--space-3); }
+  .passage.source-chapter-title { margin-top:0; }
+}

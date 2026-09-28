@@ -60,3 +60,11 @@ Builders return strings for the existing `innerHTML` plus `data-*` delegation mo
 - **Consent.** Nothing paid starts without an estimate and a confirm. Unknown is shown as unknown.
 - **No new literals.** `tests/test_ui_budget.py` ratchets five counts: raw colours outside `tokens.css`, literal font sizes, `!important`, `*-badge|*-message|*-error|*-help` class names, and copies of the escape helper outside `ui.js`. A count may fall but never rise. When one falls, lower `tests/ui_budget.json`.
 - **Cascade.** `style.css` still loads after nine feature stylesheets, and its later "Workspace shell" rules override equal-specificity rules above them. Do not move a rule earlier, or change the load order, without a cascade-equivalence check. The phase-1 fold was proved that way, both statically and with computed styles.
+
+## Page structure
+
+- **Book tabs** follow the lifecycle: Read & listen · Analyze · Cast · Script & record · Details. Keep element IDs and `data-tab` values (`read`, `analysis`, `cast`, `studio`, `details`) when a label changes; tests pin them. App-level places (Library, Voices, Books & series, Providers & settings) live in the sidebar, not in the book tabs.
+- **One status for the book.** The lifecycle strip under the tabs is the only book-level status. Stage states come from `BardicLifecycle.compute` in [lifecycle.js](../bardic/static/lifecycle.js), each from one data source; do not add a second status line or banner that restates it. The job banner is for a running job or an outcome you have not dismissed.
+- **Every tab starts with a `.section-head`**: an H2 that names the job, a lead of at most two sentences and at most one action group. The marketing voice belongs only on the empty library and welcome screen. `tests/copy_lint_test.js` fails on a heading that ends with a period, on the banned terms and on step names that are not step registry labels; an exception needs a written reason in its allowlist.
+- **Routes.** New places get a hash route in [shell.js](../bardic/static/shell.js) and are reached through `setTab`/`selectBook`, so Back and Forward work.
+- **Details is for inspection.** Provenance, resource use, source search and exports belong there, not on the primary tabs.

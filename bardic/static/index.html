@@ -9,13 +9,13 @@
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/components.css">
   <script defer src="/static/ui.js"></script>
+  <script defer src="/static/lifecycle.js"></script>
+  <script defer src="/static/shell.js"></script>
   <link rel="stylesheet" href="/static/series.css">
-  <link rel="stylesheet" href="/static/production.css">
   <link rel="stylesheet" href="/static/pipeline.css">
   <script src="/static/diagnostics.js" defer></script>
   <script src="/static/voice-preview.js" defer></script>
   <script defer src="/static/series.js"></script>
-  <script defer src="/static/production.js"></script>
   <script defer src="/static/pipeline.js"></script>
   <link rel="stylesheet" href="/static/analysis-pipeline.css">
   <script defer src="/static/analysis-pipeline.js"></script>
@@ -121,7 +121,8 @@
   <div class="app-shell">
     <aside class="sidebar" aria-label="Library">
       <a class="brand" href="/" aria-label="Bardic home"><span class="brand-mark"><svg><use href="#i-book"/></svg></span><span>Bardic<span class="brand-subtitle">A VOICE FOR EVERY STORY</span></span></a>
-      <button id="library-home" class="sidebar-home"><svg><use href="#i-book"/></svg> Library <span>↗</span></button>
+      <button id="library-home" class="sidebar-home"><svg><use href="#i-book"/></svg> Library</button>
+      <button id="sidebar-voices" class="sidebar-home sidebar-voices"><svg><use href="#i-voice"/></svg> Voices</button>
       <div class="library-heading">
         <span>YOUR BOOKS</span>
         <button class="icon-button small" id="sidebar-import" aria-label="Import a book"><svg><use href="#i-plus"/></svg></button>
@@ -144,11 +145,9 @@
     </aside>
     <main id="main-content" tabindex="-1">
       <header class="topbar">
-        <div class="breadcrumb">
-          <span>BARDIC</span>
-          <span class="breadcrumb-divider">/</span>
-          <span>YOUR LISTENING ROOM</span>
-        </div>
+        <nav id="breadcrumb" class="breadcrumb" aria-label="You are here">
+          <span>Library</span>
+        </nav>
         <span class="local-badge"><span class="status-dot"></span> Local library</span>
       </header>
       <section id="welcome" class="welcome" hidden>
@@ -200,7 +199,7 @@
           <div>
             <span>03 / CREATE</span>
             <h3>Make it a performance.</h3>
-            <p>Explore the studio for a full cast and scene direction.</p>
+            <p>Analyze the story, give each character a voice, then record the full cast.</p>
           </div>
         </div>
         <section id="home-library" class="home-library" hidden>
@@ -213,35 +212,31 @@
       </section>
       <section id="book-workspace" hidden>
         <div class="book-header">
-          <div>
-            <div class="eyebrow" id="book-eyebrow">YOUR PERSONAL EDITION</div>
-            <h1 id="book-title"></h1>
-            <div class="book-byline" id="book-byline"></div>
-          </div>
-          <button class="button subtle" id="header-import" aria-label="Import book"><svg><use href="#i-plus"/></svg><span>Import book</span></button>
+          <h1 id="book-title"></h1>
+          <div class="book-byline" id="book-byline"></div>
         </div>
         <div class="workspace-nav">
           <nav class="tabs" role="tablist" aria-label="Book views">
             <button id="read-tab" class="tab active" data-tab="read" role="tab" aria-selected="true" aria-controls="read-view"><svg><use href="#i-book"/></svg>Read &amp; listen</button>
+            <button id="analysis-tab" class="tab" data-tab="analysis" role="tab" aria-selected="false" aria-controls="analysis-view" tabindex="-1"><svg><use href="#i-steps"/></svg>Analyze</button>
             <button id="cast-tab" class="tab" data-tab="cast" role="tab" aria-selected="false" aria-controls="cast-view" tabindex="-1"><svg><use href="#i-cast"/></svg>Cast <span id="cast-count" class="count"></span></button>
-            <button id="voices-tab" class="tab" data-tab="voices" role="tab" aria-selected="false" aria-controls="voices-view" tabindex="-1"><svg><use href="#i-voice"/></svg>Voices</button>
-            <button id="studio-tab" class="tab" data-tab="studio" role="tab" aria-selected="false" aria-controls="studio-view" tabindex="-1"><svg><use href="#i-spark"/></svg>Studio</button>
-            <button id="analysis-tab" class="tab" data-tab="analysis" role="tab" aria-selected="false" aria-controls="analysis-view" tabindex="-1"><svg><use href="#i-steps"/></svg>Analysis</button>
+            <button id="studio-tab" class="tab" data-tab="studio" role="tab" aria-selected="false" aria-controls="studio-view" tabindex="-1"><svg><use href="#i-spark"/></svg>Script &amp; record</button>
+            <button id="details-tab" class="tab" data-tab="details" role="tab" aria-selected="false" aria-controls="details-view" tabindex="-1"><svg><use href="#i-settings"/></svg>Details</button>
           </nav>
-          <span id="book-status" class="book-status"></span>
+          <div id="book-lifecycle" class="book-lifecycle" aria-live="off"></div>
         </div>
         <div id="job-banner" class="job-banner" role="status" hidden></div>
         <section id="read-view" class="view-panel" role="tabpanel" aria-labelledby="read-tab">
-          <details id="listening-drawer" class="listening-drawer">
-            <summary><svg aria-hidden="true"><use href="#i-headphones"/></svg><span><strong>Listen your way</strong><small id="listening-summary" role="status">One narrator or a full cast. You choose.</small></span><span class="listening-drawer-action">Voice &amp; playback <span aria-hidden="true">＋</span></span></summary>
-            <div id="simple-listen"></div>
-          </details>
           <div class="reader-toolbar">
             <label for="reader-chapter">Chapter</label>
             <select id="reader-chapter"></select>
-            <span>Original text · Passage sync</span>
+            <div id="narrator-line" class="narrator-line">
+              <svg aria-hidden="true"><use href="#i-headphones"/></svg>
+              <span id="narrator-line-text" class="narrator-line-text">One narrator or a full cast</span>
+              <button type="button" id="narrator-change" class="button text-button small" aria-label="Change narrator">Change</button>
+            </div>
             <div class="reader-toolbar-actions">
-              <button type="button" id="open-reader" class="button subtle"><svg aria-hidden="true"><use href="#i-expand"/></svg>Reader view</button>
+              <button type="button" id="open-reader" class="button subtle"><svg aria-hidden="true"><use href="#i-expand"/></svg><span class="reader-view-label">Reader view</span></button>
               <button type="button" id="start-listening" class="button primary"><svg aria-hidden="true"><use href="#i-headphones"/></svg>Start listening</button>
             </div>
           </div>
@@ -261,95 +256,57 @@
             </article>
             <aside class="reading-aside">
               <section class="aside-section">
-                <span class="eyebrow">CONTENTS</span>
+                <span class="eyebrow">Contents</span>
                 <div id="chapter-list" class="chapter-list"></div>
               </section>
               <section class="aside-section listening-note">
                 <svg><use href="#i-headphones"/></svg>
-                <h3>A voice for this chapter.</h3>
-                <p id="reader-hint">Choose a narrator to listen as you read. The studio is here when you want a full cast.</p>
+                <h3>Listening</h3>
+                <p id="reader-hint">Choose a narrator to listen as you read. For a voice per character, analyze the story first.</p>
                 <button id="reader-listen-setup" class="button text-button">Choose a narrator <svg><use href="#i-arrow"/></svg></button>
-                <button id="go-studio" class="button text-button">Explore the studio <svg><use href="#i-arrow"/></svg></button>
+                <button id="go-studio" class="button text-button">Open Script &amp; record <svg><use href="#i-arrow"/></svg></button>
               </section>
               <section id="passage-detail" class="aside-section" hidden></section>
             </aside>
           </div>
         </section>
         <section id="cast-view" class="view-panel" role="tabpanel" aria-labelledby="cast-tab" hidden>
-          <div class="section-intro">
-            <div>
-              <span class="eyebrow">THE ENSEMBLE</span>
-              <h2>Every character, a voice.</h2>
-              <p>Choose a voice for each character, starting with the narrator. Make and refine voices in the Voices tab; characters on Default follow your default voice.</p>
+          <header class="section-head">
+            <div class="section-head-text">
+              <h2>Cast</h2>
+              <p class="section-head-lead">Choose a voice for each character, starting with the narrator. Characters on Default use that service's default voice.</p>
             </div>
-            <button id="analyze-from-cast" class="button subtle"><svg><use href="#i-spark"/></svg> Analyze the story</button>
-          </div>
+            <div class="section-head-actions">
+              <button id="analyze-from-cast" class="button subtle"><svg><use href="#i-steps"/></svg> Analyze the story</button>
+            </div>
+          </header>
           <div id="analysis-note" class="notice"></div>
-          <div id="cast-provider" class="cast-provider" role="group" aria-label="Narration provider for cast voices"></div>
+          <div id="cast-provider" class="cast-provider" role="group" aria-label="Narration service for cast voices"></div>
           <div id="cast-grid" class="cast-grid"></div>
           <details class="workspace-details">
             <summary><span>Series &amp; continuity</span><small>Connect characters across your books</small></summary>
             <div id="series-panel"></div>
           </details>
         </section>
-        <section id="voices-view" class="view-panel" role="tabpanel" aria-labelledby="voices-tab" hidden>
-          <div class="section-intro">
-            <div>
-              <span class="eyebrow">THE VOICE LIBRARY</span>
-              <h2>Make a voice, then cast it.</h2>
-              <p>Voices are shared by every book. Design one from a description, audition candidates, and save the one you like; iterating saves a new version, and characters follow a voice's current version.</p>
-            </div>
-          </div>
-          <div id="voices-panel" class="voices-panel"></div>
-        </section>
         <section id="studio-view" class="view-panel" role="tabpanel" aria-labelledby="studio-tab" hidden>
-          <div class="section-intro">
-            <div>
-              <span class="eyebrow">THE STUDIO</span>
-              <h2>Give the story your direction.</h2>
-              <p>Build the cast, shape a scene, then record. Start with one scene to hear how it all comes together.</p>
+          <header class="section-head">
+            <div class="section-head-text">
+              <h2>Script &amp; record</h2>
+              <p class="section-head-lead">Fix speakers and direction, hear examples, then record the book with the full cast. Export packages these recordings.</p>
             </div>
-            <a id="export-link" class="button subtle"><svg><use href="#i-download"/></svg> Export audiobook</a>
-          </div>
-          <div class="studio-guide" aria-label="Production workflow">
-            <button type="button" id="studio-analysis-link"><span>01</span><strong>Understand</strong><small>Run steps in Analysis</small></button>
-            <button id="studio-cast-link"><span>02</span><strong>Cast</strong><small>Review voices <span aria-hidden="true">↗</span></small></button>
-            <button id="studio-script-link"><span>03</span><strong>Direct &amp; record</strong><small>Open the script <span aria-hidden="true">↓</span></small></button>
-          </div>
-          <div class="production-controls">
+            <div class="section-head-actions">
+              <a id="export-link" class="button subtle"><svg><use href="#i-download"/></svg> Export audiobook</a>
+            </div>
+          </header>
+          <div class="production-controls record-controls">
             <div class="production-step">
               <div>
-                <h3>Understand the story</h3>
-                <p id="analysis-description">A private draft of the cast and scenes, made on this device.</p>
+                <h3>Record the book</h3>
+                <p id="render-description">Choose a narration service. Hear a scene in the script before recording the whole book.</p>
                 <div class="control-row">
-                  <label class="sr-only" for="analysis-provider">Analysis provider</label>
-                  <select id="analysis-provider">
-                    <option value="local">Local draft</option>
-                    <option value="gemini">Gemini · cloud</option>
-                    <option value="openai">OpenAI · cloud</option>
-                    <option value="anthropic">Anthropic · cloud</option>
-                  </select>
-                  <button id="analyze-button" class="button subtle">Plan analysis</button>
-                </div>
-                <div class="analysis-scope" hidden>
-                  <label for="analysis-scope">Process</label>
-                  <select id="analysis-scope">
-                    <option value="chapter">Selected chapter</option>
-                    <option value="book">Whole book</option>
-                  </select>
-                  <span id="analysis-scope-note"></span>
-                </div>
-                <p id="analysis-model-note" class="analysis-model-note">Choose narration independently.</p>
-              </div>
-            </div>
-            <div class="production-step">
-              <div>
-                <h3>Record the performance</h3>
-                <p id="render-description">Choose a provider. Audition a scene in the script before recording the whole book.</p>
-                <div class="control-row">
-                  <label class="sr-only" for="render-provider">Narration provider</label>
+                  <label class="sr-only" for="render-provider">Narration service</label>
                   <select id="render-provider">
-                    <option value="system">Device voices · local</option>
+                    <option value="system">Mac voices · free</option>
                     <option value="gemini">Gemini · paid cloud</option>
                     <option value="breeze">Breeze · local network</option>
                   </select>
@@ -359,25 +316,41 @@
             </div>
           </div>
           <div id="render-confirm" class="render-confirm" hidden></div>
-          <details id="analysis-planning" class="workspace-details studio-plan">
-            <summary><span>Classic story analysis</span><small>Older phase runs. Their results appear in Analysis history as outside changes.</small></summary>
-            <div id="progressive-production"></div>
-            <section id="analysis-progress" class="analysis-progress" aria-label="Story analysis progress"></section>
-          </details>
           <div id="script-heading" class="script-heading" tabindex="-1">
-            <h3>The performance script</h3>
+            <h3>Script</h3>
             <span id="script-meta"></span>
             <label class="sr-only" for="studio-chapter">Script chapter</label>
             <select id="studio-chapter"></select>
           </div>
           <div id="scene-list" class="scene-list"></div>
-          <details class="workspace-details">
-            <summary><span>Production details</span><small>Pipeline, source search, saved outputs &amp; resource usage</small></summary>
-            <div id="pipeline-inspector"></div>
-            <div id="resource-usage"></div>
-          </details>
+        </section>
+        <section id="details-view" class="view-panel" role="tabpanel" aria-labelledby="details-tab" hidden>
+          <header class="section-head">
+            <div class="section-head-text">
+              <h2>Details</h2>
+              <p class="section-head-lead">What this book has used so far, and what analysis saved, for inspection. Nothing here starts paid work.</p>
+            </div>
+          </header>
+          <div id="resource-usage"></div>
+          <div class="callout details-note" data-tone="info">
+            <p class="callout-title">Provenance and inspection</p>
+            <p>The explorer below reads the older phase runs, so its stage counts reflect earlier work and can miss steps run from Analyze. Analyze shows the current state. Source search and the analysis export are inside the explorer.</p>
+          </div>
+          <div id="pipeline-inspector"></div>
         </section>
         <section id="analysis-view" class="view-panel" role="tabpanel" aria-labelledby="analysis-tab" hidden></section>
+      </section>
+      <section id="voices-view" class="app-page" aria-labelledby="voices-heading" hidden>
+        <header class="section-head">
+          <div class="section-head-text">
+            <h2 id="voices-heading" tabindex="-1">Voices</h2>
+            <p class="section-head-lead">Voices are shared by every book. Design or clone a voice, hear candidates, and save the one you like; saving a change makes a new version that characters follow.</p>
+          </div>
+          <div class="section-head-actions">
+            <button type="button" id="voices-back" class="button subtle" hidden>Back to Cast</button>
+          </div>
+        </header>
+        <div id="voices-panel" class="voices-panel"></div>
       </section>
       <div id="fatal-error" class="fatal-error" hidden></div>
     </main>
@@ -402,7 +375,7 @@
   <dialog id="listen-sheet" class="modal listen-sheet" aria-labelledby="listen-sheet-title">
     <div class="modal-header">
       <div>
-        <span class="eyebrow">LISTEN</span>
+        <span class="eyebrow">Listen</span>
         <h2 id="listen-sheet-title">Choose your narrator</h2>
       </div>
       <button type="button" class="icon-button" data-close="listen-sheet" aria-label="Close"><svg><use href="#i-close"/></svg></button>
@@ -412,6 +385,10 @@
       <button type="button" role="tab" data-sheet-tab="performances" aria-selected="false" aria-controls="listen-sheet-performances" tabindex="-1">Performances</button>
     </div>
     <div id="listen-sheet-body" role="tabpanel"></div>
+    <details id="listening-drawer" class="listening-drawer sheet-more-options">
+      <summary><span><strong>More options</strong><small id="listening-summary" role="status">One narrator or a full cast</small></span><span class="listening-drawer-action" aria-hidden="true">＋</span></summary>
+      <div id="simple-listen"></div>
+    </details>
     <div id="listen-sheet-performances" role="tabpanel" hidden></div>
   </dialog>
   <footer id="player" class="player" hidden aria-label="Audio player">
@@ -422,7 +399,7 @@
       <div>
         <strong id="player-title">Ready when you are</strong>
         <span id="player-subtitle">Choose a passage to begin</span>
-        <button id="player-listen-settings" type="button" class="player-settings-link">Voice &amp; listening settings</button>
+        <button id="player-listen-settings" type="button" class="player-settings-link">Narrator &amp; speed</button>
       </div>
     </div>
     <div class="player-center">
@@ -458,230 +435,243 @@
     <form id="settings-form">
       <div class="modal-header">
         <div>
-          <span class="eyebrow">PREFERENCES</span>
+          <span class="eyebrow">Preferences</span>
           <h2 id="settings-dialog-title">Providers &amp; settings</h2>
         </div>
         <button type="button" class="icon-button" data-close="settings-dialog" aria-label="Close settings"><svg><use href="#i-close"/></svg></button>
       </div>
-      <p class="modal-lead">Device voices work without a key. Connect a provider below when you want cloud analysis or narration.</p>
-      <div class="settings-choice">
-        <div>
-          <label class="field-label" for="settings-analysis-provider">Story analysis</label>
-          <p class="field-help">Your default for the cast, scenes, and performance notes.</p>
-        </div>
-        <select id="settings-analysis-provider">
-          <option value="local">Local draft · on this device</option>
-          <option value="gemini">Gemini</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
-      </div>
-      <p class="settings-key-help">Keys entered or cleared here affect this session only. Edit the project's <code>.env</code> file to keep keys across restarts; restart after file changes. Leave a key field blank to keep its current connection.</p>
-      <details id="provider-settings-gemini" class="provider-settings" aria-labelledby="gemini-settings-title">
-        <summary class="provider-heading"><div><h3 id="gemini-settings-title">Gemini</h3><span>Analysis &amp; narration</span></div><span id="key-status" class="key-status">No key</span></summary>
-        <label class="field-label" for="api-key">Gemini API key</label>
-        <div class="key-entry">
-          <input id="api-key" type="password" autocomplete="new-password" placeholder="Enter or replace Gemini key" maxlength="500">
-          <button id="clear-key" data-clear-key="gemini" type="button" class="button text-button" aria-label="Clear Gemini key">Clear key</button>
-        </div>
-        <p class="field-help"><code>.env</code> or environment: <code>GEMINI_API_KEY</code></p>
-        <div class="settings-models">
-          <div>
-            <div class="model-picker">
-              <label class="field-label" for="analysis-model">Analysis model</label>
-              <select id="analysis-model" data-model-role="analysis" data-model-provider="gemini" required></select>
-              <label class="sr-only" for="analysis-model-custom">Custom analysis model ID</label>
-              <input id="analysis-model-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-              <p id="analysis-model-details" class="field-help model-details"></p>
+      <p class="modal-lead">Mac voices work without a key. Connect a provider below when you want cloud analysis or narration.</p>
+      <section class="settings-group" aria-labelledby="settings-group-narration">
+        <h3 class="settings-group-title" id="settings-group-narration">Narration</h3>
+        <p class="field-help">Mac voices need no setup. The Gemini narration model is under Accounts.</p>
+        <details id="provider-settings-breeze" class="provider-settings breeze-settings" aria-labelledby="breeze-settings-title">
+          <summary class="provider-heading"><div><h3 id="breeze-settings-title">Breeze</h3><span>Narration on your local network</span></div><span id="breeze-status" class="key-status">Not set up</span></summary>
+          <label class="field-label" for="breeze-url">Server URL</label>
+          <input id="breeze-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:7860" maxlength="500">
+          <label class="field-label" for="breeze-api-key">Server key <span class="field-optional">optional</span></label>
+          <div class="key-entry">
+            <input id="breeze-api-key" type="password" autocomplete="new-password" placeholder="Only if your server requires one" maxlength="500">
+            <button id="clear-breeze-key" type="button" class="button text-button" aria-label="Clear Breeze server key">Clear key</button>
+          </div>
+          <p class="field-help"><code>.env</code> or environment: <code>BREEZE_TTS_URL</code> and <code>BREEZE_API_KEY</code></p>
+          <div class="account-check-toolbar">
+            <span>Server and voices</span>
+            <button id="breeze-check" type="button" class="button text-button" aria-label="Check Breeze connection and refresh voices">Check connection</button>
+          </div>
+          <p id="breeze-check-status" class="field-help" role="status" aria-live="polite"></p>
+          <ul id="breeze-voices" class="breeze-voice-list" aria-label="Breeze voices"></ul>
+          <p class="field-help">Checking saves the URL and key shown, then reads the server's status and voice library. It generates no audio. Only cloned voices can narrate; assign them in Cast, or choose one as your narrator in Choose your narrator.</p>
+        </details>
+        <details id="provider-settings-narration-limits" class="provider-settings narration-limits" aria-labelledby="narration-limits-title">
+          <summary class="provider-heading"><div><h3 id="narration-limits-title">Narration request limits</h3><span>One-narrator listening with Gemini</span></div></summary>
+          <p class="field-help">Copy the rate limits Google AI Studio shows for the Gemini narration model (under Accounts). Chapter audio requests are paced to them. The daily count covers only this library; other apps using the same Google project share the quota.</p>
+          <div class="limit-grid">
+            <div>
+              <label class="field-label" for="tts-rpm">Requests per minute</label>
+              <input id="tts-rpm" type="number" min="1" max="10000" step="1" required>
             </div>
-            <div class="model-picker">
-              <label class="field-label" for="preprocess-model">Fast discovery model</label>
-              <select id="preprocess-model" data-model-role="preprocess" data-model-provider="gemini" required></select>
-              <label class="sr-only" for="preprocess-model-custom">Custom fast discovery model ID</label>
-              <input id="preprocess-model-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-              <p id="preprocess-model-details" class="field-help model-details"></p>
+            <div>
+              <label class="field-label" for="tts-tpm">Input tokens per minute</label>
+              <input id="tts-tpm" type="number" min="1" max="100000000" step="1" required>
+            </div>
+            <div>
+              <label class="field-label" for="tts-rpd">Requests per day</label>
+              <input id="tts-rpd" type="number" min="1" max="10000000" step="1" required>
+            </div>
+            <div>
+              <label class="field-label" for="tts-concurrency">Requests at once</label>
+              <select id="tts-concurrency">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label" for="tts-ramp">Quick-start request lengths (seconds)</label>
+              <input id="tts-ramp" inputmode="decimal" placeholder="30, 60" maxlength="60">
+            </div>
+            <div>
+              <label class="field-label" for="tts-target">Full request length (seconds of audio, 30–470)</label>
+              <input id="tts-target" type="number" min="30" max="470" step="1" required>
             </div>
           </div>
+          <p class="field-help">Gemini caps one request at about 8.5 minutes of audio; Bardic plans at most 7.8. Quick-start lengths apply when Play starts generation; queued chapters use the full length.</p>
+        </details>
+      </section>
+      <section class="settings-group" aria-labelledby="settings-group-analysis">
+        <h3 class="settings-group-title" id="settings-group-analysis">Analysis</h3>
+        <div class="settings-choice">
           <div>
-            <label class="field-label" for="tts-model">Narration model</label>
-            <select id="tts-model" required></select>
+            <label class="field-label" for="settings-analysis-provider">Story analysis</label>
+            <p class="field-help">Your default for the cast, scenes, and performance notes.</p>
           </div>
+          <select id="settings-analysis-provider">
+            <option value="local">Local draft · on this device</option>
+            <option value="gemini">Gemini</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
         </div>
-        <div class="model-catalog-toolbar">
-          <p id="model-catalog-gemini" class="field-help" role="status"></p>
-          <button type="button" class="button text-button" data-refresh-models="gemini">Refresh models</button>
-        </div>
-        <div class="account-check-toolbar">
-          <span>Analysis API readiness</span>
-          <button data-check-account="gemini" type="button" class="button text-button" aria-label="Check Gemini API">Check API</button>
-        </div>
-        <div id="account-check-gemini" class="account-check-result" role="status" aria-live="polite"></div>
-      </details>
-      <details id="provider-settings-narration-limits" class="provider-settings narration-limits" aria-labelledby="narration-limits-title">
-        <summary class="provider-heading"><div><h3 id="narration-limits-title">Narration request limits</h3><span>Simple listening with Gemini</span></div></summary>
-        <p class="field-help">Copy the rate limits Google AI Studio shows for the narration model above. Chapter chunks are paced to them. The daily count covers only this library; other apps using the same Google project share the quota.</p>
-        <div class="limit-grid">
-          <div>
-            <label class="field-label" for="tts-rpm">Requests per minute</label>
-            <input id="tts-rpm" type="number" min="1" max="10000" step="1" required>
+        <details id="provider-settings-local-analysis" class="provider-settings" aria-labelledby="local-analysis-settings-title">
+          <summary class="provider-heading"><div><h3 id="local-analysis-settings-title">Your analysis servers</h3><span>Story analysis on your local network · free</span></div><span id="local-analysis-status" class="key-status">Not set up</span></summary>
+          <label class="field-label" for="local-service-local_llm">Local LLM (OpenAI-compatible, e.g. vLLM)</label>
+          <input id="local-service-local_llm" data-local-service="local_llm" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8000" maxlength="500">
+          <label class="field-label" for="local-service-booknlp">BookNLP quote attribution</label>
+          <input id="local-service-booknlp" data-local-service="booknlp" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8100" maxlength="500">
+          <label class="field-label" for="local-service-novel_analyzer">Novel Analyzer</label>
+          <input id="local-service-novel_analyzer" data-local-service="novel_analyzer" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8200" maxlength="500">
+          <p class="field-help"><code>.env</code> or environment: <code>BARDIC_LOCAL_LLM_URL</code>, <code>BARDIC_BOOKNLP_URL</code>, <code>BARDIC_NOVEL_ANALYZER_URL</code>. Choose these servers per step in the Analysis tab. Requests are free but share that machine's GPU. Saving a URL does not check that the server answers; clearing one here overrides the environment.</p>
+        </details>
+        <p class="field-help model-help">Fast discovery gathers evidence before detailed analysis. Both lists include custom model IDs for models with structured outputs. Refreshing only lists models and generates no text; availability and prices may change. Narration uses Gemini, Breeze or Mac voices.</p>
+      </section>
+      <section class="settings-group" aria-labelledby="settings-group-accounts">
+        <h3 class="settings-group-title" id="settings-group-accounts">Accounts</h3>
+        <p class="settings-key-help">Keys entered or cleared here affect this session only. Edit the project's <code>.env</code> file to keep keys across restarts; restart after file changes. Leave a key field blank to keep its current connection.</p>
+        <details id="provider-settings-gemini" class="provider-settings" aria-labelledby="gemini-settings-title">
+          <summary class="provider-heading"><div><h3 id="gemini-settings-title">Gemini</h3><span>Analysis &amp; narration</span></div><span id="key-status" class="key-status">No key</span></summary>
+          <label class="field-label" for="api-key">Gemini API key</label>
+          <div class="key-entry">
+            <input id="api-key" type="password" autocomplete="new-password" placeholder="Enter or replace Gemini key" maxlength="500">
+            <button id="clear-key" data-clear-key="gemini" type="button" class="button text-button" aria-label="Clear Gemini key">Clear key</button>
           </div>
-          <div>
-            <label class="field-label" for="tts-tpm">Input tokens per minute</label>
-            <input id="tts-tpm" type="number" min="1" max="100000000" step="1" required>
+          <p class="field-help"><code>.env</code> or environment: <code>GEMINI_API_KEY</code></p>
+          <div class="settings-models">
+            <div>
+              <div class="model-picker">
+                <label class="field-label" for="analysis-model">Analysis model</label>
+                <select id="analysis-model" data-model-role="analysis" data-model-provider="gemini" required></select>
+                <label class="sr-only" for="analysis-model-custom">Custom analysis model ID</label>
+                <input id="analysis-model-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+                <p id="analysis-model-details" class="field-help model-details"></p>
+              </div>
+              <div class="model-picker">
+                <label class="field-label" for="preprocess-model">Fast discovery model</label>
+                <select id="preprocess-model" data-model-role="preprocess" data-model-provider="gemini" required></select>
+                <label class="sr-only" for="preprocess-model-custom">Custom fast discovery model ID</label>
+                <input id="preprocess-model-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+                <p id="preprocess-model-details" class="field-help model-details"></p>
+              </div>
+            </div>
+            <div>
+              <label class="field-label" for="tts-model">Narration model</label>
+              <select id="tts-model" required></select>
+            </div>
           </div>
-          <div>
-            <label class="field-label" for="tts-rpd">Requests per day</label>
-            <input id="tts-rpd" type="number" min="1" max="10000000" step="1" required>
+          <div class="model-catalog-toolbar">
+            <p id="model-catalog-gemini" class="field-help" role="status"></p>
+            <button type="button" class="button text-button" data-refresh-models="gemini">Refresh models</button>
           </div>
-          <div>
-            <label class="field-label" for="tts-concurrency">Requests at once</label>
-            <select id="tts-concurrency">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-            </select>
+          <div class="account-check-toolbar">
+            <span>Analysis API readiness</span>
+            <button data-check-account="gemini" type="button" class="button text-button" aria-label="Check Gemini API">Check API</button>
           </div>
-          <div>
-            <label class="field-label" for="tts-ramp">Quick-start chunk steps (seconds)</label>
-            <input id="tts-ramp" inputmode="decimal" placeholder="30, 60" maxlength="60">
+          <div id="account-check-gemini" class="account-check-result" role="status" aria-live="polite"></div>
+        </details>
+        <details id="provider-settings-openai" class="provider-settings" aria-labelledby="openai-settings-title">
+          <summary class="provider-heading"><div><h3 id="openai-settings-title">OpenAI</h3><span>Story analysis</span></div><span id="key-status-openai" class="key-status">No key</span></summary>
+          <label class="field-label" for="api-key-openai">OpenAI API key</label>
+          <div class="key-entry">
+            <input id="api-key-openai" type="password" autocomplete="new-password" placeholder="Enter or replace OpenAI key" maxlength="500">
+            <button data-clear-key="openai" type="button" class="button text-button" aria-label="Clear OpenAI key">Clear key</button>
           </div>
-          <div>
-            <label class="field-label" for="tts-target">Full chunk (seconds of audio, 30–470)</label>
-            <input id="tts-target" type="number" min="30" max="470" step="1" required>
+          <p class="field-help"><code>.env</code> or environment: <code>OPENAI_API_KEY</code></p>
+          <div class="model-picker">
+            <label class="field-label" for="analysis-model-openai">Analysis model</label>
+            <select id="analysis-model-openai" data-model-role="analysis" data-model-provider="openai" required></select>
+            <label class="sr-only" for="analysis-model-openai-custom">Custom analysis model ID</label>
+            <input id="analysis-model-openai-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+            <p id="analysis-model-openai-details" class="field-help model-details"></p>
           </div>
-        </div>
-        <p class="field-help">Gemini caps one request at about 8.5 minutes of audio; Bardic plans at most 7.8. Quick-start steps apply when Play starts generation; queued chapters use full chunks.</p>
-      </details>
-      <details id="provider-settings-breeze" class="provider-settings breeze-settings" aria-labelledby="breeze-settings-title">
-        <summary class="provider-heading"><div><h3 id="breeze-settings-title">Breeze</h3><span>Narration on your local network</span></div><span id="breeze-status" class="key-status">Not set up</span></summary>
-        <label class="field-label" for="breeze-url">Server URL</label>
-        <input id="breeze-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:7860" maxlength="500">
-        <label class="field-label" for="breeze-api-key">Server key <span class="field-optional">optional</span></label>
-        <div class="key-entry">
-          <input id="breeze-api-key" type="password" autocomplete="new-password" placeholder="Only if your server requires one" maxlength="500">
-          <button id="clear-breeze-key" type="button" class="button text-button" aria-label="Clear Breeze server key">Clear key</button>
-        </div>
-        <p class="field-help"><code>.env</code> or environment: <code>BREEZE_TTS_URL</code> and <code>BREEZE_API_KEY</code></p>
-        <div class="account-check-toolbar">
-          <span>Server and voices</span>
-          <button id="breeze-check" type="button" class="button text-button" aria-label="Check Breeze connection and refresh voices">Check connection</button>
-        </div>
-        <p id="breeze-check-status" class="field-help" role="status" aria-live="polite"></p>
-        <ul id="breeze-voices" class="breeze-voice-list" aria-label="Breeze voices"></ul>
-        <p class="field-help">Checking saves the URL and key shown, then reads the server's status and voice library. It generates no audio. Only cloned voices can narrate; choose them per character in Cast &amp; voices or for One narrator listening.</p>
-      </details>
-      <details id="provider-settings-local-analysis" class="provider-settings" aria-labelledby="local-analysis-settings-title">
-        <summary class="provider-heading"><div><h3 id="local-analysis-settings-title">Your analysis servers</h3><span>Story analysis on your local network · free</span></div><span id="local-analysis-status" class="key-status">Not set up</span></summary>
-        <label class="field-label" for="local-service-local_llm">Local LLM (OpenAI-compatible, e.g. vLLM)</label>
-        <input id="local-service-local_llm" data-local-service="local_llm" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8000" maxlength="500">
-        <label class="field-label" for="local-service-booknlp">BookNLP quote attribution</label>
-        <input id="local-service-booknlp" data-local-service="booknlp" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8100" maxlength="500">
-        <label class="field-label" for="local-service-novel_analyzer">Novel Analyzer</label>
-        <input id="local-service-novel_analyzer" data-local-service="novel_analyzer" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8200" maxlength="500">
-        <p class="field-help"><code>.env</code> or environment: <code>BARDIC_LOCAL_LLM_URL</code>, <code>BARDIC_BOOKNLP_URL</code>, <code>BARDIC_NOVEL_ANALYZER_URL</code>. Choose these servers per step in the Analysis tab. Requests are free but share that machine's GPU. Saving a URL does not check that the server answers; clearing one here overrides the environment.</p>
-      </details>
-      <details id="provider-settings-openai" class="provider-settings" aria-labelledby="openai-settings-title">
-        <summary class="provider-heading"><div><h3 id="openai-settings-title">OpenAI</h3><span>Story analysis</span></div><span id="key-status-openai" class="key-status">No key</span></summary>
-        <label class="field-label" for="api-key-openai">OpenAI API key</label>
-        <div class="key-entry">
-          <input id="api-key-openai" type="password" autocomplete="new-password" placeholder="Enter or replace OpenAI key" maxlength="500">
-          <button data-clear-key="openai" type="button" class="button text-button" aria-label="Clear OpenAI key">Clear key</button>
-        </div>
-        <p class="field-help"><code>.env</code> or environment: <code>OPENAI_API_KEY</code></p>
-        <div class="model-picker">
-          <label class="field-label" for="analysis-model-openai">Analysis model</label>
-          <select id="analysis-model-openai" data-model-role="analysis" data-model-provider="openai" required></select>
-          <label class="sr-only" for="analysis-model-openai-custom">Custom analysis model ID</label>
-          <input id="analysis-model-openai-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-          <p id="analysis-model-openai-details" class="field-help model-details"></p>
-        </div>
-        <div class="model-picker">
-          <label class="field-label" for="preprocess-model-openai">Fast discovery model</label>
-          <select id="preprocess-model-openai" data-model-role="preprocess" data-model-provider="openai" required></select>
-          <label class="sr-only" for="preprocess-model-openai-custom">Custom fast discovery model ID</label>
-          <input id="preprocess-model-openai-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-          <p id="preprocess-model-openai-details" class="field-help model-details"></p>
-        </div>
-        <div class="model-catalog-toolbar">
-          <p id="model-catalog-openai" class="field-help" role="status"></p>
-          <button type="button" class="button text-button" data-refresh-models="openai">Refresh models</button>
-        </div>
-        <div class="account-check-toolbar">
-          <span>Analysis API readiness</span>
-          <button data-check-account="openai" type="button" class="button text-button" aria-label="Check OpenAI API">Check API</button>
-        </div>
-        <div id="account-check-openai" class="account-check-result" role="status" aria-live="polite"></div>
-      </details>
-      <details id="provider-settings-anthropic" class="provider-settings" aria-labelledby="anthropic-settings-title">
-        <summary class="provider-heading"><div><h3 id="anthropic-settings-title">Anthropic</h3><span>Story analysis</span></div><span id="key-status-anthropic" class="key-status">No key</span></summary>
-        <label class="field-label" for="api-key-anthropic">Anthropic API key</label>
-        <div class="key-entry">
-          <input id="api-key-anthropic" type="password" autocomplete="new-password" placeholder="Enter or replace Anthropic key" maxlength="500">
-          <button data-clear-key="anthropic" type="button" class="button text-button" aria-label="Clear Anthropic key">Clear key</button>
-        </div>
-        <p class="field-help"><code>.env</code> or environment: <code>ANTHROPIC_API_KEY</code></p>
-        <div class="model-picker">
-          <label class="field-label" for="analysis-model-anthropic">Analysis model</label>
-          <select id="analysis-model-anthropic" data-model-role="analysis" data-model-provider="anthropic" required></select>
-          <label class="sr-only" for="analysis-model-anthropic-custom">Custom analysis model ID</label>
-          <input id="analysis-model-anthropic-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-          <p id="analysis-model-anthropic-details" class="field-help model-details"></p>
-        </div>
-        <div class="model-picker">
-          <label class="field-label" for="preprocess-model-anthropic">Fast discovery model</label>
-          <select id="preprocess-model-anthropic" data-model-role="preprocess" data-model-provider="anthropic" required></select>
-          <label class="sr-only" for="preprocess-model-anthropic-custom">Custom fast discovery model ID</label>
-          <input id="preprocess-model-anthropic-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
-          <p id="preprocess-model-anthropic-details" class="field-help model-details"></p>
-        </div>
-        <div class="model-catalog-toolbar">
-          <p id="model-catalog-anthropic" class="field-help" role="status"></p>
-          <button type="button" class="button text-button" data-refresh-models="anthropic">Refresh models</button>
-        </div>
-        <div class="account-check-toolbar">
-          <span>Analysis API readiness</span>
-          <button data-check-account="anthropic" type="button" class="button text-button" aria-label="Check Anthropic API">Check API</button>
-        </div>
-        <div id="account-check-anthropic" class="account-check-result" role="status" aria-live="polite"></div>
-      </details>
-      <details class="workspace-details settings-checks">
-        <summary><span>Check provider access</span><small>Optional checks may incur a small charge</small></summary>
-        <section class="account-check-intro" aria-labelledby="account-check-title">
-          <div>
-            <h3 id="account-check-title">Can these accounts make requests?</h3>
-            <p>Check each analysis model with a tiny text request. It may incur a small charge. This checks access now; it does not check narration or whether your balance can cover a whole book.</p>
+          <div class="model-picker">
+            <label class="field-label" for="preprocess-model-openai">Fast discovery model</label>
+            <select id="preprocess-model-openai" data-model-role="preprocess" data-model-provider="openai" required></select>
+            <label class="sr-only" for="preprocess-model-openai-custom">Custom fast discovery model ID</label>
+            <input id="preprocess-model-openai-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+            <p id="preprocess-model-openai-details" class="field-help model-details"></p>
           </div>
-          <button id="check-all-accounts" type="button" class="button subtle">Check all accounts</button>
+          <div class="model-catalog-toolbar">
+            <p id="model-catalog-openai" class="field-help" role="status"></p>
+            <button type="button" class="button text-button" data-refresh-models="openai">Refresh models</button>
+          </div>
+          <div class="account-check-toolbar">
+            <span>Analysis API readiness</span>
+            <button data-check-account="openai" type="button" class="button text-button" aria-label="Check OpenAI API">Check API</button>
+          </div>
+          <div id="account-check-openai" class="account-check-result" role="status" aria-live="polite"></div>
+        </details>
+        <details id="provider-settings-anthropic" class="provider-settings" aria-labelledby="anthropic-settings-title">
+          <summary class="provider-heading"><div><h3 id="anthropic-settings-title">Anthropic</h3><span>Story analysis</span></div><span id="key-status-anthropic" class="key-status">No key</span></summary>
+          <label class="field-label" for="api-key-anthropic">Anthropic API key</label>
+          <div class="key-entry">
+            <input id="api-key-anthropic" type="password" autocomplete="new-password" placeholder="Enter or replace Anthropic key" maxlength="500">
+            <button data-clear-key="anthropic" type="button" class="button text-button" aria-label="Clear Anthropic key">Clear key</button>
+          </div>
+          <p class="field-help"><code>.env</code> or environment: <code>ANTHROPIC_API_KEY</code></p>
+          <div class="model-picker">
+            <label class="field-label" for="analysis-model-anthropic">Analysis model</label>
+            <select id="analysis-model-anthropic" data-model-role="analysis" data-model-provider="anthropic" required></select>
+            <label class="sr-only" for="analysis-model-anthropic-custom">Custom analysis model ID</label>
+            <input id="analysis-model-anthropic-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+            <p id="analysis-model-anthropic-details" class="field-help model-details"></p>
+          </div>
+          <div class="model-picker">
+            <label class="field-label" for="preprocess-model-anthropic">Fast discovery model</label>
+            <select id="preprocess-model-anthropic" data-model-role="preprocess" data-model-provider="anthropic" required></select>
+            <label class="sr-only" for="preprocess-model-anthropic-custom">Custom fast discovery model ID</label>
+            <input id="preprocess-model-anthropic-custom" class="model-custom" maxlength="200" spellcheck="false" placeholder="Enter a model ID" hidden>
+            <p id="preprocess-model-anthropic-details" class="field-help model-details"></p>
+          </div>
+          <div class="model-catalog-toolbar">
+            <p id="model-catalog-anthropic" class="field-help" role="status"></p>
+            <button type="button" class="button text-button" data-refresh-models="anthropic">Refresh models</button>
+          </div>
+          <div class="account-check-toolbar">
+            <span>Analysis API readiness</span>
+            <button data-check-account="anthropic" type="button" class="button text-button" aria-label="Check Anthropic API">Check API</button>
+          </div>
+          <div id="account-check-anthropic" class="account-check-result" role="status" aria-live="polite"></div>
+        </details>
+        <details class="workspace-details settings-checks">
+          <summary><span>Check provider access</span><small>Optional checks may incur a small charge</small></summary>
+          <section class="account-check-intro" aria-labelledby="account-check-title">
+            <div>
+              <h3 id="account-check-title">Can these accounts make requests?</h3>
+              <p>Check each analysis model with a tiny text request. It may incur a small charge. This checks access now; it does not check narration or whether your balance can cover a whole book.</p>
+            </div>
+            <button id="check-all-accounts" type="button" class="button subtle">Check all accounts</button>
+          </section>
+          <div class="account-check-summary" aria-label="Latest account checks">
+            <div id="account-summary-gemini" data-state="unchecked">
+              <strong>Gemini</strong>
+              <span>Not checked</span>
+            </div>
+            <div id="account-summary-openai" data-state="unchecked">
+              <strong>OpenAI</strong>
+              <span>Not checked</span>
+            </div>
+            <div id="account-summary-anthropic" data-state="unchecked">
+              <strong>Anthropic</strong>
+              <span>Not checked</span>
+            </div>
+          </div>
+          <p class="account-check-help">Checking saves the key and analysis model shown for that provider. Other unsaved settings stay in place. Results may be reused for 30 seconds; exact balances and account usage are available in the provider dashboards.</p>
+        </details>
+      </section>
+      <section class="settings-group" aria-labelledby="settings-group-troubleshooting">
+        <h3 class="settings-group-title" id="settings-group-troubleshooting">Troubleshooting</h3>
+        <div class="data-note">
+          <svg><use href="#i-leaf"/></svg>
+          <p>Your library and audio stay on this device. Cloud analysis sends book text to your selected provider; Gemini narration sends text and performance notes to Google. Breeze narration sends passage text and performance notes to the server you configure on your local network, over plain HTTP unless its URL starts with https. Keys entered here stay in server memory and are never saved in this browser or written to <code>.env</code>. Cloud usage may incur charges.</p>
+        </div>
+        <section class="provider-settings" aria-labelledby="diagnostics-title">
+          <h3 id="diagnostics-title">Troubleshooting log</h3>
+          <p class="field-help">Playback and buffering issues are logged locally with passage and job IDs, playback speed, and error codes. Logs exclude book text and API keys. The most recent 5,000 events are retained.</p>
+          <a class="button subtle" href="/api/diagnostics?limit=5000" download="bardic-diagnostics.json">Download troubleshooting log</a>
         </section>
-        <div class="account-check-summary" aria-label="Latest account checks">
-          <div id="account-summary-gemini" data-state="unchecked">
-            <strong>Gemini</strong>
-            <span>Not checked</span>
-          </div>
-          <div id="account-summary-openai" data-state="unchecked">
-            <strong>OpenAI</strong>
-            <span>Not checked</span>
-          </div>
-          <div id="account-summary-anthropic" data-state="unchecked">
-            <strong>Anthropic</strong>
-            <span>Not checked</span>
-          </div>
-        </div>
-        <p class="account-check-help">Checking saves the key and analysis model shown for that provider. Other unsaved settings stay in place. Results may be reused for 30 seconds; exact balances and account usage are available in the provider dashboards.</p>
-      </details>
-      <p class="field-help model-help">Fast discovery gathers evidence before detailed analysis. Both lists include custom model IDs for models with structured outputs. Refreshing only lists models and generates no text; availability and prices may change. Narration uses Gemini, Breeze or device voices.</p>
-      <div class="data-note">
-        <svg><use href="#i-leaf"/></svg>
-        <p>Your library and audio stay on this device. Cloud analysis sends book text to your selected provider; Gemini narration sends text and performance notes to Google. Breeze narration sends passage text and performance notes to the server you configure on your local network, over plain HTTP unless its URL starts with https. Keys entered here stay in server memory and are never saved in this browser or written to <code>.env</code>. Cloud usage may incur charges.</p>
-      </div>
-      <section class="provider-settings" aria-labelledby="diagnostics-title">
-        <h3 id="diagnostics-title">Troubleshooting</h3>
-        <p class="field-help">Playback and buffering issues are logged locally with passage and job IDs, playback speed, and error codes. Logs exclude book text and API keys. The most recent 5,000 events are retained.</p>
-        <a class="button subtle" href="/api/diagnostics?limit=5000" download="bardic-diagnostics.json">Download troubleshooting log</a>
       </section>
       <div id="settings-error" class="inline-error" role="alert" hidden></div>
       <div class="modal-footer settings-footer">
-        <span class="field-help">Device voices and local analysis need no API key.</span>
+        <span class="field-help">Mac voices and local analysis need no API key.</span>
         <button type="submit" class="button primary">Save settings</button>
       </div>
     </form>
@@ -689,8 +679,8 @@
   <dialog id="import-dialog" class="modal import-modal" aria-labelledby="import-dialog-title">
     <div class="modal-header">
       <div>
-        <span class="eyebrow">ADD TO YOUR LIBRARY</span>
-        <h2 id="import-dialog-title">Start a new chapter.</h2>
+        <span class="eyebrow">Add to your library</span>
+        <h2 id="import-dialog-title">Import a book</h2>
       </div>
       <button class="icon-button" data-close="import-dialog" aria-label="Close import"><svg><use href="#i-close"/></svg></button>
     </div>

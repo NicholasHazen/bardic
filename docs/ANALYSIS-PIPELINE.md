@@ -117,7 +117,7 @@ Projectors never delete characters or passages, and never change source text or 
 
 ### Coexistence with the phase controls
 
-The Studio phase controls, the local draft and series runs still write the book directly. Before any pipeline run or decision, and when the overview is read, `sync` compares each capturable step's accepted versions with the projection. It is skipped when a digest of the captured content is unchanged; revision numbers are not relied on. Scopes that differ are recorded and accepted as `external` versions. Outside work therefore appears in history and can be rolled back, and the pipeline never silently reverts it. Discovery and the census are not capturable (their per-chapter output cannot be recovered from the merged projection), so outside discovery work appears only through its effect on the cast.
+The older phase controls (no longer shown in the browser), the local draft and series runs still write the book directly. Before any pipeline run or decision, and when the overview is read, `sync` compares each capturable step's accepted versions with the projection. It is skipped when a digest of the captured content is unchanged; revision numbers are not relied on. Scopes that differ are recorded and accepted as `external` versions. Outside work therefore appears in history and can be rolled back, and the pipeline never silently reverts it. Discovery and the census are not capturable (their per-chapter output cannot be recovered from the merged projection), so outside discovery work appears only through its effect on the cast.
 
 ## The step contract
 

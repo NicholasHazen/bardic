@@ -81,17 +81,27 @@ SQLite is the authoritative application store; JSON book projections make reader
 | --- | --- | --- |
 | Library and removed items | `library.js`, `library.css` | `/api/library`, book metadata/cover/archive/restore, series and volume slots |
 | Cast assignment (**Cast** tab) | `app.js` with helpers from `voices.js` (`BardicVoices.cast`) | Character PATCH `voices`, `/api/voices` |
-| Voice library (**Voices** tab) | `voices.js`, `voices.css` (`window.BardicVoices`) | `/api/voices`, `/api/voices/drafts…`, `/api/voices/breeze/clone`, `/api/voices/gemini/refresh`, `/api/narration/breeze/refresh` |
+| Voice library (**Voices**, an app-level page in the sidebar) | `voices.js`, `voices.css` (`window.BardicVoices`) | `/api/voices`, `/api/voices/drafts…`, `/api/voices/breeze/clone`, `/api/voices/gemini/refresh`, `/api/narration/breeze/refresh` |
 | Voice examples | `voice-preview.js`, main player in `app.js` | Book `/voice-preview`, `/voice-preview/audio/{asset_id}` |
 | Single-narrator listening | `listen.js`, `listen.css` | Book `/listen`, `/listen/takes`, `/listen/audio/{asset_id}` |
-| Progressive production | `production.js`, `production.css` | Book `/preprocessing`, `/analysis-plan`, `/analyze`, `/analysis` |
+| Progressive production (older phase runner) | `production.js`, `production.css`: no longer loaded by the page; the backend stays until series runs move to the step pipeline | Book `/preprocessing`, `/analysis-plan`, `/analyze`, `/analysis` |
 | Series identity review | `series.js`, `series.css` | Book `/series`, character links, series characters/context |
 | Collection processing | `series-processing.js`, `series-processing.css` | Series `/plan`, `/process`, `/runs`, `/map` |
-| Analysis pipeline (Analysis tab) | `analysis-pipeline.js`, `analysis-pipeline.css` | `/api/analysis-pipeline`, book `/analysis-pipeline` (plan, runs, versions, preview, accept, reject) |
-| Pipeline inspection | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
-| Resource usage | `resources.js`, `resources.css` | Book `/resources` |
+| Analysis pipeline (**Analyze** tab) | `analysis-pipeline.js`, `analysis-pipeline.css` | `/api/analysis-pipeline`, book `/analysis-pipeline` (plan, runs, versions, preview, accept, reject) |
+| Pipeline inspection (**Details** tab) | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
+| Resource usage (**Details** tab) | `resources.js`, `resources.css` | Book `/resources` |
+| Book lifecycle strip, routes, breadcrumb | `lifecycle.js` (`window.BardicLifecycle`, pure), `shell.js` (`window.BardicShell`) | Book `/analysis-pipeline` overview (read-only) |
 
 The table summarizes endpoint families; inspect [route definitions](../bardic/app.py) for request models and exact paths. These are internal application APIs without a separate compatibility/versioning policy. The generated schema is available at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.
+
+### Browser UI
+
+The page has app-level places in the sidebar (**Library**, **Voices**, **Books & series**, **Providers & settings**) and five book tabs in lifecycle order: **Read & listen · Analyze · Cast · Script & record · Details**. Element IDs and `data-tab` values are stable (`read`, `analysis`, `cast`, `studio`, `details`); labels may change. **Voices** (`#voices-view`) is outside the book workspace, so it opens without a book; `setTab('voices')` shows it and a book reopens on its last tab (`state.bookTab`).
+
+- **Lifecycle strip.** `lifecycle.js` computes four stages from one source each: Analyze (accepted results for Character discovery, Character profiles and Speakers & delivery in the analysis-pipeline overview; directing staleness does not count against "done"), Cast (speaking characters with a voice for the service chosen under Record the book), Script (passages with a speaker other than Unassigned) and Record (current Studio takes, the only audio Export packages). It returns one state per stage and one Next; nothing is suggested while the overview loads. `shell.js` fetches the overview when the book, its revision or an analysis job's status changes, and after leaving Analyze. The strip expands in place into stage cards. It replaced the old `#book-status` line and the Studio "01/02/03" guide.
+- **Routes.** `#/library`, `#/voices` and `#/book/<id>/<tab>` go through `setTab` and `selectBook`; navigation pushes a history entry, back and forward reapply the route, and a route on load wins over the last opened book. The breadcrumb follows the route.
+- **Narrator surface.** **Choose your narrator** (the listen sheet) is the one place to choose a narrator. The single-narrator panel that `listen.js` renders (`#simple-listen` inside `#listening-drawer`) now sits in the sheet under **More options**; Read & listen shows its summary as one line with **Change**.
+- **Details** holds resource use and the pipeline explorer (provenance and inspection, which reads the older phase checkpoints), with source search and the analysis export inside the explorer. The older phase runner ("Classic") is no longer shown or wired; its backend and `production.js` remain until series runs move to the step pipeline.
 
 An import posts an EPUB/TXT, saves its original bytes, creates canonical chapters and anchored passages, and makes the book readable immediately. Cast and scene data start as a local draft. The reader highlights a whole passage while that passage's audio plays. Position and playback speed are browser-local preferences; the browser does not save API keys in local storage.
 
