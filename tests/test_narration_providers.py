@@ -275,6 +275,19 @@ def test_unreachable_server_is_a_state_not_an_exception(monkeypatch):
     assert catalog["state"] == "unreachable" and catalog["voices"] == []
 
 
+@pytest.mark.parametrize("broken", ["health", "voices", "both"])
+def test_catalog_classifies_a_non_object_json_body_as_an_error(monkeypatch, fake_breeze, broken):
+    def serve(request):
+        path = request.url.path
+        if (path == "/health" and broken in ("health", "both")) or (path == "/v1/voices" and broken in ("voices", "both")):
+            return httpx.Response(200, json=["not", "an", "object"])
+        return fake_breeze(request)
+    monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(serve))
+    catalog = breeze.fetch_catalog(CONFIG)
+    assert catalog["state"] == "error" and catalog["voices"] == [] and catalog["default_voice_id"] is None
+    assert catalog["message"] == "The Breeze server returned an unreadable response."
+
+
 def test_breeze_recipe_pins_revision_seed_and_direction(fake_breeze):
     selection = pinned()
     character = {"id": "c", "voices": {"breeze": selection}, "direction": "Warm."}

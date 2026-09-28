@@ -205,14 +205,19 @@ def fetch_catalog(config: Any, *, timeout: float = 10.0) -> dict:
             if health.status_code != 200:
                 return {"state": "error", "message": f"The Breeze server returned HTTP {health.status_code} for its health check.",
                         "model": None, "voices": [], "default_voice_id": None}
+            if not isinstance(health_body, dict):
+                raise ValueError("health body is not a JSON object")
+            reported = health_body.get("model") if isinstance(health_body.get("model"), str) else None
             listing = client.get(f"{base_url}/v1/voices", headers=_headers(api_key))
             if listing.status_code == 401:
                 return {"state": "error", "message": "The Breeze server rejected the API key.",
-                        "model": health_body.get("model"), "voices": [], "default_voice_id": None}
+                        "model": reported, "voices": [], "default_voice_id": None}
             if listing.status_code != 200:
                 return {"state": "error", "message": f"The Breeze server returned HTTP {listing.status_code} listing voices.",
-                        "model": health_body.get("model"), "voices": [], "default_voice_id": None}
+                        "model": reported, "voices": [], "default_voice_id": None}
             body = listing.json()
+            if not isinstance(body, dict):
+                raise ValueError("voice list is not a JSON object")
             voices = []
             for voice in body.get("data", [])[:200] if isinstance(body.get("data"), list) else []:
                 if not isinstance(voice, dict) or not isinstance(voice.get("id"), str) or not _VOICE_ID.fullmatch(voice["id"]):

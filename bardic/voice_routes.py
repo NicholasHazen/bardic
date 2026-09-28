@@ -28,6 +28,7 @@ from .audio import BREEZE_MODEL, AudioError, UncertainRequest, _VOICE_NAMES, lis
 from .audio_refs import audio_ref
 from .errors import ApiError, Conflict, Invalid, NotFound, ProviderFailure, TooLarge
 from .store import now
+from .voice_library import MAX_DESCRIPTION, MAX_NAME
 from .voice_previews import DEMO_TEXT, _excerpt
 
 ACTIVE = {"queued", "running"}
@@ -841,7 +842,9 @@ def import_breeze_voices(runtime, set_default) -> None:
         except AudioError:
             audition = None
         pin = breeze.pin(view, server["id"])
-        runtime.voices.create("breeze", name=server["name"], description=server["description"], origin="imported",
+        # A server name is not user input: fit it to the library limit (code points) instead of refusing it.
+        name = server["name"][:MAX_NAME].strip() or server["id"]
+        runtime.voices.create("breeze", name=name, description=server["description"][:MAX_DESCRIPTION], origin="imported",
                               version={"provider_voice_id": pin["id"], "revision": pin["revision"], "seed": pin["seed"],
                                        "made": "imported", "recipe": {"description": server["description"]},
                                        "audition": audition})

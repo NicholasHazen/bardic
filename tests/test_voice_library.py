@@ -118,6 +118,21 @@ def test_check_connection_imports_server_voices_and_sets_the_default(client, ser
     assert changed["versions"][0]["server_state"] == "changed" and changed["warnings"] and not changed["assignable"]
 
 
+def test_refresh_imports_a_server_voice_whose_name_exceeds_the_library_limit(client, servers):
+    fake_breeze, _ = servers
+    # Server names are not user input: Breeze may send up to 200 characters, the library keeps 100.
+    long_name = "Ölander " + "\U0001F56F" * 60 + " the Lamplighter of the Northern Wharf and the Last Ferry"
+    fake_breeze.voices["narrator"]["name"] = long_name
+    view = client.post("/api/settings", json={"breeze_url": "http://breeze.local:7860/"})
+    assert view.status_code == 200, view.text
+    for _ in range(2):  # the second refresh must not fail either
+        refreshed = client.post("/api/narration/breeze/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+    voices = library(client)["voices"]
+    assert len(voices) == 1 and library(client)["defaults"]["breeze"] == voices[0]["id"]
+    assert voices[0]["name"] == long_name[:100].rstrip() and len(voices[0]["name"]) <= 100
+
+
 def test_characters_on_default_follow_the_default_voice_and_switching_back_restores_takes(client, servers):
     connect(client)
     book = import_text(client)
