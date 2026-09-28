@@ -398,3 +398,46 @@ def test_invalid_series_requests_never_create_jobs(client, body):
     series, _ = collection(client, positions=(1,))
     assert client.post(f"/api/series/{series['id']}/process", json=body).status_code in {400, 422}
     assert client.get('/api/jobs').json() == []
+
+
+def test_new_accepted_evidence_in_an_earlier_book_stops_a_linked_profiles_run_safely(client):
+    """Accepted evidence is retained as observations, which later books' profile prompts read.
+
+    A book whose prompt changed during the run no longer matches the confirmed plan, so the
+    series stops there with nothing sent; a new preview covers the new context and completes.
+    """
+    from bardic.series import SeriesRepository
+    from test_analysis_pipeline import run
+
+    series, books = collection(client, positions=(1, 2))
+    for book in books:
+        assert run(client, book['id'], ['discovery', 'profiles'])[0]['status'] == 'completed'
+    store = client.app.state.runtime.store
+    repository = SeriesRepository(store)
+    identity = repository.create_character(series['id'], 'Mara')
+    for book in books:
+        mara = next(c for c in store.book(book['id'])['characters'] if c['name'] == 'Mara')
+        repository.link_character(book['id'], mara['id'], identity['id'])
+    provider = client.provider
+    original = provider.__class__.__call__
+
+    def reread(self, *args):
+        result = original(self, *args)
+        if self.calls[-1] == 'profiles':
+            for item in result['characters']:
+                item['description'] = 'A second reading.'
+        return result
+    provider.__class__.__call__ = reread
+    try:
+        plan = preview(client, series, steps=['profiles'], fresh=True)
+        parent = wait_job(client, process(client, series, plan, steps=['profiles'], fresh=True).json()['id'])
+        assert parent['status'] == 'failed'
+        first, second = children(client, series)
+        assert first['status'] == 'completed' and second['status'] == 'failed'
+        assert 'not run' in second['message'] and second['run_id'] is None
+        calls = provider.calls.count('profiles')
+        plan = preview(client, series, steps=['profiles'], fresh=True)
+        parent = wait_job(client, process(client, series, plan, steps=['profiles'], fresh=True).json()['id'])
+        assert parent['status'] == 'completed' and provider.calls.count('profiles') > calls
+    finally:
+        provider.__class__.__call__ = original

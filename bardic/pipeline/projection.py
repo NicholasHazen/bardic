@@ -10,12 +10,17 @@ controls, series runs, structure repair) is recorded by :func:`sync` as an
 ``external`` version before the next pipeline decision, so it can be restored
 later. The first sync of a book records ``baseline`` versions of its existing
 state. Both are marked as legacy provenance: their producer is not known.
+
+Every sync also refreshes the book's character references from the accepted
+evidence steps (:mod:`bardic.pipeline.evidence`), in the same transaction as
+any decision it or its caller records.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 
 from ..processing import digest
+from . import evidence
 from .repository import PipelineRepository
 
 
@@ -41,8 +46,19 @@ def fingerprint(registry, book, captures=None):
     return digest([[[s.id, s.version] for s in registry], captures if captures is not None else _captures(registry, book)])
 
 
-def sync(repository: PipelineRepository, registry, conn, book, *, force=False):
-    """Record capturable projection state that no accepted version explains."""
+def sync(repository: PipelineRepository, registry, conn, book, *, force=False, references=True):
+    """Record capturable projection state that no accepted version explains.
+
+    With ``references`` (the default), then rebuild the book's character
+    references if their inputs or the stored rows changed.
+    """
+    recorded = _record_outside_changes(repository, registry, conn, book, force)
+    if references:
+        evidence.refresh(repository, conn, book)
+    return recorded
+
+
+def _record_outside_changes(repository, registry, conn, book, force):
     book_id = book['id']
     state = repository.state(conn, book_id)
     captures = _captures(registry, book)
@@ -144,7 +160,8 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
         book = store._hydrate(_book_row(conn, book_id), conn)
         if expected_revision is not None and book.get('revision', 0) != expected_revision:
             raise RevisionConflict('The book changed since this preview. Review the impact again before accepting.')
-        sync(repository, registry, conn, book)
+        # References are rebuilt once, by the sync after the decision below.
+        sync(repository, registry, conn, book, references=False)
         impact = preview(repository, registry, conn, book, step, versions, valid_audio, prepare)
         work = impact.pop('book')
         invalidated = set(impact.pop('invalidated_segment_ids'))
@@ -154,17 +171,26 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
         decision = repository.decide(conn, book_id, step.id, 'accept', versions, mode=mode, step_run_id=step_run_id)
         work['revision'] = book.get('revision', 0) + 1
         store._save_book(conn, work)
-        # Record any newly capturable scopes (e.g. draft profiles of new characters).
+        # Record any newly capturable scopes (e.g. draft profiles of new characters),
+        # then project the now-accepted evidence onto the character references.
         sync(repository, registry, conn, work)
     return {**impact, 'decision': decision, 'revision': work['revision']}
 
 
-def reject(store, repository, book_id, step, versions, *, step_run_id=None):
+def reject(store, repository, book_id, step, versions, *, step_run_id=None, registry=None):
     with store.lock, store.connect() as conn:
         heads = repository.heads(conn, book_id, step.id)
         if any(heads.get(scope) == identifier for scope, identifier in versions.items()):
             raise ValueError('An accepted version cannot be rejected. Accept another version to replace it.')
-        return repository.decide(conn, book_id, step.id, 'reject', versions, mode='user', step_run_id=step_run_id)
+        decision = repository.decide(conn, book_id, step.id, 'reject', versions, mode='user', step_run_id=step_run_id)
+        # Setting aside changes no accepted version, so this only records outside changes and
+        # repairs references another writer replaced; it never adds the set-aside evidence.
+        book = store._hydrate(_book_row(conn, book_id), conn)
+        if registry is not None:
+            sync(repository, registry, conn, book)
+        else:
+            evidence.refresh(repository, conn, book)
+        return decision
 
 
 def _book_row(conn, book_id):

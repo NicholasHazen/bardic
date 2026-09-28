@@ -169,7 +169,7 @@ See [storage research](ARTIFACTS-AND-STORAGE.md#primary-references) and the date
 
 Earlier linked observations already improve book-local profiles, with missing/later volumes excluded. A complete series biography, temporal character evolution and a full scene-presence map remain broader work.
 
-**Gap (2026-09-28):** only the older phase engine writes those observations and the Cast references they come from; step-pipeline runs, including series runs, write none. The planned follow-up — project accepted step evidence into references, read earlier volumes' accepted evidence for series context, and staged consent for series runs — is designed in [series memory plan](SERIES-MEMORY-PLAN.md). Its evidence projection is also stage 2 of removing the phase engine.
+**Gap (2026-09-28):** only the older phase engine writes those observations and the Cast references they come from; step-pipeline runs, including series runs, write none. The planned follow-up — project accepted step evidence into references, read earlier volumes' accepted evidence for series context, and staged consent for series runs — is designed in [series memory plan](SERIES-MEMORY-PLAN.md). Its evidence projection is also stage 2 of removing the phase engine. **Implemented 2026-09-28:** accepted discovery, profiles and directing evidence (and cast-name mentions) now rebuild `character_references` in each pipeline decision's transaction and append new rows to `character_observations` ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). Series context still reads the append-only observations; reading accepted evidence and staged series consent remain proposed.
 
 Acceptance criteria:
 

@@ -1,6 +1,6 @@
 # Series memory on the step pipeline (proposed follow-up)
 
-Status: proposed, 2026-09-28. Not implemented. Follows the series-run rebuild ([series runs](ANALYSIS-PIPELINE.md#series-runs)).
+Status: section 1 implemented 2026-09-28 ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)); sections 2–4 proposed. Follows the series-run rebuild ([series runs](ANALYSIS-PIPELINE.md#series-runs)).
 
 ## The gap
 
@@ -15,6 +15,16 @@ The same root cause empties the Cast tab's **References & appearances** panel. I
 ## Design
 
 ### 1. Evidence projection (fixes Cast references; prerequisite for series memory)
+
+**Implemented 2026-09-28** as one registry-level projector, [evidence.py](../bardic/pipeline/evidence.py). What was built differs from the sketch below in these ways:
+
+- Dialogue rows come from the book's current attributions, with the chapter's accepted directing version as provenance. A manual speaker choice wins (`provider: reviewed`), as in directing's own projection. Mentions come from the current cast names.
+- Profile quotations are located inside the same character's discovery evidence from the discovery versions the profile run recorded. Every matching location is kept (`anchors`). Earlier-volume quotations are dropped as `unanchored`.
+- The rebuild runs in `projection.sync`, so every decision (including set aside and baseline/external capture) and every read path refreshes it. A digest of its inputs and of the stored row IDs skips unchanged rebuilds and repairs rows a phase checkpoint replaced.
+- Migration is lazy: each book is rebuilt at its first sync and recorded in `pipeline_state`. A book with no accepted discovery, profiles or directing version keeps its references. Legacy `profile_evidence` rows are carried until discovery has an accepted version.
+- Appending to `character_observations` feeds later volumes' profile context now, before section 2. With confirmed links, a series run of profiles can therefore stop at a later book on a fingerprint mismatch (safely; see [known limitations](ANALYSIS-PIPELINE.md#known-limitations)). Section 4 removes that.
+
+The original design:
 
 Treat `character_references` as a **current-book projection** of accepted evidence, like the book's `characters` and `segments`. Accepting, rolling back or setting aside a version then changes what it shows.
 

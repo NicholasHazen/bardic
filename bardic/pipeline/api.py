@@ -568,7 +568,8 @@ def build_router(registry: Registry):
         chosen = selected(scopes, body)
         if not chosen:
             raise HTTPException(400, 'This version has no results to reject.')
-        return projection.reject(runtime.store, PipelineRepository(runtime.store), book_id, step, chosen, step_run_id=run['id'])
+        return projection.reject(runtime.store, PipelineRepository(runtime.store), book_id, step, chosen, step_run_id=run['id'],
+                                 registry=registry)
 
     return router
 
