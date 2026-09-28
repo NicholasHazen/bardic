@@ -224,8 +224,9 @@ def write_analysis_export(store, book_id, path):
         member = series.membership(book_id)
         identity = {'membership': member, 'links': series.links_for_book(book_id),
                     'series_characters': series.list_characters(member['series_id']) if member else []}
-        # Version 1 keeps its original wire identifier across the product rename.
-        manifest = {'schema_version': 1, 'format': 'spintails-analysis', 'exported_at': now(), 'book_id': book_id,
+        # The format identifier predates the product rename and is kept. Version 2: analysis-attempts.json
+        # holds allowlisted attempts (the inspector's PipelineAttempt shape), not raw stored rows.
+        manifest = {'schema_version': 2, 'format': 'spintails-analysis', 'exported_at': now(), 'book_id': book_id,
                     'artifact_count': len(artifacts), 'external_book_dependencies': sorted({owner for owner, _ in rows if owner != book_id}),
                     'audio_files_included': False, 'source_text_included': True, 'word_alignment': False,
                     'coordinate_system': 'Python Unicode character offsets, end exclusive, chapter-local',

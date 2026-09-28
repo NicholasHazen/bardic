@@ -865,7 +865,7 @@ OPS: list[Op] = [
        'reduced to word characters, spaces, dots and hyphens, at most 80 characters; `book` if empty).\n\n'
        'Contents:\n\n'
        '| File | Content |\n| --- | --- |\n'
-       '| `manifest.json` | `{schema_version: 1, format: "spintails-analysis", exported_at, book_id, artifact_count, '
+       '| `manifest.json` | `{schema_version: 2, format: "spintails-analysis", exported_at, book_id, artifact_count, '
        'external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, '
        'coordinate_system, notes}`. Start here. |\n'
        '| `README.txt` | Plain-text guide to the bundle. |\n'

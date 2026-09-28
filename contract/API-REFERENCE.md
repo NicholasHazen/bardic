@@ -1554,7 +1554,7 @@ Contents:
 
 | File | Content |
 | --- | --- |
-| `manifest.json` | `{schema_version: 1, format: "spintails-analysis", exported_at, book_id, artifact_count, external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, coordinate_system, notes}`. Start here. |
+| `manifest.json` | `{schema_version: 2, format: "spintails-analysis", exported_at, book_id, artifact_count, external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, coordinate_system, notes}`. Start here. |
 | `README.txt` | Plain-text guide to the bundle. |
 | `book.json` | The stored book document, including chapter text, passage IDs and stored take metadata (not the API presentation of `GET /api/books/{book_id}`). |
 | `story-map.json` | Same body as `GET /api/books/{book_id}/story-map`. |

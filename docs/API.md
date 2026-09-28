@@ -48,8 +48,8 @@ The reference groups operations by family:
 
 - **Binding.** The server binds to loopback by default. `BARDIC_LAN_NAME` opts into network binding and adds its `.local` name to the trusted hosts. `BARDIC_ALLOWED_HOSTS` adds exact names. See [operations](OPERATIONS.md).
 - **No authentication.** There is no account or token layer, including on the network. Anyone who can reach the port is the owner.
-- **Trusted hosts.** A request with an unexpected `Host` header is rejected before any route runs, with status 400 and the plain-text body `Invalid host header`. Apart from this and unexpected server errors (500, which have plain-text bodies), error bodies are JSON.
-- **Write guard.** A write (anything other than GET, HEAD or OPTIONS) is rejected with 403 `{"detail":"Cross-origin writes are not allowed"}` in either of two cases: the browser sends `Sec-Fetch-Site: cross-site`, or `Origin` names a host other than `Host`. A request without an `Origin` header, such as from `curl` or a native client, is accepted. There is no CORS support, so a browser page served from another origin cannot write.
+- **Trusted hosts.** A request with an unexpected `Host` header is rejected before any route runs, with status 400 and the plain-text body `Invalid host header`. Every other error body is JSON (see [Errors](#errors)).
+- **Write guard.** A write (anything other than GET, HEAD or OPTIONS) is rejected with 403 `{"detail":"Cross-origin writes are not allowed","code":"cross_origin_write"}` in either of two cases: the browser sends `Sec-Fetch-Site: cross-site`, or `Origin` names a host other than `Host`. A request without an `Origin` header, such as from `curl` or a native client, is accepted. There is no CORS support, so a browser page served from another origin cannot write.
 - **No caching, except covers.** Every `/api/` response carries `Cache-Control: no-store`, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The exception is a successful cover image (`getBookCover`): it has a strong `ETag`, answers a matching `If-None-Match` with 304, and may be cached indefinitely at its content-addressed `?v=` URL.
 - **Returned URLs.** Media URLs returned in responses (takes, clips, covers, auditions) are root-relative. Resolve them against the base URL you called.
 
@@ -62,7 +62,9 @@ Serving a client from another origin, or reaching the server beyond a trusted ne
 - **IDs.** IDs are opaque. URL-encode them, and obtain book, chapter, passage, character, series, job, session, artifact and voice IDs from responses. The diagnostics endpoint is the exception: it validates ID formats.
 - **Passage and segment** name the same source-level reader unit.
 - **Source offsets** (`start`, `end`) are chapter-local, zero-based Python Unicode code-point offsets with an exclusive end. They are not UTF-8 byte offsets or JavaScript UTF-16 indices. Canonical chapter text never changes.
-- **GET routes never start paid generation.** Some build local caches or indexes, record local resource measurements, or record analysis-pipeline decisions. The reference says so on each such operation.
+- **GET routes never start paid generation, and never create or change library records** (books, jobs, runs, artifacts, analysis-pipeline decisions or resource measurements). A few write a disposable derived cache that can be deleted without loss: the analysis census cache and the passage search index. The reference says so on each such operation. One-time work, such as schema setup and retaining legacy analysis artifacts, happens at server start.
+- **Paging.** Out-of-range `limit` and `offset` values are clamped to the allowed range, and the response reports the values used.
+- **Idempotent state changes.** Archiving or restoring a book or series that is already in that state succeeds without change.
 - **Private data.** Do not commit a captured status or other response, and do not put keys, private prose or account data into examples or fixtures. Use placeholder IDs and synthetic text.
 
 To inspect the live contract of a running server:
@@ -73,17 +75,28 @@ curl --fail --silent http://127.0.0.1:8765/openapi.json
 
 ## Errors
 
-An error body is JSON `{"detail": ...}`, except for the trusted-host rejection above. `detail` is an English sentence, or for 422 request validation a list of `{loc, msg, type, input, ctx}` issues. The diagnostics endpoint never echoes input; it returns the string `Invalid diagnostic event fields.` instead. Display `detail`, but do not parse it. There are no machine-readable error codes yet. Each operation in the reference lists the statuses it can return, and when.
+An error body is JSON `{"detail": ..., "code": ...}`, except for the trusted-host rejection above.
 
-| Status | Typical meaning |
+- **`code`** is a stable, lower snake_case identifier such as `book_not_found`, `job_active` or `plan_stale`. Branch on it. Each operation in the reference lists, per status, every code it returns (`x-bardic-error-codes`), and the test suite fails on an undocumented code. Codes that name the same condition are shared across operations. Treat an unknown code like any other failure with the same status.
+- **Global codes** can come from any operation: `validation_error` (422), `cross_origin_write` (403), `internal_error` (500, an unexpected server defect) and `route_not_found` (404 or 405 from the router).
+- **`detail`** is an English sentence, or for 422 request validation a list of `{loc, msg, type, input, ctx}` issues. The diagnostics POST never echoes input; it returns the string `Invalid diagnostic event fields.` instead. Display `detail`, but do not parse it. It describes the condition and never a UI location; a client adds its own hint, keyed on `code`.
+
+The server code lives in [`bardic/errors.py`](../bardic/errors.py). Route and service code raise its typed errors (`Invalid`, `NotFound`, `Conflict`, `TooLarge`, `RateLimited`, `ProviderFailure`, `Unavailable`). A bare `KeyError` that reaches the app is a defect and becomes a 500, never a 404.
+
+A status means the same thing on every operation:
+
+| Status | Meaning |
 | --- | --- |
-| `400` | The domain operation is invalid: unsupported model, missing key or device capability, stale series plan, archived target. The trusted-host rejection is also a 400, in plain text. |
+| `400` | The request is well-formed but not acceptable: an unsupported model, a missing key or device capability, a setting that does not apply, or an unknown ID **inside the request body** (for example `unknown_step`). The trusted-host rejection is also a 400, in plain text. |
 | `403` | A cross-origin or cross-site write was rejected. |
-| `404` | Missing book, item, job, session, artifact or voice; wrong book scope; unavailable audio. |
-| `409` | Busy book, conflicting in-flight operation, stale pipeline fingerprint or revision, or settings changed during a check. |
-| `413` | The uploaded file exceeds the import limit. An oversized import is refused before its body is read. |
-| `422` | Missing required field, wrong type, forbidden extra field, or a violated validation bound. |
-| `429`, `502`, `503` | Provider quota, provider failure, or a busy or unavailable self-hosted server or worker, where the operation documents them. |
+| `404` | A resource named **in the path** does not exist, or is not in this book. |
+| `409` | A conflict with current state: an active job (`job_active`) or series run (`series_run_active`), a stale previewed plan or revision (`plan_stale`), an archived book or series (`book_archived`, `series_archived`), or settings that changed during a check. |
+| `413` | The body is too large. An oversized import is refused before its body is read. |
+| `422` | A missing required field, wrong type, forbidden extra field, or a violated validation bound. |
+| `429` | A request or quota limit applies, for example the daily Gemini speech quota (`daily_quota_reached`, with `Retry-After`). |
+| `502` | A provider or self-hosted server failed or refused the request (`provider_error`). Checks whose purpose is to report a provider's state (account checks, model refresh, Breeze refresh) instead return 200 with the classified state. |
+| `503` | The server is shutting down (`shutting_down`); nothing was queued. |
+| `500` | An unexpected server defect (`internal_error`). |
 
 Validation of a provider's output is separate from HTTP status. HTTP 200 from a provider does not prove that its structured output passed evidence validation: check the pipeline attempt's `validation_state` and retained events.
 
@@ -118,7 +131,8 @@ Rules that apply to every `may_charge` operation:
 
 - **Ignore unknown response fields.** New fields are added without notice.
 - **Treat enumerated values as open sets.** Handle an unknown status, kind or state gracefully.
-- **Avoid internal fields.** Fields marked `x-bardic-internal` are storage bookkeeping (edit tracking, fingerprints, server paths) that reach the wire today. Do not depend on them; a later version may remove them.
+- **Avoid internal fields.** A field marked `x-bardic-internal` is bookkeeping that a later version may remove. Contract 0.2.0 removed every such field (edit tracking, recipe fingerprints, server paths, process IDs), and it has none.
+- **Audio objects share one core.** Every object that points at playable audio has `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`, which may be null when unknown, plus fields specific to its kind.
 - **Operation IDs are stable.** Renaming one is a breaking change.
 - **Generate with defaults optional.** A request field with a documented default may be omitted. Configure generators accordingly: `defaultNonNullable: false` for openapi-typescript, which `npm run contract:codegen` uses and verifies. Response schemas carry no defaults; `required` states which response fields are always present.
 - **Pin the contract version.** `info.version` follows the rules in [`contract/CHANGELOG.md`](../contract/CHANGELOG.md). Pin it, and read the changelog before upgrading.

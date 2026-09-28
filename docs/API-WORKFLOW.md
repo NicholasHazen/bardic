@@ -28,7 +28,7 @@ The Python server produces the contract from [`bardic/apispec/`](../bardic/apisp
 
 | Check | Where | Fails when |
 | --- | --- | --- |
-| Response conformance | [`tests/conftest.py`](../tests/conftest.py) wraps every `TestClient` send, including streams | Any of the following, for any `/api` response a test receives: <ul><li>A JSON body does not validate **strictly** against its operation's view; a string where a number or boolean belongs is a failure.</li><li>A field appears that no view declares, at any depth.</li><li>A success status other than 200 is returned, or 206 on a range-capable file.</li><li>An error status is not documented. The exceptions are 403 on writes (the write guard), FastAPI's own 422 validation list and 416 on range-capable files.</li><li>A binary response has the wrong media type.</li><li>A path matches no operation.</li></ul> |
+| Response conformance | [`tests/conftest.py`](../tests/conftest.py) wraps every `TestClient` send, including streams | Any of the following, for any `/api` response a test receives: <ul><li>A JSON body does not validate **strictly** against its operation's view; a string where a number or boolean belongs is a failure.</li><li>A field appears that no view declares, at any depth.</li><li>A success status other than 200 is returned, or 206 on a range-capable file, or 304 on a conditional one.</li><li>An error status is not documented. The exceptions are 403 on writes (the write guard), FastAPI's own 422 validation list and 416 on range-capable files.</li><li>An error body's `code` is not listed for that status (global codes excepted).</li><li>A binary response has the wrong media type.</li><li>A path matches no operation.</li></ul> |
 | Operation coverage | `tests/conftest.py`, at the end of an unfiltered full run | Some operation never received a 2xx response in the whole suite. |
 | Complete registry | [`tests/test_contract.py`](../tests/test_contract.py) | Any of: a route without an `op(...)` entry; an entry without a route; an `/api` route hidden with `include_in_schema=False`. |
 | Everything described | `tests/test_contract.py` | A schema, schema field or parameter has no description. |
@@ -38,7 +38,7 @@ The Python server produces the contract from [`bardic/apispec/`](../bardic/apisp
 
 **What is not enforced.** A reviewer has to check these:
 
-- **Untested states.** Responses are validated only for states some test produces. A field a view declares but no test ever produces is unverified, and so is an error status no test triggers.
+- **Untested states.** Responses are validated only for states some test produces. A field a view declares but no test ever produces is unverified, and so is an error status or code no test triggers. Trace the raises an operation can reach when you document its codes.
 - **Removed fields.** A field declared with a default (optional) can disappear from responses without a failure. Declare fields that are always sent without a default, as `X | None = Field(description=...)` if nullable, so that removing them fails.
 - **Untyped values.** `Any` and `dict[str, Any]` values are not checked below their top level.
 - **Change classification.** The generator forces a new version for every change, but only a person decides whether the change is breaking.
@@ -48,9 +48,9 @@ The Python server produces the contract from [`bardic/apispec/`](../bardic/apisp
 1. **Find the entry.** Search `bardic/apispec/` for the path. For a new route, add an `op(...)` to the matching family module, or add a family (register it in `FAMILIES`, and its tag in `TAGS`, in `spec.py`).
 2. **Classify the change** using the [versioning rules](../contract/CHANGELOG.md#versioning-rules): additive or breaking. A breaking change needs a stated reason and a note on what clients must change. Prefer an additive alternative, such as a new field alongside the old one, followed later by a deprecation.
 3. **Change the code and the description together:**
-   - **Response:** add, change or remove the `View` fields, each with a `Field(description=...)` that states its meaning, units, format and what null or absence means. Bookkeeping that clients should not use is declared with `internal(...)`.
+   - **Response:** add, change or remove the `View` fields, each with a `Field(description=...)` that states its meaning, units, format and what null or absence means. Do not send storage bookkeeping (edit tracking, recipe hashes, server paths); strip it where the response is presented. `internal(...)` exists only for a field that must stay on the wire temporarily.
    - **Request:** add or change the DTO field with its `Field` validation, and describe it in the family's `REQUEST_DOCS`.
-   - **Errors:** list every new status in `errors`, with when it happens.
+   - **Errors:** raise a typed error from [`bardic/errors.py`](../bardic/errors.py), never `HTTPException`. In the operation's `errors`, map each status to every code it can return and when: `errors={409: {'job_active': 'A job is working on this book.'}}`. Reuse an existing code for the same condition. Follow the status meanings in [API.md](API.md#errors). A new code is additive; changing or removing one is breaking.
    - **Behavior:** update the description. Say whether it queues a job, whether it can charge (`cost`), and any caching, idempotency, preconditions or side effects.
 4. **Test it.** At least one test must receive the operation's 2xx response. Test any error status a client might act on. Tests are offline, use `tmp_path`, synthetic text and mocked providers ([AGENTS.md](../AGENTS.md)).
 5. **Regenerate:** `uv run --frozen python -m bardic.apispec`. Read the diff of `contract/openapi.json` and `contract/API-REFERENCE.md`. It should contain exactly the change you intended.

@@ -107,7 +107,7 @@ def test_analysis_export_needs_no_audio_and_contains_history_and_transitive_cros
                 'references.json', 'series.json', 'analysis-attempts.json', 'pipeline-events.jsonl', 'README.txt'} <= names
         assert not any(name.endswith(('.wav', '.mp3', '.m4b')) for name in names)
         manifest = json.loads(archive.read('manifest.json'))
-        assert manifest['schema_version'] == 1 and manifest['format'] == 'spintails-analysis'
+        assert manifest['schema_version'] == 2 and manifest['format'] == 'spintails-analysis'
         assert manifest['source_text_included'] is True and manifest['audio_files_included'] is False
         assert manifest['word_alignment'] is False
         assert set(manifest['external_book_dependencies']) == {previous['id'], earliest['id']}

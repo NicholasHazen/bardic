@@ -62,7 +62,7 @@ The project is now **Bardic**, with source in `bardic/` and the preferred launch
 - Shell values take precedence over `.env` even across old/new aliases. Within the same source, the `BARDIC_` setting takes precedence over its `SPINTAILS_` alias. For example, a shell `SPINTAILS_DATA_DIR` overrides a file `BARDIC_DATA_DIR`, while two file settings select `BARDIC_DATA_DIR`.
 - An explicit data-directory setting selects that path. Otherwise, use `.bardic/` relative to the working directory; if it is absent and `.spintails/` is an existing directory, reuse `.spintails/` in place. If both exist, `.bardic/` is selected. No directory is automatically copied, merged, renamed or removed. Set `BARDIC_DATA_DIR` explicitly when both libraries exist and you want the older one.
 - Browser preferences use `bardic:` keys for new writes, with fallback reads from existing `spintails:` keys when no new value exists. Keep the same browser origin to retain reading position and listening preferences; changing ports creates a different origin.
-- Portable analysis exports retain the version-1 `spintails-analysis` format identifier. Existing schema, source coordinates, artifact identities and audio files retain their contracts.
+- Portable analysis exports retain the `spintails-analysis` format identifier (schema version 2 since contract 0.2.0, which changed only the attempts file). Existing schema, source coordinates, artifact identities and audio files retain their contracts.
 
 Use the regular full-library backup procedure before any separate data move or repair. A renamed display/package alone is not a reason to alter retained source or paid outputs.
 
