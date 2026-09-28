@@ -157,7 +157,7 @@
       <p class="performance-summary" role="status">${escape(summary)}</p>
       ${quota ? `<p class="field-help">${escape(quota)}</p>` : ''}
       ${(result?.notes || []).map(note => `<p class="field-help">${escape(note)}</p>`).join('')}
-      ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem)}</p>`).join('')}
+      ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem.detail)}${HINTS[problem.code] ? ` ${escape(HINTS[problem.code])}` : ''}</p>`).join('')}
       ${panel.formError ? `<p class="inline-error" role="alert">${escape(panel.formError)}</p>` : ''}
       <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : 'Create performance'}</button></div>
     </form>`;

@@ -3589,6 +3589,19 @@
               "performance_not_found"
             ]
           },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived"
+            ]
+          },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
             "content": {
@@ -3600,7 +3613,7 @@
             }
           }
         },
-        "description": "Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).",
+        "description": "Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while the book is archived. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).",
         "tags": [
           "Performances"
         ],
@@ -16002,9 +16015,9 @@
             "type": "array"
           },
           "problems": {
-            "description": "Blocking conditions, as sentences that state the condition; create refuses (400, with the first problem's code) while any exist.",
+            "description": "Blocking conditions, each with a stable `code` and a `detail` sentence; empty when nothing blocks. Create refuses (400, with the first problem's code) while any exist.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/PerformanceProblem"
             },
             "type": "array"
           },
@@ -16048,6 +16061,25 @@
           "narrator_label"
         ],
         "title": "PerformancePlan",
+        "type": "object"
+      },
+      "PerformanceProblem": {
+        "description": "One blocking condition of a performance plan.",
+        "properties": {
+          "code": {
+            "description": "Stable error code of the condition, the same code `createPerformance` refuses with when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, `device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or `narrator_voice_missing` (cast mode). Key a fix-it hint on it.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "A sentence that states the condition, for people.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "PerformanceProblem",
         "type": "object"
       },
       "PerformanceProgress": {

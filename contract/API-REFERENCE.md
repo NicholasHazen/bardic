@@ -2122,7 +2122,7 @@ The performance with its latest job summary and readiness. Local read with no st
 
 **Rename or archive a performance** · operation `updatePerformance` · cost `none`
 
-Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
+Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while the book is archived. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2137,6 +2137,7 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 | 400 | [Error](#schema-error) | - `performance_name_required`: `name` is only whitespace. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getperformanceaudio"></a>
@@ -4413,10 +4414,20 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `requests_estimate` | integer | yes | Gemini simple: planned full-size chunk requests; otherwise passages to generate. |
 | `expected_seconds` | number | yes | Missing text at 14 code points per second plus ready durations. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Readiness per requested chapter, in book order. |
-| `problems` | list of string | yes | Blocking conditions, as sentences that state the condition; create refuses (400, with the first problem's code) while any exist. |
+| `problems` | list of [PerformanceProblem](#schema-performanceproblem) | yes | Blocking conditions, each with a stable `code` and a `detail` sentence; empty when nothing blocks. Create refuses (400, with the first problem's code) while any exist. |
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
+
+<a id="schema-performanceproblem"></a>
+### PerformanceProblem
+
+One blocking condition of a performance plan.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | Stable error code of the condition, the same code `createPerformance` refuses with when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, `device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or `narrator_voice_missing` (cast mode). Key a fix-it hint on it. |
+| `detail` | string | yes | A sentence that states the condition, for people. |
 
 <a id="schema-performanceprogress"></a>
 ### PerformanceProgress

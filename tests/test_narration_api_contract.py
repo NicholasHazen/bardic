@@ -269,3 +269,52 @@ def test_narration_and_voice_messages_name_no_ui_location():
                     and location.search(token.string):
                 found.append(f'{name}:{token.start[0]}: {token.string}')
     assert found == []
+
+
+# Damaged stored data -------------------------------------------------------------
+
+def test_listen_skips_a_damaged_reuse_copy_instead_of_failing_the_request(client, renderer):
+    """A damaged asset in the target book is damaged stored data, not a bad request: reuse is skipped."""
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    first = wait_job(client, begin(client, book)['job']['id'])['audio']
+    other = import_text(client, book['segments'][0]['text'])
+    damaged = runtime.store.root / 'listen-audio' / other['id'] / f"{first['asset_id']}.wav"
+    damaged.parent.mkdir(parents=True, exist_ok=True)
+    damaged.write_bytes(b'not the retained take')
+    response = client.post(f"/api/books/{other['id']}/listen", json={
+        'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'segment_id': other['segments'][0]['id']})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['cached'] is False and 'job' in body
+    finished = wait_job(client, body['job']['id'])
+    assert finished['status'] == 'completed' and len(calls) == 2
+    assert finished['audio']['asset_id'] != first['asset_id'] and 'reuse' not in finished['audio']
+    assert damaged.read_bytes() == b'not the retained take', 'a retained file is never overwritten'
+
+
+def test_chapter_listening_on_a_passage_with_a_dangling_chapter_is_a_server_defect(client):
+    store = client.app.state.runtime.store
+    book = store.book(import_text(client)['id'])
+    book['segments'][0]['chapter_id'] = 'chapter_missing'
+    store.save_book(book)
+    body = {'segment_id': book['segments'][0]['id']}
+    import conftest  # its contract wrapper rejects every 500; these expect one, so they are sent unchecked
+    for path in ('/listen/chapter/preview', '/listen/chapter'):
+        response = conftest._send(client, client.build_request('POST', f"/api/books/{book['id']}{path}", json=body))
+        assert response.status_code == 500 and response.json()['code'] == 'internal_error', response.text
+
+
+def test_cancel_skips_a_dangling_child_job_id(client):
+    store = client.app.state.runtime.store
+    book = import_text(client)
+    child = store.create_job(book['id'], 'analyze')
+    parent = store.create_job('series:s1', 'series')
+    store.update_job(parent['id'], status='running', book_ids=[book['id']],
+                     child_job_ids=['0' * 32, child['id']])
+    response = client.post(f"/api/jobs/{parent['id']}/cancel")
+    assert response.status_code == 200, response.text
+    assert response.json()['cancel_requested'] is True
+    assert store.job(child['id'])['status'] == 'cancelled'

@@ -1736,7 +1736,10 @@ def create_app(data_dir: Path | None = None):
                 return public_job(job)
             if job['kind'] == 'series':
                 for identifier in job.get('child_job_ids', []):
-                    child = runtime.store.job(identifier)
+                    try:
+                        child = runtime.store.job(identifier)
+                    except KeyError:
+                        continue  # A dangling child ID does not stop the parent from being cancelled.
                     if child['status'] == 'queued':
                         runtime.store.update_job(identifier, status='cancelled', cancel_requested=True,
                                                  message='Series cancelled before this book started.')
@@ -2094,7 +2097,11 @@ def create_app(data_dir: Path | None = None):
         segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
         if segment is None:
             raise Invalid('unknown_passage', 'No passage with this ID is in the book.')
-        chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
+        try:
+            chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
+        except NotFound:
+            # The passage came from this book, so its chapter must exist: damaged stored data (500).
+            raise KeyError(segment['chapter_id']) from None  # a bare KeyError is a 500 internal_error
         chosen = {**runtime.preferences['listen_chunking'], **(body.chunking.model_dump(exclude_none=True) if body.chunking else {})}
         if body.intent == 'queue' and not (body.chunking and body.chunking.ramp_seconds is not None):
             # Queued work does not need a quick first clip; every request is full size.
@@ -2258,7 +2265,7 @@ def create_app(data_dir: Path | None = None):
         from . import performances
         runtime = rt(request)
         repository = performances.PerformanceRepository(runtime.store)
-        runtime.store.book(book_id)
+        require_active_book(runtime.store, book_id)
         repository.get(book_id, performance_id)
         fields = body.model_dump(exclude_none=True)
         if 'name' in fields:

@@ -17,7 +17,7 @@ const book = {id:'book-q',title:'The Lantern',chapters:[{id:'front',title:'Title
 const listed = [{id:'pf_1',name:'Evening',mode:'simple',chapter_ids:['c1'],narrator_label:'Samantha · Device',
   job:{id:'job-1',status:'cancelled'},progress:{passages_total:2,passages_ready:1,seconds_ready:4,chapters:[]}}];
 
-function environment() {
+function environment(preview = {}) {
   const calls = [], container = new Container(), played = [], jobs = [];
   const scope = {window:{},document:{activeElement:null},CSS:{escape:value => value},setTimeout:fn => setImmediate(fn),clearTimeout:() => {},
     fetch:async (url, options = {}) => {
@@ -25,7 +25,7 @@ function environment() {
       calls.push(call);
       let data = {};
       if (url === '/api/books/book-q/performances' && call.method === 'GET') data = {performances:listed};
-      else if (url.endsWith('/performances/preview')) data = {passages_total:2,passages_ready:0,passages_to_generate:2,requests_estimate:2,expected_seconds:60,chapters:[],problems:[],notes:[],quota:null};
+      else if (url.endsWith('/performances/preview')) data = {passages_total:2,passages_ready:0,passages_to_generate:2,requests_estimate:2,expected_seconds:60,chapters:[],problems:[],notes:[],quota:null,...preview};
       else if (url === '/api/books/book-q/performances') data = {performance:{...listed[0],id:'pf_2'},job:{id:'job-2',status:'queued'}};
       else if (url.endsWith('/prepare')) data = {performance:listed[0],job:{id:'job-3',status:'queued'}};
       return {ok:true,status:200,json:async () => data};
@@ -81,4 +81,17 @@ test('the new-performance form previews locally and creates with the chosen narr
   assert.equal(env.jobs.at(-1).id,'job-2');
   assert.match(env.container.innerHTML,/New performance/,'returns to the list after creating');
   assert.ok(!env.calls.some(call => call.method === 'POST' && call.url.includes('/listen')),'the panel never requests narration directly');
+});
+
+test('a preview problem shows its detail and the hint keyed on its code, and blocks creating', async () => {
+  const env = environment({problems:[{code:'gemini_key_missing',detail:'No Gemini API key is configured.'},
+                                     {code:'something_new',detail:'A condition without a hint.'}]});
+  env.api.render(env.container,book,env.options);
+  await settle();
+  env.click({performanceAction:'new'});
+  await settle();
+  assert.match(env.container.innerHTML,/No Gemini API key is configured\. Add a Gemini API key in Settings, or choose another narrator\./);
+  assert.match(env.container.innerHTML,/<p class="inline-error">A condition without a hint\.<\/p>/);
+  assert.doesNotMatch(env.container.innerHTML,/\[object Object\]/);
+  assert.match(env.container.innerHTML,/<button type="submit" class="button primary" disabled/);
 });
