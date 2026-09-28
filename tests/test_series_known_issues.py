@@ -174,3 +174,14 @@ def test_completed_series_run_still_starts_after_the_fixes(client, monkeypatch):
     started = client.post(url + '/process', json={'provider': 'openai', 'expected_plan_fingerprint': plan['plan_fingerprint']})
     assert started.status_code == 200, started.text
     assert wait_job(client, started.json()['id'])['status'] == 'completed'
+
+
+def test_series_runs_list_existing_children_when_a_child_id_dangles(client):  # noqa: F811
+    series, books = collection(client, 1)
+    store = client.app.state.runtime.store
+    child = store.create_job(books[0]['id'], 'analyze')
+    parent = active_series_run(client, series['id'])
+    store.update_job(parent['id'], status='completed', book_ids=[books[0]['id']], child_job_ids=['0' * 32, child['id']])
+    runs = client.get(f"/api/series/{series['id']}/runs")
+    assert runs.status_code == 200, runs.text
+    assert [c['id'] for c in runs.json()['runs'][0]['children']] == [child['id']]

@@ -53,22 +53,29 @@ def _hash(value):
 
 
 # Optional public extras of a single-passage take, copied when the stored record has them.
-_PASSAGE_EXTRAS = ('reuse', 'resource_usage', 'provider_timing', 'breeze', 'voice_revision')
+# Provider usage is served by the resources routes, not with the audio.
+_PASSAGE_EXTRAS = ('provider_timing', 'breeze', 'voice_revision')
+# Public fields of a reuse pointer; its recipe and producer fingerprint stay in storage.
+_REUSE_FIELDS = ('schema_version', 'take_id', 'book_id', 'session_id', 'segment_id')
 
 
 def present_take(book_id, metadata):
     """The public audio object (contract ``ListeningPassageAudio``) for a retained take.
 
-    A whitelist: recipe hashes, source anchors, lookup keys and any transient
-    marker stay in storage. It is idempotent, so it also cleans an audio object
-    presented by an earlier version (for example inside a stored job).
+    A whitelist: recipe hashes (also those of a reuse pointer), provider usage,
+    source anchors, lookup keys and any transient marker stay in storage. It is
+    idempotent, so it also cleans an audio object presented by an earlier
+    version (for example inside a stored job).
     """
+    reuse = metadata.get('reuse')
+    extras = {key: metadata[key] for key in _PASSAGE_EXTRAS if key in metadata}
+    if isinstance(reuse, dict):
+        extras['reuse'] = {key: reuse.get(key) for key in _REUSE_FIELDS}
     return audio_ref(f'/api/books/{quote(book_id, safe="")}/listen/audio/{metadata["asset_id"]}',
                      asset_id=metadata['asset_id'], duration=metadata.get('duration'),
                      provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
                      created_at=metadata.get('created_at'), session_id=metadata.get('session_id'),
-                     segment_id=metadata.get('segment_id'),
-                     **{key: metadata[key] for key in _PASSAGE_EXTRAS if key in metadata})
+                     segment_id=metadata.get('segment_id'), **extras)
 
 
 def present_clip(book_id, clip):
@@ -329,7 +336,14 @@ class ListeningRepository:
                 duration = self._validated_asset(source_book_id, original['asset_id'])
             except (OSError, EOFError, ValueError, KeyError):
                 continue
-            self._copy_asset(source_book_id, book_id, original['asset_id'])
+            try:
+                self._copy_asset(source_book_id, book_id, original['asset_id'])
+            except (EOFError, ValueError):
+                # The source changed while copying, or this book already holds a damaged file
+                # under that asset ID (never overwritten). Damaged stored data is skipped like
+                # a damaged source, so the passage can be generated. An OSError (for example a
+                # full disk) still propagates: it must not start a paid fallback.
+                continue
             # The producer fingerprint remains the real original fingerprint.
             # The target source-bound recipe is recorded in source_anchor;
             # reuse explicitly points to the actual retained input take.

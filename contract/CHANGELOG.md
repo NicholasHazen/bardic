@@ -23,7 +23,7 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
 ## 0.2.0 — 2026-09-28
-<!-- contract-sha256: eb2e550d41bf9131b89142d29954ddafb90183fddd866e21b4343e9cb473460e -->
+<!-- contract-sha256: 07db8d051e0f51b00e8f34a123ca1a1824a55fe5cc3c3e3e4c5a08630076a1be -->
 
 **BREAKING.** Resolves every known issue recorded with 0.1.0 ([issue #17](https://github.com/NicholasHazen/bardic/issues/17); decisions in [docs/API-KNOWN-ISSUES.md](../docs/API-KNOWN-ISSUES.md)). Regenerate clients and review each section below. Stored libraries need no migration: old stored shapes are read and presented in the new form.
 
@@ -43,7 +43,7 @@ The generator records the version but does not classify the change: the author a
 ### Shapes: one form per concept
 
 - **BREAKING** Audio objects. Every object that points at playable audio (`BookTake`, `ListeningPassageAudio`, `ListeningChunkClipAudio`, `PerformanceCastAudio`, `VoicePreviewAudio`, `LibraryVoiceAudition`, `VoiceDraftCandidateAudio`) has the same core: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`, always present and nullable when unknown.
-  - Removed from audio objects: `available`, `mode`, `cache_hit`, `performance_id`, `fingerprint`, `recipe`, `synthesis_key`, `source_anchor`, and `BookTake.resource_usage`. A present audio object is playable. To detect a new take, compare `url` or `asset_id`. `cached` on the POST envelope reports a cache hit.
+  - Removed from audio objects: `available`, `mode`, `cache_hit`, `performance_id`, `fingerprint`, `recipe`, `synthesis_key`, `source_anchor` and `resource_usage` (usage is served by the resources routes), and `VoicePreviewAudio.schema_version`. The `ListeningReuse` pointer keeps `schema_version`, `take_id`, `book_id`, `session_id` and `segment_id`, and drops `recipe` and `fingerprint`. The `AudioTakeUsage` schema is removed. A present audio object is playable. To detect a new take, compare `url` or `asset_id`. `cached` on the POST envelope reports a cache hit.
   - `LibraryVoiceVersion.audition_url` (string) became `audition` (an audio object, always present). `VoiceDraftCandidate.audio_url` became `audio` (an audio object, or null).
   - Removed schemas: `PerformancePassageAudio`, `PerformanceChunkClipAudio` (performance audio uses the listening schemas), `ListeningSourceAnchor` and `BookTakeVoiceLibrary` (use `AudioTakeVoiceLibrary`).
   - Unions of audio objects are `anyOf`, not `oneOf`, because their variants are open objects that can overlap.
@@ -60,7 +60,10 @@ The generator records the version but does not classify the change: the author a
   - search `results` (use `items`);
   - library `passage_count` (use `segment_count`);
   - pipeline provider `has_api_key` (use `configured`);
-  - `Status.analysis_models` (use `model_catalogs.gemini.models`).
+  - `Status.analysis_models` (use `model_catalogs.gemini.models`);
+  - `Status.has_api_key` (use `analysis_providers[id=gemini].has_api_key`) and `Status.analysis_model` (use `analysis_models_by_provider.gemini`);
+  - the `updateSettings` request aliases `api_key` and `analysis_model`, which are now rejected with 422 (send `api_keys.gemini` and `analysis_models_by_provider.gemini`); the codes `gemini_key_conflict` and `gemini_model_conflict` are gone.
+  - `AnalysisProviderStatus.available` and `has_api_key` both stay: they differ for `local`, which is available without a key.
 
 ### Bookkeeping removed from the wire
 
@@ -123,6 +126,11 @@ The generator records the version but does not classify the change: the author a
 - **BREAKING** `deleteLibraryVoice` records each provider deletion. After a partial failure (502), a retry resumes, and `server_deleted` lists what was removed.
 - **BREAKING** `saveVoiceDraft` and `cloneBreezeVoice` validate everything before uploading a server voice. If the library record still fails, the upload is removed. New codes: `voice_name_invalid`, `base_voice_deleted`, `candidate_audio_missing`, `recording_too_large` (413).
 - Single-voice responses report checked `server_state` values, from the saved provider checks.
+- **BREAKING** `PerformancePlan.problems` is a list of `{code, detail}` objects (`PerformanceProblem`), not sentences, so clients can offer a fix for each code. `updatePerformance` on an archived book is 409 `book_archived`.
+- `refreshBreeze` imports server voice names longer than the library's 100-character limit by shortening them, instead of failing with an undocumented 400. A Breeze health or voice-list body that is not a JSON object is reported as `state: "error"`, not a 500.
+- `listenToPassage` skips an equivalent retained take whose copy into this book fails its integrity check, and generates the passage instead of failing.
+- `cancelJob` and `listSeriesRuns` ignore a missing child job ID. A dangling listening session or chapter reference in stored data is a 500 `internal_error`, not a 404.
+- Job errors, voice warnings and Breeze and Gemini error details describe the condition and no longer name UI locations.
 
 ### System, settings, jobs and diagnostics
 

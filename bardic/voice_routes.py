@@ -28,6 +28,7 @@ from .audio import BREEZE_MODEL, AudioError, UncertainRequest, _VOICE_NAMES, lis
 from .audio_refs import audio_ref
 from .errors import ApiError, Conflict, Invalid, NotFound, ProviderFailure, TooLarge
 from .store import now
+from .voice_library import MAX_DESCRIPTION, MAX_NAME
 from .voice_previews import DEMO_TEXT, _excerpt
 
 ACTIVE = {"queued", "running"}
@@ -183,7 +184,7 @@ def register(app, rt, edit):
             warnings.append("Made with a different Google API key, so this project cannot use it.")
         designed_ok = voice["provider"] != "gemini" or runtime.preferences["tts_model"] in gemini_voices.DESIGN_MODELS
         if not designed_ok:
-            warnings.append("The selected Gemini speech model accepts only built-in voices; switch to a 3.8 model in Settings.")
+            warnings.append("The selected Gemini speech model accepts only built-in voices, so this voice cannot narrate until a 3.8 speech model is selected.")
         return {"id": voice["id"], "provider": voice["provider"], "name": voice["name"], "description": voice["description"],
                 "origin": voice["origin"], "current_version": voice["current_version"],
                 "is_default": defaults.get(voice["provider"]) == voice["id"], "deleted": bool(voice.get("deleted_at")),
@@ -841,7 +842,9 @@ def import_breeze_voices(runtime, set_default) -> None:
         except AudioError:
             audition = None
         pin = breeze.pin(view, server["id"])
-        runtime.voices.create("breeze", name=server["name"], description=server["description"], origin="imported",
+        # A server name is not user input: fit it to the library limit (code points) instead of refusing it.
+        name = server["name"][:MAX_NAME].strip() or server["id"]
+        runtime.voices.create("breeze", name=name, description=server["description"][:MAX_DESCRIPTION], origin="imported",
                               version={"provider_voice_id": pin["id"], "revision": pin["revision"], "seed": pin["seed"],
                                        "made": "imported", "recipe": {"description": server["description"]},
                                        "audition": audition})

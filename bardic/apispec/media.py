@@ -37,24 +37,6 @@ class AudioRef(View):
     voice: str | None = Field(description='Provider voice actually used, or null when unknown.')
     created_at: str | None = Field(description='ISO 8601 UTC time the audio was retained, or null when it was not recorded.')
 
-class AudioTakeUsage(View):
-    """Provider usage measured for the request that produced a take.
-
-    Counts are reported by the provider, never inferred from audio length.
-    Absent or null values are unknown, not zero. Test synthesizers and older
-    takes may carry only some of these fields.
-    """
-    input_tokens: int | None = Field(None, description='Reported input tokens (Gemini).')
-    output_tokens: int | None = Field(None, description='Reported output (audio) tokens (Gemini).')
-    cached_input_tokens: int | None = Field(None, description='Reported cached input tokens (Gemini).')
-    usage_source: str | None = Field(None, description='Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`.')
-    estimated_cost_usd: float | None = Field(None, description='Standard paid-tier list-price estimate in USD, or null when it cannot be priced. '
-                                             'Not an account balance or bill. 0 for self-hosted Breeze.')
-    cost_basis: str | None = Field(None, description='How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`.')
-    price_as_of: str | None = Field(None, description='Date of the price table used (Gemini).')
-    price_source: str | None = Field(None, description='Source of the price table (Gemini).')
-    characters: int | None = Field(None, description='Characters the Breeze server reported synthesizing.')
-
 class AudioTakeSentenceSpan(View):
     """One provider-reported sentence inside a take."""
     char_start: int = Field(description='Start code-point offset into the text that was sent (not chapter coordinates).')
@@ -88,8 +70,6 @@ class ListeningReuse(View):
     book_id: str = Field(description='Book of the original take (reuse can cross books).')
     session_id: str = Field(description='Listening session ID (64 hex) of the original take; may differ from the current session.')
     segment_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
-    recipe: str = Field(description='Source-bound recipe hash of the original take.')
-    fingerprint: str = Field(description='Producer fingerprint of the original take.')
 
 class ListeningPassageAudio(AudioRef):
     """A retained single-passage simple-listening take, ready to play.
@@ -106,7 +86,6 @@ class ListeningPassageAudio(AudioRef):
     session_id: str = Field(description='Listening session the take belongs to.')
     segment_id: str = Field(description='Passage the take narrates.')
     reuse: ListeningReuse | None = Field(None, description='Present when the bytes were copied from an equivalent retained take instead of being generated.')
-    resource_usage: AudioTakeUsage | None = Field(None, description='Usage of the generating request; absent for device takes and for reused bytes.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null when the server timing did not validate.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision that performed the take.')
@@ -237,9 +216,7 @@ class VoicePreviewAudio(AudioRef):
     voice: str = Field(description='Provider voice actually used.')
     created_at: str = Field(description='ISO 8601 UTC time the take was retained.')
     preview_id: str = Field(description='ID of the audition request (`VoicePreview.id`) this take was retained for.')
-    schema_version: int = Field(description='Take record format version (1).')
     reuse: VoicePreviewReuse | None = Field(None, description='Present when bytes were reused from an equivalent audition (for example after a character rename).')
-    resource_usage: AudioTakeUsage | None = Field(None, description='Usage of the generating request; absent for device takes and reused bytes.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision used.')

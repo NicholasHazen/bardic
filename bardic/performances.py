@@ -251,9 +251,20 @@ def refuse(problems: list[tuple[str, str]]) -> Invalid:
 
 # Ready audio ------------------------------------------------------------------
 
+def stored_session(repository, book_id: str, session_id: str) -> dict:
+    """The listening session a performance record pinned. Sessions are never deleted, so a missing one
+    is damaged stored data (a server defect, 500), not a resource the request named."""
+    try:
+        return repository.get_session(book_id, session_id)
+    except NotFound:
+        raise KeyError(session_id) from None  # a bare KeyError is a 500 internal_error
+
+
 def simple_ready(store, book_id: str, session_id: str, wanted: set[str]) -> dict[str, dict]:
     """Session audio for the wanted passages that matches their current source. Local, no WAV rereads."""
-    takes = ListeningRepository(store).takes(book_id, session_id)['takes']
+    repository = ListeningRepository(store)
+    stored_session(repository, book_id, session_id)
+    takes = repository.takes(book_id, session_id)['takes']
     return {take['segment_id']: take['audio'] for take in takes if take['segment_id'] in wanted}
 
 
@@ -369,7 +380,7 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
 
     ``record`` plans the resume of an existing performance with its pinned
     session or cast snapshot. Invalid requests raise ``Invalid``; conditions the
-    user can fix are returned as ``problems``: (error code, sentence) pairs, public as sentences.
+    user can fix are returned as ``problems``: (error code, sentence) pairs, public as ``{code, detail}``.
     """
     store = runtime.store
     book = store.book(book_id)
@@ -395,7 +406,7 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
     if mode == 'simple':
         repository = ListeningRepository(store)
         if record:
-            session = repository.get_session(book_id, record['session_id'])
+            session = stored_session(repository, book_id, record['session_id'])
         else:
             try:
                 voice, pinned = runtime.narrator_choice(provider, request.get('voice'))
@@ -478,7 +489,7 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         'chapters': [{'id': chapter['id'], 'title': chapter.get('title', ''),
                       'passages_total': len(passages[chapter['id']]),
                       'passages_ready': len(passages[chapter['id']]) - len(missing[chapter['id']])} for chapter in chapters],
-        'problems': [text for _, text in problems], 'notes': notes, 'quota': quota,
+        'problems': [{'code': code, 'detail': text} for code, text in problems], 'notes': notes, 'quota': quota,
         'narrator_label': narrator_label(runtime, record or label_record),
     }
     return {'public': public, 'problems': problems, 'book': book, 'session': session, 'snapshot': snapshot,
@@ -578,7 +589,7 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
     store = runtime.store
     book_id, provider = record['book_id'], record['provider']
     repository = ListeningRepository(store)
-    session = repository.get_session(book_id, record['session_id'])
+    session = stored_session(repository, book_id, record['session_id'])
     book = store.book(book_id)
     chapters, passages = selection(book, record['chapter_ids'])
     wanted = {segment['id'] for segments in passages.values() for segment in segments}

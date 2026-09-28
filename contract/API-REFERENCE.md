@@ -192,9 +192,9 @@ After a `ready` check, every usable server voice that no library voice version u
 
 Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.
 
-**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.
+**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.
 
-**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).
+**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).
 
 **Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.
 
@@ -203,7 +203,7 @@ Request body (`application/json`): [SettingsRequest](#schema-settingsrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Status](#schema-status) | Success. |
-| 400 | [Error](#schema-error) | - `gemini_key_conflict`: `api_key` and `api_keys.gemini` are both sent with different values. - `gemini_model_conflict`: `analysis_model` and `analysis_models_by_provider.gemini` are both sent with different values. - `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`. - `model_id_invalid`: An analysis or preprocessing model ID is malformed. - `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`. - `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`. - `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials. - `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`. - `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials. |
+| 400 | [Error](#schema-error) | - `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`. - `model_id_invalid`: An analysis or preprocessing model ID is malformed. - `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`. - `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`. - `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials. - `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`. - `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials. |
 | 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
@@ -1922,7 +1922,9 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound take whose `reuse` points at the original take. A cache hit
+   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate
+   whose copy fails its integrity check (for example this book already holds a damaged file under that
+   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit
    records a cached resource operation (stage `simple_listen`); it may also add the take to the
    equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
@@ -2227,7 +2229,7 @@ The performance with its latest job summary and readiness. Local read with no st
 
 **Rename or archive a performance** · operation `updatePerformance` · cost `none`
 
-Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
+Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while the book is archived. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2242,6 +2244,7 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 | 400 | [Error](#schema-error) | - `performance_name_required`: `name` is only whitespace. |
 | 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
@@ -2968,8 +2971,8 @@ An analysis provider and whether it is usable.
 | --- | --- | --- | --- |
 | `id` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Analysis provider ID: `local` (offline draft analysis, no key) or a cloud provider `gemini`, `openai`, `anthropic`. |
 | `label` | string | yes | Display name. |
-| `available` | boolean | yes | `local` is always available; a cloud provider is available when its key is loaded. |
-| `has_api_key` | boolean | yes | True when a key is loaded (always false for `local`). The key is never returned. |
+| `available` | boolean | yes | Whether analysis with this provider can start without further configuration. `local` needs no key, so it is always available; a cloud provider is available exactly when its key is loaded. |
+| `has_api_key` | boolean | yes | Whether an API key is loaded for this provider (from `POST /api/settings` or the server environment). Always false for `local`, which uses no key; this is where it differs from `available`. The key is never returned. The `gemini` entry also tells whether Gemini narration and voice design have a key. |
 | `model` | string \| null | yes | The saved analysis model for this provider, or null for `local`. |
 | `models` | list of string | yes | Curated model IDs (empty for `local`). A saved custom model may be absent from this list. |
 
@@ -3154,27 +3157,6 @@ Sentence timing reported by the Breeze server, accepted only when every offset m
 | `source` | `"breeze"` | yes | Who measured the timing. |
 | `offsets` | `"recipe_text_code_points"` | yes | What the character offsets index into. |
 | `segments` | list of [AudioTakeSentenceSpan](#schema-audiotakesentencespan) | yes | Sentences in order. |
-
-<a id="schema-audiotakeusage"></a>
-### AudioTakeUsage
-
-Provider usage measured for the request that produced a take.
-
-Counts are reported by the provider, never inferred from audio length.
-Absent or null values are unknown, not zero. Test synthesizers and older
-takes may carry only some of these fields.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `input_tokens` | integer \| null |  | Reported input tokens (Gemini). |
-| `output_tokens` | integer \| null |  | Reported output (audio) tokens (Gemini). |
-| `cached_input_tokens` | integer \| null |  | Reported cached input tokens (Gemini). |
-| `usage_source` | string \| null |  | Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`. |
-| `estimated_cost_usd` | number \| null |  | Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze. |
-| `cost_basis` | string \| null |  | How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`. |
-| `price_as_of` | string \| null |  | Date of the price table used (Gemini). |
-| `price_source` | string \| null |  | Source of the price table (Gemini). |
-| `characters` | integer \| null |  | Characters the Breeze server reported synthesizing. |
 
 <a id="schema-audiotakevoicelibrary"></a>
 ### AudioTakeVoiceLibrary
@@ -4286,7 +4268,6 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
@@ -4303,8 +4284,6 @@ Pointer to the original retained take whose bytes were reused for this passage.
 | `book_id` | string | yes | Book of the original take (reuse can cross books). |
 | `session_id` | string | yes | Listening session ID (64 hex) of the original take; may differ from the current session. |
 | `segment_id` | string | yes | Passage ID the original take narrated, in the original take's book; may differ from this passage when equivalent text was reused. |
-| `recipe` | string | yes | Source-bound recipe hash of the original take. |
-| `fingerprint` | string | yes | Producer fingerprint of the original take. |
 
 <a id="schema-listeningsession"></a>
 ### ListeningSession
@@ -4560,10 +4539,20 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `requests_estimate` | integer | yes | Gemini simple: planned full-size chunk requests; otherwise passages to generate. |
 | `expected_seconds` | number | yes | Missing text at 14 code points per second plus ready durations. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Readiness per requested chapter, in book order. |
-| `problems` | list of string | yes | Blocking conditions, as sentences that state the condition; create refuses (400, with the first problem's code) while any exist. |
+| `problems` | list of [PerformanceProblem](#schema-performanceproblem) | yes | Blocking conditions, each with a stable `code` and a `detail` sentence; empty when nothing blocks. Create refuses (400, with the first problem's code) while any exist. |
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
+
+<a id="schema-performanceproblem"></a>
+### PerformanceProblem
+
+One blocking condition of a performance plan.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | Stable error code of the condition, the same code `createPerformance` refuses with when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, `device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or `narrator_voice_missing` (cast mode). Key a fix-it hint on it. |
+| `detail` | string | yes | A sentence that states the condition, for people. |
 
 <a id="schema-performanceprogress"></a>
 ### PerformanceProgress
@@ -6059,9 +6048,7 @@ A partial settings update. Every field is optional; omitted fields stay unchange
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `api_key` | string \| null |  | Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is removed and an empty string clears the key. Up to 500 characters. |
 | `tts_model` | string \| null |  | Gemini speech model; must be one of `tts_models` from status. Saved. |
-| `analysis_model` | string \| null |  | Compatibility alias for `analysis_models_by_provider.gemini`. Saved. |
 | `api_keys` | map of string → string \| null |  | Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key. A different Gemini key lifts every daily quota block. |
 | `analysis_models_by_provider` | map of string → string \| null |  | Analysis model per cloud provider (`gemini`, `openai`, `anthropic`). IDs are 1–200 characters of letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit; they need not be in the curated list. Saved. |
 | `preprocess_models_by_provider` | map of string → string \| null |  | Preprocessing (scan) model per cloud provider, same ID rules. Saved. |
@@ -6082,10 +6069,8 @@ derived at request time.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `has_api_key` | boolean | yes | True when a Gemini API key is loaded (from Settings or the environment). |
 | `tts_model` | string | yes | Selected Gemini speech model; one of `tts_models`. |
 | `analysis_provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Default provider for classic analysis. |
-| `analysis_model` | string | yes | Compatibility alias of `analysis_models_by_provider.gemini`. |
 | `analysis_models_by_provider` | map of string → string | yes | Selected analysis model per cloud provider (always all three). |
 | `preprocess_models_by_provider` | map of string → string | yes | Selected preprocessing (scan) model per cloud provider (always all three). |
 | `tts_limits` | map of string → [ChapterListenLimits](#schema-chapterlistenlimits) | yes | Gemini speech limits per TTS model (one entry for each of `tts_models`). |
@@ -6594,9 +6579,7 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `voice` | string | yes | Provider voice actually used. |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained. |
 | `preview_id` | string | yes | ID of the audition request (`VoicePreview.id`) this take was retained for. |
-| `schema_version` | integer | yes | Take record format version (1). |
 | `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision used. |

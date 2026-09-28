@@ -255,6 +255,15 @@ class PerformanceQuota(View):
     resets_at: str = Field(description='ISO 8601 UTC time of the next midnight Pacific reset.')
 
 
+class PerformanceProblem(View):
+    """One blocking condition of a performance plan."""
+    code: str = Field(description='Stable error code of the condition, the same code `createPerformance` refuses with '
+                                  'when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, '
+                                  '`device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or '
+                                  '`narrator_voice_missing` (cast mode). Key a fix-it hint on it.')
+    detail: str = Field(description='A sentence that states the condition, for people.')
+
+
 class PerformancePlan(View):
     """Local estimate for a performance; nothing is recorded (except the deterministic session row) or sent."""
     mode: Literal['simple', 'cast'] = Field(description='The requested performance mode (see `Performance.mode`).')
@@ -267,8 +276,10 @@ class PerformancePlan(View):
     requests_estimate: int = Field(description='Gemini simple: planned full-size chunk requests; otherwise passages to generate.')
     expected_seconds: float = Field(description='Missing text at 14 code points per second plus ready durations.')
     chapters: list[PerformanceChapterProgress] = Field(description='Readiness per requested chapter, in book order.')
-    problems: list[str] = Field(description='Blocking conditions, as sentences that state the condition; create refuses '
-                                            '(400, with the first problem\'s code) while any exist.')
+    problems: list[PerformanceProblem] = Field(description='Blocking conditions, each with a stable `code` and a '
+                                                           '`detail` sentence; empty when nothing blocks. Create '
+                                                           'refuses (400, with the first problem\'s code) while any '
+                                                           'exist.')
     notes: list[str] = Field(description='Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book\'s current ones or predate them.')
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
@@ -312,7 +323,9 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound take whose `reuse` points at the original take. A cache hit
+   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate
+   whose copy fails its integrity check (for example this book already holds a damaged file under that
+   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit
    records a cached resource operation (stage `simple_listen`); it may also add the take to the
    equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
@@ -631,12 +644,13 @@ with `job` null when nothing is missing. Blocking problems are refused with 400 
     op('PATCH', '/api/books/{book_id}/performances/{performance_id}', 'updatePerformance', 'Performances',
        'Rename or archive a performance',
        'Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is '
-       'allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned '
+       'allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while '
+       'the book is archived. Omitted or null fields are unchanged; with no fields the record is returned '
        'as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails '
        'request validation (422).',
        response=PerformanceEnvelope,
        errors={400: {'performance_name_required': '`name` is only whitespace.'},
-               404: _PERFORMANCE_404},
+               404: _PERFORMANCE_404, 409: _ARCHIVED},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
 
     # -------------------------------------------------------------- Voice previews

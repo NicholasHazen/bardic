@@ -222,9 +222,7 @@ class TtsLimitsUpdate(StrictModel):
 
 
 class SettingsRequest(StrictModel):
-    api_key: str | None = Field(default=None, max_length=500)
     tts_model: str | None = None
-    analysis_model: str | None = None
     api_keys: dict[str, Annotated[str, Field(max_length=500)]] | None = None
     analysis_models_by_provider: dict[str, str] | None = None
     preprocess_models_by_provider: dict[str, str] | None = None
@@ -698,7 +696,7 @@ class Runtime:
                 return None
             default = self.narration_defaults().get("breeze")
             if not default:
-                return {"error": "Choose a Breeze voice for this character, or set a default Breeze voice in Voices."}
+                return {"error": "This character has no Breeze voice, and no default Breeze voice is set."}
             selection = {"library": default}
         reference = library_reference(selection)
         if reference is None:
@@ -1168,9 +1166,11 @@ def create_app(data_dir: Path | None = None):
             preferences = copy.deepcopy(runtime.preferences)
             preferences.pop("breeze_catalog", None)
             preferences.pop("gemini_voice_catalog", None)
+            # Saved for older versions only; `analysis_models_by_provider.gemini` is the one public value.
+            preferences.pop("analysis_model", None)
             breeze_view = runtime.breeze_view()
             breeze_ready = breeze_view["configured"] and any(voice["usable"] for voice in breeze_view["voices"])
-            return {"has_api_key": bool(runtime.api_key), **preferences,
+            return {**preferences,
                     "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg"))},
                                   {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)},
                                   {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
@@ -1238,14 +1238,6 @@ def create_app(data_dir: Path | None = None):
         keys = dict(body.api_keys or {})
         models = dict(body.analysis_models_by_provider or {})
         preprocess_models = dict(body.preprocess_models_by_provider or {})
-        if body.api_key is not None:
-            if "gemini" in keys and keys["gemini"].strip() != body.api_key.strip():
-                raise Invalid("gemini_key_conflict", "`api_key` and `api_keys.gemini` have different values.")
-            keys["gemini"] = body.api_key
-        if body.analysis_model is not None:
-            if "gemini" in models and models["gemini"] != body.analysis_model:
-                raise Invalid("gemini_model_conflict", "`analysis_model` and `analysis_models_by_provider.gemini` have different values.")
-            models["gemini"] = body.analysis_model
         if (keys.keys() | models.keys() | preprocess_models.keys()) - ANALYSIS_CATALOG.keys():
             raise Invalid("cloud_provider_unknown", "A provider key is not gemini, openai or anthropic.")
         if any(not valid_analysis_model(model) for model in [*models.values(), *preprocess_models.values()]):
@@ -1755,7 +1747,10 @@ def create_app(data_dir: Path | None = None):
                 return public_job(job)
             if job['kind'] == 'series':
                 for identifier in job.get('child_job_ids', []):
-                    child = runtime.store.job(identifier)
+                    try:
+                        child = runtime.store.job(identifier)
+                    except KeyError:
+                        continue  # A dangling child ID does not stop the parent from being cancelled.
                     if child['status'] == 'queued':
                         runtime.store.update_job(identifier, status='cancelled', cancel_requested=True,
                                                  message='Series cancelled before this book started.')
@@ -1997,7 +1992,17 @@ def create_app(data_dir: Path | None = None):
         store = rt(request).store
         series_view(store, series_id)
         parents = store.jobs('series:' + series_id, limit=20)
-        return {'runs': [{**public_job(parent), 'children': [public_job(store.job(identifier)) for identifier in parent.get('child_job_ids', [])]} for parent in parents]}
+
+        def children(parent):
+            # Jobs are never deleted, so a missing child means damaged data; list what exists, as cancel does.
+            found = []
+            for identifier in parent.get('child_job_ids', []):
+                try:
+                    found.append(public_job(store.job(identifier)))
+                except KeyError:
+                    continue
+            return found
+        return {'runs': [{**public_job(parent), 'children': children(parent)} for parent in parents]}
 
     @app.get('/api/series/{series_id}/map')
     def series_map(series_id: str, request: Request):
@@ -2105,7 +2110,11 @@ def create_app(data_dir: Path | None = None):
         segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
         if segment is None:
             raise Invalid('unknown_passage', 'No passage with this ID is in the book.')
-        chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
+        try:
+            chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
+        except NotFound:
+            # The passage came from this book, so its chapter must exist: damaged stored data (500).
+            raise KeyError(segment['chapter_id']) from None  # a bare KeyError is a 500 internal_error
         chosen = {**runtime.preferences['listen_chunking'], **(body.chunking.model_dump(exclude_none=True) if body.chunking else {})}
         if body.intent == 'queue' and not (body.chunking and body.chunking.ramp_seconds is not None):
             # Queued work does not need a quick first clip; every request is full size.
@@ -2269,7 +2278,7 @@ def create_app(data_dir: Path | None = None):
         from . import performances
         runtime = rt(request)
         repository = performances.PerformanceRepository(runtime.store)
-        runtime.store.book(book_id)
+        require_active_book(runtime.store, book_id)
         repository.get(book_id, performance_id)
         fields = body.model_dump(exclude_none=True)
         if 'name' in fields:

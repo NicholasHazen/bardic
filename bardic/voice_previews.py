@@ -47,21 +47,21 @@ def _excerpt(text):
 
 
 # Optional public extras of an audition take, copied when the stored record has them.
-_TAKE_EXTRAS = ('reuse', 'resource_usage', 'provider_timing', 'breeze', 'voice_revision', 'voice_library')
+# Provider usage is served by the resources routes, not with the audio.
+_TAKE_EXTRAS = ('reuse', 'provider_timing', 'breeze', 'voice_revision', 'voice_library')
 
 
 def present_take(book_id, metadata):
     """The public audio object (contract ``VoicePreviewAudio``) for a retained audition take.
 
-    A whitelist: the recipe fingerprint, the copied source anchor and any
-    transient marker stay in storage. Idempotent, so it also cleans an audio
+    A whitelist: the recipe fingerprint, the record format version, provider
+    usage, the copied source anchor and any transient marker stay in storage. Idempotent, so it also cleans an audio
     object presented by an earlier version (for example inside a stored job).
     """
     return audio_ref(f'/api/books/{quote(book_id, safe="")}/voice-preview/audio/{metadata["asset_id"]}',
                      asset_id=metadata['asset_id'], duration=metadata.get('duration'),
                      provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
                      created_at=metadata.get('created_at'), preview_id=metadata.get('preview_id'),
-                     schema_version=metadata.get('schema_version', VERSION),
                      **{key: metadata[key] for key in _TAKE_EXTRAS if key in metadata})
 
 

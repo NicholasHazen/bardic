@@ -63,7 +63,7 @@ const currentChapter = () => state.book?.chapters.find(c => c.id === state.chapt
 const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === state.chapterId) || [];
 const segmentById = (id) => state.book?.segments.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
-const playable = (segment) => Boolean(segment?.audio?.url && !segment.audio.stale && !segment.audio.is_stale);
+const playable = (segment) => Boolean(segment?.audio?.url);
 const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
 const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.BardicListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
 const listeningReady = segment => Boolean(listeningAudio(segment)?.url);
@@ -73,7 +73,7 @@ const analysisLabels = {local:'Local draft', gemini:'Gemini', openai:'OpenAI', a
 const cloudProviders = ['gemini','openai','anthropic'];
 const providerField = (name, provider) => $(`#${name}${provider === 'gemini' ? '' : `-${provider}`}`);
 const analysisProvider = (id) => state.status?.analysis_providers?.find(provider => provider.id === id);
-const providerHasKey = (id) => analysisProvider(id)?.has_api_key ?? (id === 'gemini' && Boolean(state.status?.has_api_key));
+const providerHasKey = (id) => Boolean(analysisProvider(id)?.has_api_key);
 function fillSettings() {
   $('#settings-analysis-provider').value = state.status?.analysis_provider || 'local';
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
@@ -84,7 +84,7 @@ function fillSettings() {
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
-      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || (provider === 'gemini' ? state.status?.analysis_model : '') || '',
+      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || '',
       preprocess: state.status?.preprocess_models_by_provider?.[provider] || '',
     });
   }

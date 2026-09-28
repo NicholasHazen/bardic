@@ -64,7 +64,7 @@ def versions(client, book_id, step_id):
 
 def test_library_snapshot_audio_count_matches_the_book_list(client, monkeypatch):
     fake_audio(monkeypatch)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client, 'Chapter One\n\nThe lamps were lit.\n\n“Come in,” Mara said.\n')
     url = f"/api/books/{book['id']}"
     assert wait_job(client, client.post(f'{url}/render', json={'provider': 'gemini'}).json()['id'])['status'] == 'completed'

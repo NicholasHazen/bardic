@@ -3144,7 +3144,7 @@
             ]
           }
         },
-        "description": "Play one passage with one simple narrator (no cast, no direction). Simple listening has its own narrator\nsession, recipe archive and audio directory; it never changes cast voices, scene notes, enhanced selected\ntakes or enhanced artifacts.\n\n`voice` is `\"library:vl_…\"` (that library voice's current version), a direct provider voice ID, or\nempty/null for Default. For Breeze, Default is the Bardic default library voice (not the server's\ndefault), a direct ID must be in the last Breeze voice check, and the session pins the voice revision\nand seed. For Gemini, `library:` resolves to the voice's current `voice_…` ID. Omit `model` to use the\nconfigured Gemini TTS preference; device and Breeze use `macos-say` and `breeze-tts-2`.\n\nOrder of checks, all under the store lock:\n\n1. **Cache.** A cache hit returns `{session, audio, cached: true}` immediately, even if the provider key or\n   device is no longer available and even while another job holds the book. Lookup first uses chunk\n   clips from Gemini chapter listening for this session, then the exact source/session recipe, then\n   equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained\n   passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into\n   this book and retains a new source-bound take whose `reuse` points at the original take. A cache hit\n   records a cached resource operation (stage `simple_listen`); it may also add the take to the\n   equivalent-speech lookup index, a derived cache.\n2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel\n   request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.\n3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an\n   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.\n\nPoll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when\nchapter listening finished the passage meanwhile). The job worker checks the cache again before\nsynthesis, so equivalent audio retained while the job waited is reused without a provider request; the\njob does not report whether that happened (its resource operation is marked `cached`). Failure and\ncancellation are job outcomes; audio finished during a Stop is still retained and can be found in\n`/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST\nafter an uncertain network response; retry only read-only polling.\n\nThis endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device\nvoices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device\nwarmup (about 10 listening seconds, at most three passages), lookahead (about 45 seconds, at most 12\nfuture passages, staying in the chapter) and the explicit \"Prepare rest of chapter\" action by calling\nthis endpoint serially; those queues do not resume after a browser or server restart.",
+        "description": "Play one passage with one simple narrator (no cast, no direction). Simple listening has its own narrator\nsession, recipe archive and audio directory; it never changes cast voices, scene notes, enhanced selected\ntakes or enhanced artifacts.\n\n`voice` is `\"library:vl_…\"` (that library voice's current version), a direct provider voice ID, or\nempty/null for Default. For Breeze, Default is the Bardic default library voice (not the server's\ndefault), a direct ID must be in the last Breeze voice check, and the session pins the voice revision\nand seed. For Gemini, `library:` resolves to the voice's current `voice_…` ID. Omit `model` to use the\nconfigured Gemini TTS preference; device and Breeze use `macos-say` and `breeze-tts-2`.\n\nOrder of checks, all under the store lock:\n\n1. **Cache.** A cache hit returns `{session, audio, cached: true}` immediately, even if the provider key or\n   device is no longer available and even while another job holds the book. Lookup first uses chunk\n   clips from Gemini chapter listening for this session, then the exact source/session recipe, then\n   equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained\n   passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into\n   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate\n   whose copy fails its integrity check (for example this book already holds a damaged file under that\n   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit\n   records a cached resource operation (stage `simple_listen`); it may also add the take to the\n   equivalent-speech lookup index, a derived cache.\n2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel\n   request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.\n3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an\n   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.\n\nPoll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when\nchapter listening finished the passage meanwhile). The job worker checks the cache again before\nsynthesis, so equivalent audio retained while the job waited is reused without a provider request; the\njob does not report whether that happened (its resource operation is marked `cached`). Failure and\ncancellation are job outcomes; audio finished during a Stop is still retained and can be found in\n`/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST\nafter an uncertain network response; retry only read-only polling.\n\nThis endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device\nvoices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device\nwarmup (about 10 listening seconds, at most three passages), lookahead (about 45 seconds, at most 12\nfuture passages, staying in the chapter) and the explicit \"Prepare rest of chapter\" action by calling\nthis endpoint serially; those queues do not resume after a browser or server restart.",
         "tags": [
           "Listening"
         ],
@@ -4264,6 +4264,19 @@
               "performance_not_found"
             ]
           },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived"
+            ]
+          },
           "422": {
             "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
             "content": {
@@ -4291,7 +4304,7 @@
             ]
           }
         },
-        "description": "Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).",
+        "description": "Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while the book is archived. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).",
         "tags": [
           "Performances"
         ],
@@ -8807,7 +8820,7 @@
             }
           },
           "400": {
-            "description": "- `gemini_key_conflict`: `api_key` and `api_keys.gemini` are both sent with different values.\n- `gemini_model_conflict`: `analysis_model` and `analysis_models_by_provider.gemini` are both sent with different values.\n- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.",
+            "description": "- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8816,8 +8829,6 @@
               }
             },
             "x-bardic-error-codes": [
-              "gemini_key_conflict",
-              "gemini_model_conflict",
               "cloud_provider_unknown",
               "model_id_invalid",
               "analysis_provider_unknown",
@@ -8867,7 +8878,7 @@
             ]
           }
         },
-        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).\n\n**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
+        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).\n\n**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
         "tags": [
           "System"
         ],
@@ -11488,11 +11499,11 @@
             "type": "string"
           },
           "available": {
-            "description": "`local` is always available; a cloud provider is available when its key is loaded.",
+            "description": "Whether analysis with this provider can start without further configuration. `local` needs no key, so it is always available; a cloud provider is available exactly when its key is loaded.",
             "type": "boolean"
           },
           "has_api_key": {
-            "description": "True when a key is loaded (always false for `local`). The key is never returned.",
+            "description": "Whether an API key is loaded for this provider (from `POST /api/settings` or the server environment). Always false for `local`, which uses no key; this is where it differs from `available`. The key is never returned. The `gemini` entry also tells whether Gemini narration and voice design have a key.",
             "type": "boolean"
           },
           "model": {
@@ -12204,112 +12215,6 @@
           "segments"
         ],
         "title": "AudioTakeSentenceTiming",
-        "type": "object"
-      },
-      "AudioTakeUsage": {
-        "description": "Provider usage measured for the request that produced a take.\n\nCounts are reported by the provider, never inferred from audio length.\nAbsent or null values are unknown, not zero. Test synthesizers and older\ntakes may carry only some of these fields.",
-        "properties": {
-          "input_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported input tokens (Gemini)."
-          },
-          "output_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported output (audio) tokens (Gemini)."
-          },
-          "cached_input_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reported cached input tokens (Gemini)."
-          },
-          "usage_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`."
-          },
-          "estimated_cost_usd": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze."
-          },
-          "cost_basis": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`."
-          },
-          "price_as_of": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Date of the price table used (Gemini)."
-          },
-          "price_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Source of the price table (Gemini)."
-          },
-          "characters": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Characters the Breeze server reported synthesizing."
-          }
-        },
-        "title": "AudioTakeUsage",
         "type": "object"
       },
       "AudioTakeVoiceLibrary": {
@@ -16876,17 +16781,6 @@
             ],
             "description": "Present when the bytes were copied from an equivalent retained take instead of being generated."
           },
-          "resource_usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AudioTakeUsage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Usage of the generating request; absent for device takes and for reused bytes."
-          },
           "provider_timing": {
             "anyOf": [
               {
@@ -16957,14 +16851,6 @@
           "segment_id": {
             "description": "Passage ID the original take narrated, in the original take's book; may differ from this passage when equivalent text was reused.",
             "type": "string"
-          },
-          "recipe": {
-            "description": "Source-bound recipe hash of the original take.",
-            "type": "string"
-          },
-          "fingerprint": {
-            "description": "Producer fingerprint of the original take.",
-            "type": "string"
           }
         },
         "required": [
@@ -16972,9 +16858,7 @@
           "take_id",
           "book_id",
           "session_id",
-          "segment_id",
-          "recipe",
-          "fingerprint"
+          "segment_id"
         ],
         "title": "ListeningReuse",
         "type": "object"
@@ -17874,9 +17758,9 @@
             "type": "array"
           },
           "problems": {
-            "description": "Blocking conditions, as sentences that state the condition; create refuses (400, with the first problem's code) while any exist.",
+            "description": "Blocking conditions, each with a stable `code` and a `detail` sentence; empty when nothing blocks. Create refuses (400, with the first problem's code) while any exist.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/PerformanceProblem"
             },
             "type": "array"
           },
@@ -17920,6 +17804,25 @@
           "narrator_label"
         ],
         "title": "PerformancePlan",
+        "type": "object"
+      },
+      "PerformanceProblem": {
+        "description": "One blocking condition of a performance plan.",
+        "properties": {
+          "code": {
+            "description": "Stable error code of the condition, the same code `createPerformance` refuses with when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, `device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or `narrator_voice_missing` (cast mode). Key a fix-it hint on it.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "A sentence that states the condition, for people.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "PerformanceProblem",
         "type": "object"
       },
       "PerformanceProgress": {
@@ -24724,18 +24627,6 @@
       },
       "SettingsRequest": {
         "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 500
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is removed and an empty string clears the key. Up to 500 characters."
-          },
           "tts_model": {
             "anyOf": [
               {
@@ -24746,17 +24637,6 @@
               }
             ],
             "description": "Gemini speech model; must be one of `tts_models` from status. Saved."
-          },
-          "analysis_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for `analysis_models_by_provider.gemini`. Saved."
           },
           "api_keys": {
             "anyOf": [
@@ -24885,10 +24765,6 @@
       "Status": {
         "description": "Runtime status and preferences. Never contains key values and never contacts a provider.\n\nPreference fields are those saved by `POST /api/settings`; the rest are\nderived at request time.",
         "properties": {
-          "has_api_key": {
-            "description": "True when a Gemini API key is loaded (from Settings or the environment).",
-            "type": "boolean"
-          },
           "tts_model": {
             "description": "Selected Gemini speech model; one of `tts_models`.",
             "type": "string"
@@ -24901,10 +24777,6 @@
               "openai",
               "anthropic"
             ],
-            "type": "string"
-          },
-          "analysis_model": {
-            "description": "Compatibility alias of `analysis_models_by_provider.gemini`.",
             "type": "string"
           },
           "analysis_models_by_provider": {
@@ -25046,10 +24918,8 @@
           }
         },
         "required": [
-          "has_api_key",
           "tts_model",
           "analysis_provider",
-          "analysis_model",
           "analysis_models_by_provider",
           "preprocess_models_by_provider",
           "tts_limits",
@@ -26970,10 +26840,6 @@
             "description": "ID of the audition request (`VoicePreview.id`) this take was retained for.",
             "type": "string"
           },
-          "schema_version": {
-            "description": "Take record format version (1).",
-            "type": "integer"
-          },
           "reuse": {
             "anyOf": [
               {
@@ -26984,17 +26850,6 @@
               }
             ],
             "description": "Present when bytes were reused from an equivalent audition (for example after a character rename)."
-          },
-          "resource_usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AudioTakeUsage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Usage of the generating request; absent for device takes and reused bytes."
           },
           "provider_timing": {
             "anyOf": [
@@ -27049,8 +26904,7 @@
           "model",
           "voice",
           "created_at",
-          "preview_id",
-          "schema_version"
+          "preview_id"
         ],
         "title": "VoicePreviewAudio",
         "type": "object"

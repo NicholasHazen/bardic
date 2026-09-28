@@ -14,12 +14,15 @@ function story(count = 12) {
   }))};
 }
 const clip = (id, chunk, start, end) => ({url:`/api/books/book-chunks/listen/audio/${chunk}`,asset_id:chunk,chunk_id:chunk,
-  clip_start:start,clip_end:end,duration:end-start,chunk_duration:40,timing:'estimated',mode:'simple',available:true});
+  clip_start:start,clip_end:end,duration:end-start,chunk_duration:40,timing:'estimated'});
 
 function environment({book = story(), jobs, takes = () => [], preview, chapterPost, jobsGet} = {}) {
   const calls = [], container = new Container(), storage = new Map();
   const state = {jobs:jobs || [], takes};
-  const scope = {window:{},setTimeout:fn => setImmediate(fn),localStorage:{getItem:key => storage.get(key) || null,setItem:(key,value) => storage.set(key,value)},
+  // A controllable clock for retry delays; null follows the real time.
+  const clock = {now:null};
+  const RealDate = Date;
+  const scope = {Date:class extends RealDate { static now() { return clock.now ?? RealDate.now(); } },window:{},setTimeout:fn => setImmediate(fn),localStorage:{getItem:key => storage.get(key) || null,setItem:(key,value) => storage.set(key,value)},
     fetch:async (url, options = {}) => {
       const call = {url,method:options.method || 'GET',body:options.body ? JSON.parse(options.body) : null};
       calls.push(call);
@@ -27,7 +30,7 @@ function environment({book = story(), jobs, takes = () => [], preview, chapterPo
       if (url.endsWith('/listen/chapter/preview')) data = preview || {session:{id:'session-g'},requests_needed:3,quota:{requests_today:34,rpd:100,resets_at:'2026-09-28T07:00:00+00:00'},chunks:[]};
       else if (url.endsWith('/listen/chapter') && chapterPost) {
         const result = await chapterPost(call,state);
-        if (result?.statusCode) return {ok:false,status:result.statusCode,json:async () => ({detail:result.detail})};
+        if (result?.statusCode) return {ok:false,status:result.statusCode,json:async () => ({detail:result.detail,code:result.code})};
         data = result;
       }
       else if (url.endsWith('/listen/chapter')) {
@@ -45,14 +48,14 @@ function environment({book = story(), jobs, takes = () => [], preview, chapterPo
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen.js'),'utf8'),scope);
   const api = scope.window.BardicListen;
   const options = {chapterId:'chapter-a',segmentId:'p0',playbackRate:1.5,
-    status:{has_api_key:true,providers:[{id:'system',available:false},{id:'gemini',available:true}],tts_model:'gemini-3.8-flash-tts',
+    status:{providers:[{id:'system',available:false},{id:'gemini',available:true}],tts_model:'gemini-3.8-flash-tts',
       tts_models:['gemini-3.8-flash-tts'],listen_chunking:{ramp_seconds:[30,60],target_seconds:420,concurrency:2}}};
   const click = action => container.listeners.click({target:{closest:() => ({dataset:{listenAction:action}})}});
   const change = (field, value) => container.listeners.change({target:{dataset:{listenField:field},value}});
   // The app re-renders on onChange; do that explicitly after configuration.
   async function init() { await api.render(container,book,options); change('mode','simple'); change('provider','gemini'); await api.render(container,book,options); await settle(); }
   const generation = () => calls.filter(call => call.method === 'POST' && !call.url.endsWith('/preview') && call.url !== '/api/settings');
-  return {api,book,container,options,calls,state,click,change,init,generation};
+  return {api,book,container,options,calls,state,click,change,init,generation,clock};
 }
 
 test('estimate: measured ready time, safe pace, catch-up warning and quota blocking', () => {
@@ -324,6 +327,21 @@ test('continuous: queueing ahead waits for an explicit Resume after a quota stop
   held.api.updatePlayback(held.book,held.book.segments[0],{playbackRate:1});
   await settle();
   assert.ok(!held.generation().some(call => call.url.endsWith('/listen/chapter')),'Stop generating holds automatic queueing');
+});
+
+test('continuous: a busy book is retried after a delay, an archived book is not', async () => {
+  const refused = code => environment({takes:chapterA,chapterPost:() => ({statusCode:409,code,detail:'Refused.'})});
+  const attempts = env => env.generation().filter(call => call.url.endsWith('/listen/chapter')).length;
+  for (const [code, expected] of [['job_active',2],['book_archived',1]]) {
+    const env = refused(code);
+    await env.init();
+    await playing(env);
+    assert.equal(attempts(env),1,code);
+    env.clock.now = Date.now() + 21000;
+    env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+    await settle();
+    assert.equal(attempts(env),expected,code === 'book_archived' ? 'an archived book is not retried' : 'a busy book is retried');
+  }
 });
 
 test('continuous: playback crossing into an unqueued chapter starts that chapter; turning it off restores the stop', async () => {

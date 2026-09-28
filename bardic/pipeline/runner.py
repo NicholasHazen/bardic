@@ -459,8 +459,8 @@ class RunExecutor:
         """
         base_url = self.secrets.get(provider)
         if provider not in SERVICE_PROVIDERS or not base_url:
-            raise ValueError(f'Add the {local_services.SERVICES[provider]["label"] if provider in local_services.SERVICES else provider} '
-                             'server URL in Settings first.')
+            raise ValueError(f'No {local_services.SERVICES[provider]["label"] if provider in local_services.SERVICES else provider} '
+                             'server URL is configured.')
         recipe, key = service_identity(step, unit, provider)
         cached = None if self.fresh else self.repository.unit(self.book_id, key)
         served = self._served(provider, base_url)

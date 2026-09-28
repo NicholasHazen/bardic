@@ -15,7 +15,7 @@ const functions=[
 ].join('\n');
 const helpers=source.split('\n').filter(line=>/^const (currentChapter|chapterSegments|segmentById|characterById|playable|simpleActive|listeningAudio|listeningReady|busyJob|progressKey) =/.test(line)).join('\n');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-const chunk=(url,start,end)=>({url,clip_start:start,clip_end:end,duration:end-start,chunk_id:url,timing:'estimated',available:true});
+const chunk=(url,start,end)=>({url,clip_start:start,clip_end:end,duration:end-start,chunk_id:url,timing:'estimated'});
 
 function environment(){
   const book={id:'book',title:'Harbor',chapters:[{id:'c1',title:'One',kind:'chapter',text:'A. B. C. D.'}],characters:[{id:'narrator',name:'Narrator'}],segments:[

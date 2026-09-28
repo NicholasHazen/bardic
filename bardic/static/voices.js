@@ -32,11 +32,7 @@
     return id ? findVoice(library, id) : null;
   }
   function encodeSelection(provider, character) {
-    let selection = character?.voices?.[provider];
-    if (selection === undefined) {
-      const legacy = provider === 'gemini' ? character?.voice : provider === 'system' ? character?.system_voice : undefined;
-      if (typeof legacy === 'string' && legacy) selection = {id:legacy};
-    }
+    const selection = character?.voices?.[provider];
     if (!selection || typeof selection !== 'object') return '';
     if (typeof selection.library === 'string' && selection.library) return LIB + selection.library;
     if (typeof selection.id === 'string' && selection.id) return DIRECT + selection.id;

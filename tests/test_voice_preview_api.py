@@ -282,3 +282,12 @@ def test_restart_marks_unfinished_preview_interrupted_and_keeps_saved_audio(clie
     assert restored.job(queued['id'])['status'] == 'interrupted'
     audio = VoicePreviewRepository(restored).cached(book['id'], response['preview']['id'])
     assert audio['asset_id'] == job['audio']['asset_id']
+
+
+def test_presented_audition_take_keeps_usage_and_format_version_in_storage():
+    from bardic.voice_previews import present_take
+    audio = present_take('b', {'asset_id': 'a' * 64, 'duration': 1.0, 'provider': 'gemini', 'model': DEFAULT_TTS_MODEL,
+                               'voice': 'Kore', 'created_at': '2026-09-28T00:00:00Z', 'preview_id': 'p' * 64,
+                               'schema_version': 1, 'fingerprint': 'f' * 64, 'resource_usage': {'output_tokens': 7}})
+    assert not {'schema_version', 'resource_usage', 'fingerprint'} & set(audio)
+    assert audio['preview_id'] == 'p' * 64 and present_take('b', audio) == audio

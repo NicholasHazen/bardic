@@ -10,7 +10,7 @@ This guide explains the concepts that apply across Bardic's HTTP API: transport 
 | [`contract/API-REFERENCE.md`](../contract/API-REFERENCE.md) | The same contract rendered for reading: each operation's behavior, fields and errors, and every schema. |
 | [`contract/CHANGELOG.md`](../contract/CHANGELOG.md) | The contract's version rules and change history. |
 | [API workflow](API-WORKFLOW.md) | How a change to the API updates the contract, and what the tests enforce. |
-| [API known issues](API-KNOWN-ISSUES.md) | Defects and inconsistencies the contract documents as they are, pending a keep-or-fix decision. |
+| [API known issues](API-KNOWN-ISSUES.md) | Issues found in the contract and the keep-or-fix decision for each, including everything resolved in contract 0.2.0. |
 
 The contract is generated from the server's request DTOs and from the descriptions in [`bardic/apispec/`](../bardic/apispec/). The test suite checks every API response it receives against it. A running server serves the same document at `/openapi.json`; the Swagger and ReDoc pages are disabled. Examples in this guide assume the default `http://127.0.0.1:8765`. Use your isolated development server's port when testing ([development](DEVELOPMENT.md)).
 
