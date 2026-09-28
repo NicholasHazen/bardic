@@ -62,7 +62,8 @@ function ordinary(call){
   assert.equal(env.api.enabled(book),false);
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
   assert.ok(container.innerHTML.includes('Start simple listening'));
-  assert.ok(container.innerHTML.includes('stops at the end of this chapter'));
+  assert.ok(container.innerHTML.includes('keeps going through the book'),'Continuous listening is the default');
+  assert.ok(container.innerHTML.includes('data-listen-field="continuous" checked'));
   assert.ok(container.innerHTML.includes('aria-label="Simple narrator voice"'));
   assert.match(container.innerHTML, /data-listen-options >(?:\s*)<summary data-listen-summary>More listening options/,
     'Advanced controls start collapsed');
@@ -97,7 +98,11 @@ function ordinary(call){
   assert.equal(env.calls.filter(call=>call.method==='POST').length,1,'A saved simple take is reused');
   assert.equal(JSON.stringify(book),before,'Listening does not mutate enhanced casting, scenes or audio');
   assert.equal(env.api.allowsAdvance(book,book.segments[0],book.segments[1]),true);
-  assert.equal(env.api.allowsAdvance(book,book.segments[1],book.segments[2]),false);
+  assert.equal(env.api.allowsAdvance(book,book.segments[1],book.segments[2]),true,'Continuous listening crosses chapters');
+  container.listeners.change({target:{dataset:{listenField:'continuous'},checked:false}});
+  assert.equal(env.api.allowsAdvance(book,book.segments[1],book.segments[2]),false,'Turning continuous off restores the chapter stop');
+  assert.equal(JSON.parse(env.storage.get('bardic:listen:book-9')).continuous,false,'The choice is remembered for the book');
+  assert.ok(container.innerHTML.includes('stops at the end of this chapter'));
   change(container,'mode','enhanced');
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
   assert.equal(env.api.allowsAdvance(book,book.segments[1],book.segments[2]),true);

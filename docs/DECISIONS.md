@@ -82,6 +82,8 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Revisit when:** Quality testing supports larger scene-aware takes, controlled prefetch, simple-mode chapter preparation/export or voice design. Retain source-span mapping and both old and replacement takes.
 
+**Amended 2026-09-28 (continuous listening):** At the owner's request, simple listening now keeps going through the book by default. Play is the explicit action that authorizes generation until the listener pauses or stops, a request limit is reached, generation fails, or the book ends. Device voices and Breeze extend the bounded lookahead (at most 12 future passages, about 45 listening seconds) across chapter boundaries. Gemini queues the next chapter's job while playback runs, at most once per chapter per Play, when less than about 10 minutes of generated audio is ahead. It never does so after a quota or budget stop, after a failed, cancelled or interrupted job for that chapter, or after **Stop generating**; those still need an explicit **Resume chapter** or Play. A job started this way belongs to the listening that asked for it: Pause, Stop or leaving the page cancels it (requests already sent finish and are kept), while moving to another passage or chapter keeps it. Continuous listening stops before back matter (notes, index) unless listening started there. Uncertain requests are still never resent. A per-book **Continue into the next chapter** setting restores the chapter-boundary stop.
+
 ## D09 · Honest synchronization and audio validation
 
 **Decision:** Highlight the current passage using measured clip boundaries. Validate audio format/frame completeness and reject empty/silent output. Do not claim word-level alignment or transcript fidelity.
@@ -131,3 +133,14 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 **Consequences:** The job runs the checkout's virtual-environment Python directly after `bardicctl` syncs it, so launchd's stop and kill reach the server rather than a wrapper. The service serves the main checkout, so worktree changes are live only after merging and restarting. Service commands are macOS-specific; other systems need their own supervisor. The service log is not rotated. Development servers share the host's tools and Python, not a pinned image.
 
 **Revisit when:** Bardic gains Linux-only dependencies, needs a CI image, or runs somewhere other than the owner's Mac. Any container must never mount the owner's live library.
+
+## D14 · Saved performances are labels over retained audio
+
+**Decision:** A performance is a named, mutable label: chosen chapters plus either one narrator (a listening session) or a snapshot of the resolved cast and a provider. A server job prepares it ahead of time. One-narrator audio is that session's immutable takes and chunks; cast audio is recorded in an immutable `performance_takes` table that points at content-addressed WAV assets. Playing a performance only reads audio. A passage the performance lacks waits while its job runs, and otherwise stops playback with an explanation. Cast performances never change the Studio's current takes. Unanalysed chapters, unassigned speakers and characters without a voice for the chosen provider use the narrator.
+
+**Reason:** The owner wants to process chosen chapters once, with a narrator or the cast, and listen later with no waiting and no new requests. Sessions already pin a narrator; the Studio's current takes follow cast edits, so a performance needs its own record of which audio it used.
+
+**Consequences:** Later cast or voice edits do not change a finished performance; resume uses its cast snapshot. A source change drops only the affected passages, which resume regenerates. Gemini one-narrator performances run chapter jobs one after another, paced by the usual request limits, and stop at the daily limit for a manual resume. There is no dollar cap in v1: the owner caps spending on the provider platform. One job per book still applies, so other narration for that book waits while a performance processes, and live listening does not join a performance's chapter job; saved audio always plays. Up to three performances of different books process at once. Archiving hides a performance and keeps its audio.
+
+**Revisit when:** Exports should include performance audio, performances should resume automatically after the daily reset, or listening and processing need to run side by side for the same book.
+

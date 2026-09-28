@@ -1,0 +1,55 @@
+/* Listen sheet tabs and saved performances. */
+.listen-sheet-tabs { display:flex; gap:4px; margin:14px 0 4px; padding:4px; border-radius:12px; background:var(--canvas); }
+.listen-sheet-tabs button { flex:1; min-height:40px; border:0; border-radius:9px; background:none; font-size:14px; color:var(--muted); }
+.listen-sheet-tabs button[aria-selected=true] { background:var(--white); color:var(--ink); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.listen-sheet-performance { display:flex; align-items:center; gap:12px; justify-content:space-between; margin-top:12px; padding:12px 14px; border-radius:10px; background:var(--green-light); font-size:13px; }
+.listen-sheet-performance p { margin:0; }
+.listen-sheet-performance .button { min-height:40px; white-space:nowrap; }
+
+.performance-list-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:12px 0; }
+.performance-list-head p { margin:0; font-size:13px; color:var(--muted); }
+.performance-list-head .button { min-height:44px; white-space:nowrap; }
+.performance-list { display:grid; gap:10px; }
+.performance-empty { margin:0; padding:18px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); font-size:14px; line-height:1.6; }
+.performance-card { display:grid; gap:8px; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--white); }
+.performance-card.is-current { border-color:var(--green); box-shadow:inset 0 0 0 1px var(--green); }
+.performance-card-head { display:flex; gap:8px; align-items:center; }
+.performance-card-head > div { min-width:0; }
+.performance-card-head strong { display:block; font-size:15px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.performance-card-head small { display:block; margin-top:2px; font-size:12px; color:var(--muted); }
+.performance-card-head input { flex:1; min-height:40px; }
+.performance-card progress { width:100%; height:6px; accent-color:var(--green); }
+.performance-status { margin:0; font-size:12px; color:var(--muted); }
+.performance-error { display:block; margin-top:4px; color:#9b2c2c; }
+.performance-actions, .performance-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.performance-actions .button, .performance-confirm .button { min-height:40px; }
+.performance-confirm span { font-size:13px; }
+
+.performance-form { display:grid; gap:6px; margin-top:8px; }
+.performance-form .field-label { margin-top:10px; }
+.performance-form input, .performance-form select { min-height:44px; font-size:15px; }
+.performance-segmented, .performance-providers { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+.performance-providers { grid-template-columns:repeat(3,1fr); }
+.performance-segmented button, .performance-providers button {
+  display:grid; gap:2px; text-align:left; padding:10px 12px; min-height:56px; border:1px solid var(--line); border-radius:10px; background:var(--white);
+}
+.performance-segmented button strong, .performance-providers button strong { font-size:14px; font-weight:600; }
+.performance-segmented button small, .performance-providers button small { font-size:11px; color:var(--muted); line-height:1.35; }
+.performance-segmented button[aria-checked=true], .performance-providers button[aria-checked=true] { border-color:var(--green); box-shadow:inset 0 0 0 1px var(--green); background:var(--green-light); }
+.performance-chapters-head { display:flex; align-items:center; justify-content:space-between; }
+.performance-chapters-head .button { min-height:36px; }
+.performance-chapters { max-height:min(38dvh, 320px); overflow:auto; border:1px solid var(--line); border-radius:10px; background:var(--white); }
+.performance-chapters label { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; min-height:44px; padding:6px 12px; border-bottom:1px solid var(--line); font-size:14px; }
+.performance-chapters label:last-child { border-bottom:0; }
+.performance-chapters input { width:20px; height:20px; accent-color:var(--green); }
+.performance-chapters small { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.performance-summary { margin:10px 0 0; font-size:14px; font-weight:600; }
+.performance-form-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+.performance-form-actions .button { min-height:48px; padding:0 20px; font-size:15px; }
+@media (max-width:620px) {
+  .performance-segmented, .performance-providers { grid-template-columns:1fr; }
+  .performance-list-head { flex-direction:column; align-items:stretch; }
+  .performance-form-actions .button, .listen-sheet-performance .button { flex:1; }
+  .listen-sheet-performance { flex-direction:column; align-items:stretch; }
+}
+.performance-chapters-head > span { display:flex; gap:14px; }

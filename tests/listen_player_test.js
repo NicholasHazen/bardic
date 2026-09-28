@@ -131,6 +131,25 @@ function environment(ensure,previewRequest){
   assert.ok(flowing.calls.toasts.at(-1).startsWith('Chapter complete'));
   assert.equal(flowing.calls.stops,stopsBeforeAdvance+1,'Chapter completion cancels further preparation');
 
+  // With continuous listening, playback runs into the next chapter as a
+  // continuation (keeping the lookahead), preloads across the boundary and
+  // stops only at the end of the book.
+  const onward=environment(async(_book,segment)=>({url:`/simple-${segment.id}.wav`,duration:1}));
+  onward.listen.allowsAdvance=()=>true;
+  onward.takes.set('s3',{url:'/simple-s3.wav',duration:1});
+  await onward.player.startSegment('s2');
+  assert.ok(onward.calls.preloads.includes('/simple-s3.wav'),'The next chapter\'s saved audio is preloaded');
+  const stopsBeforeCrossing=onward.calls.stops;
+  await onward.events.ended();
+  assert.equal(onward.state.segmentId,'s3');
+  assert.equal(onward.state.chapterId,'c2','The reader follows playback into the next chapter');
+  assert.equal(onward.calls.prepares.at(-1).continuation,true,'Crossing the chapter is an automatic continuation');
+  assert.equal(onward.calls.stops,stopsBeforeCrossing,'Crossing the chapter keeps the lookahead intent');
+  await onward.events.ended();
+  assert.equal(onward.state.segmentId,'s3');
+  assert.ok(onward.calls.toasts.at(-1).startsWith('The end'),'The end of the book stops playback');
+  assert.equal(onward.calls.stops,stopsBeforeCrossing+1);
+
   // Warmup applies to an already cached starting passage too, and pause/resume
   // preserves the media offset while restarting a speed-aware buffer.
   const resumed=environment(async(_book,segment)=>({url:`/simple-${segment.id}.wav`,duration:2}));

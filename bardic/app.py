@@ -134,6 +134,20 @@ class ChapterListenRequest(StrictModel):
     chunking: ChunkingOptions | None = None
 
 
+class PerformanceRequest(StrictModel):
+    name: str | None = Field(default=None, max_length=200)
+    mode: Literal['simple', 'cast']
+    chapter_ids: list[Annotated[str, Field(max_length=200)]] = Field(min_length=1, max_length=5000)
+    provider: Literal['system', 'gemini', 'breeze']
+    voice: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class PerformanceEdit(StrictModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    archived: bool | None = None
+
+
 class VoicePreviewRequest(StrictModel):
     provider: Literal['system', 'gemini', 'breeze'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
@@ -244,6 +258,11 @@ class Runtime:
         # a long chapter does not block analysis or other books' work.
         self.listen_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='listen-coordinator')
         self.narration_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='narration')
+        # Saved performances run one at a time; a Gemini chapter inside one
+        # sends its requests through the narration pool like live listening.
+        self.performance_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='performance')
+        from .performances import PerformanceRepository
+        PerformanceRepository(self.store)
         self.stopping = threading.Event()
         self.api_keys = {
             "gemini": os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "",
@@ -428,6 +447,7 @@ class Runtime:
         self.stopping.set()
         self.series_pool.shutdown(wait=True, cancel_futures=True)
         self.listen_pool.shutdown(wait=True, cancel_futures=True)
+        self.performance_pool.shutdown(wait=True, cancel_futures=True)
         self.narration_pool.shutdown(wait=True, cancel_futures=True)
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.instance_lock.close()
@@ -505,7 +525,8 @@ class Runtime:
 
     def require_idle(self, book_id):
         self.store.require_active(book_id)
-        if any(j["status"] in ACTIVE for j in self.store.jobs(book_id)):
+        # Every active job counts: a long run can have more than 100 newer child jobs.
+        if any(j["status"] in ACTIVE for j in self.store.jobs(book_id, limit=None, active=True)):
             raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
                for j in self.store.jobs(limit=None)):
@@ -642,6 +663,7 @@ class Runtime:
             self.check_cancel(job_id)
             self.store.update_job(job_id, status="completed", message=(
                 "Chapter ready to listen" if job["kind"] == "listen_chapter" else
+                "Performance ready" if job["kind"] == "performance" else
                 "Ready to listen" if job["kind"] in {"render", "listen", "voice_preview"} else "Analysis ready for review"))
         except BudgetReached as exc:
             self.store.update_job(job_id, status="budget_limited", message=str(exc))
@@ -650,6 +672,7 @@ class Runtime:
         except (Cancelled, InterruptedError):
             message = ("Stopped. Validated chapter work is saved; analyze again to resume." if job["kind"] in {"analyze", "pipeline"}
                        else "Stopped. Finished chunks are saved; prepare the chapter again to resume." if job["kind"] == "listen_chapter"
+                       else "Stopped. Finished audio is saved; prepare the performance again to resume." if job["kind"] == "performance"
                        else "Stopped. Completed takes are saved; generate again to resume.")
             self.store.update_job(job_id, status="interrupted" if self.stopping.is_set() else "cancelled", message=message)
         except Exception as exc:
@@ -1296,6 +1319,17 @@ def create_app(data_dir: Path | None = None):
                                                  message='Series cancelled before this book started.')
                     elif child['status'] == 'running':
                         runtime.store.update_job(identifier, cancel_requested=True, message='Stopping after current request.')
+            if job['kind'] == 'performance':
+                # A performance runs Gemini chapters as child jobs; stop the active one too.
+                for child in runtime.store.jobs(job['book_id'], limit=None, active=True):
+                    if child.get('parent_id') != job_id:
+                        continue
+                    if child['status'] == 'queued':
+                        runtime.store.update_job(child['id'], status='cancelled', cancel_requested=True,
+                                                 message='Performance cancelled before this chapter started.')
+                    else:
+                        runtime.store.update_job(child['id'], cancel_requested=True,
+                                                 message='Stopping after the requests already sent. Their audio will be saved.')
             if job["status"] == "queued":
                 return runtime.store.update_job(job_id, cancel_requested=True, status="cancelled", message="Cancelled before generation started.")
             return runtime.store.update_job(job_id, cancel_requested=True, message="Stopping after the current request. Finished takes will be kept.")
@@ -1641,6 +1675,9 @@ def create_app(data_dir: Path | None = None):
             active = next((job for job in store.jobs(book_id, limit=None)
                            if job['kind'] == 'listen_chapter' and job['status'] in ACTIVE and not job.get('cancel_requested')), None)
             if active:
+                if active.get('parent_id'):
+                    # Joining would let live listening stop the performance's job.
+                    raise HTTPException(409, 'A saved performance is preparing this book. Play that performance, or wait for it to finish.')
                 if active.get('session_id') != session['id'] or active.get('chapter_id') != chapter['id']:
                     raise HTTPException(409, 'Another chapter or narrator is being prepared. Stop it before starting this one.')
                 if active.get('closing'):
@@ -1688,6 +1725,68 @@ def create_app(data_dir: Path | None = None):
                                      cancel_requested=True, message='Stopped before any chunk was requested.')
             future.add_done_callback(settle_cancelled)
             return {'session': session, 'job': job, 'joined': False}
+
+    # Saved performances -------------------------------------------------
+
+    def performance_request(body):
+        return body.model_dump()
+
+    @app.get('/api/books/{book_id}/performances')
+    def list_performances(book_id: str, request: Request, archived: bool = False):
+        from . import performances
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        records = performances.PerformanceRepository(runtime.store).list(book_id, include_archived=archived)
+        return {'performances': [performances.present(runtime, record, book) for record in records]}
+
+    @app.post('/api/books/{book_id}/performances/preview')
+    def preview_performance(book_id: str, body: PerformanceRequest, request: Request):
+        from . import performances
+        runtime = rt(request)
+        runtime.store.require_active(book_id)
+        return performances.plan(runtime, book_id, performance_request(body))['public']
+
+    @app.post('/api/books/{book_id}/performances')
+    def create_performance(book_id: str, body: PerformanceRequest, request: Request):
+        from . import performances
+        runtime = rt(request)
+        with runtime.store.lock:
+            return performances.create(runtime, book_id, performance_request(body))
+
+    @app.get('/api/books/{book_id}/performances/{performance_id}')
+    def get_performance(book_id: str, performance_id: str, request: Request):
+        from . import performances
+        runtime = rt(request)
+        record = performances.PerformanceRepository(runtime.store).get(book_id, performance_id)
+        return {'performance': performances.present(runtime, record)}
+
+    @app.get('/api/books/{book_id}/performances/{performance_id}/audio')
+    def performance_audio(book_id: str, performance_id: str, request: Request):
+        from . import performances
+        runtime = rt(request)
+        record = performances.PerformanceRepository(runtime.store).get(book_id, performance_id)
+        return {'performance_id': performance_id, 'audio': performances.ready_audio(runtime, record)}
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/prepare')
+    def prepare_performance(book_id: str, performance_id: str, request: Request):
+        from . import performances
+        runtime = rt(request)
+        with runtime.store.lock:
+            return performances.prepare(runtime, book_id, performance_id)
+
+    @app.patch('/api/books/{book_id}/performances/{performance_id}')
+    def edit_performance(book_id: str, performance_id: str, body: PerformanceEdit, request: Request):
+        from . import performances
+        runtime = rt(request)
+        repository = performances.PerformanceRepository(runtime.store)
+        repository.get(book_id, performance_id)
+        fields = body.model_dump(exclude_none=True)
+        if 'name' in fields:
+            fields['name'] = fields['name'].strip()
+            if not fields['name']:
+                raise HTTPException(400, 'A performance name is required.')
+        record = repository.update(book_id, performance_id, **fields) if fields else repository.get(book_id, performance_id)
+        return {'performance': performances.present(runtime, record)}
 
     @app.post('/api/books/{book_id}/voice-preview')
     def voice_preview(book_id: str, body: VoicePreviewRequest, request: Request):
