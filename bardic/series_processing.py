@@ -106,8 +106,9 @@ def start(runtime, series_id, *, provider=None, phase='scan', concurrency=2, lim
             runtime.store.update_job(child['id'], progress=done, total=total, message=message)
         def prepare(snapshot):
             runtime.assign_local_voices(snapshot)
+            cast = runtime.resolved_cast(snapshot)
             for segment in snapshot['segments']:
-                if segment.get('audio') and not runtime.valid_audio(snapshot, segment):
+                if segment.get('audio') and not runtime.valid_audio(snapshot, segment, cast):
                     segment['audio'] = None
         result = analyze_book(book, preview['provider'], key, preview['model'], progress, lambda: cancelled(child),
             store=runtime.store, resume=True, prepare=prepare, phase=selected_phase,

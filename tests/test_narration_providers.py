@@ -15,6 +15,7 @@ from bardic.importer import parse_book
 from bardic.listening import ListeningRepository
 from bardic.store import Store
 from test_app import import_text, wait_job
+from test_audio import wav_bytes
 
 
 SEGMENT = {"id": "segment-1", "text": "“Shall we begin?” she asked.", "direction": "Quietly.", "cues": ["pause"]}
@@ -93,6 +94,17 @@ DESIGNED = {**VOICE, "id": "sailor", "name": "Sailor", "kind": "designed", "refe
 CONFIG = {"base_url": "http://breeze.local:7860", "api_key": ""}
 
 
+def multipart_fields(request: httpx.Request) -> dict[str, bytes]:
+    """Split a multipart/form-data body into {field name: raw bytes}."""
+    boundary = request.headers["content-type"].split("boundary=")[1].encode()
+    fields = {}
+    for part in request.content.split(b"--" + boundary)[1:-1]:
+        head, _, value = part.strip(b"\r\n").partition(b"\r\n\r\n")
+        name = head.split(b'name="')[1].split(b'"')[0].decode()
+        fields[name] = value
+    return fields
+
+
 def pcm(samples=4800):
     return b"".join(struct.pack("<h", int(6000 * math.sin(i * 0.05))) for i in range(samples))
 
@@ -109,6 +121,11 @@ class FakeBreeze:
         self.segments = None
         self.stream_error = None
         self.finish = True
+        self.previews = {}
+        self.preview_requests = []
+        self.clones = []
+        self.references = {}
+        self.deleted = []
 
     def sse(self, text):
         audio_bytes = pcm()
@@ -136,14 +153,51 @@ class FakeBreeze:
         if path == "/v1/voices":
             return httpx.Response(200, json={"object": "list", "data": list(self.voices.values()),
                                              "has_more": False, "default_voice_id": "narrator"})
+        if path == "/v1/voice-previews" and request.method == "POST":
+            body = json.loads(request.content)
+            self.preview_requests.append(body)
+            data = []
+            for offset in range(body.get("count", 3)):
+                preview_id = f"prv_{len(self.previews) + 1}"
+                self.previews[preview_id] = wav_bytes(frames=4800 + 480 * len(self.previews))
+                data.append({"object": "voice_preview", "id": preview_id, "description": body["description"],
+                             "text": body.get("text"), "seed": 42 + offset, "duration_ms": 200,
+                             "audio_url": f"/v1/voice-previews/{preview_id}/audio", "expires_at": "2026-09-29T00:00:00Z"})
+            return httpx.Response(200, json={"object": "list", "data": data})
+        if path.startswith("/v1/voice-previews/") and path.endswith("/audio"):
+            audio_bytes = self.previews.get(path.split("/")[3])
+            return httpx.Response(200, content=audio_bytes, headers={"content-type": "audio/wav"}) if audio_bytes else \
+                httpx.Response(404, json={"error": {"code": "preview_not_found"}})
+        if path == "/v1/voices/clone" and request.method == "POST":
+            fields = multipart_fields(request)
+            voice_id = fields["id"].decode()
+            if voice_id in self.voices:
+                return httpx.Response(409, json={"error": {"code": "voice_exists"}})
+            self.clones.append(fields)
+            self.voices[voice_id] = {**VOICE, "id": voice_id, "name": fields["name"].decode(), "is_default": False,
+                                     "description": fields.get("description", b"").decode() or None,
+                                     "labels": json.loads(fields.get("labels", b"{}")),
+                                     "reference": {"text": fields["reference_text"].decode(), "duration_ms": 200,
+                                                   "audio_url": f"/v1/voices/{voice_id}/reference"},
+                                     "created_at": f"2026-09-28T05:{len(self.voices):02d}:00Z"}
+            self.references[voice_id] = fields["reference_audio"]
+            return httpx.Response(201, json=self.voices[voice_id])
         if path.startswith("/v1/voices/"):
-            voice = self.voices.get(path.split("/")[3])
+            voice_id_ = path.split("/")[3]
+            voice = self.voices.get(voice_id_)
             if voice is None:
                 return httpx.Response(404, json={"error": {"code": "voice_not_found", "message": "gone"}})
+            if request.method == "DELETE":
+                self.deleted.append(voice_id_)
+                del self.voices[voice_id_]
+                return httpx.Response(200, json={"id": voice_id_, "deleted": True})
+            if request.method == "PATCH":
+                voice.update({key: value for key, value in json.loads(request.content).items() if key in ("name", "description")})
+                return httpx.Response(200, json=voice)
             if path.endswith("/reference"):
                 if voice["kind"] != "cloned":
                     return httpx.Response(404, json={"error": {"code": "no_reference"}})
-                return httpx.Response(200, content=self.reference)
+                return httpx.Response(200, content=self.references.get(voice_id_, self.reference))
             return httpx.Response(200, json=voice)
         if path == "/v1/speech/stream":
             body = json.loads(request.content)
@@ -394,8 +448,13 @@ def test_breeze_cast_voices_are_pinned_per_provider_and_enhanced_takes_stay_vali
     narrator = next(c for c in book["characters"] if c["id"] == "narrator")
     assert narrator["voices"] == {"gemini": {"id": "Kore"}}
     segment = next(s for s in book["segments"] if s["speaker_id"] == "narrator")
+    # Without a default voice, a character with no Breeze choice cannot render.
+    runtime = breeze_client.app.state.runtime
+    saved_default = runtime.preferences["narration_defaults"]["breeze"]
+    runtime.preferences["narration_defaults"]["breeze"] = None
     blocked = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "segment_id": segment["id"]})
-    assert blocked.status_code == 400 and "Choose a Breeze voice for Narrator" in blocked.json()["detail"]
+    assert blocked.status_code == 400 and "Narrator" in blocked.json()["detail"] and "default Breeze voice" in blocked.json()["detail"]
+    runtime.preferences["narration_defaults"]["breeze"] = saved_default
     assert breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",
                                json={"voices": {"breeze": {"id": "sailor"}}}).status_code == 400
     edited = breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",

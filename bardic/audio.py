@@ -163,14 +163,29 @@ def voice_selection(character: dict, provider: str) -> dict | None:
     """
     voices = character.get("voices")
     if isinstance(voices, dict) and isinstance(voices.get(provider), dict):
-        return voices[provider]
+        selection = voices[provider]
+        # A library assignment or a failed resolution must never fall back to a
+        # provider default voice. Callers resolve assignments before rendering.
+        if isinstance(selection.get("error"), str):
+            raise AudioError(selection["error"])
+        if "library" in selection and not selection.get("id"):
+            raise AudioError("This voice assignment was not resolved. Reload the book and try again.")
+        if isinstance(selection.get("id"), str) and selection["id"].startswith("library:"):
+            raise AudioError("This voice assignment was not resolved. Reload the book and try again.")
+        return selection
     legacy = _LEGACY_VOICE_FIELDS.get(provider)
     value = character.get(legacy) if legacy else None
+    if isinstance(value, str) and value.startswith("library:"):
+        raise AudioError("This voice assignment was not resolved. Reload the book and try again.")
     return {"id": value} if isinstance(value, str) and value else None
 
 
 def voice_id(character: dict, provider: str) -> str | None:
-    selection = voice_selection(character, provider)
+    """The concrete voice id, or None when absent or unresolved (never raises)."""
+    try:
+        selection = voice_selection(character, provider)
+    except AudioError:
+        return None
     value = selection.get("id") if selection else None
     return value if isinstance(value, str) and value else None
 
@@ -516,6 +531,12 @@ def synthesize(
         _, _, rate, frames = _wave_info(normalized_path, normalized=True)
         duration = frames / rate
         os.replace(normalized_path, output_path)
+    # Provenance: which library voice/version and exact server revision performed.
+    selection = voice_selection(character, recipe["provider"]) or {}
+    if selection.get("library"):
+        extra["voice_library"] = {"id": selection["library"], "version": selection.get("version")}
+    if recipe.get("voice_revision"):
+        extra["voice_revision"] = recipe["voice_revision"]
     return {
         # Provider-reported extras (such as sentence timing) never replace the
         # recipe identity or measured duration below.

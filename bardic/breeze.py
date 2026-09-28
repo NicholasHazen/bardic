@@ -441,3 +441,145 @@ def _collect(response: httpx.Response, recipe: dict, deadline: float, check_canc
                    "timing_accepted": timing is not None, **({"vocal_event_markup": events} if events else {})},
     }
     return result
+
+
+# Voice management ------------------------------------------------------------
+# Free requests to the owner's server. Previews run the GPU for about the
+# length of their audio times the candidate count, at interactive priority.
+
+MAX_PREVIEWS = 3
+MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+_ERROR_HINTS.update({
+    "voice_exists": "A Breeze voice with that id already exists.",
+    "preview_not_found": "That preview has expired or no longer exists on the Breeze server. Generate it again.",
+    "invalid_audio": "Breeze could not read that recording. Use a common audio format.",
+    "invalid_audio_length": "The recording must be 1–30 seconds long; 5–15 seconds of clean speech works best.",
+    "empty_audio": "The recording is silent.",
+    "missing_voice_source": "Breeze needs a preview or a recording to create this voice.",
+})
+
+
+def _call(config: Any, method: str, path: str, *, timeout: float = 30.0, expected=(200,), **kwargs) -> httpx.Response:
+    base_url, api_key = _config(config)
+    try:
+        with _client(httpx.Timeout(timeout, connect=10.0)) as client:
+            response = client.request(method, f"{base_url}{path}", headers=_headers(api_key), **kwargs)
+            response.read()
+    except httpx.ConnectError:
+        raise AudioError(f"Could not reach the Breeze server at {base_url}. Check that it is running.") from None
+    except httpx.TimeoutException:
+        raise AudioError("The Breeze server did not answer in time. Try again.") from None
+    except httpx.HTTPError:
+        raise AudioError("The connection to the Breeze server failed. Try again.") from None
+    if response.status_code not in expected:
+        raise AudioError(_error(response)[1])
+    return response
+
+
+def _json(response: httpx.Response) -> dict:
+    try:
+        body = response.json()
+    except ValueError:
+        raise AudioError("The Breeze server returned an unreadable response.") from None
+    if not isinstance(body, dict):
+        raise AudioError("The Breeze server returned an unexpected response.")
+    return body
+
+
+def design_previews(config: Any, description: str, text: str, count: int, *, seed: int | None = None) -> list[dict]:
+    """Generate candidate voices speaking ``text``; each lasts 24 hours on the server."""
+    if not isinstance(description, str) or not 3 <= len(description.strip()) <= 1000:
+        raise AudioError("Describe the voice in 3–1,000 characters.")
+    if not isinstance(text, str) or not text.strip() or len(text) > 1000:
+        raise AudioError("Give the preview 1–1,000 characters of sample text.")
+    if type(count) is not int or not 1 <= count <= MAX_PREVIEWS:
+        raise AudioError(f"Generate one to {MAX_PREVIEWS} previews at a time.")
+    body: dict[str, Any] = {"description": description.strip(), "text": text, "count": count}
+    if seed is not None:
+        body["settings"] = {"seed": _seed(seed)}
+    # Previews render sequentially: allow about three seconds per character of
+    # sample text for every candidate, with a floor for queueing.
+    response = _call(config, "POST", "/v1/voice-previews", json=body, timeout=60.0 + 0.3 * len(text) * count)
+    previews = _json(response).get("data")
+    result = []
+    for item in previews if isinstance(previews, list) else []:
+        if (isinstance(item, dict) and isinstance(item.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item["id"])
+                and type(item.get("seed")) is int):
+            result.append({"id": item["id"], "seed": item["seed"],
+                           "duration_ms": item.get("duration_ms") if type(item.get("duration_ms")) is int else None,
+                           "expires_at": item.get("expires_at") if isinstance(item.get("expires_at"), str) else None})
+    if not result:
+        raise AudioError("The Breeze server returned no previews.")
+    return result
+
+
+def preview_audio(config: Any, preview_id: str) -> bytes:
+    response = _call(config, "GET", f"/v1/voice-previews/{preview_id}/audio")
+    if len(response.content) > MAX_AUDIO_BYTES:
+        raise AudioError("The Breeze preview is too large.")
+    return response.content
+
+
+def reference_audio(config: Any, voice_id: str) -> bytes:
+    if not _VOICE_ID.fullmatch(voice_id or ""):
+        raise AudioError("That Breeze voice id is invalid.")
+    response = _call(config, "GET", f"/v1/voices/{voice_id}/reference")
+    if len(response.content) > MAX_AUDIO_BYTES:
+        raise AudioError("The Breeze reference clip is too large.")
+    return response.content
+
+
+def voice_id_for(name: str, taken: set[str]) -> str:
+    """A server id derived from a name, avoiding ids already on the server."""
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:48] or "voice"
+    candidate, suffix = base, 2
+    while candidate in taken:
+        candidate, suffix = f"{base}-{suffix}", suffix + 1
+    return candidate
+
+
+def _pinned_voice(config: Any, voice: dict) -> dict:
+    """Return the created voice with the revision Bardic pins, read back from the server."""
+    if not isinstance(voice.get("id"), str) or not _VOICE_ID.fullmatch(voice["id"]):
+        raise AudioError("The Breeze server returned an invalid voice.")
+    if voice.get("kind") != "cloned":
+        raise AudioError("Breeze saved a voice that is not a cloned voice, so its sound would not be stable.")
+    reference = hashlib.sha256(reference_audio(config, voice["id"])).hexdigest()
+    settings = voice.get("settings") if isinstance(voice.get("settings"), dict) else {}
+    return {"id": voice["id"], "name": voice.get("name"), "revision": voice_revision(voice, reference),
+            "seed": settings.get("seed") if type(settings.get("seed")) is int else DEFAULT_SEED}
+
+
+def create_from_preview(config: Any, *, voice_id: str, name: str, preview_id: str, description: str = "",
+                        labels: dict | None = None) -> dict:
+    body = {"id": voice_id, "name": name[:100], "preview_id": preview_id,
+            "description": description[:1000] or None, "labels": labels or None}
+    return _pinned_voice(config, _json(_call(config, "POST", "/v1/voices", json=body, expected=(200, 201))))
+
+
+def clone(config: Any, *, voice_id: str, name: str, audio: bytes, filename: str, reference_text: str,
+          description: str = "", labels: dict | None = None) -> dict:
+    if not audio or len(audio) > MAX_REFERENCE_BYTES:
+        raise AudioError("Upload a recording of at most 20 MB.")
+    if not isinstance(reference_text, str) or not reference_text.strip():
+        raise AudioError("Enter the exact words spoken in the recording.")
+    data = {"id": voice_id, "name": name[:100], "reference_text": reference_text.strip()}
+    if description:
+        data["description"] = description[:1000]
+    if labels:
+        data["labels"] = json.dumps(labels)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename or "recording")[:100] or "recording"
+    response = _call(config, "POST", "/v1/voices/clone", data=data, files={"reference_audio": (safe_name, audio)},
+                     timeout=120.0, expected=(200, 201))
+    return _pinned_voice(config, _json(response))
+
+
+def update_voice(config: Any, voice_id: str, *, name: str | None = None, description: str | None = None) -> None:
+    """Change labels a listener sees; name and description do not alter the pinned revision."""
+    patch = {key: value for key, value in (("name", name), ("description", description)) if value is not None}
+    if patch:
+        _call(config, "PATCH", f"/v1/voices/{voice_id}", json=patch)
+
+
+def delete_voice(config: Any, voice_id: str) -> None:
+    _call(config, "DELETE", f"/v1/voices/{voice_id}", expected=(200, 204, 404))

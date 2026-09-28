@@ -15,12 +15,33 @@
   // and Breeze resolves its single model on the server.
   const modelFor = state => state.provider === 'gemini' ? state.model : state.provider === 'system' ? 'macos-say' : null;
   const voiceFor = state => state.voices[state.provider] || (state.provider === 'gemini' ? 'Kore' : '');
-  // A Breeze session is pinned to the voice revision from the last server check;
-  // a changed revision is a different narrator, so it must not reuse the old session.
-  const breezeRevision = state => state.provider === 'breeze'
-    ? (state.status?.breeze?.voices || []).find(voice => voice.id === state.voices.breeze)?.revision || null : undefined;
+  // Library voices are sent as "library:<id>"; the server resolves them to the
+  // voice's current version. Breeze "" means the default voice.
+  const LIBRARY = 'library:';
+  const libraryVoice = (state, id) => (state.library?.voices || []).find(voice => voice.id === id) || null;
+  function resolvedVoice(state) {
+    const value = state.voices[state.provider] || '';
+    const id = value.startsWith(LIBRARY) ? value.slice(LIBRARY.length) : !value && state.provider === 'breeze' ? state.library?.defaults?.breeze : null;
+    const voice = id ? libraryVoice(state,id) : null;
+    const version = voice && (voice.versions || []).find(item => item.version === voice.current_version);
+    return voice ? {voice,version} : null;
+  }
+  // The concrete voice the server will use; it names listening jobs and sessions.
+  function concreteVoice(state) {
+    const resolved = resolvedVoice(state);
+    return resolved ? resolved.version?.provider_voice_id ?? null : voiceFor(state);
+  }
+  // A session is pinned to a concrete voice version. A new current version (or a
+  // changed default or revision) is a different narrator, so it must not reuse
+  // the old session. Direct Breeze ids fall back to the last server check.
+  function voiceIdentity(state) {
+    const resolved = resolvedVoice(state);
+    if (resolved) return [resolved.voice.id,resolved.voice.current_version,resolved.version?.provider_voice_id ?? null,resolved.version?.revision ?? null];
+    if (state.provider !== 'breeze') return undefined;
+    return (state.status?.breeze?.voices || []).find(voice => voice.id === state.voices.breeze)?.revision || null;
+  }
   const configKey = state => JSON.stringify([state.provider,state.voices[state.provider],modelFor(state),
-    ...(state.provider === 'breeze' ? [breezeRevision(state)] : [])]);
+    ...(voiceIdentity(state) !== undefined ? [voiceIdentity(state)] : [])]);
   const storageKey = id => `bardic:listen:${id}`;
   const stateFor = book => book && books.get(book.id);
   const enabled = book => stateFor(book)?.mode === 'simple';
@@ -534,7 +555,7 @@
         state.chapter.job = job;
         // A fresh browser learns the narrator session from a matching job so
         // saved chunks play without sending anything.
-        if (!state.sessionId && job.voice === voiceFor(state) && job.model === modelFor(state) &&
+        if (!state.sessionId && job.voice === concreteVoice(state) && job.model === modelFor(state) &&
             adoptSession(state,{id:job.session_id},sentKey)) await loadSaved(state,true);
         if (!CHAPTER_TERMINAL.has(job.status)) { shareJob(state,job); watchChapter(state); }
         paint(state.panel);
@@ -809,16 +830,29 @@
     return `<div class="simple-listen-buffer chapter-queue" aria-live="polite">${lines.join('')}</div>`;
   }
 
-  // Breeze voices come from the server library. Choose its default (or first
-  // usable) voice visibly in the selector; requests always name the voice.
-  function breezeVoices(status) {
-    return (status?.breeze?.voices || []).map(voice => ({...voice,usable:voice.usable !== false}));
+  // Breeze and Gemini narrators come from the voice library (/api/voices).
+  // Breeze "" is Default: the library's default Breeze voice, resolved by the
+  // server. Gemini keeps its built-in names alongside library voices.
+  function libraryOptions(state, provider) {
+    const unsupported = provider === 'gemini' && state.library?.providers?.gemini?.designed_voices_supported === false;
+    return (state.library?.voices || []).filter(voice => voice.provider === provider && !voice.deleted)
+      .map(voice => ({id:LIBRARY + voice.id,name:voice.name,usable:!unsupported && voice.assignable !== false,
+        reason:unsupported ? 'needs Gemini 3.8 TTS' : voice.assignable === false ? 'unavailable' : ''}));
   }
-  function defaultBreezeVoice(state) {
-    if (state.provider !== 'breeze' || state.voices.breeze) return;
-    const voices = breezeVoices(state.status).filter(voice => voice.usable);
-    const preferred = voices.find(voice => voice.id === state.status?.breeze?.default_voice_id) || voices[0];
-    if (preferred) state.voices.breeze = preferred.id;
+  function breezeDefaultName(state) {
+    const id = state.library?.defaults?.breeze;
+    return id ? libraryVoice(state,id)?.name || '' : '';
+  }
+  // Earlier saved choices named a Breeze server voice directly. Follow the
+  // library voice whose current version is that server voice, when there is one.
+  function adoptLibraryChoice(state) {
+    const value = state.voices.breeze;
+    if (!value || value.startsWith(LIBRARY) || !state.library) return false;
+    const match = (state.library.voices || []).find(voice => voice.provider === 'breeze' && !voice.deleted &&
+      (voice.versions || []).find(item => item.version === voice.current_version)?.provider_voice_id === value);
+    if (!match) return false;
+    state.voices.breeze = LIBRARY + match.id;
+    return true;
   }
   function change(panel, field, value) {
     const state = panel.state;
@@ -829,7 +863,6 @@
     if (field === 'mode') state.mode = value === 'simple' ? 'simple' : 'enhanced';
     else if (field === 'provider') {
       state.provider = PROVIDERS.includes(value) ? value : 'system';
-      defaultBreezeVoice(state);
       // Selecting an unchecked Breeze server asks the app to fetch its voices once.
       if (state.provider === 'breeze' && state.status?.breeze?.state === 'unchecked') panel.options.onRefreshBreeze?.();
     }
@@ -852,20 +885,23 @@
     const system = status.providers?.find(provider => provider.id === 'system');
     const gemini = status.providers?.find(provider => provider.id === 'gemini');
     const breeze = status.providers?.find(provider => provider.id === 'breeze');
-    // Breeze requests always name a server voice, so one must be chosen first.
+    // Breeze needs a chosen voice or a default voice before anything can be requested.
+    const breezeVoiceReady = Boolean(state.voices.breeze || state.library?.defaults?.breeze);
     const available = state.provider === 'system' ? system?.available !== false
-      : state.provider === 'breeze' ? breeze?.available === true && Boolean(state.voices.breeze)
+      : state.provider === 'breeze' ? breeze?.available === true && breezeVoiceReady
       : Boolean(status.has_api_key || gemini?.available);
     const selected = selectedSegment(panel);
     const canUseCache = selected && state.takes.get(selected.id)?.source === sourceKey(selected);
+    const defaultName = breezeDefaultName(state);
     const voices = state.provider === 'system'
       ? [{id:'',name:'Default device voice'},...(status.system_voices || [])]
       : state.provider === 'breeze'
-        ? [...(state.voices.breeze ? [] : [{id:'',name:'Choose a Breeze voice',usable:false}]),...breezeVoices(status)]
-        : builtInVoices.map(name => ({id:name,name}));
-    const selectedVoice = state.voices[state.provider];
-    if (selectedVoice && !voices.some(voice => (voice.id || voice.name) === selectedVoice)) {
-      voices.push({id:selectedVoice,name:state.provider === 'breeze' ? `${selectedVoice} (not on server)` : selectedVoice});
+        ? [{id:'',name:defaultName ? `Default (${defaultName})` : 'Default (none set yet)'},...libraryOptions(state,'breeze')]
+        : [...builtInVoices.map(name => ({id:name,name})),...libraryOptions(state,'gemini')];
+    const selectedVoice = state.voices[state.provider] || '';
+    if (selectedVoice && !voices.some(voice => (voice.id ?? voice.name) === selectedVoice)) {
+      voices.push({id:selectedVoice,name:selectedVoice.startsWith(LIBRARY) ? 'Deleted voice'
+        : state.provider === 'breeze' ? `${selectedVoice} (not in library)` : selectedVoice});
     }
     const models = (status.tts_models || []).map(item => typeof item === 'string' ? item : item.id);
     if (state.model && !models.includes(state.model)) models.push(state.model);
@@ -902,8 +938,7 @@
     const progressMarkup = chunked(state) ? (showProgress ? chapterStatus : '') : showProgress ? `<div class="simple-listen-buffer"><div><span role="status">${escape(progressText)}</span>${chapter ? '' : `<span>${buffered.readyPassages} passage${buffered.readyPassages === 1 ? '' : 's'}</span>`}</div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Saved audio buffer'}"></progress></div>` : '';
     const drawer = panel.container.closest?.('details');
     const summary = drawer?.querySelector?.('#listening-summary');
-    const narratorLabel = (state.provider === 'breeze' ? breezeVoices(status).find(voice => voice.id === selectedVoice)?.name : '') ||
-      selectedVoice || (state.provider === 'breeze' ? 'No Breeze voice' : 'Default device voice');
+    const narratorLabel = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name || selectedVoice || 'Default device voice';
     const providerLabel = PROVIDER_LABELS[state.provider] || state.provider;
     const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Studio voices selected · Narrator setup';
     const costLabel = state.provider === 'gemini' ? 'usage may incur charges' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free on this device';
@@ -914,12 +949,12 @@
         ? 'Breeze narrates on your server over the local network, so passage text is sent there. There are no per-request charges. It generates at about real-time speed; prepare the chapter ahead for faster playback.'
         : 'Device narration stays on this computer and has no model charges.';
     const unavailableNote = state.provider === 'system' ? 'Device narration is unavailable here. Choose another provider to generate new audio.'
-      : state.provider === 'breeze' ? (breeze?.available === true ? 'Choose a Breeze voice to generate new takes.'
+      : state.provider === 'breeze' ? (breeze?.available === true ? 'Choose a Breeze voice, or set a default voice in Voices, to generate new takes.'
         : breeze?.reason || status.breeze?.message || 'Connect your Breeze server in Settings to generate new takes.')
       : 'Add a Gemini API key in Settings to generate new takes.';
     const voiceOption = voice => {
       const id = voice.id ?? voice.name;
-      const disabled = state.provider === 'breeze' && voice.usable === false && id !== selectedVoice;
+      const disabled = voice.usable === false && id !== selectedVoice;
       return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}${disabled && voice.reason ? ` · ${escape(voice.reason)}` : ''}</option>`;
     };
     if (summary) {
@@ -943,7 +978,7 @@
       </div>
       <div class="simple-listen-settings">
         <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · local network</option></select></label>
-        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !selectedVoice) ? 'disabled' : ''}>Hear example</button></div>
+        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !breezeVoiceReady) ? 'disabled' : ''}>Hear example</button></div>
       </div>
       <p class="simple-listen-note simple-listen-disclosure">${escape(providerNote)}</p>
       ${!available && !canUseCache ? `<p class="simple-listen-unavailable">${escape(unavailableNote)}</p>` : ''}
@@ -1094,7 +1129,7 @@
         chapter:{job:null,preview:null,previewKey:null,watching:false,waiters:[],takesMark:null,error:'',discovered:null,missing:0},
         mode:prior.mode === 'simple' ? 'simple' : 'enhanced',provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
         voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore',
-          breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,
+          breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,library:options.voiceLibrary || null,
         model:prior.model || status.tts_model || 'gemini-3.8-flash-tts',sessionId:prior.sessionId || null,sessionKey:prior.sessionKey || null};
       books.set(book.id,state);
     }
@@ -1113,10 +1148,8 @@
     state.book = book;
     state.panel = panel;
     if (options.status) state.status = options.status;
-    if (state.provider === 'breeze' && !state.voices.breeze) {
-      defaultBreezeVoice(state);
-      if (state.voices.breeze) save(state);
-    }
+    if (options.voiceLibrary) state.library = options.voiceLibrary;
+    if (adoptLibraryChoice(state)) save(state);
     for (const [id,item] of state.takes) {
       const segment = book.segments.find(segment => segment.id === id);
       if (!segment || sourceKey(segment) !== item.source) state.takes.delete(id);
