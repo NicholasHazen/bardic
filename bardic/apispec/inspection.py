@@ -1,9 +1,7 @@
 """Contract entries for the inspection route family.
 
-Two tags live here: 'Classic analysis' (the older phase-based analysis engine:
-status, plan preview, start, and its free local preprocessing) and
-'Inspection' (read-only views of stages, retained artifacts, the story map,
-passage search, resource usage and the portable analysis export).
+Read-only views of pipeline stages, retained artifacts, the story map,
+passage search, resource usage and the portable analysis export.
 """
 from __future__ import annotations
 
@@ -12,135 +10,13 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .base import Op, View, internal, op
-from .common import Job
 
 BOOK_ID = 'Book ID, from the library or the import response.'
 BOOK_404 = 'No book has this ID.'
 
 
-# --------------------------------------------------------------- classic analysis
-
-class AnalysisChapterProgress(View):
-    """Per-chapter progress row of the classic analysis checkpoint.
-
-    Rows are created for every chapter of the book when a checkpoint is first
-    written; chapters outside the requested scope keep their earlier state.
-    Rows written by a newer cloud run start with only ``id``, ``title``,
-    ``status``, ``discovery_complete`` and ``directing_complete``; the other
-    fields appear once the run reaches that chapter.
-    """
-    id: str = Field(description='Chapter ID.')
-    title: str | None = Field(default=None, description='Chapter title at the time the row was written.')
-    stage: Literal['discovery', 'directing', 'complete'] | None = Field(
-        default=None, description='Last stage this chapter reached. Absent until a run works on the chapter.')
-    status: Literal['pending', 'running', 'completed', 'failed', 'interrupted', 'budget_limited'] = Field(
-        description='State of the chapter within its current stage. `interrupted` also covers a user cancellation and '
-                    'a server restart; `budget_limited` means a request/token/dollar allowance stopped the run.')
-    completed_units: int | None = Field(default=None, description='Requests (units) finished for this chapter in its current stage.')
-    total_units: int | None = Field(default=None, description='Requests (units) planned for this chapter in its current stage.')
-    error: str | None = Field(default=None, description='Human-readable failure text for this chapter, or null. Display only.')
-    discovery_complete: bool | None = Field(
-        default=None, description='True when character discovery covers this chapter (for newer cloud runs: validated '
-                                  'discovery covers the whole chapter text).')
-    directing_complete: bool | None = Field(
-        default=None, description='True when passage direction for this chapter is complete and still matches the current cast.')
-
-
-class AnalysisStatus(View):
-    """Checkpoint summary of the classic analysis engine for one book.
-
-    When no checkpoint exists the server synthesizes `status: "not_started"`
-    with one pending row per chapter. A checkpoint is written by
-    `POST /api/books/{book_id}/analyze` (both the local draft and the cloud
-    phases), and by the per-book `analyze` children of series runs recorded
-    before contract 0.2.0 (newer series runs use the step pipeline). It
-    survives failures, so it can describe an older run than the latest job.
-    Source text and model responses are never included.
-    """
-    fingerprint: str | None = internal('Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). '
-                                       'Absent when no checkpoint exists.', default=None)
-    provider: str | None = Field(description='Analysis provider of the checkpoint: `local`, `gemini`, `openai` or `anthropic`; null when not started.')
-    model: str | None = Field(description='Detailed-analysis model ID used, or null (local drafts and not started).')
-    status: Literal['not_started', 'running', 'completed', 'failed', 'interrupted', 'budget_limited'] = Field(
-        description='Overall state. `interrupted` covers cancellation and server restarts; `budget_limited` means a '
-                    'request/token/dollar allowance stopped the run. Validated work is kept in every case.')
-    stage: Literal['discovery', 'preprocessing', 'profiles', 'directing', 'complete'] | None = Field(
-        default=None, description='Stage in progress or last reached. `preprocessing` is the free local census at the start '
-                                  'of a cloud run; `complete` after success.')
-    phase: Literal['scan', 'profiles', 'direct', 'full'] | None = Field(
-        default=None, description='Requested cloud phase. Absent for local drafts and for checkpoints written before phases existed.')
-    scan_model: str | None = Field(default=None, description='Fast model used for discovery in cloud runs. Absent for local drafts.')
-    completed_units: int | None = Field(default=None, description='Units (requests or batches) completed in the latest run. '
-                                                                  'Absent only if a run failed before its first save.')
-    total_units: int | None = Field(default=None, description='Units known so far for the latest run. A `full` run discovers more '
-                                                              'work as it goes, so this can grow.')
-    current_chapter_id: str | None = Field(description='Chapter being worked on, or null between chapters, during profiles and when idle.')
-    scope_chapter_id: str | None = Field(default=None, description='The `chapter_id` the run was limited to, or null for the whole book. '
-                                                                   'Absent when not started.')
-    error: str | None = Field(default=None, description='Human-readable failure text of the latest run, or null. Display only.')
-    updated_at: str | None = Field(default=None, description='ISO 8601 UTC time the checkpoint was last saved. Absent when not started.')
-    chapters: list[AnalysisChapterProgress] = Field(description='One row per chapter of the book (as of the checkpoint).')
-
-
-class CensusChapter(View):
-    """Local census statistics for one chapter (section) of the book."""
-    id: str = Field(description='Chapter ID.')
-    title: str = Field(description='Chapter title as stored in the book.')
-    kind: str = Field(description='Section type: `chapter`, `recap`, `section`, `front_matter` or `back_matter` '
-                                  '(older books may use other values; `section` when unrecorded).')
-    eligible: bool = Field(description='False for front and back matter, which cloud discovery and direction skip.')
-    words: int = Field(description='Whitespace-separated word count of the chapter text.')
-    estimated_tokens: int = Field(description='Rough token estimate (UTF-8 bytes / 3), for sizing only.')
-    passages: int = Field(description='Number of passages (segments) in the chapter.')
-    dialogue_turns: int = Field(description='Number of dialogue passages.')
-    unassigned_dialogue: int = Field(description='Dialogue passages whose speaker is `unassigned`.')
-
-
-class CensusCharacter(View):
-    """Heuristic effort signals for one known or candidate character.
-
-    These count names and speech tags; they do not prove identity, presence
-    or narrative importance.
-    """
-    id: str = Field(description='Book-local character ID for a known character, or `candidate_<hash>` for a name found only '
-                                'in speech tags.')
-    name: str = Field(description='Cast name for a known character; for a candidate, the name as it appeared in the first matching speech tag.')
-    aliases: list[str] = Field(description='Cast aliases of a known character (possibly empty); always empty for a speech-tag candidate.')
-    known_character: bool = Field(description='True for a character already in the book cast; false for a speech-tag candidate.')
-    mentions: int = Field(description='Whole-word name/alias matches in eligible chapters (only unambiguous names are counted).')
-    explicit_speech_tags: int = Field(description='Speech tags such as `said Anna` naming this character.')
-    dialogue_turns: int = Field(description='Dialogue passages currently attributed to this character.')
-    dialogue_words: int = Field(description='Words in those dialogue passages.')
-    chapter_count: int = Field(description='Eligible chapters with at least one mention.')
-    chapter_mentions: dict[str, int] = Field(description='Mention count by chapter ID (chapters with none are omitted).')
-    uncertain_attributions: int = Field(description='Attributed dialogue passages with missing or below-0.8 confidence.')
-    ambiguous_aliases: int = Field(description='Names/aliases shared with another character.')
-    priority_score: int = Field(description='Heuristic score combining mentions, tags, dialogue and spread. Higher means more effort.')
-    priority: Literal['deep', 'standard', 'basic'] = Field(description='Effort tier derived from the score and ambiguity.')
-    recommended_evidence_limit: int = Field(description='Evidence quotations a profile request uses for this tier (16, 10 or 5).')
-
-
-class AnalysisCensus(View):
-    """Free, rules-based whole-book census. Cached per book input; recomputed when the text, structure, cast or
-    attributions change. Retained as a `census` artifact."""
-    version: int = Field(description='Census algorithm version (currently 1).')
-    fingerprint: str = internal('Cache key of the census inputs.')
-    source_hash: str = internal('Hash of the chapter IDs and texts the census used.')
-    local_complete: bool = Field(description='Always true: the local census covers every chapter.')
-    local_chapters_scanned: int = Field(description='Chapters scanned (all chapters, including front/back matter).')
-    eligible_chapter_ids: list[str] = Field(description='Chapters eligible for cloud discovery and direction, in book order.')
-    eligible_chapters: int = Field(description='Count of eligible chapters.')
-    chapters: list[CensusChapter] = Field(description='One row per chapter of the book in book order, including front and back matter '
-                                                        '(see `eligible`).')
-    characters: list[CensusCharacter] = Field(description='Known characters and speech-tag candidates (excluding `narrator` and '
-                                                          '`unassigned`), highest priority first.')
-    words: int = Field(description='Total words across all chapters.')
-    estimated_source_tokens: int = Field(description='Rough token estimate for eligible chapters only.')
-    note: str = Field(description='Interpretation caveat. Display only.')
-
-
 class AnalysisUsage(View):
-    """Tracked analysis request usage for a book, across all runs (classic and step pipeline)."""
+    """Tracked analysis request usage for a book, across all runs, including runs of the removed Classic engine."""
     attempts: int = Field(description='Recorded analysis HTTP attempts, including failed and repair attempts.')
     input_tokens: int = Field(description='Sum of reported input tokens. Attempts without reported usage add 0 here; see '
                                           '`unknown_usage_attempts`.')
@@ -152,103 +28,52 @@ class AnalysisUsage(View):
     note: str = Field(description='Interpretation caveat. Display only.')
 
 
-class ProfileFreshness(View):
-    """Currency of one character's vocal profile."""
-    character_id: str = Field(description='Book-local character ID.')
-    state: Literal['reviewed', 'current', 'stale', 'draft'] = Field(
-        description='`reviewed`: manually edited (authoritative). `current`: refined from the current evidence set. '
-                    '`stale`: refined earlier but the evidence or settings changed. `draft`: never refined.')
-    provisional: bool = Field(description='True when the profile may still change: the whole book is not yet discovered, '
-                                          'or the state is neither `current` nor `reviewed`.')
-
-
-class AnalysisCoverage(View):
-    """Local census, semantic discovery coverage, tracked usage and profile freshness.
-
-    Whole-book discovery coverage and profile freshness are separate facts.
-    Only validated cloud discovery counts as semantic coverage; local drafts do not.
-    """
-    local: AnalysisCensus = Field(description='The free local census.')
-    semantic_chapters_complete: int = Field(description='Eligible chapters whose full text is covered by validated cloud discovery.')
-    semantic_chapter_ids: list[str] = Field(description='Those chapter IDs, in book order.')
-    eligible_chapters: int = Field(description='Eligible chapters (same as `local.eligible_chapters`).')
-    whole_book_discovered: bool = Field(description='True when every eligible chapter is covered (false for a book with none).')
-    profiles_provisional: bool = Field(description='True unless the whole book is discovered and every profile is current or reviewed.')
-    usage: AnalysisUsage
-    note: str = Field(description='Interpretation caveat. Display only.')
-    characters: list[ProfileFreshness] = Field(description='Profile freshness per cast member, excluding `narrator` and `unassigned`.')
-    profiles_current: int = Field(description='Profiles whose state is `current` or `reviewed`.')
-    profiles_total: int = Field(description='Profiles considered (cast members excluding `narrator` and `unassigned`).')
-
-
-class AnalysisPlanStageCounts(View):
-    """Pending (uncached) requests by stage."""
-    discovery: int = Field(description='Character-discovery requests (fast model).')
-    profiles: int = Field(description='Profile-refinement requests (detailed model).')
-    directing: int = Field(description='Passage/scene direction requests (detailed model).')
-
-
-class AnalysisPlanLimits(View):
-    """Echo of the request's `limits` with defaults applied. The preview does not enforce them."""
-    max_requests: int = Field(description='Per-run HTTP request cap.')
-    max_input_tokens: int = Field(description='Per-run input-token cap.')
-    max_output_tokens: int = Field(description='Per-run output-token cap.')
-    budget_usd: float | None = Field(description='Cumulative tracked analysis allowance for the book in USD; null means no dollar guard.')
-
-
-class AnalysisPlan(View):
-    """Preview of currently known classic-analysis work. No provider is contacted."""
-    phase: Literal['scan', 'profiles', 'direct', 'full'] = Field(description='Requested phase.')
-    provider: str = Field(description='Resolved provider: the request value, or the saved default analysis provider.')
-    scan_model: str | None = Field(description='Configured discovery (fast) model for this provider, or null when none is configured '
-                                               '(the run then falls back to the detailed model or the built-in default).')
-    model: str | None = Field(description='Configured detailed model for this provider, or null (the run then uses the built-in default).')
-    requests: int = Field(description='Requests that are not already cached. Always 0 for `local`. Excludes retries and evidence repairs.')
-    cached_units: int = Field(description='Known units that validated cached output would satisfy (only when `resume` is true).')
-    estimated_input_tokens: int = Field(description='Approximate input tokens of the pending requests (0 for `local`).')
-    output_token_allowance: int = Field(description='Sum of the pending requests\' output caps (0 for `local`).')
-    estimated_cost_usd: float | None = Field(description='Approximate USD cost of the pending requests; null when a model has no '
-                                                         'known price; 0 for `local`. Not an invoice.')
-    steps_by_stage: AnalysisPlanStageCounts = Field(description='Pending requests by stage. Computed for `local` too, although a local run '
-                                                                'does not send these requests.')
-    coverage: AnalysisCoverage = Field(description='Same body as `GET /api/books/{book_id}/preprocessing`, with profile freshness '
-                                                   'computed against the plan\'s working cast.')
-    future_work_unknown: bool = Field(description='True for `full`: discovery can add profiles and change direction prompts, '
-                                                  'so the estimate is incomplete.')
-    note: str = Field(description='Interpretation caveat. Display only.')
-    limits: AnalysisPlanLimits
-
-
 # ------------------------------------------------------------------ inspection
 
 class PipelineStage(View):
-    """One stage card of the pipeline inspector. Counts have stage-specific units; never sum them."""
-    id: Literal['import', 'structure', 'census', 'series', 'discovery', 'profiles', 'directing', 'voices',
-                'narration', 'alignment', 'export'] = Field(description='Stage ID, in pipeline order.')
-    label: str = Field(description='Display name.')
-    status: Literal['complete', 'partial', 'pending', 'available', 'not_started', 'provisional', 'planned', 'ready',
-                    'queued', 'running', 'failed', 'interrupted', 'cancelled', 'budget_limited'] = Field(
-        description='`complete`/`partial`/`pending` from the counts. Fixed states: `series` is `available` (book is in a series) '
-                    'or `not_started`; `profiles` is `provisional` while whole-book discovery is incomplete and some profiles '
-                    'are current; `alignment` is `planned`; `export` is `ready`. An active `analyze` job whose checkpoint '
-                    'stage is this stage shows the job status (`queued`/`running`); likewise an active `render` job for '
-                    '`narration`. With no active job, a failed/interrupted/budget-limited checkpoint shows that status on its '
-                    'stage.')
-    completed: int | None = Field(description='Units done, or null where not counted (`series`, `export`).')
-    total: int | None = Field(description='Units in scope, or null where not counted.')
-    unit_label: str = Field(description='What the counts measure, e.g. `sections`, `eligible sections`, `profiles`, `passages`.')
-    dependencies: list[str] = Field(description='Stage IDs this stage conceptually depends on. Descriptive, not a scheduler.')
-    artifact_count: int = Field(description='Retained artifact versions whose stage equals this ID.')
+    """One stage card of the pipeline inspector. Counts have stage-specific units; never sum them.
+
+    Cards come in pipeline order: `import` and `series`, then one card per
+    analysis step (the step IDs of `GET /api/analysis-pipeline`, currently
+    `structure`, `census`, `discovery`, `quotes`, `profiles`, `directing`),
+    then `voices`, `narration`, `alignment` and `export`. A step card counts
+    accepted results of the step pipeline, the same numbers as
+    `GET /api/books/{book_id}/analysis-pipeline`.
+    """
+    id: str = Field(description='Stage ID: `import`, `series`, a pipeline step ID, `voices`, `narration`, `alignment` or '
+                                '`export`. Clients must tolerate new step IDs.')
+    label: str = Field(description='Display name. For a step card, the step\'s label.')
+    status: Literal['complete', 'partial', 'pending', 'stale', 'available', 'not_started', 'planned', 'ready',
+                    'queued', 'running'] = Field(
+        description='`complete`/`partial`/`pending` from the counts. A step card is `queued`/`running` while its latest '
+                    'step version is, and otherwise `stale` when some accepted result is out of date with its inputs. '
+                    '`narration` shows an active `render` job\'s status. Fixed states: `series` is `available` (book is in '
+                    'a series) or `not_started`; `alignment` is `planned`; `export` is `ready`.')
+    completed: int | None = Field(description='Units done, or null where not counted (`series`, `export`). For a step card, '
+                                              'accepted scopes.')
+    total: int | None = Field(description='Units in scope, or null where not counted. For a step card, its scopes; '
+                                          'chapter-scoped steps count only eligible sections.')
+    unit_label: str = Field(description='What the counts measure, e.g. `sections`, `eligible sections`, `book result`, '
+                                        '`profiles`, `passages`.')
+    dependencies: list[str] = Field(description='Stage IDs this stage conceptually depends on. For a step card, the step\'s '
+                                                'declared inputs, or `import` when it has none. Descriptive, not a scheduler.')
+    artifact_count: int = Field(description='Retained artifact versions whose stage equals this ID, including versions from '
+                                            'older engines that used the same stage name.')
+    stale_count: int | None = Field(description='Step cards: accepted scopes whose inputs changed since acceptance. Null for '
+                                                'other cards.')
+    candidate_count: int | None = Field(description='Step cards: recent step versions (of the newest 20) waiting for review. '
+                                                    'Null for other cards.')
     note: str = Field(description='Interpretation text. Display only.')
 
 
 class PipelineJobSummary(View):
     """A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`."""
     id: str = Field(description='Job ID.')
-    kind: str = Field(description='Job kind, e.g. `analyze`, `pipeline`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`.')
+    kind: str = Field(description='Job kind, e.g. `pipeline`, `series`, `render`, `listen`, `listen_chapter`, `performance`, '
+                                  '`voice_preview`, or `analyze` for historical jobs of the removed Classic engine.')
     status: str = Field(description='Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, '
                                     '`budget_limited`, `quota_limited`.')
-    phase: str | None = Field(default=None, description='Classic analysis phase, present on `analyze` jobs.')
+    phase: str | None = Field(default=None, description='Phase of a historical `analyze` job of the removed Classic engine.')
     progress: int = Field(description='Units completed so far, in kind-specific units (see `Job`); not a percentage.')
     total: int = Field(description='Units planned, in the same units; 0 when not yet known. May grow while running.')
     message: str = Field(description='Progress or outcome text. Display only.')
@@ -258,14 +83,14 @@ class PipelineJobSummary(View):
 
 
 class PipelineAttempt(View):
-    """One recorded analysis HTTP attempt (classic or step pipeline), newest 100 for the book.
+    """One recorded analysis HTTP attempt, newest 100 for the book (step pipeline, or the removed Classic engine).
 
     Fields come from the stored attempt and may be absent on records from
     older versions. Prompts, responses and credentials are never included.
     """
     id: str = Field(description='Attempt ID.')
     run_id: str | None = Field(default=None, description='Job ID of the run that sent it.')
-    stage: str | None = Field(default=None, description='Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID.')
+    stage: str | None = Field(default=None, description='Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records.')
     unit_key: str | None = Field(default=None, description='Opaque cache key of the unit of work.')
     provider: str | None = Field(default=None, description='Provider ID.')
     model: str | None = Field(default=None, description='Model ID.')
@@ -292,7 +117,7 @@ class PipelineEvent(View):
     id: str = Field(description='Event ID (32 hex characters).')
     book_id: str = Field(description='Book ID the event belongs to.')
     run_id: str | None = Field(description='Job ID of the run.')
-    stage: str | None = Field(description='Classic stage or pipeline step ID.')
+    stage: str | None = Field(description='Pipeline step ID, or a stage of the removed Classic engine on older records.')
     unit_key: str | None = Field(description='Opaque unit cache key.')
     event: Literal['started', 'accepted', 'cache_hit', 'cache_rejected', 'cache_superseded', 'validation_rejected',
                    'budget_limited', 'failed', 'cancelled'] = Field(description='What happened to the unit.')
@@ -301,7 +126,7 @@ class PipelineEvent(View):
                                                              'cached output or rejection record.')
     attempt_id: str | None = Field(default=None, description='Related HTTP attempt, when known.')
     error: str | None = Field(default=None, description='Redacted failure or rejection text. Display only.')
-    cached_unit_key: str | None = Field(default=None, description='For `cache_rejected` in classic runs: the unit key of the rejected cache entry.')
+    cached_unit_key: str | None = Field(default=None, description='For `cache_rejected` in older Classic runs: the unit key of the rejected cache entry.')
     repair: bool | None = Field(default=None, description='For step-pipeline `started`: true when this is an evidence-repair request.')
 
 
@@ -659,99 +484,7 @@ class PassageSearchResult(View):
 
 # ---------------------------------------------------------------- operations
 
-ANALYSIS_BODY_NOTE = """\
-The request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from
-runtime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for
-the fast discovery model), not from this request. A typical body:
-
-```json
-{"provider": "openai", "phase": "scan", "resume": true,
- "limits": {"max_requests": 25, "max_input_tokens": 1000000, "max_output_tokens": 100000, "budget_usd": 1.0}}
-```
-
-Cloud phases (`provider` = `gemini`, `openai` or `anthropic`):
-
-| `phase` | Scope |
-| --- | --- |
-| `scan` | Discover characters over eligible source sections using the fast model. |
-| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |
-| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |
-| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |
-
-`provider: "local"` runs the free heuristic draft instead, without semantic model discovery; `phase` and
-`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when
-supplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names
-such a section. The main UI uses whole-book scan/profiles and selected-chapter direction.
-"""
-
 OPS: list[Op] = [
-    op('GET', '/api/books/{book_id}/analysis', 'getAnalysisStatus', 'Classic analysis',
-       'Get classic analysis progress',
-       'Checkpoint summary of the classic analysis engine, including per-chapter progress. Returns '
-       '`status: "not_started"` (with one pending row per chapter) when no checkpoint exists.\n\n'
-       'The checkpoint belongs to the latest run that saved progress and survives failures, cancellation and '
-       'restarts (a server restart marks a running checkpoint `interrupted`). Follow a running analysis through '
-       'its job (`GET /api/jobs`); use this for per-chapter detail. The step pipeline (`/analysis-pipeline`) does '
-       'not write this checkpoint.\n\n'
-       'The classic engine may be retired in favor of the step pipeline.',
-       response=AnalysisStatus, errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
-
-    op('POST', '/api/books/{book_id}/analyze', 'startClassicAnalysis', 'Classic analysis',
-       'Start or resume classic analysis',
-       'Queues an `analyze` job and returns it immediately. Poll `GET /api/jobs` until it is terminal; '
-       'failures, cancellation and allowance stops (`budget_limited`) appear in the job, not as HTTP errors. '
-       'Cancel with `POST /api/jobs/{job_id}/cancel`; a remote request already sent can still complete and be '
-       'billed. To resume after a stop, failure or restart, call this endpoint again (an old job ID is never '
-       'revived).\n\n'
-       'Send the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud '
-       'provider may incur charges; `provider: "local"` never contacts a provider. There is no server-enforced '
-       'preview fingerprint for these runs (pipeline and series runs have one); the UI invalidates its preview when local '
-       'inputs change.\n\n'
-       + ANALYSIS_BODY_NOTE +
-       '\nThe provider and configured models are snapshotted when the job is queued; the job carries `provider`, '
-       '`model`, `scan_model`, `phase` and `chapter_id`.\n\n'
-       'Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. '
-       'Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is '
-       'sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, '
-       'affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan '
-       'coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is '
-       'updated (new revision) as each chapter stage is published.\n\n'
-       'The classic engine may be retired in favor of the step pipeline.',
-       response=Job, response_description='The queued `analyze` job.',
-       errors={404: BOOK_404,
-               400: 'The book is archived (restore it first); `chapter_id` is not a chapter of this book; the provider is not '
-                    '`local`, `gemini`, `openai` or `anthropic`; or the cloud provider has no API key configured.',
-               409: 'A job is already queued or running for this book, or an active series run has reserved it.'},
-       params={'book_id': BOOK_ID}, cost='may_charge'),
-
-    op('GET', '/api/books/{book_id}/preprocessing', 'getAnalysisPreprocessing', 'Classic analysis',
-       'Get the local census, discovery coverage and profile freshness',
-       'Free local census (names, speech tags, dialogue counts and heuristic priority per character; words and '
-       'token estimates per chapter), semantic source coverage from validated cloud discovery, tracked analysis '
-       'usage, and profile freshness/provisional state. No provider is contacted.\n\n'
-       'Not purely a read: it computes and caches the census when the book changed (retained as a `census` artifact '
-       'and measured as a `census` resource operation), may import validated discovery from an older checkpoint '
-       'into the unit cache, and may retain `series_context` artifacts for linked earlier volumes. None of this '
-       'changes the book.',
-       response=AnalysisCoverage, errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
-
-    op('POST', '/api/books/{book_id}/analysis-plan', 'previewClassicAnalysis', 'Classic analysis',
-       'Preview classic analysis work',
-       'Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without '
-       'provider inference. Returns the requested phase, provider and configured models, pending requests, '
-       'cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` '
-       '(with defaults applied; the preview does not enforce them).\n\n'
-       'The estimate covers currently known work before retries and evidence repairs; `full` can discover more '
-       'work. Cost is approximate (null when a model has no known price); the run\'s request guard reserves more '
-       'conservatively. Unlike `analyze`, the preview works on archived books and while a job is running. It has '
-       'the same local side effects as `GET /api/books/{book_id}/preprocessing` (census cache and retained '
-       'artifacts) and never changes the book.\n\n'
-       + ANALYSIS_BODY_NOTE,
-       response=AnalysisPlan,
-       errors={404: BOOK_404,
-               400: '`chapter_id` is not a chapter of this book, or the provider is not `local`, `gemini`, `openai` or `anthropic`.'},
-       params={'book_id': BOOK_ID}),
-
     op('GET', '/api/books/{book_id}/pipeline', 'getPipelineInspector', 'Inspection',
        'Inspect the processing pipeline',
        'Versioned envelope with stage IDs, status, counts and dependencies; retained artifact counts and kinds; '
@@ -760,9 +493,13 @@ OPS: list[Op] = [
        'The pipeline is an inspector, not a generic dependency scheduler. Its stage counts have different units '
        'and must not be summed into a global completion percentage. An HTTP 200 attempt does not mean its output '
        'passed validation: use `validation_state`.\n\n'
-       'No provider is contacted, but the first inspection of a book in a server process retains legacy data as '
-       'artifacts (marked `legacy_provenance`), and it has the local side effects of '
-       '`GET /api/books/{book_id}/preprocessing`. It never changes the book.',
+       'Step cards count the step pipeline\'s accepted, out-of-date (`stale_count`) and waiting (`candidate_count`) '
+       'results, as `GET /api/books/{book_id}/analysis-pipeline` does. Artifact counts include retained versions '
+       'from the removed Classic engine.\n\n'
+       '**This GET writes.** Like the pipeline overview, it first records outside changes as `baseline` or '
+       '`external` step versions (see `GET /api/books/{book_id}/analysis-pipeline`). The first inspection of a book '
+       'in a server process also retains legacy data as artifacts (marked `legacy_provenance`). No provider is '
+       'contacted, and the book itself is not changed.',
        response=PipelineInspector, errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
 
     op('GET', '/api/books/{book_id}/resources', 'getBookResourceUsage', 'Inspection',
@@ -884,34 +621,4 @@ OPS: list[Op] = [
 ]
 
 
-REQUEST_DOCS: dict[str, dict[str, str]] = {
-    'AnalysisRequest': {
-        '__doc__': 'A classic analysis request, used both to preview (`analysis-plan`) and to start (`analyze`). Send the '
-                   'same body to both.',
-        'provider': '`local`, `gemini`, `openai` or `anthropic`. Omitted or null uses the saved default analysis provider. '
-                    '`local` runs the free heuristic draft (no semantic discovery) and ignores `phase` and `limits`.',
-        'chapter_id': 'Limit the run to this chapter of the book (must belong to it). Omitted or null: the whole book '
-                      '(cloud phases skip front and back matter; the local draft covers every chapter). Profile '
-                      'refinement is book-wide regardless.',
-        'resume': 'Reuse validated saved units and chapter progress (default true). False re-requests work that would '
-                  'otherwise be reused (retained history is kept).',
-        'phase': 'Cloud phase: `scan` (default; character discovery with the fast model), `profiles` (refine profiles '
-                 'from retained evidence and confirmed earlier-series context), `direct` (annotate passages and scenes '
-                 'with the detailed model) or `full` (all three; its initial estimate is incomplete).',
-        'limits': 'Allowances checked before every HTTP attempt. Omitted: all defaults.',
-    },
-    'AnalysisLimits': {
-        '__doc__': 'Allowances reserved before every analysis HTTP attempt, including retries and evidence repairs. When '
-                   'one would be exceeded the run stops as `budget_limited` and keeps its validated work. Request and '
-                   'token caps apply to the run; the dollar guard includes prior tracked analysis for the book. Unknown '
-                   'prices, or earlier attempts of unknown cost, stop a run that has a dollar guard. These limits do not '
-                   'cap narration (TTS) spending and do not represent account credit.',
-        'max_requests': 'Maximum HTTP attempts in this run, 1–1,000 (default 25).',
-        'max_input_tokens': 'Maximum input tokens in this run, 1,000–10,000,000 (default 1,000,000). Reported usage '
-                            'counts; attempts without reported usage count their conservative reservation.',
-        'max_output_tokens': 'Maximum output tokens in this run, 1,000–2,000,000 (default 100,000). Same accounting.',
-        'budget_usd': 'Tracked analysis allowance for the whole book in USD, including earlier runs: greater than 0 and '
-                      'at most 1,000 (default 1.0). Explicit null removes the dollar guard, leaving the request and '
-                      'token caps.',
-    },
-}
+REQUEST_DOCS: dict[str, dict[str, str]] = {}

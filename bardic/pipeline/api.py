@@ -194,6 +194,39 @@ def _versions_view(repository, registry, conn, book_id, step, step_runs):
     return items
 
 
+def step_states(store, repository, registry, book):
+    """Per-step accepted, stale and candidate state of one book, in pipeline order.
+
+    Captures outside changes first, so the counts describe the current book.
+    Shared by the Analyze overview and the Details explorer's stage cards.
+    """
+    book_id = book['id']
+    with store.lock:
+        # Commit outside-change capture before other connections read the history.
+        with store.connect() as conn:
+            projection.sync(repository, registry, conn, book)
+        eligible = {c['id'] for c in eligible_chapters(book)}
+        with store.connect() as conn:
+            stale = projection.stale_scopes(repository, registry, conn, book_id)
+            steps = []
+            for step in registry:
+                heads = repository.heads(conn, book_id, step.id)
+                payloads = repository.payloads(conn, heads.values())
+                origins = {}
+                for identifier in heads.values():
+                    origin = payloads.get(identifier, {}).get('origin', 'run')
+                    origins[origin] = origins.get(origin, 0) + 1
+                versions = _versions_view(repository, registry, conn, book_id, step, repository.step_runs(book_id, step.id, 20))
+                scopes = [s for s in step.scopes(book) if not step.chapter_scoped or s in eligible]
+                steps.append({'id': step.id,
+                              'accepted_scopes': sum(s in heads for s in scopes), 'has_accepted': bool(heads),
+                              'total_scopes': len(scopes), 'accepted_origins': origins,
+                              'stale_scopes': stale.get(step.id, []),
+                              'pending_versions': sum(v['state'] == 'candidate' for v in versions),
+                              'latest': versions[0] if versions else None})
+    return steps
+
+
 def unmet_message(registry, step_id, inputs):
     labels = ' and '.join(registry.get(i).label for i in inputs)
     return (f'{registry.get(step_id).label} needs accepted results from {labels}. '
@@ -275,7 +308,7 @@ def execute_run(runtime, registry, job, run, secrets, *, limits, concurrency, fr
     """Run a queued pipeline run inside its job, then settle the run record.
 
     ``limits`` must be a full ``Limits`` dump: ``None`` values mean uncapped,
-    while a missing key would fall back to the older phase-engine defaults.
+    while a missing key would fall back to ``RequestBudget``'s default caps.
     """
     repository = PipelineRepository(runtime.store)
     book_id = run['book_id']
@@ -341,28 +374,8 @@ def build_router(registry: Registry):
         settings = step_settings(runtime, registry)
         with store.lock:
             book = store.book(book_id)
-            # Commit outside-change capture before other connections read the history.
-            with store.connect() as conn:
-                projection.sync(repository, registry, conn, book)
-            eligible = {c['id'] for c in eligible_chapters(book)}
-            with store.connect() as conn:
-                stale = projection.stale_scopes(repository, registry, conn, book_id)
-                steps = []
-                for step in registry:
-                    heads = repository.heads(conn, book_id, step.id)
-                    payloads = repository.payloads(conn, heads.values())
-                    origins = {}
-                    for identifier in heads.values():
-                        origin = payloads.get(identifier, {}).get('origin', 'run')
-                        origins[origin] = origins.get(origin, 0) + 1
-                    versions = _versions_view(repository, registry, conn, book_id, step, repository.step_runs(book_id, step.id, 20))
-                    scopes = [s for s in step.scopes(book) if not step.chapter_scoped or s in eligible]
-                    steps.append({'id': step.id, 'settings': settings[step.id],
-                                  'accepted_scopes': sum(s in heads for s in scopes), 'has_accepted': bool(heads),
-                                  'total_scopes': len(scopes), 'accepted_origins': origins,
-                                  'stale_scopes': stale.get(step.id, []),
-                                  'pending_versions': sum(v['state'] == 'candidate' for v in versions),
-                                  'latest': versions[0] if versions else None})
+            steps = [{'id': item['id'], 'settings': settings[item['id']], **{k: v for k, v in item.items() if k != 'id'}}
+                     for item in step_states(store, repository, registry, book)]
         runs = repository.runs(book_id, 5)
         active = next((r for r in runs if r['status'] in ACTIVE), None)
         return {'book_id': book_id, 'revision': book.get('revision', 0), 'steps': steps, 'active_run': active,

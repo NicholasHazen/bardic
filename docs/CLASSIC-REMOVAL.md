@@ -1,8 +1,8 @@
 # Removing the legacy phase ("Classic") analysis engine
 
-Status: stage 1 done (2026-09-28). Stages 2–4 are pending. The owner approved the four stages; stage 4 needs the owner's go before it runs on a real library.
+Status: stages 1–3 are done (2026-09-28). Stage 4 is pending. The owner approved the four stages, and stage 4 needs the owner's go before it runs on a real library.
 
-"Classic" is the analysis engine that came before the step pipeline. It covers the progressive phase runner ([progressive.py](../bardic/progressive.py)), the older chapter-checkpoint runner ([staged_analysis.py](../bardic/staged_analysis.py)), their unit cache and coverage reader ([legacy_phase.py](../bardic/legacy_phase.py)), the `analysis_checkpoints` record in [store.py](../bardic/store.py), and the book routes `POST /analyze`, `GET /preprocessing`, `POST /analysis-plan`, `GET /analysis` and `GET /pipeline`. The UI stopped offering it in UX phase 2. The step pipeline ([pipeline/](../bardic/pipeline/), [the analysis pipeline](ANALYSIS-PIPELINE.md)) replaces it. Series runs already use the step pipeline ([decision](DECISIONS.md)).
+"Classic" is the analysis engine that came before the step pipeline. It covered the progressive phase runner (`progressive.py`), the older chapter-checkpoint runner (`staged_analysis.py`), their unit cache and coverage reader (`legacy_phase.py`), the `analysis_checkpoints` record in [store.py](../bardic/store.py), and the book routes `POST /analyze`, `GET /preprocessing`, `POST /analysis-plan` and `GET /analysis`. `GET /pipeline` read its state too. The UI stopped offering the engine in UX phase 2, and stage 3 deleted its code and routes. The step pipeline ([pipeline/](../bardic/pipeline/), [the analysis pipeline](ANALYSIS-PIPELINE.md)) replaces it. Series runs already use the step pipeline ([decision](DECISIONS.md)).
 
 ## The four stages
 
@@ -10,9 +10,9 @@ Each stage is its own pull request.
 
 | Stage | What changes | Behavior change | Gate |
 | --- | --- | --- | --- |
-| 1. Untangle | Live code stops importing the engine. Shared code moves out of it. | None. Prompts and cache keys are byte-identical. | Full suite; [prompt identity test](../tests/test_prompt_identity.py); [isolation test](../tests/test_legacy_isolation.py) |
-| 2. Evidence projection | Accepted step evidence becomes `character_references` and series observations. The checkpoint stops being their only writer. | Cast references and series context come from accepted pipeline versions. | [Series memory plan](SERIES-MEMORY-PLAN.md) |
-| 3. Delete code paths | Delete the engine files, their routes and their tests. Remove the references listed in `ALLOWED` in the isolation test. | The Classic routes return 404. Existing data is still readable where noted below. | Stage 2 merged; inventory below |
+| 1. Untangle (**done**) | Live code stops importing the engine. Shared code moves out of it. | None. Prompts and cache keys are byte-identical. | Full suite; [prompt identity test](../tests/test_prompt_identity.py); [isolation test](../tests/test_legacy_isolation.py) |
+| 2. Evidence projection (**done**) | Accepted step evidence becomes `character_references`. The checkpoint stops being their only writer. Series memory (contract 0.3.0) then made series context read those rows. | Cast references and series context come from accepted pipeline versions. | [Series memory plan](SERIES-MEMORY-PLAN.md) |
+| 3. Delete code paths (**done**) | Delete the engine files, their routes and their tests. Rebuild the Details explorer from the step pipeline. | The Classic routes are no longer served. Existing data is still readable where noted below. | Stage 2 merged; contract 0.4.0 |
 | 4. Drop data | A migration drops the legacy tables and legacy rows, after a verified backup and backfill. | Legacy rows are gone. Everything listed under "keep" is intact. | **Owner go**; [operations](OPERATIONS.md) backup |
 
 ## Stage 1: what moved
@@ -24,122 +24,91 @@ Nothing was renamed on the wire, and no table schema changed.
 | `progressive.discovery_ranges`, `discovery_specs`, `spread`, `profile_specs`, `direction_cast`, `direction_specs` | [pipeline/prompts.py](../bardic/pipeline/prompts.py) | The Discovery, Profiles and Directing steps build their requests with these. `progressive` imports them back. |
 | `staged_analysis._split_chapter` | [analysis_common.py](../bardic/analysis_common.py) `split_chapter` | The Directing step publishes scene boundaries with it. |
 | `staged_analysis.fingerprint`, `PIPELINE_VERSION` | [analysis_common.py](../bardic/analysis_common.py) | Structure repair re-keys a saved checkpoint with it. It now uses `processing.digest`, which is the same SHA-256 of the same sorted JSON. |
-| `ProcessingStore.unit`, `save_unit`, `units`, and creation of `analysis_units` | [legacy_phase.py](../bardic/legacy_phase.py) `LegacyProcessingStore` (a subclass) | [processing.py](../bardic/processing.py) now holds only shared request infrastructure. It neither creates nor reads `analysis_units`. |
-| `preprocessing.coverage` | [legacy_phase.py](../bardic/legacy_phase.py) `coverage` | It reads `analysis_units` and `analysis_checkpoints`. The census stays in [preprocessing.py](../bardic/preprocessing.py). |
+| `ProcessingStore.unit`, `save_unit`, `units`, and creation of `analysis_units` | `legacy_phase.py` (deleted in stage 3) `LegacyProcessingStore` (a subclass) | [processing.py](../bardic/processing.py) now holds only shared request infrastructure. It neither creates nor reads `analysis_units`. |
+| `preprocessing.coverage` | `legacy_phase.py` (deleted in stage 3) `coverage` | It reads `analysis_units` and `analysis_checkpoints`. The census stays in [preprocessing.py](../bardic/preprocessing.py). |
 
 `progressive` and `staged_analysis` re-export the moved names, so the engine and its tests run unchanged. Test files changed only in their import lines. The legacy unit tests import `LegacyProcessingStore as ProcessingStore`.
 
-`analysis_units` is created only when `LegacyProcessingStore` is constructed. Existing libraries already have the table. Everything else that reads it checks that it exists first: the artifact backfill and the library storage measurement. A new library gets the table only if a Classic route runs.
+`analysis_units` is created only when `LegacyProcessingStore` is constructed. Existing libraries already have the table. Everything else that reads it checks that it exists first: the artifact backfill and the library storage measurement. A new library got the table only if a Classic route ran; since stage 3, nothing creates it.
 
 **Evidence of no behavior change.**
 
 - [test_prompt_identity.py](../tests/test_prompt_identity.py) pins SHA-256 digests of the discovery, resumed-discovery, profile and direction request specs for a synthetic four-chapter book. It also pins the step pipeline's unit cache keys for the Discovery, Profiles and Directing steps, and the checkpoint fingerprint. The digests were recorded from the pre-move code at `7b1f5b0`. A JSON dump of the specs was also byte-compared before and after the move.
 - The existing suite passes with no assertion edits.
 
-## Dependency check
+## Stage 3: what was removed
 
-[test_legacy_isolation.py](../tests/test_legacy_isolation.py) keeps stage 1 true:
+Stage 3 landed on 2026-09-28 with contract **0.4.0 (BREAKING)**. It was written against 0.2.3 as 0.3.0 and renumbered when series memory took 0.3.0 first. The owner answered the three open questions first:
 
-- **Static.** It parses every module under `bardic/`, including imports inside functions and `from . import x`. Only the modules in `ALLOWED` may import `progressive`, `staged_analysis` or `legacy_phase`. None of `bardic/pipeline/` or the shared modules may import them.
-- **Runtime.** Importing `bardic.app`, the pipeline router, runner, projection, prompts and steps, `pipeline_view`, `series_processing`, `processing` and `preprocessing`, then building the step registry, loads none of the three legacy modules.
-- **Storage.** The shared `ProcessingStore` does not create `analysis_units`. On an existing library, the table's DDL and rows are unchanged, and `LegacyProcessingStore` reads them.
+1. **Keep the Details explorer.** `GET /api/books/{id}/pipeline` stays, with its stage cards rebuilt from the step pipeline.
+2. **Delete the in-memory cloud path.** `analysis._cloud` and `_reconcile_known_aliases` had no caller left. The demo's no-store local draft stays.
+3. **Keep Classic-era immutable artifacts.** They are retained history, and stage 4 keeps them.
 
-```sh
-uv run --frozen pytest -q tests/test_legacy_isolation.py tests/test_prompt_identity.py
-# Quick manual view of what still references the engine:
-grep -rnE "(progressive|staged_analysis|legacy_phase)( |$|,)" bardic --include='*.py' | grep import
-```
+### Code
 
-After stage 1, the only references are the three `ALLOWED` modules:
+| Removed | Notes |
+| --- | --- |
+| `bardic/progressive.py`, `bardic/staged_analysis.py`, `bardic/legacy_phase.py` | The phase runner, the chapter runner, and their unit cache and coverage reader. |
+| The store and phase branches of `analysis.analyze_book`, plus `analysis._cloud`, `_reconcile_known_aliases` and `DEFAULT_MODELS` | `analyze_book(book, provider='local', progress, cancelled)` now runs only the local heuristic draft. `POST /api/demo` uses it. Any other provider raises `ValueError`. The shared request, evidence and annotation helpers that the pipeline imports stay. |
+| `app.Runtime.analyze`, `AnalysisLimits`, `AnalysisRequest` | Only `POST /analyze` used them. |
+| Routes `POST /api/books/{id}/analyze`, `GET …/preprocessing`, `POST …/analysis-plan`, `GET …/analysis` | They are no longer served. As for any unknown path, a GET gets 404 and a POST gets 405 (from the static-file mount). Their `op()` entries, their views and the `Classic analysis` tag are removed from `bardic/apispec/`. |
+| `static/production.js`, `static/production.css` | They were already unloaded; `index.html` did not reference them. |
+| `app.js`: `renderAnalysisProgress`, `updateAnalysisHint`, `state.analysisSummary` and `analysisError`, the `/analysis` request in `pollJobs`, and the `analyze` branch of `startJob` | Also removed: the dead `#analyze-button`, `#analysis-provider` and `#analysis-scope` selectors in `updateBusyControls`. `pollJobs` now makes one request, `GET /api/jobs`. |
 
-| Module | Reference | Stage 3 action |
-| --- | --- | --- |
-| `bardic/app.py` | `GET /preprocessing` (`legacy_phase`, `progressive`), `POST /analysis-plan` (`progressive.plan`) | Delete the routes |
-| `bardic/analysis.py` | `analyze_book()` sends calls with a store to `progressive.run` or `staged_analysis.analyze_staged` | Remove the store branches |
-| `bardic/pipeline_view.py` | `pipeline()`, the `GET /pipeline` readout | Rewrite or delete (a decision, below) |
+### The Details explorer
 
-## Stage 3 inventory: code
+`pipeline_view.pipeline()` no longer reads Classic coverage, `analysis_units` or the checkpoint. It shows these cards:
 
-Delete means removing the code in stage 3. Keep means it stays live. Line numbers are from stage 1.
+- `import` and `series`.
+- One card per registered step, in pipeline order: `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing`. The counts come from `pipeline.api.step_states`, which the Analyze overview (`GET /analysis-pipeline`) also uses, so both surfaces show the same numbers. `completed`/`total` are the accepted and total scopes. `stale_count` is the number of accepted scopes whose inputs changed. `candidate_count` is the number of versions waiting for review. Status is `queued`/`running` while the latest step version runs, `stale` when anything accepted is out of date, and otherwise follows the counts.
+- `voices`, `narration`, `alignment` and `export`.
 
-### Backend modules and functions
-
-| Item | Action | Why |
-| --- | --- | --- |
-| `bardic/progressive.py` (whole file) | Delete | The phase engine. The builders it re-exports live in `pipeline/prompts.py`. |
-| `bardic/staged_analysis.py` (whole file) | Delete | The chapter engine, including its local draft path. `_references` is the checkpoint's reference builder; stage 2's projector replaces it. If stage 2 reuses it, move it before deleting the file. |
-| `bardic/legacy_phase.py` (whole file) | Delete | `LegacyProcessingStore` and `coverage` only serve the engine, `/preprocessing` and `/pipeline`. |
-| `bardic/pipeline/prompts.py` | Keep | Live request builders. Update the docstring's mention of `progressive`. |
-| `bardic/analysis_common.py` `split_chapter` | Keep | Used by the Directing step. |
-| `bardic/analysis_common.py` `fingerprint` | Keep until stage 4 | Structure repair re-keys an existing checkpoint. It goes with `analysis_checkpoints`. |
-| `bardic/processing.py` | Keep | Shared: `RequestBudget`, `BudgetReached`, attempts, events, census cache, `digest`, `source_hash`, `token_estimate`, `price_for`, `request_context`. |
-| `bardic/preprocessing.py` (`census`, `eligible_chapters`) | Keep | The Census step, prompts and pipeline planning use them. |
-| `analysis.analyze_book()` store/phase branches (lines 778–786) and the `phase`, `scan_model`, `limits`, `run_id`, `chapter_id`, `resume`, `prepare` parameters | Delete | Only `Runtime.analyze` passes a store. `POST /api/demo` calls `analyze_book(book, "local")` with no store, which runs `_local`. Keep that path. |
-| `analysis._cloud` (the in-memory cloud path) and `_reconcile_known_aliases` | Decide | Nothing calls `_cloud` once the store branches go, and `_reconcile_known_aliases` is used only by `_cloud` and `staged_analysis`. `tests/test_analysis.py` and `test_analysis_providers.py` test the path directly. Delete both with those tests, or keep them as a documented in-memory fallback. |
-| `analysis._evidence_spans` | Keep | Evidence validation uses it. It maps quotes to exact spans, which stage 2's projection also needs. |
-| `analysis._local`, `_scene_members`, `_check_cancel`, `_validate_source` | Keep | The demo and in-memory local path use them. |
-| `app.Runtime.analyze()` (lines 833–877), `AnalysisLimits`, `AnalysisRequest` | Delete | Only `POST /analyze` uses them. |
-| `app` imports of `transform_checkpoint_structure` and the `analysis_status` / `analysis_checkpoint` / `commit_analysis` branch in `repair_book_structure` | Keep until stage 4 | The branch runs only when a checkpoint exists. Without it, a repair would leave a stale checkpoint and stale `character_references`. It goes with the table. |
-| `store.Store`: `analysis_checkpoints` DDL, startup recovery loop, `analysis_checkpoint`, `save_analysis_checkpoint`, `_save_analysis_checkpoint`, `commit_analysis`, `delete_analysis_checkpoint`, `analysis_status` | Keep until stage 4 | Structure repair, `GET /analysis` and test fixtures still use them. `_save_analysis_checkpoint` writes `character_references` and calls `series.retain_observations`. Until stage 2 lands, it is the only writer of both. |
-| `store.character_references()`, the `character_references` DDL | Keep | Stage 2 makes this table a pipeline projection. The Cast references route and the analysis export read it. |
-| `structure.transform_checkpoint_structure` | Keep until stage 4 | Used only by the repair branch above. |
-| `artifacts.backfill` branches for `analysis_units` and `analysis_checkpoints` (lines 385–398) | Keep until stage 4, then delete | They turn legacy rows into immutable artifacts. Stage 4 must run them before dropping the tables. They check that each table exists, so they are safe to leave in place until then. |
-| `library._payload_bytes` table list entries `analysis_units`, `analysis_checkpoints` | Keep until stage 4 | Measured only when the table exists. Remove the names after the drop. |
-| `series.py` migration that seeds `character_observations` from `character_references` | Stage 2 owns this | Not Classic engine code. |
-| Job kind `analyze` in `store` restart recovery and UI labels | Keep | Historical jobs still display. |
-
-### Routes
-
-| Route | Action | Notes |
-| --- | --- | --- |
-| `POST /api/books/{id}/analyze` | Delete | The Classic worker. With `provider: "local"` it ran the staged local draft. The pipeline's own local and service providers replace it. |
-| `GET /api/books/{id}/preprocessing` | Delete | Classic coverage and profile status. |
-| `POST /api/books/{id}/analysis-plan` | Delete | Classic phase preview. |
-| `GET /api/books/{id}/analysis` | Delete, or return a static "not started" body until stage 4 | Checkpoint progress summary. `app.js` still polls it; see the frontend section. |
-| `GET /api/books/{id}/pipeline` | **Decision** | `pipeline_view.pipeline()` builds its stage cards from Classic coverage, `analysis_units` and the checkpoint. It also returns attempts, events, jobs and usage, which are shared. The **Details** explorer (`pipeline.js`) renders it. Either rebuild the stage cards from `pipeline_*` state, or drop them and keep the shared parts. |
-| `GET /story-map`, `/artifacts`, `/search`, `/analysis-export`, `/characters/{id}/references`, `/repair-structure`, `/api/demo` | Keep | Live features. Their shared helpers are in `pipeline_view.py` (`prepare`, `story_map`, `write_analysis_export`). |
-
-`POST /api/demo` must keep working. It uses provider `local` with no store, so it runs `analysis._local`, not the phase engine.
-
-On `main` (not on `ux-phase-2` at stage 1), `bardic/apispec/` and `contract/openapi.json` describe these routes. Remove them there too and follow the contract changelog.
-
-### Frontend (stage 2 owns these files until it merges)
-
-| File and item | Action | Why |
-| --- | --- | --- |
-| `static/production.js`, `static/production.css` | Delete | The Classic panel. `index.html` no longer loads it. |
-| `app.js` `renderAnalysisProgress()` (line 1234) and `state.analysisSummary` / `analysisError` | Delete | `#analysis-progress` is no longer in the page, so it returns early. |
-| `app.js` `pollJobs` request to `/analysis` (line 1761) | Delete | It feeds only the dead progress renderer. |
-| `app.js` `startJob` branch for kind `analyze` and `#analysis-provider` | Delete | No caller passes `analyze`, and the element no longer exists. |
-| `static/pipeline.js` stage cards from `GET /pipeline` | Follows the `/pipeline` decision | Story map, artifacts, search and export stay. |
-| `index.html` note "The explorer below reads the older phase runs" (line 337) | Update | Follows the `/pipeline` decision. |
-| `shell.js` `ANALYSIS_KINDS` and `app.js` job labels containing `analyze` | Keep | Historical job display. |
+Like the overview, the explorer first records outside changes (`projection.sync`). The artifact counts, the artifact browser, attempts, events, usage, source search, the story map and the analysis export are unchanged. Artifact counts include Classic-era versions whose stage has the same name.
 
 ### Tests
 
-| Test | Action |
+Deleted: `test_progressive*.py`, `test_staged*.py`, `test_production_ui.py`, `production_ui_test.js`, seven coverage tests in `test_preprocessing.py` (two more became census tests), the unit-cache half of `test_processing.py`'s cache test, `test_resources.py`'s progressive validator test, and `test_app.py`'s local `/analyze` test. The step pipeline's manual-lock tests cover the guarantee that last test made.
+
+Rewritten to drive the pipeline:
+
+| Test | Now |
 | --- | --- |
-| `test_progressive.py`, `test_progressive_api.py`, `test_progressive_artifacts.py`, `test_staged_analysis.py`, `test_staged_api.py` | Delete |
-| `test_production_ui.py`, `production_ui_test.js` | Delete |
-| `test_preprocessing.py`: the 9 `coverage()` tests | Delete. Keep the census tests (`test_census_*`, `test_cache_reuses_exact_inputs_*` and the others that do not call `coverage`). |
-| `test_processing.py::test_unit_and_preprocessing_caches_require_matching_book_stage_and_source` | Split. Delete the unit-cache half and keep the census-cache half. Then import the shared `ProcessingStore` again. |
-| `test_identity_resolution.py::test_alias_resolver_keeps_later_canonical_evidence_in_profiles_and_references` | Rewrite against `pipeline.prompts.profile_specs` and stage 2's projector, or delete. |
-| `test_identity_resolution.py::test_ambiguous_candidate_evidence_is_not_attributed_to_either_shared_alias` | Retarget to stage 2's projector (it tests `_references`). |
-| `test_resources.py::test_progressive_validators_and_publication_measure_local_work_and_cache_validation` | Delete, or re-express on a pipeline run. |
-| `test_pipeline_view_api.py`: the 4 `/pipeline` tests | Follow the `/pipeline` decision. Keep the story-map test. |
-| `test_analysis_pipeline.py::test_outside_changes_are_recorded_as_external_versions` | Rewrite. It uses `POST /analyze` (local) to make an outside change; use a passage `PATCH` instead. |
-| `test_app.py::test_local_analysis_creates_cast_and_preserves_manual_corrections` | Delete, or move the manual-edit guarantee to a pipeline test. |
-| `test_provider_settings.py`: the 5 `/analyze` tests | Re-express the key and model isolation guarantees on pipeline runs if they are not already covered, then delete. |
-| `test_library_api.py::test_book_archive_restore_*` | Replace the `/analyze` 400 assertion with a pipeline-run refusal. |
-| `test_local_analysis_services.py` | Keep. `/v1/analyze` is the service path, not the book route. |
-| `test_analysis_store.py`, and fixtures that call `save_analysis_checkpoint` in `test_series.py`, `test_library.py`, `test_library_api.py`, `test_artifacts.py`, `test_pipeline_view_api.py`, `test_series_structure_api.py` | Keep until stage 4. Then move them to stage 2's reference writer or delete them with the table. |
-| `test_artifacts.py` legacy backfill tests (`legacy_unit`, checkpoint backfill) | Keep until stage 4. They prove the backfill that stage 4 depends on. |
-| `test_prompt_identity.py` | Keep |
-| `test_legacy_isolation.py` | Keep until the modules are gone. Delete it in the stage 3 PR, or empty `LEGACY`. |
+| `test_provider_settings.py`, 5 tests | Key and model isolation, explicit override, no fallback when a key is missing, queued-run snapshot and key redaction after rotation. Each runs a Discovery run with the real plan and fingerprint and a fake adapter per provider. |
+| `test_library_api.py` archive test | An archived book refuses `POST …/analysis-pipeline/runs` (400). |
+| `test_analysis_pipeline.py` outside change | The local draft written straight to the store is recorded as `external`, and accepting `baseline` restores the speakers. New tests: a manual passage edit is a lock, not an outside change; the explorer's step cards match the overview; stale and waiting counts. |
+| `test_identity_resolution.py`, 2 tests | Against `pipeline.prompts.profile_specs` and stage 2's `evidence.refresh`. |
+| `test_analysis.py`, `test_analysis_providers.py` | The cloud-path tests became direct `_apply_annotations` checks (invented IDs, speakers and evidence are rejected; reviewed passages and scenes are kept) and an adapter-level transport redaction test. |
+| `test_pipeline_view_api.py` | Classic coverage tests replaced by: a local draft is never counted as discovery. |
+| `test_artifacts.py` | Legacy-unit fixtures create the old `analysis_units` table directly. The backfill tests stay. |
+| `test_legacy_isolation.py` | Now proves the engine is gone: no module, no importer, no load at runtime, no served route, no browser call to a removed route. A new library never creates `analysis_units`, and an existing library's rows survive until `ArtifactRepository.backfill` retains them. |
+| `listen_job_poll_test.js`, `pipeline_ui_test.js` | Polling no longer requests `/analysis`. The cards render the out-of-date and waiting counts. |
+| `tools/contract-codegen-check.mjs` | The smoke body uses `startBookAnalysisPipelineRun`. |
 
-### Documentation
+### What still references Classic data (stage 4)
 
-Update [ARCHITECTURE.md](ARCHITECTURE.md), [API.md](API.md), [DATA-MODEL.md](DATA-MODEL.md), [DEVELOPMENT.md](DEVELOPMENT.md) (test map and "adding a stage", which still point at `progressive.py`), [OPERATIONS.md](OPERATIONS.md) (request limits section), [CHAPTER-ANALYSIS.md](CHAPTER-ANALYSIS.md), [ARTIFACTS-AND-STORAGE.md](ARTIFACTS-AND-STORAGE.md) and [ROADMAP.md](ROADMAP.md). Mark [PROGRESSIVE-ANALYSIS-PLAN.md](PROGRESSIVE-ANALYSIS-PLAN.md) and [CHAPTER-ANALYSIS.md](CHAPTER-ANALYSIS.md) as historical.
+A grep for `progressive`, `staged_analysis`, `legacy_phase`, `analysis_units` and `/analyze` in `bardic/` finds only these:
+
+- `artifacts.backfill` reads `analysis_units` and `analysis_checkpoints` if they exist.
+- `library._payload_bytes` lists `analysis_units` and `analysis_checkpoints`.
+- `/v1/analyze` (in `local_services.py` and `pipeline/runner.py`) is the self-hosted service path and is unrelated.
+- "progressive-disclosure" in `style.css` names a UI pattern and is unrelated.
+
+The same grep, re-run after merging series memory, finds the same list. Legacy `character_observations` rows have their own readers; see the [data rules](#stage-4-data-rules).
+
+## Stage 4 inventory: code
+
+Delete these in the same pull request as the data migration, after it runs:
+
+| Item | Why it waited |
+| --- | --- |
+| `store.Store`: the `analysis_checkpoints` DDL, the startup recovery loop, and `analysis_checkpoint`, `save_analysis_checkpoint`, `_save_analysis_checkpoint`, `commit_analysis`, `delete_analysis_checkpoint` and `analysis_status` | Structure repair and test fixtures still use them. Startup recreates the table if the DDL stays. |
+| `app.repair_book_structure`'s checkpoint branch, `structure.transform_checkpoint_structure`, `analysis_common.fingerprint` and `PIPELINE_VERSION` | They re-key an existing checkpoint during structure repair. `test_prompt_identity.py`'s checkpoint fingerprint test goes with them. |
+| The `artifacts.backfill` branches for `analysis_units` and `analysis_checkpoints` | The migration runs them first. Keep `test_artifacts.py`'s legacy backfill tests and `test_legacy_isolation.py`'s backfill test until then. |
+| The `analysis_units` and `analysis_checkpoints` entries in `library._payload_bytes` | They are measured only while the tables exist. |
+| The observation branch of `series._SourceCheck` | Series context checks a Classic-written reference against its retained observation. Replace it, or accept the loss, under the [data rules](#stage-4-data-rules) before deleting the rows. |
+| Stage 2's carry-over of legacy `profile_evidence` rows in `pipeline/evidence.py` | Those rows live in `character_references`, not in the dropped tables. Remove the carry-over only if the migration rebuilds the table from accepted versions (see the Drop table). |
+| Checkpoint fixtures in `test_analysis_store.py`, `test_series.py`, `test_library.py`, `test_library_api.py`, `test_artifacts.py`, `test_evidence_projection.py`, `test_pipeline_view_api.py`, `test_series_structure_api.py` and `test_contract_series.py` | Move each one to the stage 2 reference writer, or delete it with the table. |
+| Contract descriptions of Classic-only book fields (`profile_state`, `profile_provisional`, `profiles_provisional`, a Classic `phase`) and `analyze` jobs | Keep them while stored books and jobs can still carry the values. Stage 4 does not rewrite books, so these descriptions probably stay. |
 
 ## Stage 4 inventory: data
 
@@ -157,14 +126,37 @@ Run this as a one-time maintenance migration with the owner's go. It is not part
 | --- | --- |
 | `analysis_units` and index `analysis_units_stage` | `DROP TABLE` / `DROP INDEX` |
 | `analysis_checkpoints` | `DROP TABLE`. Delete the `Store` DDL, the restart-recovery loop and the checkpoint methods in the same PR, or startup recreates an empty table. |
-| Legacy `character_observations` rows | Delete only rows that stage 2's writer did not produce. Stage 1 cannot say how to recognise them: stage 2 defines the provenance fields its rows carry. Stage 4 must write that predicate from stage 2's merged code, count the matches and show the count to the owner before deleting. Rows that series context still reads must not be deleted unless stage 2 has replaced them. *Update (series memory, 2026-09-28):* stage 2 writes no observations, and series context now reads `character_references`. The table is read only to re-check that a phase-engine reference still matches its retained chapter hash; after the drop such references are left out of series context (the evidence projection replaces them at each book's next sync, except carried discovery evidence until discovery is accepted). |
-| `character_references` rows written by checkpoints | Only if stage 2 did not already rebuild the table from accepted versions on accept. Rebuild from accepted versions rather than leaving the table empty. |
+| Legacy `character_observations` rows | `DELETE` the rows; **keep the table**. Every row is Classic-era: stage 2 and series memory write none (`evidence.RETAIN_OBSERVATIONS` is off). Follow the [data rules](#stage-4-data-rules) first: series context still checks Classic-written references against these rows. |
+| `character_references` rows written by checkpoints | **Keep.** Stage 2 rebuilds a book's rows on sync once it has an accepted `discovery`, `profiles` or `directing` version, and carries legacy `profile_evidence` rows until discovery is accepted. A book with none of those versions keeps its checkpoint rows. The table is the current projection: emptying it would blank Cast references and series context. |
+
+### Stage 4 data rules
+
+Re-checked against the code after series memory (contract 0.3.0) and stage 3 (0.4.0), 2026-09-28.
+
+1. **Series context sources its entries from `character_references`, not from observations.** `SeriesRepository.context_for_book` (used by the Profiles step and `getBookSeriesContext`) reads each earlier volume's current `character_references` rows. Stage 3 wrote "series context still reads observations"; that is no longer true as a source.
+2. **The observation rows are still read, though.** A grep of `bardic/` for `character_observations` finds these readers:
+   - `series._SourceCheck.current`. A reference row the Classic engine wrote (no `projection` field) counts in series context only while the observation retained with it exists. Their shared content hash is the proof that the chapter text is unchanged. Projection rows are checked against `pipeline_state` source hashes instead and never read the table.
+   - `SeriesRepository.observations`, which fills the analysis export's `observations.json`.
+   - `ArtifactRepository.backfill`, which retains each row as a `character_observation` artifact.
+   - `series.initialize_schema`, at every startup. It creates the table when it is missing and then seeds it from every book's current `character_references`.
+   - `library._payload_bytes`, the storage measurement.
+
+   The writers are structure repair of a legacy checkpoint (`Store._save_analysis_checkpoint` → `retain_observations`) and `evidence.retain_history`, which runs only when `RETAIN_OBSERVATIONS` is on.
+3. **Delete the rows, keep the table.** Do not `DROP` it. The next startup would recreate it and seed it from the current references, which would write the pipeline's projection rows as observations. That is the append `RETAIN_OBSERVATIONS = False` rules out. The table also stays as the series-memory history table: `retain_history` is tested and can be switched on by the owner.
+4. **Run `ArtifactRepository.backfill` for every book before deleting** (step 2 above). It retains every observation as a `character_observation` artifact, which carries its `source_hash`. Count the rows per book and show the counts to the owner.
+5. **Decide what happens to Classic-written references in series context.** Once their observations are gone, `_SourceCheck` drops them. The rows affected are all rows of a book with no accepted discovery, profiles or directing version, and the carried `profile_evidence` rows of a book with no accepted discovery version. Before deleting, count them per linked book and show the owner. Then choose one of these:
+   - **Sync every book first.** Run `projection.sync` for every book, as opening it in Analyze does. This records baseline profiles and directing and rebuilds dialogue and mention rows with provenance. Carried discovery evidence still leaves series context until that book accepts a discovery version.
+   - **Check against the artifact.** In the same pull request, change `_SourceCheck` to compare a Classic-written row with its retained `character_observation` artifact instead of the table row.
+
+   Do not fabricate observations, projection fields or step provenance for these rows.
+6. **After the delete,** `observations.json` in the analysis export is empty for Classic-era books. Their history is in the `character_observation` artifacts.
+7. **Keep `analysis_attempts`**, including Classic-era rows (see Keep).
 
 ### Keep
 
 | Data | Why |
 | --- | --- |
-| `character_observations` table (stage 2 writes no rows; see above); `series`, `series_books`, `series_characters`, `series_character_links`, `series_volume_slots` | Series memory and confirmed identities |
+| `character_observations` table (its rows are deleted; see the [data rules](#stage-4-data-rules)); `series`, `series_books`, `series_characters`, `series_character_links`, `series_volume_slots` | Series memory and confirmed identities. Startup would recreate and re-seed a dropped observations table. |
 | `character_references` | Stage 2's current-book projection of accepted evidence |
 | `analysis_attempts` (including Classic-era rows) | Usage history. `RequestBudget` sums every tracked attempt for a book, so deleting old rows would silently reset a book's spending guard. |
 | `pipeline_events` (including Classic-era rows) | Validation state for displayed attempts, and resource summaries |
@@ -174,8 +166,8 @@ Run this as a one-time maintenance migration with the owner's go. It is not part
 | Jobs of kind `analyze` | Job history |
 | The `preprocess_models_by_provider` preference | The pipeline's `scan` model role reads it. |
 
-## Open decisions for the owner
+## Owner decisions
 
-1. **`GET /pipeline` and the Details explorer.** Rebuild the stage cards from step-pipeline state, or drop them and keep attempts, events, usage, story map and export.
-2. **The in-memory cloud path** (`analysis._cloud`). Delete it in stage 3 with its tests, or keep it.
-3. **Classic-era artifacts in stage 4.** This plan keeps them as immutable history. The owner earlier chose to "discard the phase engine and its data"; confirm that this means the live tables and not the retained provenance.
+1. **`GET /pipeline` and the Details explorer.** Keep it, and rebuild the stage cards from step-pipeline state. Done in stage 3.
+2. **The in-memory cloud path** (`analysis._cloud`). Delete it. Done in stage 3.
+3. **Classic-era artifacts in stage 4.** Keep them as immutable history. "Discard the phase engine and its data" means the live tables, not the retained provenance.

@@ -147,6 +147,77 @@ def test_invalidated_earlier_evidence_is_not_sent(client):
     assert entries(context(client, second)) == []
 
 
+def test_profile_prompt_shows_where_earlier_evidence_is_from_and_keeps_ids_in_the_recipe(client):
+    # Ported from the deleted Classic test_progressive.py: the prompt carries no IDs or offsets.
+    from bardic.artifacts import ArtifactRepository
+    from bardic.pipeline.prompts import EARLIER_PROMPT_FIELDS
+    series, (first, second) = discovered(client)
+    link(client, series, [first, second])
+    prompts = describe_profiles(client, ['Series reading.'])
+    assert run(client, second['id'], ['profiles'])[0]['status'] == 'completed'
+    sent = earlier_in(prompts[-1])
+    assert sent and all(tuple(entry) == EARLIER_PROMPT_FIELDS for entry in sent)
+    assert {entry['book_title'] for entry in sent} == {client.get(f"/api/books/{first['id']}").json()['title']}
+    assert all(entry['position'] == 1 for entry in sent)
+    # The IDs live in the retained provenance: the recipe depends on the first volume's artifacts.
+    artifacts = ArtifactRepository(client.app.state.runtime.store)
+    recipe = artifacts.get(second['id'], artifacts.list(second['id'], kind='analysis_input', stage='profiles')['items'][0]['id'])
+    linked = [artifacts.get(item['book_id'], item['id']) for item in recipe['dependency_links']]
+    observations = [a for a in linked if a['kind'] == 'character_observation']
+    assert observations and {a['book_id'] for a in observations} == {first['id']}
+    assert {a['payload']['book_id'] for a in observations} == {first['id']}
+
+
+def pre_upgrade_volume(client, current, identity, position=1):
+    """An earlier volume written before artifact records: a Classic checkpoint wrote its
+    reference row and retained the matching observation (same content hash)."""
+    from bardic.importer import parse_book
+    from bardic.series import observation_of, source_hash
+    store = client.app.state.runtime.store
+    earlier = parse_book('earlier.txt', b'Mara used a low voice.')
+    earlier['characters'].append({'id': 'early-mara', 'name': 'Mara', 'aliases': [], 'description': '', 'direction': ''})
+    chapter = earlier['chapters'][0]
+    quote = 'Mara used a low voice.'
+    start = chapter['text'].index(quote)
+    reference = {'id': 'legacy-mara', 'character_id': 'early-mara', 'chapter_id': chapter['id'], 'segment_id': None,
+                 'start': start, 'end': start + len(quote), 'quote': quote, 'kind': 'profile_evidence',
+                 'profile_description': 'An earlier vocal observation.', 'profile_direction': '',
+                 'provider': 'anthropic', 'model': 'earlier-model', 'confidence': None}
+    observation = observation_of(earlier['id'], reference, source_hash(chapter['text']))
+    with store.connect() as conn:
+        conn.execute('INSERT INTO books(id,body) VALUES (?,?)', (earlier['id'], json.dumps(earlier)))
+        conn.execute('INSERT INTO series_books(book_id,series_id,position) VALUES (?,?,?)',
+                     (earlier['id'], current['series_id'], position))
+        conn.execute('INSERT INTO series_character_links VALUES (?,?,?,?)',
+                     (earlier['id'], 'early-mara', identity['id'], 'before-upgrade'))
+        conn.execute('INSERT INTO character_references VALUES (?,?,?,?,?,?)',
+                     (earlier['id'], reference['id'], 'early-mara', chapter['id'], None, json.dumps(reference)))
+        conn.execute('INSERT INTO character_observations VALUES (?,?,?,?,?,?)',
+                     (observation['id'], earlier['id'], 'early-mara', chapter['id'], observation['source_hash'],
+                      json.dumps(observation)))
+    return earlier, observation
+
+
+def test_a_pre_upgrade_volume_is_read_from_its_reference_rows_while_their_observations_remain(client):
+    # Ported from the deleted Classic test_progressive_artifacts.py fixture: a reference row plus its
+    # retained observation. The profiles step reads the reference row; the observation proves its source.
+    series, (second,) = discovered(client, positions=(2,))
+    identity = link(client, series, [second])
+    earlier, observation = pre_upgrade_volume(client, {'series_id': series['id']}, identity)
+    found = entries(context(client, second))
+    assert [(o['book_id'], o['quote'], o['version_id']) for o in found] == [(earlier['id'], 'Mara used a low voice.', None)]
+    prompts = describe_profiles(client, ['Read with the earlier volume.'])
+    assert run(client, second['id'], ['profiles'])[0]['status'] == 'completed'
+    sent = earlier_in(prompts[-1])
+    assert [(o['book_title'], o['quote']) for o in sent] == [(earlier['title'], 'Mara used a low voice.')]
+    assert all('book_id' not in o for o in sent)
+    # Without the retained observation, nothing proves the row's source is unchanged: it is not read
+    # (docs/CLASSIC-REMOVAL.md, stage 4 data rules).
+    with client.app.state.runtime.store.connect() as conn:
+        conn.execute('DELETE FROM character_observations WHERE id=?', (observation['id'],))
+    assert entries(context(client, second)) == []
+
+
 # --- section 4: staged consent --------------------------------------------------------------------
 
 def test_two_book_profiles_run_with_memory_completes_with_consent_up_to(client):

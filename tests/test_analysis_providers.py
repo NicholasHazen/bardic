@@ -1,12 +1,10 @@
 """Provider contracts are checked offline; tests never need real credentials."""
-from copy import deepcopy
 import json
 
 import httpx
 import pytest
 
 from bardic import analysis
-from bardic.importer import parse_book
 
 
 ADAPTERS = {"gemini": analysis._request, "openai": analysis._openai_request, "anthropic": analysis._anthropic_request}
@@ -121,31 +119,12 @@ def test_cancellation_after_request_does_not_retry_or_consume_result(provider):
     assert len(captured) == 1
 
 
-@pytest.mark.parametrize("provider", ADAPTERS)
-def test_cloud_requires_its_key_and_valid_model_before_any_request(provider, monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("No HTTP request should be made")
-
-    monkeypatch.setattr(httpx.Client, "post", forbidden)
-    book = parse_book("sample.txt", b"The house was quiet.")
-    original = deepcopy(book)
-    with pytest.raises(ValueError, match="API key"):
-        analysis.analyze_book(book, provider)
-    with pytest.raises(ValueError, match="model ID"):
-        analysis.analyze_book(book, provider, "test-key", "https://another-host/model")
-    assert book == original
-
-
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-def test_transport_failure_does_not_mutate_existing_book(provider, monkeypatch):
-    def offline(self, url, **kwargs):
-        raise httpx.ConnectError("private-test-key", request=httpx.Request("POST", url))
+def test_transport_failure_is_reported_without_the_key(provider, monkeypatch):
+    def offline(req):
+        raise httpx.ConnectError("private-test-key", request=req)
 
-    monkeypatch.setattr(httpx.Client, "post", offline)
     monkeypatch.setattr(analysis.time, "sleep", lambda _: None)
-    book = parse_book("sample.txt", b"The house was quiet.")
-    original = deepcopy(book)
     with pytest.raises(ValueError, match="could not connect") as exc:
-        analysis.analyze_book(book, provider, "private-test-key")
+        request(provider, offline)
     assert "private-test-key" not in str(exc.value)
-    assert book == original

@@ -285,50 +285,22 @@ def test_pipeline_validation_history_is_not_lost_when_latest_event_preview_is_bo
     assert view['attempts'][0]['validation_state'] == 'accepted'
 
 
-def test_pipeline_does_not_count_local_drafts_as_semantic_discovery_or_direction(client):
+def test_pipeline_does_not_count_a_local_draft_as_discovery(client):
     from bardic.analysis import analyze_book
 
     book = import_book(client)
     store = client.app.state.runtime.store
-    draft = analyze_book(book, 'local', store=store)
+    with store.lock:
+        draft = analyze_book(store.book(book['id']), 'local')
+        store.save_book(draft)
     view = client.get(f"/api/books/{book['id']}/pipeline").json()
     stages = {stage['id']: stage for stage in view['stages']}
-    assert store.analysis_status(book['id'])['status'] == 'completed'
-    assert stages['discovery']['completed'] == 0
-    assert stages['directing']['completed'] == 0
-    assert stages['directing']['status'] != 'complete'
-    assert 'local draft maps remain available' in stages['directing']['note']
+    # Discovery output cannot be recovered from a book, so an outside draft never counts as discovered.
+    assert stages['discovery']['completed'] == 0 and stages['discovery']['status'] == 'pending'
+    assert stages['discovery']['total'] == 2 and stages['discovery']['unit_label'] == 'eligible sections'
     assert [(chapter['id'], chapter['text']) for chapter in draft['chapters']] == [
         (chapter['id'], chapter['text']) for chapter in book['chapters']]
     assert ProcessingStore(store).attempts(book['id']) == []
-
-
-def test_pipeline_direction_counts_only_outputs_reusable_with_current_inputs(client, monkeypatch):
-    from test_progressive import FakeProvider, process, story
-
-    store = client.app.state.runtime.store
-    book = story()
-    store.save_book(book)
-    provider = FakeProvider(monkeypatch)
-    complete = process(book, store, phase='full')
-    assert any(call['stage'] == 'directing' for call in provider.calls)
-    response = client.get(f"/api/books/{book['id']}/pipeline")
-    assert response.status_code == 200, response.text
-    stages = {stage['id']: stage for stage in response.json()['stages']}
-    assert stages['discovery']['status'] == 'complete'
-    assert stages['directing']['status'] == 'complete'
-    assert stages['directing']['completed'] == stages['directing']['total'] == 2
-    assert 'series' in stages['profiles']['dependencies']
-    calls_before = len(provider.calls)
-    mara = next(character for character in complete['characters'] if character['name'] == 'Mara')
-    mara['direction'] = 'A reviewed change to the vocal performance.'
-    store.save_book(complete)
-    updated = client.get(f"/api/books/{book['id']}/pipeline").json()
-    revised_stages = {stage['id']: stage for stage in updated['stages']}
-    assert revised_stages['directing']['completed'] == 0
-    assert revised_stages['directing']['status'] != 'complete'
-    assert revised_stages['directing']['artifact_count'] >= stages['directing']['artifact_count']
-    assert len(provider.calls) == calls_before, 'Inspecting stale direction must not start another request'
 
 
 def test_views_and_search_preserve_source_and_do_not_queue_processing(client):

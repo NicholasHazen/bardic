@@ -8,8 +8,7 @@ import pytest
 
 from bardic import analysis, processing
 from bardic.importer import parse_book
-from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore  # also covers the legacy unit cache
-from bardic.processing import BudgetReached, RequestBudget
+from bardic.processing import BudgetReached, ProcessingStore, RequestBudget
 from bardic.store import Store
 
 
@@ -246,15 +245,7 @@ def test_source_hash_ignores_titles_audio_and_profiles_but_tracks_exact_text_and
     assert processing.source_hash(revised) != original
 
 
-def test_unit_and_preprocessing_caches_require_matching_book_stage_and_source(repository):
-    value = {'chapter_id': 'chapter', 'result': {'characters': []}}
-    repository.save_unit('book', 'unit-a', 'discovery', 'source-a', value)
-    repository.save_unit('book', 'unit-b', 'profiles', 'source-a', {'profile': True})
-    repository.save_unit('book', 'unit-c', 'discovery', 'source-b', {'stale': True})
-    repository.save_unit('other', 'unit-a', 'discovery', 'source-a', {'other': True})
-    assert repository.unit('book', 'unit-a') == value
-    assert repository.unit('missing', 'unit-a') is None
-    assert repository.units('book', 'discovery', 'source-a') == [value]
+def test_preprocessing_cache_requires_matching_book_and_fingerprint(repository):
     repository.save_preprocessing('book', 'fingerprint', {'free': True})
     assert repository.preprocessing('book', 'fingerprint') == {'free': True}
     assert repository.preprocessing('book', 'different') is None

@@ -1,6 +1,6 @@
 # Analysis providers
 
-Implemented September 27, 2026. Literary analysis and audio generation have separate provider choices. One selected analysis provider runs the requested progressive phase: discovery, book-level character profiles, or scene/passage direction. Fast discovery and detailed interpretation models are configured separately. Cross-book identities require confirmed links; “global cast” in early design notes means the cast within one book. The resulting cast and directions can be performed by either existing narration provider.
+Implemented September 27, 2026. Literary analysis and audio generation have separate provider choices. Each model-based analysis step has its own provider: discovery, book-level character profiles, or speakers & delivery. Fast discovery and detailed interpretation models are configured separately. Cross-book identities require confirmed links; “global cast” in early design notes means the cast within one book. The resulting cast and directions can be performed by either existing narration provider.
 
 | Analysis choice | Default model | Credential | Transport |
 | --- | --- | --- | --- |
@@ -8,6 +8,8 @@ Implemented September 27, 2026. Literary analysis and audio generation have sepa
 | Gemini | `gemini-3.8-flash` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini `generateContent` |
 | OpenAI | `gpt-6-sol` | `OPENAI_API_KEY` | Responses API |
 | Anthropic | `claude-sonnet-5` | `ANTHROPIC_API_KEY` | Messages API |
+
+The saved default provider is used for model steps that have no saved step settings. `local` means no preferred cloud provider: the first cloud provider with a key is used. The free local draft itself now serves only the demo book; the free Chapters & titles and census steps always run locally.
 
 The step pipeline (Analysis tab) also offers three self-hosted servers on the owner's network, set by URL in Settings → **Your analysis servers** or `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL` and `BARDIC_NOVEL_ANALYZER_URL`:
 
@@ -17,16 +19,16 @@ The step pipeline (Analysis tab) also offers three self-hosted servers on the ow
 | BookNLP | — | Server URL | `POST /v1/analyze` per chapter | quote attribution; directing (speakers only) |
 | Novel Analyzer | — | Server URL | `POST /v1/analyze` per chapter | directing |
 
-They cost nothing per request (Bardic records a $0 price for the Local LLM), but they share the server's GPU, often with Breeze narration. The phase controls and series runs still offer only the cloud providers. Details, confidence rules and limits: [self-hosted providers](ANALYSIS-PIPELINE.md#self-hosted-providers). Dated live results: [validation](VALIDATION.md#self-hosted-analysis-servers).
+They cost nothing per request (Bardic records a $0 price for the Local LLM), but they share the server's GPU, often with Breeze narration. Series runs use the same steps, so they offer them too. Details, confidence rules and limits: [self-hosted providers](ANALYSIS-PIPELINE.md#self-hosted-providers). Dated live results: [validation](VALIDATION.md#self-hosted-analysis-servers).
 
 Settings accepts another model ID for each cloud provider, so model access and future versions do not require a code change. A custom model must support its provider's structured-output contract. Credentials, endpoints, and request formats are isolated by provider; a failed or unavailable provider never triggers a fallback to another company. Narration keeps its own Gemini model setting.
 
 ## Shared pipeline
 
 1. Discover characters across bounded source chunks with exact source quotations.
-2. Reconcile names and aliases into a global cast, preserving reviewed identities and voice assignments.
+2. Build each character's profile from the accepted discovery evidence, preserving reviewed identities and voice assignments.
 3. Analyze scene context, assign known speakers, annotate tone/subtext/performance directions, and propose additional scene boundaries using existing source IDs.
-4. Validate all results against the original text and known IDs before publishing each chapter stage. Keep manual corrections. Cancellation, refusal, incomplete output, or invalid evidence preserves published chapters and validated request checkpoints; retry resumes compatible saved work. One evidence correction attempt is allowed before stopping. See [chapter analysis](CHAPTER-ANALYSIS.md) for source anchoring and character reference storage.
+4. Validate all results against the original text and known IDs before a version is recorded. Keep manual corrections. Cancellation, refusal, incomplete output, or invalid evidence preserves validated units and accepted versions; running the step again resumes compatible saved work. One evidence correction attempt is allowed before stopping. See the [analysis pipeline](ANALYSIS-PIPELINE.md) for steps, source anchoring and character references.
 
 The pipeline does not ask a model to rewrite source prose. All providers use the same JSON schemas and application validators. Switching analysis provider can change automatic annotations; any takes whose effective directions change are invalidated through the existing audio cache rules.
 

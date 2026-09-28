@@ -80,21 +80,6 @@ class RenderRequest(StrictModel):
     force: bool = False
 
 
-class AnalysisLimits(StrictModel):
-    max_requests: int = Field(default=25, ge=1, le=1000)
-    max_input_tokens: int = Field(default=1000000, ge=1000, le=10000000)
-    max_output_tokens: int = Field(default=100000, ge=1000, le=2000000)
-    budget_usd: float | None = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
-
-
-class AnalysisRequest(StrictModel):
-    provider: str | None = None
-    chapter_id: str | None = None
-    resume: bool = True
-    phase: Literal["scan", "profiles", "direct", "full"] = "scan"
-    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
-
-
 class BookMetadataRequest(StrictModel):
     title: str = Field(min_length=1, max_length=500)
     author: str = Field(default='', max_length=500)
@@ -890,53 +875,6 @@ class Runtime:
             self.pool.submit(self.run, job, work, self.narration_secrets(request.provider))
             return job
 
-    def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
-        with self.store.lock:
-            self.require_idle(book_id)
-            book = self.store.book(book_id)
-            if chapter_id is not None and chapter_id not in {c["id"] for c in book["chapters"]}:
-                raise HTTPException(400, "Choose a chapter in this book")
-            provider = provider or self.preferences["analysis_provider"]
-            if provider not in ANALYSIS_LABELS:
-                raise HTTPException(400, "Choose local, gemini, openai, or anthropic analysis")
-            key = self.api_keys.get(provider, "")
-            if provider != "local" and not key:
-                raise HTTPException(400, f"Add an {ANALYSIS_LABELS[provider]} API key in Settings first" if provider in {"openai", "anthropic"} else "Add a Gemini API key in Settings first")
-            model = self.preferences["analysis_models_by_provider"].get(provider)
-            scan_model = self.preferences["preprocess_models_by_provider"].get(provider)
-            job = self.store.create_job(book_id, "analyze")
-            job = self.store.update_job(job["id"], provider=provider, model=model, scan_model=scan_model, phase=phase, chapter_id=chapter_id)
-
-            def work():
-                def progress(done, total, message):
-                    self.check_cancel(job["id"])
-                    self.store.update_job(job["id"], progress=done, total=total, message=message)
-                def prepare(snapshot):
-                    self.check_cancel(job["id"])
-                    self.assign_local_voices(snapshot)
-                    cast = self.resolved_cast(snapshot)
-                    for segment in snapshot["segments"]:
-                        if segment.get("audio") and not self.valid_audio(snapshot, segment, cast):
-                            segment["audio"] = None
-                from contextlib import nullcontext
-                from .resources import ResourceLedger
-                timing = ResourceLedger(self.store).operation(book_id, 'local_analysis', run_id=job['id'],
-                    chapter_id=chapter_id, measure_cpu=True) if provider == 'local' else nullcontext()
-                with timing:
-                    updated = analyze_book(book, provider, key, model, progress, lambda: self.cancelled(job["id"]),
-                                           store=self.store, chapter_id=chapter_id, resume=resume, prepare=prepare,
-                                           phase=phase, scan_model=scan_model, limits=limits, run_id=job["id"])
-                self.check_cancel(job["id"])
-                self.assign_local_voices(updated)
-                updated["revision"] = book.get("revision", 0) + 1
-                cast = self.resolved_cast(updated)
-                for s in updated["segments"]:
-                    if s.get("audio") and not self.valid_audio(updated, s, cast):
-                        s["audio"] = None
-                self.store.save_book(updated)
-            self.pool.submit(self.run, job, work, (key,))
-            return job
-
 
 def create_app(data_dir: Path | None = None):
     @asynccontextmanager
@@ -1314,17 +1252,6 @@ def create_app(data_dir: Path | None = None):
         # Proposals only: confirming one uses the link route above.
         return SeriesRepository(rt(request).store).suggestions(book_id)
 
-    @app.get("/api/books/{book_id}/analysis")
-    def get_analysis(book_id: str, request: Request):
-        runtime = rt(request)
-        book = runtime.store.book(book_id)
-        return runtime.store.analysis_status(book_id) or {
-            "status": "not_started", "stage": "discovery", "provider": None, "model": None,
-            "completed_units": 0, "total_units": 0, "current_chapter_id": None,
-            "chapters": [{"id": c["id"], "title": c["title"], "stage": "discovery", "status": "pending",
-                          "completed_units": 0, "total_units": 0, "discovery_complete": False, "directing_complete": False}
-                         for c in book["chapters"]]}
-
     @app.get("/api/books/{book_id}/characters/{character_id}/references")
     def get_character_references(book_id: str, character_id: str, request: Request):
         runtime = rt(request)
@@ -1493,38 +1420,6 @@ def create_app(data_dir: Path | None = None):
             return [item for item in entries if item["id"] != entry_id]
         return save_lexicon(rt(request), book_id, change)
 
-    @app.post("/api/books/{book_id}/analyze")
-    def analyze(book_id: str, body: AnalysisRequest, request: Request):
-        return rt(request).analyze(book_id, body.provider, body.chapter_id, body.resume, body.phase, body.limits.model_dump())
-
-    @app.get("/api/books/{book_id}/preprocessing")
-    def preprocessing(book_id: str, request: Request):
-        from .legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
-        from .progressive import discoveries, profile_status
-        runtime = rt(request)
-        with runtime.store.lock:
-            book = runtime.store.book(book_id)
-            accepted = discoveries(book, runtime.store, ProcessingStore(runtime.store))
-            result = coverage(book, runtime.store)
-            result.update(profile_status(book, runtime.store, accepted, result))
-            return result
-
-    @app.post("/api/books/{book_id}/analysis-plan")
-    def analysis_plan(book_id: str, body: AnalysisRequest, request: Request):
-        from .progressive import plan
-        runtime = rt(request)
-        with runtime.store.lock:
-            book = runtime.store.book(book_id)
-            if body.chapter_id and body.chapter_id not in {c['id'] for c in book['chapters']}:
-                raise HTTPException(400, "Choose a chapter in this book")
-            provider = body.provider or runtime.preferences['analysis_provider']
-            if provider not in ANALYSIS_LABELS:
-                raise HTTPException(400, "Choose a valid analysis provider")
-            result = plan(book, runtime.store, provider, runtime.preferences['analysis_models_by_provider'].get(provider),
-                          runtime.preferences['preprocess_models_by_provider'].get(provider), body.phase, body.chapter_id, body.resume)
-            result['limits'] = body.limits.model_dump()
-            return result
-
     @app.post("/api/books/{book_id}/render")
     def render(book_id: str, body: RenderRequest, request: Request):
         return rt(request).render(book_id, body)
@@ -1638,7 +1533,7 @@ def create_app(data_dir: Path | None = None):
         with runtime.store.lock:
             book = runtime.store.book(book_id)
             cast = runtime.resolved_cast(book)
-            return pipeline(runtime.store, book, lambda book, segment: runtime.valid_audio(book, segment, cast))
+            return pipeline(runtime.store, book, lambda book, segment: runtime.valid_audio(book, segment, cast), pipeline_registry)
 
     @app.get('/api/books/{book_id}/resources')
     def resource_usage(book_id: str, request: Request, limit: int = 100, offset: int = 0, run_id: str | None = None):

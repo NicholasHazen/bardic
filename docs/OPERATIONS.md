@@ -151,34 +151,34 @@ Then open `http://bardic.local:8765` on the other device, using your `BARDIC_POR
 | Need | Workflow | What can call a provider |
 | --- | --- | --- |
 | Listen immediately | Read & listen → simple listening, choose one narrator, start playback. Optionally prepare the rest of the chapter first. | Gemini requests uncached passages serially for warmup/lookahead or the selected chapter preparation. Breeze sends uncached passages to the configured server the same way. Device voices stay local. |
-| Build a character performance | Studio → free census → cheap discovery → profiles → chapter direction → review voices/notes → render a short scene. | Selected cloud analysis stages and Gemini narration. |
-| Process supplied series volumes | Manage books & series → membership/order/placeholders → confirm character links → preview a series run. | Explicit series analysis; at most two discovery books concurrently, later phases in reading order. |
+| Build a character performance | Analyze → Chapters & titles and census (free) → discovery → profiles → Speakers & delivery → review voices/notes in Cast → render a short scene in Script & record. | The model steps you run and confirm, and Gemini narration. |
+| Process supplied series volumes | Manage books & series → membership/order/placeholders → confirm character links → preview a series run. | The confirmed series run: the requested steps for one book at a time, in reading order. |
 | Inspect existing work | Pipeline explorer, artifact inspection, source search, resource dashboard, analysis export. | None of these inspection actions generates model output. Local indices/artifact projections may be prepared as needed. |
 
 The census is free local Python processing. It does not count as semantic model discovery. Whole-book discovery and profile currency are separate: a profile can be stale after new evidence or a changed identity link even when scanning is complete. References distinguish a named mention, attributed dialogue and profile evidence; none alone proves physical presence in a scene.
 
-For a later volume, set an explicit reading order and supply any earlier books you want considered. Only confirmed character links and source-valid observations from strictly earlier, available books are used. Missing/planned placeholders contain no source evidence. Removing/changing series membership clears that book's current identity links while retaining historical observations. Review links again before relying on cross-book profiles.
+For a later volume, set an explicit reading order and supply any earlier books you want considered. Only confirmed character links and the accepted, source-valid evidence of strictly earlier, available books are used; accepting or rolling back results in an earlier book changes what a later book reads. Missing/planned placeholders contain no source evidence. Removing/changing series membership clears that book's current identity links while retaining historical observations. Review links again before relying on cross-book profiles.
 
 Simple listening has a separate audio store and does not require or change enhanced analysis. Its buffer meter reports saved listening seconds at the selected speed. Pause, Stop, switching books or changing narrator invalidate pending playback/preparation. An in-flight take can finish and remain cached. Automatic continuation stops at the current chapter boundary. There is no whole-book background preparation queue or simple-mode ZIP yet.
 
 ## Budget and resource semantics
 
-The progressive analysis request limits are implemented in [processing.py](../bardic/processing.py). Defaults are:
+Analysis request metering is implemented in [processing.py](../bardic/processing.py). Every analysis HTTP attempt is reserved and recorded before it is sent. Analysis tab and series runs have **no cap by default**: confirming the plan preview, which states the estimated requests and cost, authorizes the run. An API caller can set optional limits on a run:
 
 | Allowance | Default | Scope |
 | --- | ---: | --- |
-| Requests | 25 | This analysis run; every HTTP attempt, including a transport retry or evidence repair. |
-| Input tokens | 1,000,000 | This run, using reported usage when available and a conservative reservation otherwise. |
-| Output tokens | 100,000 | This run; requests also have explicit output caps. |
-| Estimated spend | US$1 | Cumulative tracked **analysis** attempts for this book, including earlier runs. |
+| Requests | none | This analysis run; every HTTP attempt, including a transport retry or evidence repair. |
+| Input tokens | none | This run, using reported usage when available and a conservative reservation otherwise. |
+| Output tokens | none | This run; requests also have explicit output caps. |
+| Estimated spend | none | Cumulative tracked **analysis** attempts for this book, including earlier runs (and Classic-era attempts). |
 
-A series child run shares its request/token limits across phases. The series preview shows the combined per-book allowances; it is not an independently enforced account-wide ceiling. One failure or exhausted allowance stops new scheduling, while a request already active in another worker may still complete.
+In a series run, optional limits apply to each book's run; there is no account-wide ceiling. One failure or exhausted allowance stops new scheduling, while a request already in flight may still complete. The Classic engine's default allowances (25 requests, 1M input and 100K output tokens, US$1 per book) went with it in [stage 3](CLASSIC-REMOVAL.md).
 
 Before sending a guarded analysis attempt, the worker reserves UTF-8 request bytes plus protocol allowance as a conservative input bound, and the requested output cap. Its estimated cost includes input-rate uplift to avoid assuming cache discounts. Reported usage can replace token reservations; missing usage keeps its conservative cost reservation. This is deliberately different from an exact provider invoice.
 
-Preview estimates describe the known work at preview time. They exclude retries and can change as discovery reveals characters or scene work. A full-mode preview is not a guaranteed final price. Resume retains prior book spending; changing a model, running another phase or restarting does not erase it.
+Preview estimates describe the known work at preview time. They exclude retries and repairs, and a step whose input runs in the same request is estimated from that input's current accepted result. A preview is not a guaranteed final price. Tracked book spending is kept: changing a model, running another step or restarting does not erase it.
 
-An unknown/custom model price prevents a dollar-guarded request. Earlier attempts with unknown cost also prevent claiming a reliable cumulative dollar allowance. Choose a documented priced model when possible, or explicitly select request/token-only limits after reviewing the uncertainty. Do not clear ledger rows to make an allowance appear unused.
+An unknown/custom model price prevents a dollar-guarded request. Earlier attempts with unknown cost also prevent claiming a reliable cumulative dollar allowance. Choose a documented priced model when possible, or leave the dollar limit unset and use request/token limits after reviewing the uncertainty. Do not clear ledger rows to make an allowance appear unused.
 
 **The analysis allowances do not currently cap narration, simple listening, voice examples, account checks, or unrelated account spending.** Narration use is measured where possible, but no narration dollar ceiling is enforced. Use explicit short auditions and provider-side account controls when deciding how much narration to run. Extending guards is a [roadmap item](ROADMAP.md).
 
@@ -197,13 +197,13 @@ Current price tables are dated research snapshots, not live pricing feeds. Reche
 
 ## Jobs, cancellation and recovery
 
-The normal worker runs one book job at a time. Series discovery has its explicitly bounded two-book path. Busy-book and series reservations prevent conflicting edits/processing during a run. Long provider calls occur outside database write transactions.
+The normal worker runs one book job at a time; a series run processes one book at a time. Busy-book and series reservations prevent conflicting edits/processing during a run. Long provider calls occur outside database write transactions.
 
-Accepted analysis units and completed audio assets are persisted before later work proceeds. Chapter/profile publication is transactional. If later work fails, prior accepted results remain reusable. Cancellation stops between safe boundaries; it cannot reliably recall an already submitted request or refund it.
+Validated analysis units and completed audio assets are persisted before later work proceeds. Accepting a version is transactional. If later work fails, prior accepted results remain reusable. Cancellation stops between safe boundaries; it cannot reliably recall an already submitted request or refund it.
 
-On startup, unfinished jobs/checkpoints become interrupted. No cloud work automatically resumes. Inspect the run/error and current provider/limits, preview the remaining work, then start the desired stage with resume enabled. It revalidates compatible cached units and charges only new attempted provider work. Invalid cache entries are retired from the derived cache; immutable accepted/rejected history remains inspectable.
+On startup, unfinished jobs and pipeline runs become interrupted. No cloud work automatically resumes. Inspect the run/error and current step settings, preview the remaining work, then run the step again. It revalidates compatible cached units and charges only new attempted provider work. Invalid cache entries are retired from the derived cache; immutable accepted/rejected history remains inspectable.
 
-Transport failures are deliberately bounded. Progressive analysis can perform one short retry of a recognized transient response; authentication/billing failures are not automatically retried. An uncertain connection/timeout stops rather than blindly repeating a potentially charged request. Invalid structured evidence gets at most one corrective response for that request. These are separate mechanisms and both consume allowance if another HTTP attempt is sent.
+Transport failures are deliberately bounded. Analysis can perform one short retry of a recognized transient response; authentication/billing failures are not automatically retried. An uncertain connection/timeout stops rather than blindly repeating a potentially charged request. Invalid structured evidence gets at most one corrective response for that request. These are separate mechanisms and both consume allowance if another HTTP attempt is sent.
 
 Simple listening similarly does not automatically resend a failed or uncertain generation POST. Its browser polls jobs with bounded read-only retries and joins an already active identical session/passage request when the API receives it again. Preparation failures preserve saved clips and expose **Retry preparation**. After a restart/reload, the saved single-passage jobs/takes remain, but the browser's chapter/lookahead queue requires another explicit action. Do not assume that pressing Play after a failure is always free: it checks the saved cache and can request new narration if no valid match is available.
 

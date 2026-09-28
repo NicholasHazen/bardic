@@ -175,10 +175,12 @@ class SeriesContextObservation(View):
     It is one of that book's current character references (its accepted
     evidence). Its quote was rechecked against the earlier book's current chapter
     text at `start`/`end` (zero-based Unicode code-point offsets, exclusive end),
-    and a row whose chapter text changed since it was produced is left out.
+    and a row whose chapter text changed since it was produced is left out. A row
+    the removed Classic engine wrote counts only while the observation that engine
+    retained with it (same content hash, so the same chapter text) still exists.
     """
     id: str = Field(description='Stable observation ID: a content hash of the evidence, its location, reading and '
-                                'producer. A reference the older phase engine wrote keeps the ID of the observation '
+                                'producer. A reference the removed Classic engine wrote keeps the ID of the observation '
                                 'it retained.')
     book_id: str = Field(description='Earlier book the evidence comes from.')
     character_id: str = Field(description="Character ID local to that earlier book.")
@@ -196,14 +198,14 @@ class SeriesContextObservation(View):
     model: str | None = Field(description='Model that produced the observation, or null.')
     confidence: float | None = Field(description='Attribution confidence from 0 to 1 when recorded, else null.')
     step: Literal['discovery', 'profiles', 'directing'] | None = Field(
-        description='Step whose accepted version produced the evidence; null for rows the older phase engine wrote '
+        description='Step whose accepted version produced the evidence; null for rows the removed Classic engine wrote '
                     'and for dialogue attributed by hand or outside any accepted directing version.')
     version_id: str | None = Field(description='The accepted `step_output` version (artifact ID) the evidence came from, '
                                                'or null when `step` is null.')
     origin: Literal['run', 'baseline', 'external', 'manual', 'book'] | None = Field(
         description='How that version or row came about: `run` (a pipeline run), `baseline`/`external` (recorded from '
                     'existing work; producer unknown), `manual` (a speaker chosen by hand), `book` (attributed outside '
-                    'any accepted version); null for rows the older phase engine wrote.')
+                    'any accepted version); null for rows the removed Classic engine wrote.')
     source_hash: str = internal('SHA-256 of the chapter text the observation was validated against.')
     book_title: str = Field(description='Title of the earlier book.')
     position: float = Field(description="The earlier book's reading order.")

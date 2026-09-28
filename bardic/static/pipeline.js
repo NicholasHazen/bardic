@@ -13,7 +13,7 @@
     stale:'Out of date', running:'Running', queued:'Queued', failed:'Failed', interrupted:'Interrupted', cancelled:'Cancelled',
     budget_limited:'Spending limit reached', planned:'Planned', ready:'Ready', available:'Available', blocked:'Waiting', unknown:'Unknown',
     reserved:'Reserved', received:'Response received', uncertain:'Outcome uncertain', not_sent:'Not sent (connection failed)', accepted:'Accepted', rejected:'Rejected',
-    provisional:'Provisional draft', interrupted_unknown:'Interrupted · outcome unknown'};
+    interrupted_unknown:'Interrupted · outcome unknown'};
   const status = value => labels[value] || String(value || 'Unknown').replaceAll('_', ' ');
   const statusClass = value => Object.hasOwn(labels, value) ? value : 'unknown';
   const when = value => {
@@ -21,6 +21,9 @@
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? 'Time not recorded' : date.toLocaleString();
   };
+  // Step cards also report accepted results that are out of date and versions waiting in Analyze.
+  const review = stage => [stage.stale_count ? `${number(stage.stale_count)} out of date` : '',
+    stage.candidate_count ? `${number(stage.candidate_count)} waiting for review` : ''].filter(Boolean).join(' · ');
   const recent = values => [...values].sort((a, b) =>
     (Date.parse(b.updated_at || b.created_at) || 0) - (Date.parse(a.updated_at || a.created_at) || 0));
   const base = panel => `/api/books/${path(panel.book.id)}`;
@@ -61,7 +64,7 @@
     if (!panel.snapshot) { node.innerHTML = '<p class="pipeline-help">Loading saved analysis status…</p>'; return; }
     const stages = panel.snapshot.stages || [];
     const byId = new Map(stages.map(stage => [stage.id, stage.label]));
-    node.innerHTML = `<ol class="pipeline-stage-grid">${stages.map(stage => `<li class="pipeline-stage"><button type="button" data-pipeline-stage="${escape(stage.id)}" aria-pressed="${panel.stage === stage.id}"><span class="pipeline-stage-title">${escape(stage.label)}</span><span class="pipeline-badge ${statusClass(stage.status)}">${escape(status(stage.status))}</span><span class="pipeline-stage-count">${typeof stage.total === 'number' ? `${number(stage.completed ?? 0)} / ${number(stage.total)} ${escape(stage.unit_label || 'items')}` : typeof stage.completed === 'number' ? `${number(stage.completed)} ${escape(stage.unit_label || 'saved items')}` : 'Count not available'}</span><span class="pipeline-help">${escape(UI.fmt.plural(stage.artifact_count ?? 0, 'saved result'))}</span></button>${stage.dependencies?.length ? `<p class="pipeline-dependencies"><span>Uses</span> ${stage.dependencies.map(id => `<button type="button" data-pipeline-stage="${escape(id)}">${escape(byId.get(id) || id)}</button>`).join(' · ')}</p>` : '<p class="pipeline-dependencies">Source step</p>'}${stage.note ? `<p class="pipeline-stage-note">${escape(stage.note)}</p>` : ''}</li>`).join('')}</ol>${panel.snapshot.capabilities?.word_alignment === false ? '<p class="pipeline-note">Word alignment is planned. Current read-along timing follows passage boundaries.</p>' : ''}${(panel.snapshot.notes || []).map(note => `<p class="pipeline-help">${escape(note)}</p>`).join('')}`;
+    node.innerHTML = `<ol class="pipeline-stage-grid">${stages.map(stage => `<li class="pipeline-stage"><button type="button" data-pipeline-stage="${escape(stage.id)}" aria-pressed="${panel.stage === stage.id}"><span class="pipeline-stage-title">${escape(stage.label)}</span><span class="pipeline-badge ${statusClass(stage.status)}">${escape(status(stage.status))}</span><span class="pipeline-stage-count">${typeof stage.total === 'number' ? `${number(stage.completed ?? 0)} / ${number(stage.total)} ${escape(stage.unit_label || 'items')}` : typeof stage.completed === 'number' ? `${number(stage.completed)} ${escape(stage.unit_label || 'saved items')}` : 'Count not available'}</span>${review(stage) ? `<span class="pipeline-help">${escape(review(stage))}</span>` : ''}<span class="pipeline-help">${escape(UI.fmt.plural(stage.artifact_count ?? 0, 'saved result'))}</span></button>${stage.dependencies?.length ? `<p class="pipeline-dependencies"><span>Uses</span> ${stage.dependencies.map(id => `<button type="button" data-pipeline-stage="${escape(id)}">${escape(byId.get(id) || id)}</button>`).join(' · ')}</p>` : '<p class="pipeline-dependencies">Source step</p>'}${stage.note ? `<p class="pipeline-stage-note">${escape(stage.note)}</p>` : ''}</li>`).join('')}</ol>${panel.snapshot.capabilities?.word_alignment === false ? '<p class="pipeline-note">Word alignment is planned. Current read-along timing follows passage boundaries.</p>' : ''}${(panel.snapshot.notes || []).map(note => `<p class="pipeline-help">${escape(note)}</p>`).join('')}`;
   }
 
   function paintFilters(panel) {

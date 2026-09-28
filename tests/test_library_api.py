@@ -102,7 +102,8 @@ def test_book_archive_restore_keeps_files_takes_history_and_direct_access(client
     assert len(removed) == 1 and removed[0]['archived'] is True
     assert client.get(f'/api/books/{book_id}').status_code == 200
     assert store.book(book_id) == before and source.read_bytes() == original_bytes
-    assert client.post(f'/api/books/{book_id}/analyze', json={'provider': 'local'}).status_code == 400
+    refused = client.post(f'/api/books/{book_id}/analysis-pipeline/runs', json={'steps': ['census'], 'limits': {'max_requests': 1}})
+    assert refused.status_code == 400 and 'Restore this book' in refused.json()['detail']
     assert client.patch(f'/api/books/{book_id}/metadata', json={'title': 'Blocked'}).status_code == 400
     assert client.post(f'/api/books/{book_id}/restore').status_code == 200
     assert client.get('/api/books').json()[0]['id'] == book_id

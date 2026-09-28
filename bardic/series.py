@@ -8,8 +8,8 @@ volume's **current** ``character_references``: the accepted evidence the step
 pipeline projects there (:mod:`bardic.pipeline.evidence`). Rolling back or
 setting aside a version in volume 1 therefore changes what volume 2 is told.
 The append-only ``character_observations`` table is legacy history written by
-the phase engine; it is no longer read for prompts (it only re-validates the
-source hash of rows the phase engine wrote). History of what was sent lives in
+the removed Classic engine; it is no longer read for prompts (it only re-validates
+the source hash of reference rows that engine wrote). History of what was sent lives in
 artifacts: step_output versions and the ``character_observation`` artifacts a
 profile request records for each earlier-volume entry it includes.
 """
@@ -519,7 +519,7 @@ class _SourceCheck:
       records the chapter hashes the projection was built from, and a chapter whose
       text changed since is excluded until the next rebuild. A state recorded
       before those hashes existed falls back to the exact-slice check.
-    * A row the phase engine wrote: it counts only while the observation that the
+    * A row the removed Classic engine wrote: it counts only while the observation that the
       same checkpoint retained has the current source hash.
     """
 

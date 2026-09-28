@@ -1,10 +1,9 @@
 """Request builders for the LLM analysis steps: prompts, schemas and source locators.
 
-Discovery, Profiles and Directing build their requests here. The legacy phase
-engine (``bardic/progressive.py``) imports these builders back until it is
-removed. Prompt text, schemas and output caps are part of every cached unit's
-identity: ``tests/test_prompt_identity.py`` pins them, so a change here is a
-deliberate request change, never a refactor.
+Discovery, Profiles and Directing build their requests here. The builders came
+from the removed Classic engine unchanged. Prompt text, schemas and output caps
+are part of every cached unit's identity: ``tests/test_prompt_identity.py`` pins
+them, so a change here is a deliberate request change, never a refactor.
 """
 from __future__ import annotations
 
@@ -118,7 +117,9 @@ def profile_specs(book, store, accepted, *, require_current_evidence=False):
     ``require_current_evidence`` (the step pipeline) skips a character that has no
     accepted evidence in this book, so earlier volumes never decide which units
     exist: a series run's consent then covers the same unit set whatever the
-    earlier volumes accept meanwhile. The phase engine keeps its old rule.
+    earlier volumes accept meanwhile. The default keeps the removed Classic
+    engine's rule (earlier-volume evidence alone is enough), which the prompt
+    identity test pins.
     """
     local = census(book, store)
     stats = {c['id']: c for c in local['characters']}

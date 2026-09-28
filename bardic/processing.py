@@ -1,10 +1,9 @@
 """Shared request infrastructure: conservative per-attempt spending guards,
 attempt and event records, the census cache, and content digests.
 
-The step pipeline, series runs, performances and the legacy phase engine all
-use this module. The phase engine's own unit cache (the ``analysis_units``
-table) lives in ``bardic/legacy_phase.py``; this module neither creates nor
-reads it.
+The step pipeline, series runs and performances use this module. It neither
+creates nor reads the removed Classic engine's unit cache table, which existing
+libraries keep until the stage 4 migration (docs/CLASSIC-REMOVAL.md).
 """
 from __future__ import annotations
 

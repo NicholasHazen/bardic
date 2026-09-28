@@ -28,11 +28,11 @@ The rebuild runs from :func:`bardic.pipeline.projection.sync`, which every
 pipeline decision (accept, rollback, set aside, auto, baseline and external
 capture) and read path (overview, plan, run start, preview) calls inside its
 transaction. It is skipped when a digest of its inputs and of the stored rows
-is unchanged. Any other writer of ``character_references`` (the legacy phase
-checkpoint) changes the stored rows, so the next sync rebuilds them.
+is unchanged. Any other writer of ``character_references`` (structure repair of
+a legacy Classic checkpoint) changes the stored rows, so the next sync rebuilds them.
 
 A book without any accepted discovery, profiles or directing version is left
-untouched. Rows the legacy phase engine wrote as ``profile_evidence`` (no
+untouched. Rows the removed Classic engine wrote as ``profile_evidence`` (no
 ``projection`` field) are carried, revalidated, until a discovery version is
 accepted: discovery cannot be captured as a baseline, so they are its only
 record in the current projection. They stay in ``character_observations``.

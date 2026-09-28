@@ -1,11 +1,11 @@
-"""Analysis helpers that outlive the legacy phase engine.
+"""Analysis helpers that outlived the removed Classic (phase) engine.
 
 ``split_chapter`` publishes the scene boundaries a directing result proposes;
 the step pipeline's Directing step uses it. ``fingerprint`` is the identity of
 a saved ``analysis_checkpoints`` record, which structure repair re-keys while
 that legacy table exists (docs/CLASSIC-REMOVAL.md, stage 4).
 
-Both moved here unchanged from ``bardic/staged_analysis.py``.
+Both moved here unchanged from that engine's chapter runner.
 """
 from __future__ import annotations
 

@@ -205,20 +205,3 @@ def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, mon
     assert wait_job(client, job['id'])['status'] == 'cancelled'
     assert len(calls) == 1
     assert sum(bool(s['audio']) for s in client.get(url).json()['segments']) == 1
-
-
-def test_local_analysis_creates_cast_and_preserves_manual_corrections(client):
-    book = import_text(client)
-    url = f"/api/books/{book['id']}"
-    job = client.post(f'{url}/analyze', json={'provider': 'local'}).json()
-    assert wait_job(client, job['id'])['status'] == 'completed'
-    book = client.get(url).json()
-    assert any(c['name'] == 'Mara' for c in book['characters'])
-    dialogue = next(s for s in book['segments'] if s['kind'] == 'dialogue')
-    assert dialogue['speaker_id'] != 'unassigned'
-    client.patch(f"{url}/segments/{dialogue['id']}", json={'direction': 'Very dry wit', 'speaker_id': 'narrator'})
-    job = client.post(f'{url}/analyze', json={'provider': 'local'}).json()
-    assert wait_job(client, job['id'])['status'] == 'completed'
-    revised = next(s for s in client.get(url).json()['segments'] if s['id'] == dialogue['id'])
-    assert revised['direction'] == 'Very dry wit'
-    assert revised['speaker_id'] == 'narrator'
