@@ -31,6 +31,12 @@ function toast(message, error = false) {
   $('#toast').hidden = false;
   toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 8500 : 4800);
 }
+const ERROR_HINTS = {
+  breeze_voice_unavailable:'Refresh Breeze voices in Settings.',
+  breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.',
+  breeze_default_voice_missing:'Choose a default Breeze voice in Voices.',
+  book_archived:'It is listed under Removed items.',
+};
 async function request(path, options = {}) {
   const headers = {...options.headers};
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
@@ -41,7 +47,10 @@ async function request(path, options = {}) {
   else body = await response.text();
   if (!response.ok) {
     const detail = body?.detail ?? body?.error ?? body;
-    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(x => x.msg || JSON.stringify(x)).join('; ') : JSON.stringify(detail) || `Request failed (${response.status})`);
+    const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(x => x.msg || JSON.stringify(x)).join('; ') : JSON.stringify(detail) || `Request failed (${response.status})`;
+    // Error details describe the condition; where to fix it in this UI is added here, keyed on the stable code.
+    const hint = ERROR_HINTS[body?.code];
+    throw Object.assign(new Error(hint ? `${message} ${hint}` : message), {code:body?.code ?? null, status:response.status});
   }
   return body;
 }
@@ -967,6 +976,9 @@ async function selectBook(id) {
 function applyBook(book) {
   if (book.id !== state.book?.id) return;
   const previous = segmentById(state.segmentId);
+  // References are derived from the current book, so any new revision can change them.
+  const referencesStale = book.revision !== state.book?.revision;
+  if (referencesStale) { state.referenceCache.clear(); state.referenceVersion++; }
   state.book = book;
   const next = segmentById(state.segmentId);
   if (!simpleActive() && state.audioSegmentId && (!playable(next) || (next?.audio?.asset_id || next?.audio?.fingerprint) !== (previous?.audio?.asset_id || previous?.audio?.fingerprint))) stopAudio({clear:true});
@@ -975,6 +987,7 @@ function applyBook(book) {
   const index = state.books.findIndex(b => b.id === book.id);
   if (index >= 0) state.books[index] = book;
   renderBook();
+  if (referencesStale) $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences));
 }
 function renderBook() {
   const book = state.book;
@@ -1123,7 +1136,7 @@ function referenceContent(character) {
   if (entry.error) return `<p class="field-help">${escapeHTML(entry.error)}</p><button type="button" class="button text-button" data-retry-references="${escapeHTML(character.id)}">Try again</button>`;
   if (!entry.references.length) {
     const evidence = character.evidence || [];
-    return `<p class="field-help">No chapter references saved yet. Analyze a chapter to collect appearances and source evidence.</p>${evidence.length ? `<p class="field-help">Earlier profile evidence:</p>${evidence.map(item => `<blockquote>${escapeHTML(typeof item === 'string' ? item : item.quote || item.text || '')}</blockquote>`).join('')}` : ''}`;
+    return `<p class="field-help">No references to this character in the text yet.</p>${evidence.length ? `<p class="field-help">Earlier profile evidence:</p>${evidence.map(item => `<blockquote>${escapeHTML(typeof item === 'string' ? item : item.quote || item.text || '')}</blockquote>`).join('')}` : ''}`;
   }
   const shown = Math.min(entry.references.length, entry.shown || 100);
   const chapters = new Map(state.book.chapters.map(chapter => [chapter.id, chapter]));
