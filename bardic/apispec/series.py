@@ -170,12 +170,16 @@ class SeriesContextSeries(View):
 
 
 class SeriesContextObservation(View):
-    """One source-validated observation of a linked character from an earlier volume.
+    """One piece of accepted evidence for a linked character from an earlier volume.
 
-    Its quote was rechecked against the earlier book's current chapter text at
-    `start`/`end` (zero-based Unicode code-point offsets, exclusive end).
+    It is one of that book's current character references (its accepted
+    evidence). Its quote was rechecked against the earlier book's current chapter
+    text at `start`/`end` (zero-based Unicode code-point offsets, exclusive end),
+    and a row whose chapter text changed since it was produced is left out.
     """
-    id: str = Field(description='Stable observation ID (content hash).')
+    id: str = Field(description='Stable observation ID: a content hash of the evidence, its location, reading and '
+                                'producer. A reference the older phase engine wrote keeps the ID of the observation '
+                                'it retained.')
     book_id: str = Field(description='Earlier book the evidence comes from.')
     character_id: str = Field(description="Character ID local to that earlier book.")
     chapter_id: str = Field(description='Chapter ID in the earlier book.')
@@ -191,6 +195,15 @@ class SeriesContextObservation(View):
     provider: str | None = Field(description='Provider that produced the observation (`local` for local rules), or null.')
     model: str | None = Field(description='Model that produced the observation, or null.')
     confidence: float | None = Field(description='Attribution confidence from 0 to 1 when recorded, else null.')
+    step: Literal['discovery', 'profiles', 'directing'] | None = Field(
+        description='Step whose accepted version produced the evidence; null for rows the older phase engine wrote '
+                    'and for dialogue attributed by hand or outside any accepted directing version.')
+    version_id: str | None = Field(description='The accepted `step_output` version (artifact ID) the evidence came from, '
+                                               'or null when `step` is null.')
+    origin: Literal['run', 'baseline', 'external', 'manual', 'book'] | None = Field(
+        description='How that version or row came about: `run` (a pipeline run), `baseline`/`external` (recorded from '
+                    'existing work; producer unknown), `manual` (a speaker chosen by hand), `book` (attributed outside '
+                    'any accepted version); null for rows the older phase engine wrote.')
     source_hash: str = internal('SHA-256 of the chapter text the observation was validated against.')
     book_title: str = Field(description='Title of the earlier book.')
     position: float = Field(description="The earlier book's reading order.")
@@ -228,14 +241,46 @@ class BookSeriesContext(View):
                     'use timestamps.')
 
 
+class SeriesBookEstimate(View):
+    """An "up to" estimate: the work of context-pending steps counted as all new."""
+    requests: int = Field(description='Model requests, before retries or evidence repairs. Every unit of a '
+                                      'context-pending step counts, even when a saved result exists now.')
+    estimated_input_tokens: int = Field(description='Estimated input tokens, from the prompts as they are now. '
+                                                    'Context-pending prompts can grow while the run is going.')
+    output_token_allowance: int = Field(description='Sum of the output token caps.')
+    estimated_cost_usd: float | None = Field(
+        description='Estimated USD at current prompt sizes, rounded to 6 decimals; null when a price is unknown (never '
+                    'counted as zero). Approximate; the cost of a context-pending step can be higher.')
+
+
+class SeriesEstimate(SeriesBookEstimate):
+    """The series total of the books' `up_to` estimates."""
+    known_cost_usd: float = Field(description="Sum of the books' known `up_to.estimated_cost_usd`, rounded to 6 "
+                                              "decimals. A lower bound when a book's cost is unknown.")
+
+
 class SeriesPlanBook(View):
     """One supplied, active book in a series plan, with its own step-pipeline plan."""
     book_id: str = Field(description='Book ID.')
     title: str = Field(description='Book title ("Untitled" when the book has none).')
     position: float = Field(description=POSITION)
-    fingerprint: str = Field(description="This book's plan `fingerprint` (the same as `plan.fingerprint`). The series "
-                                         'worker recomputes it before the book starts and does not run the book when it '
-                                         'differs.')
+    fingerprint: str = Field(description="This book's plan `fingerprint` (the same as `plan.fingerprint`). It covers "
+                                         'what every unit sends, including earlier-volume context.')
+    consent_fingerprint: str = Field(
+        description="What the run's consent covers for this book (SHA-256 hex): its revision, `fresh`, and each "
+                    "step's ID, version, provider, model and unit set, plus the exact requests of steps that are not "
+                    'context-pending. The series worker recomputes it before the book starts and does not run the '
+                    'book when it differs. Earlier books accepting new results during the run do not change it.')
+    context_pending: list[StepId] = Field(
+        description='Requested steps whose prompts read earlier books of this run (today: `profiles`, when a linked '
+                    'character of this book has a confirmed link in an earlier supplied book). Their units are '
+                    'fixed; what the prompts say is only known when this book starts. Empty for the first book and '
+                    'for books without such links.')
+    context_sources: list[str] = Field(
+        description='Earlier books of this run that `context_pending` steps read, sorted by ID. With a review gate '
+                    'the series pauses after such a book while its results wait for review.')
+    up_to: SeriesBookEstimate = Field(
+        description='This book\'s "up to" estimate. Equal to the `plan` figures when `context_pending` is empty.')
     plan: PipelinePlan = Field(description="The book's step-pipeline plan for the requested steps, `configs` and "
                                            '`fresh`, over every eligible chapter: exactly what '
                                            '`planBookAnalysisPipelineRun` returns for that book.')
@@ -254,7 +299,7 @@ class SeriesPlan(View):
     the summed estimate and the fingerprint that confirms it."""
     series_id: str = Field(description='Series ID.')
     name: str = Field(description='Series name.')
-    plan_version: int = Field(description='Version of the series plan format, part of the fingerprint. Currently 2.')
+    plan_version: int = Field(description='Version of the series plan format, part of the fingerprint. Currently 3.')
     steps: list[StepId] = Field(description='Requested step IDs, deduplicated, in pipeline order.')
     configs: dict[StepId, PipelineStepConfigView] = Field(
         description="`{step ID: {provider, model}}` resolved for every requested step: the request's `configs` entry, "
@@ -280,6 +325,12 @@ class SeriesPlan(View):
     known_cost_usd: float = Field(description="Sum of the books' known `estimated_cost_usd` in USD, rounded to 6 "
                                               'decimals. A lower bound when `unknown_cost_books` is not empty.')
     unknown_cost_books: list[str] = Field(description='Book IDs whose estimate is unknown (null), in reading order.')
+    context_pending_books: list[str] = Field(
+        description='Book IDs, in reading order, with a `context_pending` step. When not empty, present the `up_to` '
+                    "estimate: later books read earlier books' accepted results, so their prompts (and cost) can "
+                    'grow during the run.')
+    up_to: SeriesEstimate = Field(description="Sum of the books' `up_to` estimates; equal to the plan totals when "
+                                              '`context_pending_books` is empty. An unknown price stays unknown.')
     missing_inputs: dict[str, dict[StepId, list[StepId]]] = Field(
         description="`{book ID: {step: [required inputs]}}` for the books whose plan reports `missing_inputs`; books "
                     'without any are omitted. Starting the run is refused (400) while this is not empty.')
@@ -290,8 +341,8 @@ class SeriesPlan(View):
     notes: list[str] = Field(description='Human-readable caveats. Display only.')
     fingerprint: str = Field(
         description='Opaque series plan identity (SHA-256 hex) over the plan version, series, steps, resolved `configs`, '
-                    "`fresh` and every book's ID, position and plan fingerprint. Send it as `expected_fingerprint` to "
-                    'start exactly this plan.')
+                    "`fresh` and every book's ID, position and `consent_fingerprint`. Send it as `expected_fingerprint` "
+                    'to start exactly this plan.')
 
 
 class SeriesChildRun(View):
@@ -321,6 +372,44 @@ class SeriesRun(Job):
 class SeriesRuns(View):
     """Recent series runs."""
     runs: list[SeriesRun] = Field(description='Up to 20 parent runs, newest first.')
+
+
+class SeriesLinkSource(View):
+    """An earlier-volume character whose confirmed link supports a suggestion."""
+    book_id: str = Field(description='Earlier book ID.')
+    title: str = Field(description='Earlier book title.')
+    position: float = Field(description="Earlier book's reading order.")
+    character_id: str = Field(description='Character ID local to that earlier book.')
+    character_name: str = Field(description="That character's current name.")
+
+
+class SeriesLinkCandidate(View):
+    """One series identity a character might be."""
+    series_character_id: str = Field(description='Series identity ID. Confirm with `linkSeriesCharacter`.')
+    name: str = Field(description='Series identity name.')
+    matched_names: list[str] = Field(description="This book's spellings (the character's name or aliases) that matched.")
+    sources: list[SeriesLinkSource] = Field(description='Linked earlier-volume characters with a matching name or alias, '
+                                                        'in reading order.')
+
+
+class SeriesLinkSuggestion(View):
+    """A proposed identity link for one unlinked character. Nothing is linked until the owner confirms."""
+    character_id: str = Field(description='Book-local character ID.')
+    character_name: str = Field(description="The character's current name.")
+    candidates: list[SeriesLinkCandidate] = Field(description='Matching series identities, by name then ID. More than '
+                                                              'one means namesakes: choose, or create a separate identity.')
+    ambiguous: bool = Field(description='True when there are several candidates, or when one candidate is also '
+                                        'proposed for another character of this book. Offer an explicit choice; never '
+                                        'preselect one.')
+
+
+class BookSeriesSuggestions(View):
+    """Proposed identity links for a book's unlinked characters."""
+    book_id: str = Field(description='Book ID.')
+    series_id: str | None = Field(description="The book's active series, or null when it is in none (then there are "
+                                              'no suggestions).')
+    suggestions: list[SeriesLinkSuggestion] = Field(description='One entry per unlinked character with at least one '
+                                                                'candidate, by name then ID.')
 
 
 class SeriesMap(View):
@@ -476,14 +565,28 @@ OPS: list[Op] = [
     op('GET', '/api/books/{book_id}/series/context', 'getBookSeriesContext', TAG,
        'Preview earlier-volume context for a book',
        'Reads the bounded context that analysis of this book receives from strictly earlier volumes, without model '
-       'calls. It includes only observations of characters with confirmed links, from active earlier books of the '
-       'same active series, whose quotes still match the current source text; name mentions, later volumes, '
-       'unconfirmed links, removed or unavailable volumes and invalidated evidence are excluded. Missing volumes '
-       'contribute nothing.\n\n'
-       'The bound (at most 12,000 serialized characters and 8 observations per character) is an implementation '
-       'choice, not a request parameter. `fingerprint` is stable while the inputs are unchanged. All historical '
-       'observations remain retained even when omitted here.',
+       "calls. Since contract 0.3.0 it is each earlier book's **accepted** evidence (its current character "
+       'references: profile evidence and attributed dialogue), not the retained observation history, so accepting, '
+       'rolling back or setting aside a version there changes it. It includes only characters with confirmed links, '
+       'from active earlier books of the same active series, and evidence whose quote still matches the current '
+       'source text; name mentions, later volumes, unconfirmed links, removed or unavailable volumes and invalidated '
+       'evidence are excluded. Missing volumes contribute nothing.\n\n'
+       'The bound (at most 12,000 serialized characters and 8 entries per character) is an implementation choice, '
+       'not a request parameter; profile requests use a larger bound and send at most 6 entries per character. '
+       '`fingerprint` is stable while the inputs are unchanged.',
        response=BookSeriesContext,
+       params={'book_id': BOOK_ID},
+       errors={404: 'The book does not exist.'}),
+
+    op('GET', '/api/books/{book_id}/series/suggestions', 'listSeriesLinkSuggestions', TAG,
+       'Suggest identity links for a book',
+       "Proposes series identities for this book's characters that have no link yet. A proposal needs an exact "
+       "match, ignoring case and repeated spaces, between one of the character's names or aliases and a name or "
+       'alias of a character in a strictly earlier, active volume of the same series that already has a confirmed '
+       'link. Nothing is linked or stored: confirm a proposal with `linkSeriesCharacter`. Namesakes, and one identity '
+       'proposed for two characters, are marked `ambiguous` and need an explicit choice. Narrator and unassigned are '
+       'never proposed. Read-only.',
+       response=BookSeriesSuggestions,
        params={'book_id': BOOK_ID},
        errors={404: 'The book does not exist.'}),
 
@@ -491,8 +594,13 @@ OPS: list[Op] = [
        "Previews a series run: the step-pipeline plan of every supplied, active book of the series, in reading order, "
        'for the same `steps`, `configs` and `fresh`, and the summed estimate. No model or service calls.\n\n'
        "- Each book's `plan` is exactly what `planBookAnalysisPipelineRun` returns for that book over every eligible "
-       'chapter, computed from that book\'s own accepted results. Accepted results in one book are not read by '
-       'another.\n'
+       "chapter, computed from that book's accepted results and, for Character profiles, the accepted results of "
+       'earlier books through confirmed links.\n'
+       '- **Context-pending books.** In a later book whose linked characters have a confirmed link in an earlier book '
+       'of this run, Character profiles is `context_pending`: earlier books may accept new results during the run, '
+       'which changes what its prompts say but not which units exist. Its `up_to` estimate counts every such unit as '
+       'a request and estimates tokens from the current context, which can grow; say so when asking for consent. '
+       'Use the series `up_to` totals when `context_pending_books` is not empty.\n'
        "- Omitted `configs` entries use the saved step settings; the resolved `configs` apply to every book.\n"
        "- `estimated_cost_usd` is null when any book's cost is unknown; `known_cost_usd` and `unknown_cost_books` say "
        'what is priced. Estimates cover known work before retries or evidence repairs.\n'
@@ -500,8 +608,9 @@ OPS: list[Op] = [
        'while either is not empty.\n'
        '- Missing and planned placeholders and removed books are listed in `skipped_volumes` and never run.\n'
        '- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book\'s ID, '
-       'position and plan fingerprint (which covers the book revision and every unit\'s identity). It does not cover '
-       '`mode`, `gates`, `concurrency` or `limits`.\n\n'
+       "position and `consent_fingerprint` (the book revision, and each step's version, provider, model and unit "
+       'set, plus the exact requests of steps that are not context-pending). It does not cover `mode`, `gates`, '
+       '`concurrency` or `limits`.\n\n'
        'The plan can be empty when the series has no active books. Not purely read-only: for each book the server '
        'first records outside changes as the book pipeline overview does (`projection.sync`), and building units may '
        'store free local census caches.',
@@ -528,16 +637,27 @@ OPS: list[Op] = [
        'the authorization, and every paid HTTP attempt is still reserved and recorded by the pipeline runner.\n\n'
        '**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number '
        'of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with '
-       '`series_run_id`, `position`, `title`, `plan_fingerprint` (that book\'s confirmed plan) and `run_id: null`. '
+       '`series_run_id`, `position`, `title`, `plan_fingerprint` (that book\'s plan), `consent_fingerprint`, '
+       '`context_pending`, `context_sources` and `run_id: null`. '
        'Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with '
        '`listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, '
-       'single-book runs and accepting versions on them get 409. Cancelling the parent '
+       'single-book runs and accepting versions on them get 409 (except the book a paused run waits on, below). '
+       'Cancelling the parent '
        '(`POST /api/jobs/{job_id}/cancel`) cancels queued children at once and asks the running child to stop; '
        'cancelling a child stops the series at that book.\n\n'
        '**Execution.** Books run one at a time in reading order; `concurrency` is the number of model requests in '
-       'flight inside the running book. Before each book starts, its plan is recomputed; if it no longer matches its '
-       'confirmed fingerprint, that child fails with nothing sent and the series stops. Each book runs as one pipeline '
-       'run (with `series_run_id` set), with the same candidates, gates and auto-accept as a run started from the book. '
+       'flight inside the running book. Before each book starts, its plan is recomputed; if its `consent_fingerprint` '
+       "changed, that child fails with nothing sent and the series stops. Earlier books' newly accepted results "
+       "change a context-pending book's prompts but not its consent. Each book runs as one pipeline run (with "
+       '`series_run_id` set), with the same candidates, gates and auto-accept as a run started from the book.\n\n'
+       '**Review pauses.** A later book never reads unreviewed results. When a book completes with a version of an '
+       'evidence step (discovery, profiles or directing) waiting for review (a `review` gate) and a later book of the '
+       'run reads it (`context_sources`), the series pauses: '
+       'the parent stays `running` with `waiting_for_review` set and nothing runs. That book then accepts version '
+       'decisions (accept, roll back, set aside) while every other reservation holds. Resume with '
+       '`resumeSeriesProcessing` once nothing waits; cancel the parent to stop. A review gate on a book no later '
+       'book reads leaves its version waiting and the series continues. A restart while paused interrupts the run '
+       'like any active job.\n\n'
        'The first child that does not complete stops the series with that status (`failed`, `budget_limited`, '
        '`quota_limited`, `cancelled` or `interrupted`); children that never started end `cancelled` (after a cancel) '
        'or `interrupted`, with `not_started: true`, and never start later. Validated units are cached per book, so '
@@ -553,6 +673,24 @@ OPS: list[Op] = [
                404: SERIES_404,
                409: '`expected_fingerprint` does not match the recomputed plan (preview again); the series already has '
                     'an active run; or a book has an active job or is reserved by another series run.'},
+       cost='may_charge'),
+
+    op('POST', '/api/series/{series_id}/runs/{job_id}/resume', 'resumeSeriesProcessing', TAG,
+       'Resume a series run paused for review',
+       "Continues a series run that paused for the owner's review (`waiting_for_review` on the parent job). Refused "
+       'with 409 while the waiting book still has a version from this run waiting for a decision: accept it or set it '
+       "aside in that book's Analysis tab first. The run keeps the provider keys, server URLs and settings "
+       'snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it '
+       'starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent '
+       'job with `waiting_for_review: null`. No request body.',
+       response=Job,
+       response_description='The parent series job, still running. Poll it until it is terminal.',
+       params={'series_id': SERIES_ID, 'job_id': 'The parent `series` job ID.'},
+       errors={400: 'The series worker could not resume (the run is then marked `failed` and nothing more runs).',
+               404: SERIES_404 + ' Also when the job is not a run of this series: "Series run not found".',
+               409: 'The run is not waiting for review (never paused, already resumed, or ended), it was cancelled, '
+                    'the waiting book still has a version waiting for a decision, or the server restarted since '
+                    'it paused.'},
        cost='may_charge'),
 
     op('GET', '/api/series/{series_id}/runs', 'listSeriesRuns', TAG, 'List recent series runs',
@@ -622,7 +760,8 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'mode': '`serial` (default) runs each book\'s steps one after another in pipeline order. `parallel` starts every '
                 'step whose in-run inputs have finished. Books always run one at a time.',
         'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run. With `review`, each book\'s '
-                 'version waits in that book\'s Analysis tab.',
+                 "version waits in that book's Analysis tab, and the series pauses after a book that a later book "
+                 'reads until it is reviewed and the run resumed.',
         'concurrency': 'Maximum model requests in flight inside the running book, 1–4 (default 2). Books run one at a '
                        'time. Each step also has its own `parallel` cap.',
         'limits': 'Optional caps applied separately to each book\'s run; see Limits. Uncapped when omitted. A limit '

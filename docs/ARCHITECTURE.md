@@ -58,8 +58,8 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`analysis_common.py`](../bardic/analysis_common.py) | Scene-boundary publication for directing results, and the saved checkpoint fingerprint that structure repair re-keys. |
 | [`model_catalog.py`](../bardic/model_catalog.py) | Documented model choices, dated pricing metadata, explicit account inventory refresh, custom model support. Listing a model does not prove generation compatibility. |
 | [`account_checks.py`](../bardic/account_checks.py) | Explicit small text requests that test an account/model and classify errors. Does not retrieve a credit balance. |
-| [`series.py`](../bardic/series.py) | Explicit series membership, confirmed character identities, retained observations, bounded evidence from earlier supplied volumes. |
-| [`series_processing.py`](../bardic/series_processing.py) | Series runs on the step pipeline: per-book pipeline plans and one series fingerprint, a parent job with one `pipeline` child per book in reading order, per-book re-check before start, cancellation and failure settlement. |
+| [`series.py`](../bardic/series.py) | Explicit series membership, confirmed character identities, bounded accepted evidence from earlier supplied volumes (series memory), identity-link suggestions, legacy retained observations. |
+| [`series_processing.py`](../bardic/series_processing.py) | Series runs on the step pipeline: per-book pipeline plans and one series fingerprint, a parent job with one `pipeline` child per book in reading order, per-book consent re-check before start (context-pending profiles), review pause and resume, cancellation and failure settlement. |
 | [`library.py`](../bardic/library.py) | Editable metadata, covers, measured storage, reversible removal/restoration, explicit missing/planned volume slots. |
 | [`artifacts.py`](../bardic/artifacts.py) | Immutable content-addressed versions, mutable current heads, verified dependency edges, projection capture and honest legacy backfill. |
 | [`pipeline/`](../bardic/pipeline/) | Step-based analysis: step contract and registry, built-in steps and their request builders (`prompts.py`), runner (planning, bounded parallel units, metered requests, unit cache), candidate versions, accept/reject/rollback with a revision-guarded projection, outside-change capture, HTTP router. Runs never write the book projection. See [the analysis pipeline](ANALYSIS-PIPELINE.md). |
@@ -88,8 +88,8 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Voice examples | `voice-preview.js`, main player in `app.js` | Book `/voice-preview`, `/voice-preview/audio/{asset_id}` |
 | Single-narrator listening | `listen.js`, `listen.css` | Book `/listen`, `/listen/takes`, `/listen/audio/{asset_id}` |
 | Progressive production (older phase runner) | `production.js`, `production.css`: no longer loaded by the page; the backend stays until series runs move to the step pipeline | Book `/preprocessing`, `/analysis-plan`, `/analyze`, `/analysis` |
-| Series identity review | `series.js`, `series.css` | Book `/series`, character links, series characters/context |
-| Collection processing | `series-processing.js`, `series-processing.css` | Series `/plan`, `/process`, `/runs`, `/map` |
+| Series identity review | `series.js`, `series.css` | Book `/series`, character links, link suggestions, series characters/context |
+| Collection processing | `series-processing.js`, `series-processing.css` | Series `/plan`, `/process`, `/runs`, `/runs/{job}/resume`, `/map` |
 | Analysis pipeline (**Analyze** tab) | `analysis-pipeline.js`, `analysis-pipeline.css` | `/api/analysis-pipeline`, book `/analysis-pipeline` (plan, runs, versions, preview, accept, reject) |
 | Pipeline inspection (**Details** tab) | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
 | Resource usage (**Details** tab) | `resources.js`, `resources.css` | Book `/resources` |

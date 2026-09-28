@@ -421,10 +421,11 @@ def test_empty_and_unknown_series_and_invalid_plans_are_refused_without_jobs(cli
 
 
 def test_new_accepted_evidence_in_an_earlier_book_does_not_stop_a_linked_profiles_run(client):
-    """The evidence projection writes no observations, so later books' profile prompts are unchanged.
+    """Book 1 accepts new profile evidence during the run, and book 2 reads it (series memory).
 
-    Book 1 accepts new profile evidence during the run (its Cast references change); book 2's
-    series context, and so its plan fingerprint, stays as confirmed and the series completes.
+    Book 2's profiles are context-pending: its prompts change, but its consent fingerprint covers
+    only the unit set, providers, models and versions, so the series completes. The projection
+    still writes no observations (history is in artifacts).
     """
     from bardic.series import SeriesRepository
     from test_analysis_pipeline import run
@@ -450,6 +451,7 @@ def test_new_accepted_evidence_in_an_earlier_book_does_not_stop_a_linked_profile
     provider.__class__.__call__ = reread
     try:
         plan = preview(client, series, steps=['profiles'], fresh=True)
+        assert plan['context_pending_books'] == [books[1]['id']]
         parent = wait_job(client, process(client, series, plan, steps=['profiles'], fresh=True).json()['id'])
         assert parent['status'] == 'completed', parent
         assert [child['status'] for child in children(client, series)] == ['completed', 'completed']
@@ -459,4 +461,7 @@ def test_new_accepted_evidence_in_an_earlier_book_does_not_stop_a_linked_profile
     first_mara = next(c for c in store.book(books[0]['id'])['characters'] if c['name'] == 'Mara')
     profiled = [r for r in store.character_references(books[0]['id'], first_mara['id']) if r['step'] == 'profiles']
     assert profiled and {r['profile_description'] for r in profiled} == {'A second reading.'}
+    # Book 2's context now carries it.
+    later = repository.context_for_book(books[1]['id'])
+    assert 'A second reading.' in {o['description'] for c in later['characters'] for o in c['observations']}
     assert repository.observations(books[0]['id']) == []

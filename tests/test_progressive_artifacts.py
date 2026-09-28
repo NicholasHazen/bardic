@@ -13,7 +13,7 @@ from bardic.importer import parse_book
 from bardic.pipeline_view import write_analysis_export
 from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
 from bardic.processing import BudgetReached, digest, source_hash
-from bardic.series import SeriesRepository
+from bardic.series import SeriesRepository, observation_of
 from bardic.store import Store
 from test_progressive import FakeProvider, process, story
 
@@ -211,11 +211,14 @@ def legacy_earlier_volume(store, current):
             conn.execute('INSERT INTO series_character_links VALUES (?,?,?,?)',
                          (earlier['id'], character_id, identities[name], 'before-upgrade'))
             start = source.index(quote)
-            observation = {'id': 'legacy-' + name.lower(), 'book_id': earlier['id'], 'character_id': character_id,
-                           'chapter_id': chapter['id'], 'start': start, 'end': start + len(quote),
-                           'source_hash': source_hash, 'quote': quote, 'kind': 'profile_evidence',
-                           'description': 'An earlier vocal observation.', 'direction': '',
-                           'provider': 'anthropic', 'model': 'earlier-model'}
+            # A phase checkpoint wrote the reference and retained its observation (same content hash).
+            reference = {'id': 'legacy-' + name.lower(), 'character_id': character_id, 'chapter_id': chapter['id'],
+                         'segment_id': None, 'start': start, 'end': start + len(quote), 'quote': quote,
+                         'kind': 'profile_evidence', 'profile_description': 'An earlier vocal observation.',
+                         'profile_direction': '', 'provider': 'anthropic', 'model': 'earlier-model', 'confidence': None}
+            observation = observation_of(earlier['id'], reference, source_hash)
+            conn.execute('INSERT INTO character_references VALUES (?,?,?,?,?,?)',
+                         (earlier['id'], reference['id'], character_id, chapter['id'], None, json.dumps(reference)))
             conn.execute('INSERT INTO character_observations VALUES (?,?,?,?,?,?)',
                          (observation['id'], earlier['id'], character_id, chapter['id'], source_hash, json.dumps(observation)))
     return earlier, identities

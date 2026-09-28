@@ -18,8 +18,8 @@ This document describes current storage as of 2026-09-28. Read [architecture](AR
 | Cast performance take history | `performance_takes` and WAV files | Immutable passage takes keyed by performance, passage and source key. Independent of the Studio `takes` selection. |
 | Accepted model results for fast reuse | `analysis_units` | Replaceable/rejectable cache; original accepted outputs retained in artifacts. |
 | Analysis progress | `analysis_checkpoints`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
-| Current character references | `character_references` | Current-book projection of accepted discovery, profiles and directing evidence plus cast-name mentions, rebuilt by pipeline sync and decisions ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). A phase-engine checkpoint still replaces it until the next sync. |
-| Validated observations | `character_observations` | Append-only by repository convention, deduplicated by content. |
+| Current character references | `character_references` | Current-book projection of accepted discovery, profiles and directing evidence plus cast-name mentions, rebuilt by pipeline sync and decisions ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). Later volumes' series context reads it ([series memory](ANALYSIS-PIPELINE.md#series-memory)). A phase-engine checkpoint still replaces it until the next sync. |
+| Validated observations | `character_observations` | Legacy history written only by the phase engine. Append-only by repository convention, deduplicated by content. Not read for prompts since 2026-09-28. |
 | Output/provenance history | `artifact_versions`, `artifact_dependencies` | Immutable, including when no longer current. |
 | Current artifact selections | `artifact_heads` | Mutable pointers; removable without deleting history. |
 | Spend/usage | `analysis_attempts`, `resource_operations`, events | Durable tracked measurements/reservations, with explicit unknowns. |
@@ -112,11 +112,11 @@ Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.
 | Table | Key and columns | Contract |
 | --- | --- | --- |
 | `books` | PK `id`; `body` | Current domain projection. |
-| `jobs` | PK `id`; `book_id`, `body` | Durable job status/progress/cancellation fields. Series parent jobs use a synthetic `series:<series_id>` scope and hold child IDs/book reservations. |
+| `jobs` | PK `id`; `book_id`, `body` | Durable job status/progress/cancellation fields. Series parent jobs use a synthetic `series:<series_id>` scope and hold child IDs/book reservations. A parent paused for review stays `running` with `waiting_for_review`; its children carry `consent_fingerprint`, `context_pending` and `context_sources`. |
 | `settings` | PK `id`; `body` | Saved preferences; excludes API keys. |
 | `takes` | PK `(book_id, segment_id)`; `body` | Currently selected enhanced take metadata. Replacing a selection does not delete archived audio. |
 | `analysis_checkpoints` | PK `book_id`; `fingerprint`, `body` | Current working book, stage/chapter completion and references, with compatibility unit state. One current checkpoint per book. |
-| `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current references, indexed by book/character and book/chapter. Rows written by the evidence projection carry `step`, `version_id` (the accepted `step_output` artifact), `origin` and `projection`; their ID hashes their content. Each row passes the same exact-span check as observations. The rebuild digest and drop counts live in `pipeline_state.body.evidence`. |
+| `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current references, indexed by book/character and book/chapter. Rows written by the evidence projection carry `step`, `version_id` (the accepted `step_output` artifact), `origin` and `projection`; their ID hashes their content. Each row passes the same exact-span check as observations. The rebuild digest, drop counts and the chapter hashes the rows were validated against (`sources`) live in `pipeline_state.body.evidence`. |
 
 Jobs can be queued, running, completed, failed, cancelled, interrupted, or budget-limited depending on the worker outcome. A restart interrupts active jobs/checkpoints rather than guessing that remote requests were never sent. Historical jobs remain useful status records but are not a substitute for attempt-level billing evidence.
 
@@ -157,7 +157,7 @@ Identical persisted source/event/body records are suppressed within two seconds.
 
 Observation IDs hash their content, excluding the new recording timestamp. Replaying a checkpoint uses `INSERT OR IGNORE`; a changed interpretation becomes a distinct observation. Retention requires the current committed chapter, character, exact source span, and quote to match. Kinds are `profile_evidence`, `dialogue`, and `mention`.
 
-Current references can be replaced or cleared without deleting observations. The evidence projection writes no observations (owner decision, 2026-09-28): series context reads this table, and appending accepted evidence would change later volumes' prompts during a series run. The phase engine remains the only writer until the series-memory follow-up decides otherwise. Later analysis queries observations only through confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter hash and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every historical observation indiscriminately.
+Current references can be replaced or cleared without deleting observations. Since 2026-09-28 series context reads earlier volumes' **current references** (their accepted evidence), not this table, so a rollback in volume 1 changes what volume 2 reads ([series memory](ANALYSIS-PIPELINE.md#series-memory)). The evidence projection writes no observations and the phase engine remains the only writer; the table's only remaining read for context is re-checking that a phase-engine reference still matches the chapter hash its retained observation recorded. Each earlier-volume entry a profile request sends is retained as a `character_observation` artifact instead. Context uses only confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter source and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every accepted reference indiscriminately. Legacy rows stay until the owner-gated data drop.
 
 Moving a book to another series clears its current character links, while historical observations/artifacts remain. Assigning an actual book to a missing/planned position removes that placeholder. Archiving a series retains books, membership, links, originals, and audio. Archiving a book hides it from ordinary library results and later-book context. Direct reads can still find removed items for restoration. Removing a placeholder deletes only that placeholder, not an actual book.
 
@@ -187,11 +187,11 @@ Principal artifact kinds are:
 | `analysis_input` / unit key | Effective request recipe plus actual retained upstream artifact dependencies. |
 | `analysis_output` / unit key | Accepted result, linked to the recorded recipe when known. |
 | `analysis_rejection` / unit key | Rejected structured result, producing attempt ID, and safe validation context, linked to its actual request input. |
-| `character_observation` / observation ID | Exact observation with a source dependency only when hash/span/quote can be verified. |
+| `character_observation` / observation ID | Exact observation with a source dependency only when hash/span/quote can be verified. Also recorded (in the earlier book) for each earlier-volume entry a profile request sends, carrying its `step`/`version_id`/`origin`; the profile unit depends on it. |
 | `series_context` / `book` | Snapshot of explicit membership and confirmed links, including their removal. |
 | `series_run` / parent job ID | Retained collection run state for each participating book. |
 | `library_state` / book or series scope | Archive/restore visibility state, captured for affected books. |
-| `step_output` / `<step>:<scope>` | One analysis pipeline step's result for a book, chapter or character scope, with the accepted input versions it read. Candidates are recorded **without** selecting them (`record(select=False)`); the head is the accepted version and moves only on an accept decision. `origin` distinguishes model/local runs from `baseline`/`external` captures of existing work (legacy provenance). |
+| `step_output` / `<step>:<scope>` | One analysis pipeline step's result for a book, chapter or character scope, with the accepted input versions it read. Candidates are recorded **without** selecting them (`record(select=False)`); the head is the accepted version and moves only on an accept decision. `origin` distinguishes model/local runs from `baseline`/`external` captures of existing work (legacy provenance). A profile version produced in a series book also records `series_inputs` (`{earlier book ID: digest of its accepted evidence versions and linked characters}`) for cross-book staleness; the key is absent otherwise, so other versions keep their identity. |
 
 Current snapshots and model results are different kinds on purpose. A scene-map snapshot can exist immediately after import without successful semantic directing. Artifact count therefore does not mean a stage is complete. Audio bytes and simple-listening take records also have their own storage; not every application datum is an artifact.
 
@@ -205,7 +205,7 @@ When a scene/chapter/profile/audio selection disappears from the current project
 | `pipeline_step_runs` | PK `id`; `book_id`, `run_id`, `step_id`, JSON body | One execution of one step (the UI's "version"): configuration, accepted inputs read, unit counts, status, scope → `step_output` artifact IDs. Baseline/external captures are step runs with that origin. |
 | `pipeline_decisions` | PK `id`; `book_id`, `step_id`, JSON body | Append-only accept/reject log (`user`, `auto`, `baseline`, `external`). Triggers reject update/delete. |
 | `pipeline_units` | PK `(book_id, unit_key)`; `step_id`, JSON body | Replaceable validated-unit cache keyed by exact request identity; each entry is also retained as an `analysis_output` artifact. |
-| `pipeline_state` | PK `book_id`; JSON body | The book revision and step signature last reconciled, used to detect outside changes cheaply. |
+| `pipeline_state` | PK `book_id`; JSON body | The book revision and step signature last reconciled, used to detect outside changes cheaply, and the evidence projection's state (`evidence`: input digest, row digest, chapter `sources` hashes, counts). |
 
 Pipeline runs never write `books.body`; acceptance does, in one transaction with the decision. See [the analysis pipeline](ANALYSIS-PIPELINE.md).
 

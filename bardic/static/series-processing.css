@@ -17,6 +17,9 @@
 .series-processing-run header { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); }
 .series-processing-run h4, .series-processing-run p { margin:0; font-size:var(--text-sm); }
 .series-processing-failure { color:var(--tone-bad-text); }
+/* A run paused for review: the callout names the book, links to its Analyze step and offers Resume. */
+.series-processing-run .callout { margin:var(--space-1) 0; }
+.series-processing-run .callout p { margin:0; }
 .series-processing pre { max-height:360px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:var(--text-2xs); }
 .library-dialog {width:min(1100px,94vw);max-width:1100px;max-height:90vh;overflow:auto}
 .cover-thumb img {width:100%;height:100%;object-fit:cover;border-radius:inherit}

@@ -52,8 +52,9 @@ function environment(handler) {
 const book = {id:'book/9', characters:[{id:'narrator', name:'Narrator'}, {id:'mira', name:'Mira <script>x</script>'}]};
 const saga = {id:'series-1', name:'The <Lantern> & Books'};
 const identity = {id:'identity-1', name:'Mira', links:[]};
-function reads(call, membership = {series_id:saga.id, series_name:saga.name, position:9}, context = null) {
+function reads(call, membership = {series_id:saga.id, series_name:saga.name, position:9}, context = null, suggestions = null) {
   if (call.url === '/api/series') return {data:[saga]};
+  if (call.url.endsWith('/series/suggestions')) return {data:suggestions || {book_id:book.id, series_id:membership?.series_id ?? null, suggestions:[]}};
   if (call.url.endsWith('/series/context')) return {data:context || {characters:[], included_observations:0}};
   if (call.url.endsWith('/series')) return {data:{membership, links:[], characters:[identity]}};
   throw new Error(`Unexpected request ${call.method} ${call.url}`);
@@ -64,7 +65,7 @@ function reads(call, membership = {series_id:saga.id, series_name:saga.name, pos
   const first = environment(call => reads(call));
   const container = new Container();
   await first.render(container, book);
-  assert.equal(first.calls.length, 3);
+  assert.equal(first.calls.length, 4);
   assert.ok(first.calls.every(call => call.method === 'GET'));
   assert.ok(container.innerHTML.includes('The &lt;Lantern&gt; &amp; Books'));
   assert.ok(container.innerHTML.includes('Mira &lt;script&gt;x&lt;/script&gt;'));
@@ -72,7 +73,7 @@ function reads(call, membership = {series_id:saga.id, series_name:saga.name, pos
   assert.ok(!container.innerHTML.includes('Linked to Mira'));
   assert.ok(container.innerHTML.includes('Matching names never link automatically'));
   await first.render(container, {...book});
-  assert.equal(first.calls.length, 3, 'Repeated parent renders must preserve unsaved panel edits');
+  assert.equal(first.calls.length, 4, 'Repeated parent renders must preserve unsaved panel edits');
 
   // Explicit selected identity creates one link request; empty value unlinks.
   const writes = [];
@@ -144,6 +145,37 @@ function reads(call, membership = {series_id:saga.id, series_name:saga.name, pos
   assert.ok(contextContainer.innerHTML.includes('A soft &lt;voice&gt;'));
   assert.ok(contextContainer.innerHTML.includes('She said &lt;hello&gt;.'));
   assert.ok(contextContainer.innerHTML.includes('selection of 3 available observations'));
+
+  // Suggestions are shown, never applied: only an explicit confirmation writes, through the link route.
+  {
+    const suggestionWrites = [];
+    const proposals = {book_id:book.id, series_id:saga.id, suggestions:[
+      {character_id:'mira', character_name:'Mira <b>', ambiguous:false, candidates:[{series_character_id:'identity-1', name:'Mira', matched_names:['Mira'],
+        sources:[{book_id:'book-1', title:'Earlier <book>', position:1, character_id:'m1', character_name:'Mira'}]}]},
+      {character_id:'tomas', character_name:'Tomas', ambiguous:true, candidates:[
+        {series_character_id:'identity-2', name:'Tomas', matched_names:['Tomas'], sources:[{book_id:'book-1', title:'One', position:1, character_id:'t1', character_name:'Tomas'}]},
+        {series_character_id:'identity-3', name:'Tomas', matched_names:['Tomas'], sources:[{book_id:'book-2', title:'Two', position:2, character_id:'t2', character_name:'Tomas'}]}]}]};
+    const env = environment(call => {
+      if (call.method === 'PUT') { suggestionWrites.push(call); return {data:{}}; }
+      return reads(call, undefined, null, proposals);
+    });
+    const box = new Container();
+    await env.render(box, book);
+    assert.equal(suggestionWrites.length, 0, 'showing suggestions links nothing');
+    assert.ok(box.innerHTML.includes('Suggested links') && box.innerHTML.includes('2 suggested'));
+    assert.ok(box.innerHTML.includes('Earlier &lt;book&gt;') && box.innerHTML.includes('Mira &lt;b&gt;'));
+    assert.ok(box.innerHTML.includes('<option value="">Choose one: several identities match</option>'), 'namesakes are never preselected');
+    submit(box, form('data-series-suggestion', {series_character_id:''}, {seriesSuggestion:'tomas'}));
+    await settle();
+    assert.equal(suggestionWrites.length, 0);
+    assert.match(box.status.textContent, /Choose which series identity/);
+    submit(box, form('data-series-suggestion', {series_character_id:'identity-1'}, {seriesSuggestion:'mira'}));
+    await settle();
+    assert.equal(suggestionWrites.length, 1);
+    assert.equal(suggestionWrites[0].url, '/api/books/book%2F9/series/characters/mira');
+    assert.deepEqual(suggestionWrites[0].body, {series_character_id:'identity-1'});
+    assert.equal(box.status.textContent, 'Suggested link confirmed.');
+  }
 
   // Failure keeps the panel recoverable, shows server detail, and unlocks controls.
   const failed = environment(call => call.method === 'PUT' ? {ok:false, status:409, data:{detail:'Wait for analysis to finish.'}} : reads(call));

@@ -693,8 +693,8 @@ OPS: list[Op] = [
                     'scope this version does not contain; or a selected result does not fit the book.',
                404: NO_VERSION,
                409: 'The version is still running; another (non-pipeline) job is changing this book; the book is '
-                    'reserved by an active series run; or the book revision differs from `expected_revision` '
-                    '(review the impact again).'},
+                    'reserved by an active series run (unless that run is paused waiting for your review of this '
+                    'book); or the book revision differs from `expected_revision` (review the impact again).'},
        params={'book_id': BOOK, 'step_id': STEP, 'version_id': VERSION}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject',
        'rejectAnalysisPipelineStepVersion', TAG,
