@@ -9,7 +9,18 @@
   const valid = audio => Boolean(audio?.url && audio.available !== false && !audio.stale && !audio.is_stale);
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
-  const configKey = state => JSON.stringify([state.provider,state.voices[state.provider],state.provider === 'gemini' ? state.model : 'macos-say']);
+  const PROVIDERS = ['system','gemini','breeze'];
+  const PROVIDER_LABELS = {system:'Device',gemini:'Gemini',breeze:'Breeze'};
+  // Only Gemini chooses among speech models; device voices use the macOS model
+  // and Breeze resolves its single model on the server.
+  const modelFor = state => state.provider === 'gemini' ? state.model : state.provider === 'system' ? 'macos-say' : null;
+  const voiceFor = state => state.voices[state.provider] || (state.provider === 'gemini' ? 'Kore' : '');
+  // A Breeze session is pinned to the voice revision from the last server check;
+  // a changed revision is a different narrator, so it must not reuse the old session.
+  const breezeRevision = state => state.provider === 'breeze'
+    ? (state.status?.breeze?.voices || []).find(voice => voice.id === state.voices.breeze)?.revision || null : undefined;
+  const configKey = state => JSON.stringify([state.provider,state.voices[state.provider],modelFor(state),
+    ...(state.provider === 'breeze' ? [breezeRevision(state)] : [])]);
   const storageKey = id => `bardic:listen:${id}`;
   const stateFor = book => book && books.get(book.id);
   const enabled = book => stateFor(book)?.mode === 'simple';
@@ -19,8 +30,7 @@
 
   function getSelection(book) {
     const state = stateFor(book);
-    return state ? {mode:state.mode,provider:state.provider,voice:state.voices[state.provider],
-      model:state.provider === 'gemini' ? state.model : 'macos-say'} : null;
+    return state ? {mode:state.mode,provider:state.provider,voice:state.voices[state.provider],model:modelFor(state)} : null;
   }
 
   function saved(id) {
@@ -65,7 +75,13 @@
   ];
   const CHUNK_LENGTHS = [[180,'3 min'],[300,'5 min'],[420,'7 min · recommended'],[470,'7.8 min · maximum']];
   const SAFETY_MARGIN = 5;
-  const chunked = state => state?.mode === 'simple' && state.provider === 'gemini';
+  // Chunked chapter jobs are a provider capability (quota-paced Gemini today).
+  // Without capability metadata, fall back to the historical Gemini-only rule.
+  function chunkCapable(state) {
+    const capabilities = state?.status?.narration_providers?.[state.provider]?.capabilities;
+    return capabilities ? capabilities.chunked_listening === true : state?.provider === 'gemini';
+  }
+  const chunked = state => state?.mode === 'simple' && chunkCapable(state);
   const presetFor = ramp => CHUNK_PRESETS.find(preset => JSON.stringify(preset.ramp) === JSON.stringify((ramp || []).map(Number))) || null;
   function span(seconds) {
     if (!Number.isFinite(seconds)) return 'unknown';
@@ -204,7 +220,7 @@
     if (!await settleKnownJob(state,task) || !current(state,version)) return null;
     task.operation = 'prepare';
     const result = await request(base(state),{provider:state.provider,voice:state.voices[state.provider],
-      model:state.provider === 'gemini' ? state.model : 'macos-say',segment_id:segment.id});
+      model:modelFor(state),segment_id:segment.id});
     if (result.job?.id) state.knownJob = {id:result.job.id};
     if (!current(state,version)) { cancelJob(result?.job?.id); return null; }
     if (result.session?.id) {
@@ -433,7 +449,7 @@
     return true;
   }
   function chapterBody(state, segment, intent) {
-    return {provider:'gemini',voice:state.voices.gemini || 'Kore',model:state.model,segment_id:segment.id,intent};
+    return {provider:state.provider,voice:voiceFor(state),model:modelFor(state),segment_id:segment.id,intent};
   }
   function settleWaiters(state) {
     for (const resolveWaiter of state.chapter.waiters.splice(0)) resolveWaiter();
@@ -518,7 +534,7 @@
         state.chapter.job = job;
         // A fresh browser learns the narrator session from a matching job so
         // saved chunks play without sending anything.
-        if (!state.sessionId && job.voice === (state.voices.gemini || 'Kore') && job.model === state.model &&
+        if (!state.sessionId && job.voice === voiceFor(state) && job.model === modelFor(state) &&
             adoptSession(state,{id:job.session_id},sentKey)) await loadSaved(state,true);
         if (!CHAPTER_TERMINAL.has(job.status)) { shareJob(state,job); watchChapter(state); }
         paint(state.panel);
@@ -793,6 +809,17 @@
     return `<div class="simple-listen-buffer chapter-queue" aria-live="polite">${lines.join('')}</div>`;
   }
 
+  // Breeze voices come from the server library. Choose its default (or first
+  // usable) voice visibly in the selector; requests always name the voice.
+  function breezeVoices(status) {
+    return (status?.breeze?.voices || []).map(voice => ({...voice,usable:voice.usable !== false}));
+  }
+  function defaultBreezeVoice(state) {
+    if (state.provider !== 'breeze' || state.voices.breeze) return;
+    const voices = breezeVoices(state.status).filter(voice => voice.usable);
+    const preferred = voices.find(voice => voice.id === state.status?.breeze?.default_voice_id) || voices[0];
+    if (preferred) state.voices.breeze = preferred.id;
+  }
   function change(panel, field, value) {
     const state = panel.state;
     invalidate(state);
@@ -800,7 +827,12 @@
     state.error = '';
     state.message = '';
     if (field === 'mode') state.mode = value === 'simple' ? 'simple' : 'enhanced';
-    else if (field === 'provider') state.provider = value === 'gemini' ? 'gemini' : 'system';
+    else if (field === 'provider') {
+      state.provider = PROVIDERS.includes(value) ? value : 'system';
+      defaultBreezeVoice(state);
+      // Selecting an unchecked Breeze server asks the app to fetch its voices once.
+      if (state.provider === 'breeze' && state.status?.breeze?.state === 'unchecked') panel.options.onRefreshBreeze?.();
+    }
     else if (field === 'voice') state.voices[state.provider] = value;
     else if (field === 'model') state.model = value;
     if (field !== 'mode') {
@@ -819,14 +851,22 @@
     const status = panel.options.status || {};
     const system = status.providers?.find(provider => provider.id === 'system');
     const gemini = status.providers?.find(provider => provider.id === 'gemini');
-    const available = state.provider === 'system' ? system?.available !== false : Boolean(status.has_api_key || gemini?.available);
+    const breeze = status.providers?.find(provider => provider.id === 'breeze');
+    // Breeze requests always name a server voice, so one must be chosen first.
+    const available = state.provider === 'system' ? system?.available !== false
+      : state.provider === 'breeze' ? breeze?.available === true && Boolean(state.voices.breeze)
+      : Boolean(status.has_api_key || gemini?.available);
     const selected = selectedSegment(panel);
     const canUseCache = selected && state.takes.get(selected.id)?.source === sourceKey(selected);
     const voices = state.provider === 'system'
       ? [{id:'',name:'Default device voice'},...(status.system_voices || [])]
-      : builtInVoices.map(name => ({id:name,name}));
+      : state.provider === 'breeze'
+        ? [...(state.voices.breeze ? [] : [{id:'',name:'Choose a Breeze voice',usable:false}]),...breezeVoices(status)]
+        : builtInVoices.map(name => ({id:name,name}));
     const selectedVoice = state.voices[state.provider];
-    if (selectedVoice && !voices.some(voice => (voice.id || voice.name) === selectedVoice)) voices.push({id:selectedVoice,name:selectedVoice});
+    if (selectedVoice && !voices.some(voice => (voice.id || voice.name) === selectedVoice)) {
+      voices.push({id:selectedVoice,name:state.provider === 'breeze' ? `${selectedVoice} (not on server)` : selectedVoice});
+    }
     const models = (status.tts_models || []).map(item => typeof item === 'string' ? item : item.id);
     if (state.model && !models.includes(state.model)) models.push(state.model);
     // Any active job reserves the book (examples and device narration would be
@@ -855,17 +895,33 @@
       selected && remaining(state,selected.id).some(item => !resolve(state.book,item));
     const chunking = status.listen_chunking || {};
     const preset = presetFor(chunking.ramp_seconds);
-    const chunkSettings = state.provider === 'gemini' ? `<label>First audio<select data-listen-field="chunk-preset" aria-label="How quickly the first chunk arrives">${CHUNK_PRESETS.map(item => `<option value="${item.id}" ${preset?.id === item.id ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${preset ? '' : `<option value="" selected>Custom · ${escape((chunking.ramp_seconds || []).join(', '))} s</option>`}</select></label><label>Full chunk length<select data-listen-field="chunk-length" aria-label="Audio per full-size request">${CHUNK_LENGTHS.map(([value,label]) => `<option value="${value}" ${Number(chunking.target_seconds) === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}${CHUNK_LENGTHS.some(([value]) => value === Number(chunking.target_seconds)) || !chunking.target_seconds ? '' : `<option value="" selected>Custom · ${escape(span(chunking.target_seconds))}</option>`}</select></label>` : '';
+    const chunkSettings = chunkCapable(state) ? `<label>First audio<select data-listen-field="chunk-preset" aria-label="How quickly the first chunk arrives">${CHUNK_PRESETS.map(item => `<option value="${item.id}" ${preset?.id === item.id ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${preset ? '' : `<option value="" selected>Custom · ${escape((chunking.ramp_seconds || []).join(', '))} s</option>`}</select></label><label>Full chunk length<select data-listen-field="chunk-length" aria-label="Audio per full-size request">${CHUNK_LENGTHS.map(([value,label]) => `<option value="${value}" ${Number(chunking.target_seconds) === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}${CHUNK_LENGTHS.some(([value]) => value === Number(chunking.target_seconds)) || !chunking.target_seconds ? '' : `<option value="" selected>Custom · ${escape(span(chunking.target_seconds))}</option>`}</select></label>` : '';
     const chapterForSelection = chapterJob && chapterJob.chapter_id === selected?.chapter_id;
     const showProgress = state.mode === 'simple' && (state.intent || state.loading || playing || preparing || (chunked(state) && chapterForSelection));
     const chapterStatus = state.mode === 'simple' && chunked(state) ? chapterMarkup(state,panel) : '';
     const progressMarkup = chunked(state) ? (showProgress ? chapterStatus : '') : showProgress ? `<div class="simple-listen-buffer"><div><span role="status">${escape(progressText)}</span>${chapter ? '' : `<span>${buffered.readyPassages} passage${buffered.readyPassages === 1 ? '' : 's'}</span>`}</div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Saved audio buffer'}"></progress></div>` : '';
     const drawer = panel.container.closest?.('details');
     const summary = drawer?.querySelector?.('#listening-summary');
-    const narratorLabel = selectedVoice || 'Default device voice';
-    const providerLabel = state.provider === 'gemini' ? 'Gemini' : 'Device';
+    const narratorLabel = (state.provider === 'breeze' ? breezeVoices(status).find(voice => voice.id === selectedVoice)?.name : '') ||
+      selectedVoice || (state.provider === 'breeze' ? 'No Breeze voice' : 'Default device voice');
+    const providerLabel = PROVIDER_LABELS[state.provider] || state.provider;
     const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Studio voices selected · Narrator setup';
-    const selectionSummary = `${sourceLabel}: ${narratorLabel} / ${providerLabel} · ${state.provider === 'gemini' ? 'usage may incur charges' : 'free on this device'}`;
+    const costLabel = state.provider === 'gemini' ? 'usage may incur charges' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free on this device';
+    const selectionSummary = `${sourceLabel}: ${narratorLabel} / ${providerLabel} · ${costLabel}`;
+    const providerNote = state.provider === 'gemini'
+      ? 'Gemini receives the chapter text in large chunks paced to your request limits, and may incur charges, including examples. No narration spending cap is enforced.'
+      : state.provider === 'breeze'
+        ? 'Breeze narrates on your server over the local network, so passage text is sent there. There are no per-request charges. It generates at about real-time speed; prepare the chapter ahead for faster playback.'
+        : 'Device narration stays on this computer and has no model charges.';
+    const unavailableNote = state.provider === 'system' ? 'Device narration is unavailable here. Choose another provider to generate new audio.'
+      : state.provider === 'breeze' ? (breeze?.available === true ? 'Choose a Breeze voice to generate new takes.'
+        : breeze?.reason || status.breeze?.message || 'Connect your Breeze server in Settings to generate new takes.')
+      : 'Add a Gemini API key in Settings to generate new takes.';
+    const voiceOption = voice => {
+      const id = voice.id ?? voice.name;
+      const disabled = state.provider === 'breeze' && voice.usable === false && id !== selectedVoice;
+      return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}${disabled && voice.reason ? ` · ${escape(voice.reason)}` : ''}</option>`;
+    };
     if (summary) {
       const summaryText = `${state.error ? 'Preparation paused · ' : chapter ? `Preparing chapter: ${state.intent.completed} of ${state.intent.total} passages · ` : generating ? `Generating chapter: ${chapterJob.progress || 0} of ${chapterJob.total || '…'} passages · ` : ''}${selectionSummary}`;
       if (summary.textContent !== summaryText) summary.textContent = summaryText;
@@ -886,11 +942,11 @@
         <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>One narrator</option><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Studio voices</option></select></label>
       </div>
       <div class="simple-listen-settings">
-        <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option></select></label>
-        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voice => { const id = voice.id ?? voice.name; return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}</option>`; }).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy ? 'disabled' : ''}>Hear example</button></div>
+        <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · local network</option></select></label>
+        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !selectedVoice) ? 'disabled' : ''}>Hear example</button></div>
       </div>
-      <p class="simple-listen-note simple-listen-disclosure">${state.provider === 'gemini' ? 'Gemini receives the chapter text in large chunks paced to your request limits, and may incur charges, including examples. No narration spending cap is enforced.' : 'Device narration stays on this computer and has no model charges.'}</p>
-      ${!available && !canUseCache ? `<p class="simple-listen-unavailable">${state.provider === 'system' ? 'Device narration is unavailable here. Choose Gemini to generate new audio.' : 'Add a Gemini API key in Settings to generate new takes.'}</p>` : ''}
+      <p class="simple-listen-note simple-listen-disclosure">${escape(providerNote)}</p>
+      ${!available && !canUseCache ? `<p class="simple-listen-unavailable">${escape(unavailableNote)}</p>` : ''}
       <div class="simple-listen-actions">
         <button type="button" class="button primary" data-listen-action="start" ${startDisabled ? 'disabled' : ''} aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : state.mode === 'simple' ? 'Play simple listening' : 'Start simple listening'}">${startLabel}</button>
         ${state.mode === 'simple' || state.loading ? '<button type="button" class="button subtle" data-listen-action="stop">Stop</button>' : ''}
@@ -1036,8 +1092,9 @@
       const systemAvailable = status.providers?.find(provider => provider.id === 'system')?.available !== false;
       state = {book,version:0,takes:new Map(),queue:[],active:null,intent:null,job:null,knownJob:null,loading:false,error:'',message:'',loadedKey:null,
         chapter:{job:null,preview:null,previewKey:null,watching:false,waiters:[],takesMark:null,error:'',discovered:null,missing:0},
-        mode:prior.mode === 'simple' ? 'simple' : 'enhanced',provider:['system','gemini'].includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
-        voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore'},
+        mode:prior.mode === 'simple' ? 'simple' : 'enhanced',provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
+        voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore',
+          breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,
         model:prior.model || status.tts_model || 'gemini-3.8-flash-tts',sessionId:prior.sessionId || null,sessionKey:prior.sessionKey || null};
       books.set(book.id,state);
     }
@@ -1055,6 +1112,11 @@
     panel.state = state;
     state.book = book;
     state.panel = panel;
+    if (options.status) state.status = options.status;
+    if (state.provider === 'breeze' && !state.voices.breeze) {
+      defaultBreezeVoice(state);
+      if (state.voices.breeze) save(state);
+    }
     for (const [id,item] of state.takes) {
       const segment = book.segments.find(segment => segment.id === id);
       if (!segment || sourceKey(segment) !== item.source) state.takes.delete(id);

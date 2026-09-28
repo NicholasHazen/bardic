@@ -441,6 +441,24 @@ function environment(ensure,previewRequest){
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
   await until(()=>casting.voicePreview.getState().status==='ready');
   assert.deepEqual(casting.calls.previews[3].body,{provider:'gemini',character_id:'mara',segment_id:'s1',voice:'Kore',model:'tts-test',segment_direction:'Unsaved passage cue.'});
+  // Breeze auditions name the chosen server voice and omit the model; without a
+  // chosen voice nothing is requested.
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,breeze_voice:{value:''}}},'breeze');
+  assert.equal(casting.calls.previews.length,4,'A missing Breeze voice never requests a sample');
+  assert.match(casting.calls.toasts.at(-1),/Choose a Breeze voice for Mara/);
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,breeze_voice:{value:'storyteller'}}},'breeze');
+  await until(()=>casting.voicePreview.getState().status==='ready');
+  assert.deepEqual(casting.calls.previews[4].body,{provider:'breeze',character_id:'mara',voice:'storyteller',direction:'An unsaved gentle delivery.'});
+  casting.nodes.get('#render-provider').value='breeze';
+  casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
+  assert.equal(casting.calls.previews.length,5,'A character without a Breeze voice cannot audition a Breeze passage');
   assert.equal(JSON.stringify(casting.state.book),castBefore,'No audition saves voice, direction or speaker edits');
+  character.voices={breeze:{id:'narrator',revision:'r1',seed:42}};
+  const pinnedBefore=JSON.stringify(casting.state.book);
+  casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
+  await until(()=>casting.voicePreview.getState().status==='ready');
+  assert.deepEqual(casting.calls.previews[5].body,{provider:'breeze',character_id:'mara',segment_id:'s1',voice:'narrator',segment_direction:'Unsaved passage cue.'});
+  assert.equal(JSON.stringify(casting.state.book),pinnedBefore,'No audition saves voice, direction or speaker edits');
+  delete character.voices;
   console.log('Main player simple-listen integration checks passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -30,7 +30,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .analysis import analyze_book
 from .processing import BudgetReached
 from .account_checks import check_account
-from .audio import assemble_audio, list_system_voices, render_fingerprint, synthesize, validate_audio
+from . import breeze
+from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, assemble_audio, list_system_voices,
+                    providers_status, render_fingerprint, synthesize, validate_audio, voice_id, voice_selection)
 from .config import data_directory
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
@@ -106,7 +108,7 @@ class SeriesVolumeRequest(StrictModel):
 
 
 class ListenRequest(StrictModel):
-    provider: Literal['system', 'gemini'] = 'system'
+    provider: Literal['system', 'gemini', 'breeze'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
     segment_id: str
@@ -128,7 +130,7 @@ class ChapterListenRequest(StrictModel):
 
 
 class VoicePreviewRequest(StrictModel):
-    provider: Literal['system', 'gemini'] = 'system'
+    provider: Literal['system', 'gemini', 'breeze'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
     segment_id: str | None = Field(default=None, max_length=200)
@@ -161,16 +163,26 @@ class SettingsRequest(StrictModel):
     analysis_provider: str | None = None
     tts_limits: dict[str, dict[str, int]] | None = None
     listen_chunking: ChunkingOptions | None = None
+    breeze_url: str | None = Field(default=None, max_length=500)
+    breeze_api_key: str | None = Field(default=None, max_length=500)
 
 
 def valid_analysis_model(model):
     return isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", model) is not None
 
 
+class VoiceChoice(StrictModel):
+    id: str = Field(min_length=1, max_length=200)
+    seed: int | None = Field(default=None, ge=0, le=breeze.MAX_SEED)
+
+
 class CharacterEdit(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     aliases: list[str] | None = None
     description: str | None = Field(default=None, max_length=3000)
+    # One saved choice per narration provider; null removes that provider's choice.
+    voices: dict[str, VoiceChoice | None] | None = None
+    # Earlier single-provider fields, accepted and stored as voices.gemini/voices.system.
     voice: str | None = Field(default=None, max_length=200)
     system_voice: str | None = Field(default=None, max_length=200)
     direction: str | None = Field(default=None, max_length=3000)
@@ -180,6 +192,8 @@ class SegmentEdit(StrictModel):
     speaker_id: str | None = None
     direction: str | None = Field(default=None, max_length=3000)
     cues: list[str] | None = None
+    # A seeded provider (Breeze) repeats a take for the same seed; a new seed is a new take.
+    seed: int | None = Field(default=None, ge=0, le=breeze.MAX_SEED)
 
 
 class SceneEdit(StrictModel):
@@ -218,6 +232,8 @@ class Runtime:
             "openai": os.environ.get("OPENAI_API_KEY") or "",
             "anthropic": os.environ.get("ANTHROPIC_API_KEY") or "",
         }
+        # Narration-only credentials, kept apart from the analysis provider keys.
+        self.narration_keys = {"breeze": os.environ.get("BREEZE_API_KEY") or ""}
         self.account_checks = {}
         self.account_check_locks = {provider: threading.Lock() for provider in ANALYSIS_CATALOG}
         self.account_checks_running = {}
@@ -242,8 +258,102 @@ class Runtime:
             "preprocess_models_by_provider": preprocess_models,
             "tts_limits": self._saved_tts_limits(saved.get("tts_limits")),
             "listen_chunking": self._saved_chunking(saved.get("listen_chunking")),
+            "breeze_url": self._saved_breeze_url(saved.get("breeze_url")),
+            # The last voice check survives restarts so pinned sessions and
+            # cached audio resolve while the server is offline.
+            "breeze_catalog": saved.get("breeze_catalog") if isinstance(saved.get("breeze_catalog"), dict) else None,
         }
         LIMITER.configure(self.preferences["tts_limits"])
+        self.breeze_checking = False
+
+    @staticmethod
+    def _saved_breeze_url(saved):
+        for value in (saved, os.environ.get("BREEZE_TTS_URL")):
+            if isinstance(value, str) and value.strip():
+                try:
+                    return breeze.normalize_base_url(value)
+                except ValueError:
+                    continue
+        return ""
+
+    def breeze_config(self):
+        return {"base_url": self.preferences["breeze_url"], "api_key": self.narration_keys["breeze"]}
+
+    def breeze_view(self):
+        """Report the last Breeze check without contacting the server."""
+        config = self.breeze_config()
+        catalog = self.preferences.get("breeze_catalog") or {}
+        current = catalog.get("base_url") == config["base_url"] and bool(config["base_url"])
+        if not config["base_url"]:
+            state, message = "unconfigured", "Add the Breeze server URL to narrate with Breeze."
+        elif self.breeze_checking:
+            state, message = "checking", "Checking the Breeze server…"
+        elif not current:
+            state, message = "unchecked", "Check the connection to load Breeze voices."
+        else:
+            state, message = catalog.get("state", "unchecked"), catalog.get("message", "")
+        return {"configured": bool(config["base_url"]), "base_url": config["base_url"],
+                "has_api_key": bool(config["api_key"]), "state": state, "message": message,
+                "checked_at": catalog.get("checked_at") if current else None,
+                "model": catalog.get("model") if current else None,
+                "default_voice_id": catalog.get("default_voice_id") if current else None,
+                "voices": copy.deepcopy(catalog.get("voices", [])) if current else []}
+
+    def refresh_breeze(self):
+        """Check the server and voices outside the store lock; free, no generation."""
+        with self.store.lock:
+            config = self.breeze_config()
+            if not config["base_url"]:
+                raise HTTPException(400, "Add the Breeze server URL in Settings first.")
+            if self.breeze_checking:
+                raise HTTPException(409, "A Breeze check is already running.")
+            self.breeze_checking = True
+        try:
+            result = breeze.fetch_catalog(config)
+        except Exception:
+            # Unexpected transport failures can carry request details.
+            result = {"state": "error", "message": "The Breeze check could not finish. Try again.",
+                      "model": None, "voices": [], "default_voice_id": None}
+        finally:
+            with self.store.lock:
+                self.breeze_checking = False
+        with self.store.lock:
+            if config != self.breeze_config():
+                raise HTTPException(409, "Breeze settings changed during the check. Check the connection again.")
+            previous = self.preferences.get("breeze_catalog") or {}
+            if result["state"] != "ready" and previous.get("base_url") == config["base_url"]:
+                # Keep the last known voices so pinned choices and cached audio still resolve.
+                result = {**result, "voices": previous.get("voices", []),
+                          "default_voice_id": previous.get("default_voice_id")}
+            preferences = copy.deepcopy(self.preferences)
+            preferences["breeze_catalog"] = {**result, "base_url": config["base_url"],
+                                             "checked_at": datetime.now(timezone.utc).isoformat()}
+            self.store.save_settings(preferences)
+            self.preferences = preferences
+            return self.breeze_view()
+
+    def breeze_selection(self, voice, seed=None):
+        """Pin a Breeze voice from the saved check. Local only; call under the store lock."""
+        view = self.breeze_view()
+        try:
+            return breeze.pin(view, voice, seed=seed)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+
+    def narration_credentials(self, provider):
+        if provider == "gemini":
+            return self.api_keys["gemini"]
+        if provider == "breeze":
+            return self.breeze_config()
+        return None
+
+    def narration_secrets(self, provider):
+        key = {"gemini": self.api_keys["gemini"], "breeze": self.narration_keys["breeze"]}.get(provider)
+        return (key,) if key else ()
+
+    def require_breeze(self):
+        if not self.preferences["breeze_url"]:
+            raise HTTPException(400, "Add the Breeze server URL in Settings first, or choose another narrator.")
 
     @staticmethod
     def _saved_tts_limits(saved):
@@ -348,8 +458,8 @@ class Runtime:
             choices = [v["id"] for v in installed if v["locale"].startswith("en-")][:8]
         if choices:
             for index, character in enumerate(book["characters"]):
-                if not character.get("system_voice"):
-                    character["system_voice"] = choices[index % len(choices)]
+                if not voice_id(character, "system"):
+                    character.setdefault("voices", {})["system"] = {"id": choices[index % len(choices)]}
 
     def require_idle(self, book_id):
         self.store.require_active(book_id)
@@ -394,7 +504,39 @@ class Runtime:
                 s["audio"] = None
         for c in result["chapters"]:
             c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
+        for character in result["characters"]:
+            character["voices"] = {provider: selection for provider in NARRATION_PROVIDERS
+                                   if (selection := voice_selection(character, provider))}
         return result
+
+    def merge_voices(self, item, fields):
+        """Apply per-provider voice choices to a character; call under the store lock.
+
+        Earlier single-provider fields are accepted and saved as voices entries,
+        leaving one stored source for each provider's choice. Breeze choices are
+        pinned to the voice revision from the last server check.
+        """
+        changes = dict(fields.pop("voices", None) or {})
+        for provider, legacy in (("gemini", "voice"), ("system", "system_voice")):
+            if legacy in fields:
+                value = fields.pop(legacy)
+                changes.setdefault(provider, {"id": value} if isinstance(value, str) and value.strip() else None)
+        if not changes:
+            return
+        if set(changes) - set(NARRATION_PROVIDERS):
+            raise HTTPException(400, "Choose voices for system, gemini or breeze narration")
+        voices = {provider: copy.deepcopy(selection) for provider in NARRATION_PROVIDERS
+                  if (selection := voice_selection(item, provider))}
+        for provider, choice in changes.items():
+            if choice is None:
+                voices.pop(provider, None)
+            elif provider == "breeze":
+                voices[provider] = self.breeze_selection(choice["id"].strip(), seed=choice.get("seed"))
+            else:
+                voices[provider] = {"id": choice["id"].strip()}
+        fields["voices"] = voices
+        item.pop("voice", None)
+        item.pop("system_voice", None)
 
     def run(self, job, operation, secrets=()):
         job_id = job["id"]
@@ -420,7 +562,7 @@ class Runtime:
         except Exception as exc:
             # Provider implementations sanitize their errors. Redact the key again at the boundary.
             message = str(exc) or type(exc).__name__
-            for key in (*secrets, *self.api_keys.values()):
+            for key in (*secrets, *self.api_keys.values(), *self.narration_keys.values()):
                 if key:
                     message = message.replace(key, "[redacted]")
             message = message[:1200]
@@ -450,17 +592,28 @@ class Runtime:
         with self.store.lock:
             self.require_idle(book_id)
             book = self.store.book(book_id)
-            if request.provider not in {"system", "gemini"}:
-                raise HTTPException(400, "Choose system or gemini narration")
+            if request.provider not in NARRATION_PROVIDERS:
+                raise HTTPException(400, "Choose system, gemini or breeze narration")
             if request.provider == "gemini" and not self.api_key:
                 raise HTTPException(400, "Add a Gemini API key in Settings first")
             if request.provider == "system" and not (shutil.which("say") and shutil.which("ffmpeg")):
                 raise HTTPException(400, "Local narration requires macOS say and ffmpeg. Choose Gemini on other systems.")
+            if request.provider == "breeze":
+                self.require_breeze()
             selected = [s for s in book["segments"] if (not request.scene_id or s["scene_id"] == request.scene_id) and (not request.segment_id or s["id"] == request.segment_id)]
             if not selected:
                 raise HTTPException(400, "No passages selected")
-            model = self.preferences["tts_model"] if request.provider == "gemini" else "macos-say"
-            key = self.api_key
+            if request.provider == "breeze":
+                # Fail before queueing rather than part way through a scene.
+                cast = {c["id"]: c for c in book["characters"]}
+                missing = sorted({cast[s["speaker_id"]].get("name", s["speaker_id"]) for s in selected
+                                  if s["speaker_id"] in cast and not voice_id(cast[s["speaker_id"]], "breeze")})
+                if missing:
+                    more = "…" if len(missing) > 5 else ""
+                    raise HTTPException(400, f"Choose a Breeze voice for {', '.join(missing[:5])}{more} in the cast first.")
+            model = {"gemini": self.preferences["tts_model"], "breeze": BREEZE_MODEL}.get(request.provider, "macos-say")
+            # Snapshot credentials and server configuration for this queued job.
+            key = self.narration_credentials(request.provider)
             job = self.store.create_job(book_id, "render", len(selected))
 
             def work():
@@ -507,7 +660,7 @@ class Runtime:
                                 try:
                                     duration = validate_audio(path)
                                     metadata = {"fingerprint": fingerprint, "duration": duration, "provider": request.provider, "model": model,
-                                                "voice": character.get("system_voice") if request.provider == "system" else character.get("voice")}
+                                                "voice": voice_id(character, request.provider)}
                                 except (OSError, EOFError, ValueError):
                                     pass
                         if metadata is None:
@@ -520,7 +673,7 @@ class Runtime:
                         metrics.update(audio_seconds=metadata["duration"], output_bytes=self.take_path(book_id, metadata).stat().st_size)
                     self.store.update_job(job["id"], progress=i+1, message=f"Saved {i+1}/{len(selected)} passages · {reused} reused")
 
-            self.pool.submit(self.run, job, work, (key,))
+            self.pool.submit(self.run, job, work, self.narration_secrets(request.provider))
             return job
 
     def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
@@ -625,9 +778,16 @@ def create_app(data_dir: Path | None = None):
     def status(runtime):
         voices = list_system_voices()
         with runtime.store.lock:
-            return {"has_api_key": bool(runtime.api_key), **copy.deepcopy(runtime.preferences),
+            preferences = copy.deepcopy(runtime.preferences)
+            preferences.pop("breeze_catalog", None)
+            breeze_view = runtime.breeze_view()
+            breeze_ready = breeze_view["configured"] and any(voice["usable"] for voice in breeze_view["voices"])
+            return {"has_api_key": bool(runtime.api_key), **preferences,
                     "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg"))},
-                                  {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)}],
+                                  {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)},
+                                  {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
+                                   "reason": None if breeze_ready else breeze_view["message"]}],
+                    "narration_providers": providers_status(), "breeze": breeze_view,
                     "analysis_providers": [{"id": provider, "label": label,
                                             "available": provider == "local" or bool(runtime.api_keys.get(provider)),
                                             "has_api_key": bool(runtime.api_keys.get(provider)),
@@ -647,6 +807,10 @@ def create_app(data_dir: Path | None = None):
     @app.post("/api/account-checks/{provider}")
     def check_provider_account(provider: str, request: Request):
         return rt(request).check_account(provider)
+
+    @app.post("/api/narration/breeze/refresh")
+    def refresh_breeze(request: Request):
+        return rt(request).refresh_breeze()
 
     @app.post("/api/models/{provider}/refresh")
     def refresh_provider_models(provider: str, request: Request):
@@ -694,6 +858,12 @@ def create_app(data_dir: Path | None = None):
             if model not in TTS_MODELS:
                 raise HTTPException(400, "Unsupported tts_model in rate limits")
             tts_limits[model] = normalize_limits(value)
+        breeze_url = None
+        if body.breeze_url is not None:
+            try:
+                breeze_url = breeze.normalize_base_url(body.breeze_url)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from None
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
@@ -703,6 +873,8 @@ def create_app(data_dir: Path | None = None):
             preferences["tts_limits"].update(tts_limits)
             if chunking is not None:
                 preferences["listen_chunking"] = chunking
+            if breeze_url is not None:
+                preferences["breeze_url"] = breeze_url
             if body.tts_model is not None:
                 preferences["tts_model"] = body.tts_model
             if body.analysis_provider is not None:
@@ -714,6 +886,8 @@ def create_app(data_dir: Path | None = None):
             runtime.preferences = preferences
             LIMITER.configure(preferences["tts_limits"])
             runtime.api_keys.update({provider: key.strip() for provider, key in keys.items()})
+            if body.breeze_api_key is not None:
+                runtime.narration_keys["breeze"] = body.breeze_api_key.strip()
             for provider, check in list(runtime.account_checks.items()):
                 current = (runtime.api_keys[provider], preferences["analysis_models_by_provider"][provider])
                 if check["configuration"] != current:
@@ -879,6 +1053,8 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404, "Item not found")
             if "speaker_id" in fields and fields["speaker_id"] not in {c["id"] for c in book["characters"]}:
                 raise HTTPException(400, "Choose a character in this book's cast")
+            if collection == "characters":
+                runtime.merge_voices(item, fields)
             item.update(fields)
             item["edited"] = True
             if collection == "segments" and "speaker_id" in fields:
@@ -892,9 +1068,17 @@ def create_app(data_dir: Path | None = None):
             runtime.store.save_book(book)
             return runtime.present(book)
 
+    def character_fields(body):
+        fields = body.model_dump(exclude_none=True)
+        if body.voices is not None:
+            # A null entry removes that provider's choice, so keep it explicitly.
+            fields["voices"] = {provider: choice.model_dump(exclude_none=True) if choice else None
+                                for provider, choice in body.voices.items()}
+        return fields
+
     @app.patch("/api/books/{book_id}/characters/{character_id}")
     def edit_character(book_id: str, character_id: str, body: CharacterEdit, request: Request):
-        return edit(rt(request), book_id, "characters", character_id, body.model_dump(exclude_none=True))
+        return edit(rt(request), book_id, "characters", character_id, character_fields(body))
 
     @app.post("/api/books/{book_id}/characters")
     def add_character(book_id: str, body: CharacterEdit, request: Request):
@@ -904,8 +1088,11 @@ def create_app(data_dir: Path | None = None):
             book = runtime.store.book(book_id)
             if not body.name:
                 raise HTTPException(400, "A character name is required")
-            character = {"id": f"character-{uuid4().hex[:12]}", "name": body.name, "aliases": [], "description": "", "evidence": [], "voice": "Kore", "system_voice": "", "direction": ""}
-            character.update(body.model_dump(exclude_none=True))
+            character = {"id": f"character-{uuid4().hex[:12]}", "name": body.name, "aliases": [], "description": "", "evidence": [],
+                         "voices": {"gemini": {"id": "Kore"}}, "direction": ""}
+            fields = character_fields(body)
+            runtime.merge_voices(character, fields)
+            character.update(fields)
             character["edited"] = True
             book["characters"].append(character)
             runtime.store.save_book(book)
@@ -1184,7 +1371,8 @@ def create_app(data_dir: Path | None = None):
         with store.lock:
             store.require_active(book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
-            session = repository.session(book_id, body.provider, body.voice, model)
+            selection = runtime.breeze_selection(body.voice) if body.provider == 'breeze' else None
+            session = repository.session(book_id, body.provider, body.voice, model, selection=selection)
             cached = repository.cached(book_id, session['id'], body.segment_id)
             if cached:
                 with ResourceLedger(store).operation(book_id, 'simple_listen', unit_key=body.segment_id,
@@ -1203,11 +1391,13 @@ def create_app(data_dir: Path | None = None):
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
                 raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
-            key = runtime.api_key if body.provider == 'gemini' else None
+            key = runtime.narration_credentials(body.provider)
             if body.provider == 'gemini' and not key:
                 raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
             if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
                 raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+            if body.provider == 'breeze':
+                runtime.require_breeze()
             book = store.book(book_id)
             segment = next(s for s in book['segments'] if s['id'] == body.segment_id)
             job = store.create_job(book_id, 'listen', 1)
@@ -1223,7 +1413,7 @@ def create_app(data_dir: Path | None = None):
                         metrics['cached'] = True
                 store.update_job(job['id'], progress=1, audio=audio)
             try:
-                future = runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+                future = runtime.pool.submit(runtime.run, job, work, runtime.narration_secrets(body.provider))
             except RuntimeError:
                 store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                                  message='No narration was started. Restart Bardic and try again.')
@@ -1371,9 +1561,11 @@ def create_app(data_dir: Path | None = None):
         with store.lock:
             store.require_active(book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
+            selection = runtime.breeze_selection(body.voice) if body.provider == 'breeze' else None
             preview = repository.prepare(book_id, body.provider, body.voice, model,
                                          segment_id=body.segment_id, character_id=body.character_id,
-                                         direction=body.direction, segment_direction=body.segment_direction)
+                                         direction=body.direction, segment_direction=body.segment_direction,
+                                         selection=selection)
             cached = repository.cached(book_id, preview['id'])
             if cached:
                 with ResourceLedger(store).operation(book_id, 'voice_preview', unit_key=preview['id'],
@@ -1389,11 +1581,13 @@ def create_app(data_dir: Path | None = None):
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
                 raise HTTPException(503, 'The local worker is stopping. Restart Bardic before previewing a voice.')
-            key = runtime.api_key if body.provider == 'gemini' else None
+            key = runtime.narration_credentials(body.provider)
             if body.provider == 'gemini' and not key:
                 raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
             if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
                 raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+            if body.provider == 'breeze':
+                runtime.require_breeze()
             job = store.create_job(book_id, 'voice_preview', 1)
             job = store.update_job(job['id'], preview_id=preview['id'], preview=preview,
                                    segment_id=preview['segment_id'], provider=body.provider,
@@ -1408,7 +1602,7 @@ def create_app(data_dir: Path | None = None):
                         metrics['cached'] = True
                 store.update_job(job['id'], progress=1, audio=audio)
             try:
-                future = runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+                future = runtime.pool.submit(runtime.run, job, work, runtime.narration_secrets(body.provider))
             except RuntimeError:
                 store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                                  message='No narration was started. Restart Bardic and try again.')

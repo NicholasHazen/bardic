@@ -57,7 +57,7 @@ def _details(fields, source):
         raise ValueError('Invalid diagnostic operation.')
     if fields.get('status') not in {None, 'failed', 'cancelled', 'interrupted'}:
         raise ValueError('Invalid diagnostic job status.')
-    if fields.get('provider') not in {None, 'gemini', 'system'}:
+    if fields.get('provider') not in {None, 'gemini', 'system', 'breeze'}:
         raise ValueError('Invalid diagnostic provider.')
     return fields
 

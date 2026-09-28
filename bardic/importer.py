@@ -362,8 +362,8 @@ def _passages(text: str, start: int, end: int):
 
 def _base_characters() -> list[dict]:
     return [
-        {"id": "narrator", "name": "Narrator", "aliases": [], "description": "The book's narrative voice.", "evidence": [], "voice": "Kore", "system_voice": "", "direction": "Clear, warm literary narration. Natural pacing; restrained expression."},
-        {"id": "unassigned", "name": "Unassigned dialogue", "aliases": [], "description": "Dialogue whose speaker needs review.", "evidence": [], "voice": "Puck", "system_voice": "", "direction": "Natural, understated dialogue."},
+        {"id": "narrator", "name": "Narrator", "aliases": [], "description": "The book's narrative voice.", "evidence": [], "voices": {"gemini": {"id": "Kore"}}, "direction": "Clear, warm literary narration. Natural pacing; restrained expression."},
+        {"id": "unassigned", "name": "Unassigned dialogue", "aliases": [], "description": "Dialogue whose speaker needs review.", "evidence": [], "voices": {"gemini": {"id": "Puck"}}, "direction": "Natural, understated dialogue."},
     ]
 
 

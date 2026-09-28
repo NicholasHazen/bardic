@@ -32,6 +32,7 @@ TTS_MODELS = (
     "gemini-3.1-flash-tts-preview",
 )
 SYSTEM_MODEL = "macos-say"
+BREEZE_MODEL = "breeze-tts-2"
 SAMPLE_RATE = 24_000
 MAX_AUDIO_BYTES = 64 * 1024 * 1024
 _RECIPE_VERSION = 2
@@ -43,6 +44,31 @@ _VOICE_NAMES = (
     "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
     "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 )
+# One row per narration provider. Code reads these fields instead of branching
+# on provider names; `capabilities` holds only flags that callers consult.
+PROVIDERS: dict[str, dict[str, Any]] = {
+    "system": {
+        "label": "Mac voices · local", "default_model": SYSTEM_MODEL, "models": (SYSTEM_MODEL,),
+        "default_voice": None, "requires": "none",
+        "capabilities": {"offline": True, "performance_direction": False, "timing": "passage",
+                         "chunked_listening": False, "seeded_takes": False, "cost": "local"},
+    },
+    "gemini": {
+        "label": "Gemini · expressive", "default_model": DEFAULT_TTS_MODEL, "models": TTS_MODELS,
+        "default_voice": "Kore", "requires": "api_key",
+        "capabilities": {"offline": False, "performance_direction": True, "timing": "passage",
+                         "custom_voice_ids": True, "speakers_per_take": 1,
+                         "chunked_listening": True, "seeded_takes": False, "cost": "cloud"},
+    },
+    "breeze": {
+        "label": "Breeze · local network", "default_model": BREEZE_MODEL, "models": (BREEZE_MODEL,),
+        "default_voice": None, "requires": "server",
+        "capabilities": {"offline": False, "performance_direction": True, "timing": "passage",
+                         "chunked_listening": False, "seeded_takes": True, "cost": "self_hosted"},
+    },
+}
+# Voice choices saved before per-provider maps existed.
+_LEGACY_VOICE_FIELDS = {"gemini": "voice", "system": "system_voice"}
 
 
 class AudioError(ValueError):
@@ -108,37 +134,45 @@ def list_system_voices() -> list[dict[str, str]]:
 
 
 def providers_status() -> dict[str, Any]:
-    voices = list_system_voices()
-    missing = [name for name in ("say", "ffmpeg") if not shutil.which(name)]
-    reason = f"Missing {' and '.join(missing)}." if missing else ("No installed system voices found." if not voices else None)
+    """Describe each provider's static contract. Availability is the caller's concern."""
     return {
-        "system": {
-            "available": reason is None,
-            "reason": reason,
-            "model": SYSTEM_MODEL,
-            "voices": voices,
-            "capabilities": {"offline": True, "performance_direction": False, "timing": "passage"},
-        },
-        "gemini": {
-            "available": True,
-            "requires_api_key": True,
-            "default_model": DEFAULT_TTS_MODEL,
-            "models": list(TTS_MODELS),
-            "voices": [{"id": name, "name": name} for name in _VOICE_NAMES],
-            "capabilities": {
-                "offline": False, "performance_direction": True, "timing": "passage",
-                "custom_voice_ids": True, "speakers_per_take": 1,
-            },
-        },
+        provider: {
+            "id": provider, "label": row["label"], "default_model": row["default_model"],
+            "models": list(row["models"]), "default_voice": row["default_voice"], "requires": row["requires"],
+            "capabilities": dict(row["capabilities"]),
+            **({"voices": [{"id": name, "name": name} for name in _VOICE_NAMES]} if provider == "gemini" else {}),
+        }
+        for provider, row in PROVIDERS.items()
     }
 
 
 def _provider(provider: str) -> str:
     if provider in ("system", "local"):
         return "system"
-    if provider == "gemini":
+    if provider in PROVIDERS:
         return provider
-    raise AudioError("Unknown narration provider. Choose system or Gemini.")
+    raise AudioError("Unknown narration provider. Choose system, Gemini or Breeze.")
+
+
+def voice_selection(character: dict, provider: str) -> dict | None:
+    """Return the character's saved voice choice for one provider.
+
+    Choices live in ``character["voices"][provider]`` as ``{"id": ..., ...}``.
+    Older characters stored Gemini and macOS names in separate fields; those are
+    still read so their existing recipes and takes keep the same identity.
+    """
+    voices = character.get("voices")
+    if isinstance(voices, dict) and isinstance(voices.get(provider), dict):
+        return voices[provider]
+    legacy = _LEGACY_VOICE_FIELDS.get(provider)
+    value = character.get(legacy) if legacy else None
+    return {"id": value} if isinstance(value, str) and value else None
+
+
+def voice_id(character: dict, provider: str) -> str | None:
+    selection = voice_selection(character, provider)
+    value = selection.get("id") if selection else None
+    return value if isinstance(value, str) and value else None
 
 
 def _system_voice(requested: str | None) -> str:
@@ -193,38 +227,52 @@ def _performance_style(segment: dict, character: dict, scene: dict) -> str:
     return ". ".join(directions) + ". Convey direction through delivery; preserve every transcript word without adding speech."
 
 
+def _system_recipe(segment: dict, character: dict, scene: dict, model: str | None) -> dict:
+    # Hash the requested voice recipe without consulting the current host.
+    # A previously rendered book must remain playable when say is absent.
+    selection = voice_selection(character, "system")
+    voice = (selection or {}).get("id") or "__system_default__"
+    if not isinstance(voice, str) or len(voice) > 256:
+        raise AudioError("The selected system voice is invalid.")
+    return {"model": SYSTEM_MODEL, "voice": voice, "style": _performance_style(segment, character, scene)}
+
+
+def _gemini_recipe(segment: dict, character: dict, scene: dict, model: str | None) -> dict:
+    selection = voice_selection(character, "gemini")
+    voice = (selection or {}).get("id") or "Kore"
+    model = model or DEFAULT_TTS_MODEL
+    if model not in TTS_MODELS:
+        raise AudioError("Unsupported Gemini TTS model. Choose a model listed in Settings.")
+    if not isinstance(voice, str) or not voice.strip() or len(voice) > 256:
+        raise AudioError("The selected Gemini voice is invalid.")
+    if model == "gemini-3.1-flash-tts-preview" and voice not in _VOICE_NAMES:
+        raise AudioError("Gemini 3.1 requires a prebuilt voice. Use Gemini 3.8 for custom voice IDs.")
+    return {"model": model, "voice": voice, "style": _performance_style(segment, character, scene)}
+
+
+def _breeze_recipe(segment: dict, character: dict, scene: dict, model: str | None) -> dict:
+    from .breeze import recipe_fields
+    return recipe_fields(segment, character, scene, model)
+
+
+_RECIPES = {"system": _system_recipe, "gemini": _gemini_recipe, "breeze": _breeze_recipe}
+
+
 def _recipe(segment: dict, character: dict, scene: dict, provider: str, model: str | None) -> dict:
     provider = _provider(provider)
     text = segment.get("text")
     if not isinstance(text, str) or not text.strip():
         raise AudioError("The passage has no text to narrate.")
-    if provider == "system":
-        # Hash the requested voice recipe without consulting the current host.
-        # A previously rendered book must remain playable when say is absent.
-        voice = character.get("system_voice") or "__system_default__"
-        if not isinstance(voice, str) or len(voice) > 256:
-            raise AudioError("The selected system voice is invalid.")
-        model = SYSTEM_MODEL
-    else:
-        voice = character.get("voice") or "Kore"
-        model = model or DEFAULT_TTS_MODEL
-        if model not in TTS_MODELS:
-            raise AudioError("Unsupported Gemini TTS model. Choose a model listed in Settings.")
-        if not isinstance(voice, str) or not voice.strip() or len(voice) > 256:
-            raise AudioError("The selected Gemini voice is invalid.")
-        if model == "gemini-3.1-flash-tts-preview" and voice not in _VOICE_NAMES:
-            raise AudioError("Gemini 3.1 requires a prebuilt voice. Use Gemini 3.8 for custom voice IDs.")
     return {
         "version": _RECIPE_VERSION,
         # Separate repeated source passages so regenerating a single take cannot
         # overwrite the audio (or invalidate timing) of another identical line.
         "segment_id": segment.get("id"),
         "provider": provider,
-        "model": model,
-        "voice": voice,
         "text": text,
-        "style": _performance_style(segment, character, scene),
         "sample_rate": SAMPLE_RATE,
+        # model, voice and style, plus any provider-specific performance inputs.
+        **_RECIPES[provider](segment, character, scene, model),
     }
 
 
@@ -416,19 +464,29 @@ def validate_audio(path: Path) -> float:
     return frames / rate
 
 
+def _generate(recipe: dict, credentials: Any, *, timeout: float | None, pace: bool) -> bytes:
+    if recipe["provider"] == "breeze":
+        from .breeze import generate
+        return generate(recipe, credentials, timeout=timeout)
+    return _generate_gemini(recipe, credentials, timeout=timeout, pace=pace)
+
+
 def synthesize(
     segment: dict, character: dict, scene: dict, provider: str,
-    model: str | None, api_key: str | None, output_path: Path,
+    model: str | None, api_key: Any, output_path: Path,
     *, timeout: float | None = None, pace: bool = True,
 ) -> dict:
     """Render a take and atomically publish validated, normalized WAV audio.
 
-    ``timeout`` extends the provider read timeout for long multi-passage takes;
-    ``pace=False`` is for callers that already reserved a rate-limit slot.
+    ``api_key`` carries the provider's credentials: the Gemini key string, or
+    the Breeze server configuration. ``timeout`` extends the provider read
+    timeout for long multi-passage takes; ``pace=False`` is for callers that
+    already reserved a rate-limit slot.
     """
     recipe = _recipe(segment, character, scene, provider, model)
     actual_voice = recipe["voice"]
     resource_usage = None
+    extra: dict[str, Any] = {}
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".take-", dir=output_path.parent) as directory:
@@ -446,8 +504,9 @@ def synthesize(
             _normalize(source, normalized_path)
         else:
             source = temporary / "source.wav"
-            data = _generate_gemini(recipe, api_key, timeout=timeout, pace=pace)
+            data = _generate(recipe, api_key, timeout=timeout, pace=pace)
             resource_usage = getattr(data, 'resource_usage', None)
+            extra = dict(getattr(data, 'take_metadata', None) or {})
             source.write_bytes(data)
             channels, width, rate, _ = _wave_info(source)
             if (channels, width, rate) == (1, 2, SAMPLE_RATE):
@@ -458,6 +517,9 @@ def synthesize(
         duration = frames / rate
         os.replace(normalized_path, output_path)
     return {
+        # Provider-reported extras (such as sentence timing) never replace the
+        # recipe identity or measured duration below.
+        **extra,
         "fingerprint": _fingerprint(recipe), "duration": duration,
         "provider": recipe["provider"], "model": recipe["model"], "voice": actual_voice,
         **({'resource_usage': resource_usage} if resource_usage is not None else {}),

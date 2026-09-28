@@ -1566,6 +1566,23 @@ textarea {
   padding:8px 0 8px 4px;
   font-size:12px;
 }
+.breeze-voice-list {
+  margin:8px 0 0;
+  padding-left:18px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+.breeze-voice-list:empty {
+  display:none;
+}
+.breeze-voice-list strong {
+  color:var(--ink);
+  font-weight:500;
+}
+.breeze-voice-list .unusable {
+  opacity:.7;
+}
 .provider-settings .field-help {
   font-size:12px;
   margin:7px 0 0;

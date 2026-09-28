@@ -1,10 +1,10 @@
 # Narration research and provider implementation
 
-Researched **September 27, 2026** against current provider documentation. No paid API request was made during development. The Gemini integration is contract-tested with representative responses; a real project/key still needs a short audition to validate account availability and subjective quality.
+Researched **September 27, 2026** against current provider documentation. No paid API request was made during development. The self-hosted Breeze server was checked live with short synthetic requests; see [Breeze TTS](#breeze-tts-self-hosted). The Gemini integration is contract-tested with representative responses; a real project/key still needs a short audition to validate account availability and subjective quality.
 
 ## Choice and pipeline
 
-The first implementation uses Gemini 3.8 Flash TTS for directed performance and installed macOS voices for a working offline path. A provider owns one take at a time; the application owns casting, exact source spans, scene context, checkpoints, and assembly. This makes individual takes editable and retryable without regenerating the whole book.
+The first implementation uses Gemini 3.8 Flash TTS for directed performance and installed macOS voices for a working offline path. A self-hosted Breeze server was added on 2026-09-27 as a third provider behind the same per-passage recipe. A provider owns one take at a time; the application owns casting, exact source spans, scene context, checkpoints, and assembly. This makes individual takes editable and retryable without regenerating the whole book.
 
 One take per speaker passage avoids the two-speaker limit in Gemini's combined requests. The immutable passage text is sent intact. Character delivery, scene mood/direction, passage direction, and cues are passed separately as style. We deliberately do not insert new words, laughter, or inline tags into the book. Scene segmentation is independent of audio chunking.
 
@@ -60,6 +60,29 @@ For Gemini output, a later optional word-alignment pass can preserve source offs
 - [ElevenLabs forced alignment](https://elevenlabs.io/docs/api-reference/forced-alignment/create) accepts audio plus transcript and returns words/characters with times and loss values. This adds another cloud transfer and account.
 
 These aligners are research options, not installed dependencies or completed features.
+
+## Breeze TTS (self-hosted)
+
+Researched and measured **September 27, 2026** against the owner's server (`breeze-tts-2`, API 1.0.0) using its `/guide.md` and `/openapi.json`. Requests used short original synthetic text only. Breeze has no per-request charge.
+
+**Documented by the server** (provider claims, not verified by this project unless noted below):
+
+- `/v1/speech*` accepts up to 10,000 characters per request; background jobs accept up to 2,000,000. `instruction` is at most 1,000 characters and applies with `cfg_scale` 4 by default.
+- English and Chinese only. Voices are `cloned` (a 5–15 s reference clip plus transcript, stable timbre) or `designed` (an instruction only, re-imagined per request, so it can drift between segments). The default seed is 42.
+- One GPU renders one generation at a time at roughly one second of compute per audio second. Interactive requests (`/v1/speech*`, previews) pre-empt background jobs. More than 16 waiting interactive requests return `503 server_busy` with `Retry-After`; `503 model_loading` lasts about 80 s after a restart.
+- Disconnecting from `/v1/speech/stream` stops generation. Timing is per segment (sentence level); there is no word timing. Inline `(laugh)`, `(sigh)`, `(cough)`, `(clears throat)` and Chinese bracket events are performed, not read. The OpenAI-compatible endpoint substitutes the default voice for unknown names; Bardic does not use it.
+
+**Measured in this session** (sample sizes of one or two each; treat as indicative):
+
+- Output from `output_format: "wav"` and streamed `pcm_24000` is mono, 16-bit, 24 kHz: Bardic's stored take format, so no conversion is needed.
+- Segment offsets are Python code points into the sent text. A sample containing an emoji with a variation selector measured 63 code points versus 64 UTF-16 units, and every returned offset sliced the exact segment text.
+- `auto` segmentation packed up to two sentences per segment. The observed gaps were 500 ms after a paragraph and 120 ms between segments inside a paragraph.
+- Plain speech streamed 4.00 s of audio in 4.15–4.17 s (about 1.04× real time), with first audio after 0.17–0.18 s. The pre-send voice check (voice record plus reference clip) took 0.07–0.09 s. A 27.6 s passage took 29.0 s end to end (1.05×).
+- Slower samples, causes not isolated: the first 6.5 s take of a run took 14.1 s (2.2×); a 4.2 s take with an instruction took 7.3 s (1.7×); an earlier non-streamed 5.1 s request took 5.6 s while the server reported busy. The server guide says an instruction costs about 10–15 % and the first use of a voice or input size after a restart up to about 1 s.
+- Speech rate on these samples was 13.4–15.5 code points per second. Repeating the same text, voice and seed gave identical duration and sentence timing; waveform bit-identity was not checked (the server says it is not guaranteed).
+- Voice revisions were identical across two consecutive checks.
+
+At about real time, a listener at 1.5× or faster overtakes generation unless the chapter is prepared ahead. Offline tests (`tests/test_narration_providers.py`) cover the documented HTTP/SSE contract with a fake server; they do not measure quality or speed.
 
 ## Local validation and operating notes
 

@@ -80,7 +80,9 @@ Default narration: `gemini-3.8-flash-tts`. Settings also offers Flash-Lite and t
 
 Cloud generation and analysis run only when you choose those actions. They can incur API charges. Test a short scene to check model access, voice quality, and quota before a full book. See the dated [voice research](docs/RESEARCH-VOICE.md) for pricing and official sources.
 
-OpenAI and Anthropic currently cover the text analysis phases in this app. Narration choices remain Gemini and installed Mac voices. See [analysis providers](docs/ANALYSIS-PROVIDERS.md) for API contracts and sources.
+OpenAI and Anthropic currently cover the text analysis phases in this app. Narration choices are Gemini, installed Mac voices and a self-hosted Breeze server.
+
+**Breeze** is a narration server you run on your own network. Set `BREEZE_TTS_URL=http://host.local:7860` (and `BREEZE_API_KEY` only if the server requires one) in `.env`, or enter the URL in **Settings → Breeze**, then press **Check connection**. The check lists the server's voices and never generates audio. Only cloned voices can narrate; create them with the Breeze server's own tools. Choose a Breeze voice per character in **Cast & voices** or as the simple narrator. Breeze has no per-request charge, but it sends passage text and performance notes to that server, over plain HTTP unless the URL uses `https`. See [analysis providers](docs/ANALYSIS-PROVIDERS.md) for API contracts and sources.
 
 In **Settings**, open a provider and use **Check API**, or open **Check provider access → Check all accounts**. Each check makes one tiny text request using that provider's selected analysis model, then reports access, billing/credit errors, quota/rate limits, and any token usage returned for that check. It may incur a small API charge; it never sends book text or starts narration. Checks are explicit, with no background polling or automatic retries, and identical checks reuse their result for 30 seconds.
 

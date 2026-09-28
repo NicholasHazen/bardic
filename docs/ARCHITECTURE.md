@@ -6,7 +6,7 @@ This document describes the implementation in this repository as of 2026-09-27. 
 
 Bardic is a local web application for importing an ebook, developing an evidence-backed performance script, generating narration, and reading along with passage highlighting. It also supports simple single-narrator listening without completing story analysis first.
 
-The server is Python with FastAPI and SQLite. The browser uses HTML, CSS, and plain JavaScript; no frontend build system or JavaScript framework is required. Original ebooks and WAV assets are files on the local machine. Text analysis can call Gemini, OpenAI, or Anthropic. Narration currently uses Gemini or installed macOS voices. Provider calls are explicit processing actions; browsing saved work does not generate narration or run cloud story analysis.
+The server is Python with FastAPI and SQLite. The browser uses HTML, CSS, and plain JavaScript; no frontend build system or JavaScript framework is required. Original ebooks and WAV assets are files on the local machine. Text analysis can call Gemini, OpenAI, or Anthropic. Narration uses Gemini, installed macOS voices, or a self-hosted Breeze TTS server that the owner runs on the local network. Provider calls are explicit processing actions; browsing saved work does not generate narration or run cloud story analysis.
 
 The application has a single local owner. It is not a multiuser service, hosted library, DRM-removal tool, or general workflow scheduler. The default server binds to loopback. An opt-in local-network mode (`BARDIC_LAN_NAME`) binds the network and advertises a `.local` name for the same single owner's other devices; it adds no authentication and treats everyone on that network as the owner. Public or multiuser deployment would require authentication, authorization, and operational design.
 
@@ -21,7 +21,7 @@ flowchart TD
     Worker --> Listen[Simple listening]
     Worker --> Narration[Enhanced narration]
     Analysis --> Providers[Gemini / OpenAI / Anthropic text APIs]
-    Listen --> TTS[Gemini TTS / macOS say]
+    Listen --> TTS[Gemini TTS / macOS say / Breeze server]
     Narration --> TTS
     Import --> Store[SQLite current state and checkpoints]
     Analysis --> Store
@@ -58,7 +58,8 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`artifacts.py`](../bardic/artifacts.py) | Immutable content-addressed versions, mutable current heads, verified dependency edges, projection capture and honest legacy backfill. |
 | [`pipeline_view.py`](../bardic/pipeline_view.py) | Pipeline progress, source-anchored story map, portable analysis export. These views expose implemented state rather than run a second pipeline. |
 | [`search.py`](../bardic/search.py) | Local literal-word search with source coordinates, limited to the selected book or it plus earlier active series volumes. |
-| [`audio.py`](../bardic/audio.py) | Narration recipes/providers, audio validation/normalization, and sample-accurate WAV assembly. |
+| [`audio.py`](../bardic/audio.py) | Narration provider table (`PROVIDERS`), per-provider voice accessor, recipe and generation dispatch, Gemini/macOS adapters, audio validation/normalization, and sample-accurate WAV assembly. |
+| [`breeze.py`](../bardic/breeze.py) | Self-hosted Breeze TTS adapter: server URL validation, explicit voice check with revision pinning, pure recipe fields, streaming generation behind a live pre-send voice check, and sentence-timing validation. Checking voices never generates audio. |
 | [`take_archive.py`](../bardic/take_archive.py) | Private rendering followed by validated, atomic, content-addressed audio publication. Distinguishes generation recipe from actual resulting bytes. |
 | [`voice_previews.py`](../bardic/voice_previews.py) | Bounded contextual/demo auditions, retained input recipes and independent byte-addressed preview takes. Never edits casting or selected simple/enhanced takes. |
 | [`listening.py`](../bardic/listening.py) | Independent single-voice sessions/takes and a content-equivalent synthesis cache; intentionally excludes enhanced casting and performance directions. |
@@ -154,13 +155,15 @@ Collection discovery can use one or two workers. Profiles and direction run in r
 
 ## Audio production
 
-An enhanced narration recipe combines the exact passage, provider/model, selected voice, character and scene/performance instructions, and audio format version. Gemini and macOS narration are adapters behind this recipe. Device narration uses `say` and `ffmpeg`; it does not provide Gemini-style expressive steering.
+An enhanced narration recipe combines the exact passage, provider/model, selected voice, character and scene/performance instructions, and audio format version. `audio.PROVIDERS` holds one row per narration provider (label, default model/voice, credential kind and the capability flags callers read, such as `chunked_listening`, `seeded_takes` and `cost`). `_recipe` builds the shared fields and delegates provider fields through `_RECIPES`; `_generate` dispatches the network call. A character stores one voice choice per provider in `voices`; `voice_selection()` reads that map and falls back to the earlier `voice`/`system_voice` fields, so Gemini and device recipes are byte-identical to those produced before the provider table existed (pinned by golden fingerprint tests). Device narration uses `say` and `ffmpeg`; it does not provide Gemini-style expressive steering.
+
+Breeze voices are mutable server records, so a Breeze choice is pinned locally as `{id, revision, seed}`. The revision hashes only speech-affecting server state, including the SHA-256 of the reference clip. Fingerprints read the pinned copy and never the network, so Breeze takes stay valid after a restart or while the server is offline. Immediately before each request the worker fetches the live voice and its reference clip; a changed revision stops the take before any speech request is sent. Generation uses the server's SSE stream (`pcm_24000`) because a client disconnect there stops the server's GPU work; the collected PCM is wrapped as WAV and validated and published like any other take, never played while streaming. Performance notes become a Breeze `instruction` (at most 1,000 characters, rejected rather than truncated). Busy/loading 503 responses are retried a bounded number of times after `Retry-After`. Breeze has no per-request charge; resource operations record the request with cost basis `self_hosted`.
 
 `take_archive.produce_take()` renders into a private temporary file, checks the returned recipe fingerprint, validates the WAV, hashes its final bytes, and publishes without replacing an existing asset. The recipe fingerprint identifies the requested performance; the asset hash identifies a particular result. Two generations of one recipe can therefore coexist. WAV assembly uses real sample counts, and export joins only complete chapters.
 
 Simple listening retains a narrator session and exact passage identity. It excludes inferred speaker, character traits, scene directions, and cues. Cast edits therefore do not invalidate simple listening audio. A separate rebuildable index hashes equivalent speech inputs without passage IDs so exact text and voice/provider/model recipes can reuse audio across passages/books. WAV validity and content hashes are checked before reuse; a new target take records its own source binding and a pointer to the actual retained input, keeping the original producer fingerprint. Target books receive independent audio-file copies. Its sessions, takes, and audio directory remain separate from enhanced production.
 
-Current highlighting/timelines are passage-level. Word alignment, verification that every word was actually spoken, continuous scene-level acting synthesis, and automated audio quality scoring are not implemented. The [word-highlighting proposal](WORD-HIGHLIGHTING.md) recommends optional per-asset alignment with passage fallback. Buffering cannot guarantee that an unmeasured provider will sustain 2.5× consumption; chapter preparation is available when generation lags.
+Current highlighting/timelines are passage-level. Breeze takes also retain sentence timing (`provider_timing`) when every returned offset resolves to the exact sent text; nothing uses it for highlighting yet. Word alignment, verification that every word was actually spoken, continuous scene-level acting synthesis, and automated audio quality scoring are not implemented. The [word-highlighting proposal](WORD-HIGHLIGHTING.md) recommends optional per-asset alignment with passage fallback. Buffering cannot guarantee that an unmeasured provider will sustain 2.5× consumption; chapter preparation is available when generation lags.
 
 ## Concurrency, migration, and operational boundaries
 
@@ -179,10 +182,10 @@ Settings loaded from `.env` remain environment configuration; keys entered throu
 | Search | Literal-word FTS5 retrieval. No embeddings, vector ranking, or retrieval-driven automatic character linking. |
 | Provenance | Exact inputs are retained for the current progressive path. Legacy data is explicitly incomplete; snapshot edges are not fabricated generation lineage. |
 | Scheduling | Explicit bounded jobs with reusable work. No automatic restart continuation or distributed queue. |
-| Audio | Gemini and macOS voices, passage production, separate simple listening. No OpenAI/Anthropic TTS adapters, voice cloning, word alignment, or M4B packaging. |
+| Audio | Gemini, macOS and self-hosted Breeze voices, passage production, separate simple listening (chunked chapter jobs for Gemini only). No OpenAI/Anthropic TTS adapters, voice creation or cloning from Bardic, word alignment, or M4B packaging. |
 | Budgets | Conservative progressive text-analysis guards. No shared hard narration budget or exact provider balance API. |
 | Lifecycle | Soft removal and restoration. No permanent-delete UI, automatic garbage collection, backup scheduler, or analysis-bundle import. |
 
-When extending the system, preserve exact source coordinates, separate current selections from retained history, meter every new paid analysis attempt at its transport boundary, and version effective request/audio recipes when their behavior changes. New graph edges must identify actual known inputs. A new provider, index, or UI view must not silently turn an inspection request into paid generation.
+A new narration provider needs a `PROVIDERS` row, an `_RECIPES` entry, a branch in `_generate`, credentials through `Runtime.narration_credentials()`/`narration_secrets()`, and must leave the golden identity tests in `tests/test_narration_providers.py` unchanged. When extending the system, preserve exact source coordinates, separate current selections from retained history, meter every new paid analysis attempt at its transport boundary, and version effective request/audio recipes when their behavior changes. New graph edges must identify actual known inputs. A new provider, index, or UI view must not silently turn an inspection request into paid generation.
 
 Relevant deeper references: [data model](DATA-MODEL.md), [progressive analysis plan](PROGRESSIVE-ANALYSIS-PLAN.md), [chapter analysis](CHAPTER-ANALYSIS.md), [analysis providers](ANALYSIS-PROVIDERS.md), [artifact/storage notes](ARTIFACTS-AND-STORAGE.md), and [validation](VALIDATION.md). Plans describe intent and historical decisions; the code and this implementation map determine what currently exists.

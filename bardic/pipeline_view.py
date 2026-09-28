@@ -136,7 +136,7 @@ def pipeline(store, book, valid_audio):
     stage('directing', 'Scene and performance map', directed, eligible, 'eligible sections', ['profiles'],
           f'Counts semantic direction reusable with current request inputs. {historical_direction} sections were marked directed in the saved checkpoint; earlier and local draft maps remain available.')
     cast = [c for c in book['characters'] if c['id'] != 'unassigned']
-    stage('voices', 'Voice assignments', sum(bool(c.get('voice') or c.get('system_voice')) for c in cast), len(cast), 'voices', ['profiles'], 'Saved choices may be defaults. Review them for the selected narration provider.')
+    stage('voices', 'Voice assignments', sum(bool(c.get('voices') or c.get('voice') or c.get('system_voice')) for c in cast), len(cast), 'voices', ['profiles'], 'Saved choices may be defaults. Review them for the selected narration provider.')
     stage('narration', 'Audio takes', audio, len(book['segments']), 'passages', ['directing', 'voices'], 'Counts selected takes valid for current performance settings. Earlier takes remain stored.')
     stage('alignment', 'Word alignment', 0, None, 'words', ['narration'], 'Not implemented. Current read-along timing follows passage boundaries.', status='planned')
     stage('export', 'Reusable analysis export', None, None, 'bundles', ['import'], 'Download source, graph, profiles, observations, version history and provenance without generating audio. Audio files use the separate audiobook export.', status='ready')

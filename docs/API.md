@@ -43,10 +43,11 @@ A queued job response is not a completed result. Worker failures, cancellations,
 | --- | --- |
 | `GET /api/status` | Runtime settings, provider availability, configured-key booleans, model catalogs, prior account-check state, system voices, TTS choices, data directory, timing kind. Never returns key values. |
 | `POST /api/settings` | Updates model preferences and/or in-memory credentials; returns the status family. |
+| `POST /api/narration/breeze/refresh` | Explicit check of the configured Breeze server: health, voice list and reference clips of cloned voices, pinning each voice's revision. No generation. Returns the `breeze` status object; failures are reported as `state`/`message`, not errors. 400 without a URL; 409 if settings changed during the check or another check is running. |
 | `POST /api/models/{provider}/refresh` | Explicit remote model-inventory request for `gemini`, `openai`, or `anthropic`. Returns catalog state/models/message/cache information. Does not generate text or establish credit. |
 | `POST /api/account-checks/{provider}` | Explicit tiny text generation with the configured analysis model. Can incur a charge. Returns access/billing/quota state, timestamp, usage if reported, and dashboard links; not an exact balance. |
 
-Settings accepts `tts_model`, `analysis_provider`, `analysis_models_by_provider`, `preprocess_models_by_provider`, and `api_keys`. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries. Conflicting alias/map values are rejected. An empty key string clears that runtime key; omitted keys stay unchanged. Credentials are not persisted by this endpoint. Models/preferences are persisted.
+Settings accepts `tts_model`, `analysis_provider`, `analysis_models_by_provider`, `preprocess_models_by_provider`, `api_keys`, `breeze_url` (an http(s) server root without path or credentials; saved; `""` clears) and `breeze_api_key` (runtime only; `""` clears). Status adds `narration_providers` (per-provider label, models, default voice, `requires` and capabilities such as `chunked_listening`, `seeded_takes` and `cost`), a `breeze` provider entry whose `available` is true only after a check found a usable voice, and `breeze` (`configured`, `base_url`, `has_api_key`, `state`, `message`, `checked_at`, `model`, `default_voice_id`, `voices[]` with `usable`, `reason`, `revision`, `seed`). Status never contacts the server. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries. Conflicting alias/map values are rejected. An empty key string clears that runtime key; omitted keys stay unchanged. Credentials are not persisted by this endpoint. Models/preferences are persisted.
 
 A preference-only request:
 
@@ -116,8 +117,8 @@ There is no destructive book-delete endpoint. Archiving does not reclaim disk sp
 | `GET /api/books/{book_id}/analysis` | Checkpoint summary, including per-chapter progress; returns `not_started` when no checkpoint exists. |
 | `GET /api/books/{book_id}/characters/{character_id}/references` | Unpaginated references for that current cast member, with kinds and source anchors. |
 | `POST /api/books/{book_id}/characters` | Adds a human-reviewed cast member; `name` is required. Returns the full book. |
-| `PATCH /api/books/{book_id}/characters/{character_id}` | Optional `name`, `aliases`, `description`, `voice`, `system_voice`, `direction`. Returns the full book. |
-| `PATCH /api/books/{book_id}/segments/{segment_id}` | Optional `speaker_id`, `direction`, `cues`; marks the passage edited. A reviewed speaker assignment gets confidence 1.0. Returns the full book. |
+| `PATCH /api/books/{book_id}/characters/{character_id}` | Optional `name`, `aliases`, `description`, `voices`, `direction`; `voice`/`system_voice` remain accepted as the Gemini/device entries. `voices` is `{provider: {id, seed?} | null}`; `null` removes that provider's choice, and a Breeze `id` is pinned to the revision from the last Breeze check (400 if unknown or not a cloned voice). Returns the full book. |
+| `PATCH /api/books/{book_id}/segments/{segment_id}` | Optional `speaker_id`, `direction`, `cues`, `seed` (0–4294967295, used by seeded providers such as Breeze; a new seed is a new take); marks the passage edited. A reviewed speaker assignment gets confidence 1.0. Returns the full book. |
 | `PATCH /api/books/{book_id}/scenes/{scene_id}` | Optional `title`, `summary`, `tone`, `direction`. Returns the full book. |
 
 Typical analysis body:
@@ -218,7 +219,7 @@ A remote request already sent can complete and be billed after cancellation. Val
 
 | Route | Behavior |
 | --- | --- |
-| `POST /api/books/{book_id}/render` | Enhanced production job. `{provider:"system"|"gemini", scene_id?, segment_id?, force:false}`. Omitted selectors select the whole book; both selectors, if given, are intersected. |
+| `POST /api/books/{book_id}/render` | Enhanced production job. `{provider:"system"|"gemini"|"breeze", scene_id?, segment_id?, force:false}`. Breeze requires a configured URL and a Breeze voice for every selected speaker; otherwise 400 before queueing. Omitted selectors select the whole book; both selectors, if given, are intersected. |
 | `GET /api/audio/{book_id}/{segment_id}` | Current valid enhanced passage WAV. Stale/unavailable selection returns 404. |
 | `GET /api/books/{book_id}/audio-assets/{asset_id}` | Retained enhanced audio asset bytes for that book. |
 | `POST /api/books/{book_id}/voice-preview` | Explicit bounded voice sample from an exact source prefix or the original demo. See request/response contract below. |
@@ -238,7 +239,7 @@ A simple-listening request:
 {"provider":"system","voice":"Samantha","model":"macos-say","segment_id":"SEGMENT_ID"}
 ```
 
-For Gemini, select `provider: "gemini"`, a supported voice/model, or omit `model` to use the configured TTS preference. `segment_id` is required; `provider` defaults to `system`. Optional `voice` and `model` strings are limited to 256 and 200 characters respectively. Simple listening has its own narrator session, recipe archive, and audio directory. It does not overwrite cast voices, scene notes, enhanced selected takes, or enhanced artifacts.
+For Gemini, select `provider: "gemini"`, a supported voice/model, or omit `model` to use the configured TTS preference. For Breeze, send `provider: "breeze"`, a server voice ID from the last check (or omit `voice` for the server default) and omit `model` or send `null`; the session pins that voice's revision and seed. Breeze passages always use this endpoint; the chapter endpoint is Gemini-only. `segment_id` is required; `provider` defaults to `system`. Optional `voice` and `model` strings are limited to 256 and 200 characters respectively. Simple listening has its own narrator session, recipe archive, and audio directory. It does not overwrite cast voices, scene notes, enhanced selected takes, or enhanced artifacts.
 
 A cache hit returns `{"session":{...},"audio":{...},"cached":true}` immediately, even if the provider key/device is no longer available. Lookup first checks the exact source/session recipe, then equivalent simple speech inputs across retained passages/books. The latter includes exact text, voice, provider/model and versioned synthesis recipe; it validates WAV integrity and the actual content hash before retaining a new source-bound reuse record. Audio may include `synthesis_key` and a version-1 `reuse` pointer to the original retained take. The original producer fingerprint stays unchanged; the target `recipe` and `source_anchor` describe its new source binding. `cache_hit` is a transient result flag.
 
@@ -260,7 +261,7 @@ Simple listening has no separate TTS budget field or narration spending cap. The
 {"provider":"gemini","voice":"Leda","segment_id":"segment-id","character_id":"character-id","direction":"Warm and measured.","segment_direction":"Quietly."}
 ```
 
-`provider` is `system` (default) or `gemini`. Optional fields: `voice` (256 characters), `model`, `segment_id`, `character_id` (200 each), and `direction`/`segment_direction` (3,000 each). Omit `model` to use the configured Gemini TTS preference or `macos-say` for device narration. Device requests reject a different model. There is no caller-supplied transcript field: text is always resolved from the stored book or fixed demo. `direction` requires `character_id`; `segment_direction` requires both a passage and character. Unknown fields are rejected.
+`provider` is `system` (default), `gemini` or `breeze`; a Breeze `voice` must be in the last Breeze check. Optional fields: `voice` (256 characters), `model`, `segment_id`, `character_id` (200 each), and `direction`/`segment_direction` (3,000 each). Omit `model` to use the configured Gemini TTS preference or `macos-say` for device narration. Device requests reject a different model. There is no caller-supplied transcript field: text is always resolved from the stored book or fixed demo. `direction` requires `character_id`; `segment_direction` requires both a passage and character. Unknown fields are rejected.
 
 An explicit passage is used even when auditioning an unsaved speaker assignment. Otherwise a selected character uses its first attributed passage, falling back to the original demo when none exists; neither selector means demo text. The browser prefers the currently selected passage for that character, then its first passage in the current chapter, before leaving the fallback to the server. References or name mentions do not substitute for attributed speech. A passage sample is an exact original prefix of at most 400 Python Unicode code points, preferentially ending at a sentence/word boundary. It includes a validated chapter-local `source_anchor`; source text is never rewritten. `truncated` identifies a shortened sample.
 

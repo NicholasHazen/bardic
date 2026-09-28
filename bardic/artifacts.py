@@ -252,7 +252,7 @@ def capture_book(conn, book, *, legacy_provenance=False, only_missing=False):
                                     'profile_input_key', 'profile_provisional', 'profile_state'))
         save('character_profile', character_id, profile, label=character.get('name', character_id), stage='profiles',
              dependencies=_profile_dependency(conn, book_id, character))
-        save('voice_assignment', character_id, _pick(character, ('id', 'voice', 'system_voice')),
+        save('voice_assignment', character_id, _pick(character, ('id', 'voices', 'voice', 'system_voice')),
              label=character.get('name', character_id), stage='voices')
     for segment in segments:
         if not isinstance(segment.get('audio'), dict):
