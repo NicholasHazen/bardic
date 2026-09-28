@@ -1,7 +1,7 @@
 {
-  "raw_colors_outside_tokens": 304,
-  "font_size_literals": 383,
+  "raw_colors_outside_tokens": 301,
+  "font_size_literals": 377,
   "important": 17,
   "badge_message_error_help_classes": 28,
-  "escape_helpers_outside_ui_js": 5
+  "escape_helpers_outside_ui_js": 4
 }

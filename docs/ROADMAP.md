@@ -169,6 +169,8 @@ See [storage research](ARTIFACTS-AND-STORAGE.md#primary-references) and the date
 
 Earlier linked observations already improve book-local profiles, with missing/later volumes excluded. A complete series biography, temporal character evolution and a full scene-presence map remain broader work.
 
+**Gap (2026-09-28):** only the older phase engine writes those observations and the Cast references they come from; step-pipeline runs, including series runs, write none. The planned follow-up — project accepted step evidence into references, read earlier volumes' accepted evidence for series context, and staged consent for series runs — is designed in [series memory plan](SERIES-MEMORY-PLAN.md). Its evidence projection is also stage 2 of removing the phase engine.
+
 Acceptance criteria:
 
 - Provide an explicit review flow for identity-link suggestions; namesakes never merge automatically. Preserve the evidence and the user's link decision as versioned inputs.
