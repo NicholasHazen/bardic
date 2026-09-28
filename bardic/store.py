@@ -14,6 +14,32 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+# Written once, when a job reaches its terminal status; never changed afterwards.
+JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "resume_after"})
+# Stored bookkeeping that is not part of the published Job (the series plan
+# fingerprint stays in storage and in the `series_run` artifact).
+INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint"})
+# Job fields renamed in contract 0.2.0, by kind: stored documents from older
+# versions are translated when read, and new documents use the new names.
+LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "analysis_limits"},
+                     "listen_chapter": {"limits": "speech_limits"}}
+
+
+def upgrade_job(job: dict) -> dict:
+    """A stored job document with current field names (the stored row is not rewritten)."""
+    for old, new in LEGACY_JOB_FIELDS.get(job.get("kind"), {}).items():
+        if old in job:
+            value = job.pop(old)
+            job.setdefault(new, value)
+    return job
+
+
+def public_job(job: dict) -> dict:
+    """The job as the API presents it: without internal bookkeeping."""
+    return {name: value for name, value in job.items() if name not in INTERNAL_JOB_FIELDS}
+
+
 class Store:
     def __init__(self, root: Path):
         from .series import initialize_schema
@@ -200,14 +226,14 @@ class Store:
         clauses = (["book_id=?"] if book_id else []) + (["json_extract(body,'$.status') IN ('queued','running')"] if active else [])
         with self.lock, self.connect() as conn:
             sql = "SELECT body FROM jobs" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid DESC" + (f" LIMIT {int(limit)}" if limit is not None else "")
-            return [json.loads(row[0]) for row in conn.execute(sql, (book_id,) if book_id else ())]
+            return [upgrade_job(json.loads(row[0])) for row in conn.execute(sql, (book_id,) if book_id else ())]
 
     def job(self, job_id: str) -> dict:
         with self.lock, self.connect() as conn:
             row = conn.execute("SELECT body FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
                 raise NotFound('job_not_found', "Job not found")
-            return json.loads(row[0])
+            return upgrade_job(json.loads(row[0]))
 
     def create_job(self, book_id: str, kind: str, total: int = 0) -> dict:
         job = dict(id=uuid4().hex, book_id=book_id, kind=kind, status="queued", progress=0,
@@ -220,6 +246,12 @@ class Store:
     def update_job(self, job_id: str, **fields) -> dict:
         with self.lock:
             job = self.job(job_id)
+            if job["status"] not in ACTIVE_JOB_STATUSES:
+                # A terminal outcome is final: a late worker, done-callback or shutdown race
+                # must not turn `cancelled` into `interrupted` or rewrite what the job reported.
+                fields = {name: value for name, value in fields.items() if name not in JOB_OUTCOME_FIELDS}
+                if not fields:
+                    return job
             job.update(fields, updated_at=now())
             with self.connect() as conn:
                 conn.execute("UPDATE jobs SET body=? WHERE id=?", (json.dumps(job), job_id))

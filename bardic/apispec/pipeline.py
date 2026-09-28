@@ -276,7 +276,7 @@ class PipelineRun(View):
 
 class PipelineRunStarted(View):
     """The queued job and the run record. A queued job is not a result: poll the job."""
-    job: Job = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `mode` added).')
+    job: Job = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added).')
     run: PipelineRun = Field(description='The run as created (`status: queued`, empty `step_run_ids`).')
 
 

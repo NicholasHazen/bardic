@@ -177,18 +177,6 @@ class PerformanceCastMember(View):
     fallback: bool = Field(description='True when the speaker has no usable voice and uses the narrator.')
 
 
-class PerformanceJobSummary(View):
-    """The latest performance job, abbreviated."""
-    id: str = Field(description='Job ID (32-character hex) of the latest `performance` job; the full job is listed by `GET /api/jobs?book_id=…`.')
-    status: str = Field(description='Job status (see the Job object).')
-    progress: int = Field(description='Passages finished so far (for Gemini simple performances, advances only when a chapter\'s child job settles).')
-    total: int = Field(description='Passages the job has to prepare (those missing when it started).')
-    message: str = Field(description='Human-readable progress line, for example `Chapter 2 of 5 · passage 14 of 40`. Display only.')
-    error: str | None = Field(description='Human-readable failure reason when the job failed, else null.')
-    resume_after: str | None = Field(description='ISO 8601 UTC time after which a `quota_limited` job can be resumed, else null.')
-    child_job_id: str | None = Field(description='The `listen_chapter` child job running now (Gemini simple), else null.')
-
-
 class PerformanceChapterProgress(View):
     """Readiness of one selected chapter."""
     id: str = Field(description='Chapter ID.')
@@ -232,7 +220,7 @@ class Performance(View):
     archived: bool = Field(description='True when hidden from the default list (listed only with `archived=true`). Its audio is kept.')
     job_id: str | None = Field(description='Latest job ID, or null if no job was ever needed.')
     cast: list[PerformanceCastMember] | None = Field(None, description='Cast only: the narrator and each speaker in the chosen chapters.')
-    job: PerformanceJobSummary | None = Field(description='Summary of the latest job, or null.')
+    job: Job | None = Field(description='The latest `performance` job (a full `Job`), or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
 
@@ -378,7 +366,7 @@ passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `ex
 `realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
-`limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
+`speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
 the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks
 are kept on every outcome; start the chapter again to resume."""
 

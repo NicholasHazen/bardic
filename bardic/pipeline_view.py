@@ -9,7 +9,7 @@ from .artifacts import ArtifactRepository
 from .preprocessing import coverage
 from .processing import ProcessingStore
 from .series import SeriesRepository
-from .store import now
+from .store import now, public_job
 
 
 def prepare(store, book_id):
@@ -160,9 +160,8 @@ def pipeline(store, book, valid_audio):
         if item.get('status') == 'reserved' and not any(j['id'] == item.get('run_id') and j['status'] in {'running', 'queued'} for j in jobs):
             item['status'] = 'interrupted_unknown'
         public_attempts.append(item)
-    job_fields = ('id', 'kind', 'status', 'phase', 'progress', 'total', 'message', 'error', 'created_at', 'updated_at')
     return {'schema_version': 1, 'book_id': book['id'], 'stages': stages,
-            'jobs': [{k: j[k] for k in job_fields if k in j} for j in jobs],
+            'jobs': [public_job(j) for j in jobs],
             'usage': knowledge['usage'], 'attempts': public_attempts, 'events': events,
             'capabilities': {'word_alignment': False}, 'artifact_kinds': counts['kinds'], 'artifact_counts': counts,
             'notes': ['Historical records imported from older versions may lack exact request provenance. Lost versions cannot be reconstructed.',

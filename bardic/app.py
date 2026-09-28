@@ -38,7 +38,7 @@ from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, 
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
 from .voice_routes import import_breeze_voices, register as register_voice_routes
 from .config import data_directory
-from .errors import STATUS_CODES, ApiError, NotFound
+from .errors import STATUS_CODES, ApiError, Conflict, Invalid, NotFound
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .lan import allowed_hosts
@@ -48,14 +48,13 @@ from .pipeline.api import build_router as pipeline_router
 from .pipeline.repository import PipelineRepository
 from .series import SeriesRepository
 from .structure import repair_structure, transform_checkpoint_structure
-from .store import InstanceLock, Store
+from .store import InstanceLock, Store, public_job
 from .take_archive import produce_take
 from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
 from .tts_limits import CANCEL_CHECK, DEFAULT_LIMITS as DEFAULT_TTS_LIMITS, LIMITER, normalize_limits, quota_day, requests_today
 
 TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview"]
-ANALYSIS_MODELS = ANALYSIS_CATALOG["gemini"]
 ANALYSIS_LABELS = {"local": "Local draft", "gemini": "Gemini", "openai": "OpenAI", "anthropic": "Anthropic"}
 ACCOUNT_LINKS = {
     "gemini": {"billing_url": "https://aistudio.google.com/billing", "usage_url": "https://aistudio.google.com/usage"},
@@ -175,6 +174,9 @@ class VoicePreviewRequest(StrictModel):
 
 
 class DiagnosticRequest(StrictModel):
+    # Passage, session and job IDs are scoped to a book; the dependency is part of the schema.
+    model_config = ConfigDict(extra="forbid", json_schema_extra={'dependentRequired': {
+        name: ['book_id'] for name in ('segment_id', 'session_id', 'job_id')}})
     event: Literal['listen_request_failed', 'listen_poll_failed', 'listen_job_failed',
                    'buffer_failed', 'cache_read_failed', 'playback_media_error',
                    'playback_play_rejected', 'playback_waiting', 'playback_resumed', 'preview_failed']
@@ -187,6 +189,19 @@ class DiagnosticRequest(StrictModel):
     media_error_code: int | None = Field(default=None, strict=True, ge=1, le=4)
     operation: Literal['request', 'poll', 'play', 'prefetch', 'media', 'prepare', 'settle', 'cache_read'] | None = None
 
+    @model_validator(mode="after")
+    def identifiers_need_a_book(self):
+        if self.book_id is None and any(value is not None for value in (self.segment_id, self.session_id, self.job_id)):
+            raise ValueError("segment_id, session_id and job_id require book_id")
+        return self
+
+
+class TtsLimitsUpdate(StrictModel):
+    """Gemini speech limits for one model; omitted (or null) limits keep their current value."""
+    rpm: int | None = Field(default=None, strict=True, ge=1, le=10_000)
+    tpm: int | None = Field(default=None, strict=True, ge=1, le=100_000_000)
+    rpd: int | None = Field(default=None, strict=True, ge=1, le=10_000_000)
+
 
 class SettingsRequest(StrictModel):
     api_key: str | None = Field(default=None, max_length=500)
@@ -196,7 +211,7 @@ class SettingsRequest(StrictModel):
     analysis_models_by_provider: dict[str, str] | None = None
     preprocess_models_by_provider: dict[str, str] | None = None
     analysis_provider: str | None = None
-    tts_limits: dict[str, dict[str, int]] | None = None
+    tts_limits: dict[str, TtsLimitsUpdate] | None = None
     listen_chunking: ChunkingOptions | None = None
     breeze_url: str | None = Field(default=None, max_length=500)
     breeze_api_key: str | None = Field(default=None, max_length=500)
@@ -281,6 +296,8 @@ class Runtime:
         self.performance_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='performance')
         from .performances import PerformanceRepository
         PerformanceRepository(self.store)
+        # Creates the diagnostics table once, at startup; requests only read or append.
+        self.diagnostics = DiagnosticRepository(self.store)
         self.stopping = threading.Event()
         self.api_keys = {
             "gemini": os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "",
@@ -329,7 +346,17 @@ class Runtime:
 
     @staticmethod
     def _saved_breeze_url(saved):
-        for value in (saved, os.environ.get("BREEZE_TTS_URL")):
+        """Only a URL set in Settings ("" when none). `BREEZE_TTS_URL` is resolved at use and never saved."""
+        if isinstance(saved, str) and saved.strip():
+            try:
+                return breeze.normalize_base_url(saved)
+            except ValueError:
+                pass
+        return ""
+
+    def breeze_url(self):
+        """The Breeze server in use: the URL saved in Settings, else `BREEZE_TTS_URL`."""
+        for value in (self.preferences["breeze_url"], os.environ.get("BREEZE_TTS_URL")):
             if isinstance(value, str) and value.strip():
                 try:
                     return breeze.normalize_base_url(value)
@@ -371,7 +398,7 @@ class Runtime:
         return {**self.api_keys, **self.service_urls()}
 
     def breeze_config(self):
-        return {"base_url": self.preferences["breeze_url"], "api_key": self.narration_keys["breeze"]}
+        return {"base_url": self.breeze_url(), "api_key": self.narration_keys["breeze"]}
 
     def breeze_view(self):
         """Report the last Breeze check without contacting the server."""
@@ -398,9 +425,9 @@ class Runtime:
         with self.store.lock:
             config = self.breeze_config()
             if not config["base_url"]:
-                raise HTTPException(400, "Add the Breeze server URL in Settings first.")
+                raise Invalid("breeze_url_missing", "No Breeze server URL is configured.")
             if self.breeze_checking:
-                raise HTTPException(409, "A Breeze check is already running.")
+                raise Conflict("breeze_check_running", "A Breeze check is already running.")
             self.breeze_checking = True
         try:
             result = breeze.fetch_catalog(config)
@@ -413,7 +440,7 @@ class Runtime:
                 self.breeze_checking = False
         with self.store.lock:
             if config != self.breeze_config():
-                raise HTTPException(409, "Breeze settings changed during the check. Check the connection again.")
+                raise Conflict("settings_changed", "The Breeze URL or key changed during the check; its result was discarded.")
             previous = self.preferences.get("breeze_catalog") or {}
             if result["state"] != "ready" and previous.get("base_url") == config["base_url"]:
                 # Keep the last known voices so pinned choices and cached audio still resolve.
@@ -465,7 +492,7 @@ class Runtime:
         return (key,) if key else ()
 
     def require_breeze(self):
-        if not self.preferences["breeze_url"]:
+        if not self.breeze_url():
             raise HTTPException(400, "Add the Breeze server URL in Settings first, or choose another narrator.")
 
     @staticmethod
@@ -523,10 +550,10 @@ class Runtime:
 
     def check_account(self, provider):
         if provider not in ANALYSIS_CATALOG:
-            raise HTTPException(400, "Choose gemini, openai, or anthropic")
+            raise Invalid("cloud_provider_unknown", "The provider is not gemini, openai or anthropic.")
         gate = self.account_check_locks[provider]
         if not gate.acquire(blocking=False):
-            raise HTTPException(409, "A check for this provider is already running")
+            raise Conflict("account_check_running", "A check for this provider is already running.")
         try:
             with self.store.lock:
                 key = self.api_keys[provider]
@@ -546,7 +573,7 @@ class Runtime:
             with self.store.lock:
                 if configuration != (self.api_keys[provider], self.preferences["analysis_models_by_provider"][provider]):
                     # A slow response for a replaced credential must not look current.
-                    raise HTTPException(409, "Provider settings changed during the check. Check the current settings again.")
+                    raise Conflict("settings_changed", "The key or model changed during the check; its result was discarded.")
                 self.account_checks[provider] = {"configuration": configuration, "time": time.monotonic(), "result": copy.deepcopy(result)}
             return result
         finally:
@@ -717,7 +744,8 @@ class Runtime:
         cancel_token = CANCEL_CHECK.set(lambda: self.check_cancel(job_id))
         try:
             self.check_cancel(job_id)
-            self.store.update_job(job_id, status="running", message="Starting…")
+            if self.store.update_job(job_id, status="running", message="Starting…")["status"] != "running":
+                return  # Cancelled after the check; its terminal status is final.
             operation()
             self.check_cancel(job_id)
             self.store.update_job(job_id, status="completed", message=(
@@ -1016,7 +1044,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
-        if request.url.path == '/api/diagnostics':
+        if request.url.path == '/api/diagnostics' and request.method == 'POST':
             # FastAPI's default validation body echoes invalid input. A
             # rejected accidental message/key must not enter this log API's
             # response either, even though it was never stored.
@@ -1040,7 +1068,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.get('/api/diagnostics')
     def diagnostics(request: Request, book_id: str | None = None, limit: int = 100):
-        return DiagnosticRepository(rt(request).store).events(book_id=book_id, limit=limit)
+        return rt(request).diagnostics.events(book_id=book_id, limit=limit)
 
     def status(runtime):
         voices = list_system_voices()
@@ -1056,6 +1084,8 @@ def create_app(data_dir: Path | None = None):
                                   {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
                                    "reason": None if breeze_ready else breeze_view["message"]}],
                     "narration_providers": providers_status(), "breeze": breeze_view,
+                    # Resolved (Settings, else environment), like local_service_urls.
+                    "breeze_url": breeze_view["base_url"],
                     # Resolved (Settings, else environment); the saved-only values are not shown.
                     "local_service_urls": runtime.service_urls(),
                     "analysis_providers": [{"id": provider, "label": label,
@@ -1066,9 +1096,9 @@ def create_app(data_dir: Path | None = None):
                                            for provider, label in ANALYSIS_LABELS.items()],
                     "account_checks": {provider: runtime.account_check_view(provider) for provider in ANALYSIS_CATALOG},
                     "model_catalogs": {provider: runtime.model_catalog.view(provider, runtime.api_keys[provider]) for provider in ANALYSIS_CATALOG},
-                    "system_voices": voices, "tts_models": TTS_MODELS, "analysis_models": ANALYSIS_MODELS,
+                    "system_voices": voices, "tts_models": TTS_MODELS,
                     "tts_rate": {model: LIMITER.view(model) for model in TTS_MODELS},
-                    "data_directory": str(runtime.store.root), "timing_kind": "segment"}
+                    "timing_kind": "segment"}
 
     @app.get("/api/status")
     def get_status(request: Request):
@@ -1095,7 +1125,7 @@ def create_app(data_dir: Path | None = None):
     def refresh_provider_models(provider: str, request: Request):
         runtime = rt(request)
         if provider not in ANALYSIS_CATALOG:
-            raise HTTPException(400, "Choose gemini, openai, or anthropic")
+            raise Invalid("cloud_provider_unknown", "The provider is not gemini, openai or anthropic.")
         with runtime.store.lock:
             key = runtime.api_keys[provider]
         try:
@@ -1107,7 +1137,7 @@ def create_app(data_dir: Path | None = None):
                       "message": "The model list could not be refreshed. Try again later.", "cached": False}
         with runtime.store.lock:
             if key != runtime.api_keys[provider]:
-                raise HTTPException(409, "The key changed during the refresh. Refresh the current key's models again.")
+                raise Conflict("settings_changed", "The key changed during the refresh; its result was discarded.")
         return result
 
     @app.post("/api/settings")
@@ -1118,46 +1148,48 @@ def create_app(data_dir: Path | None = None):
         preprocess_models = dict(body.preprocess_models_by_provider or {})
         if body.api_key is not None:
             if "gemini" in keys and keys["gemini"].strip() != body.api_key.strip():
-                raise HTTPException(400, "Conflicting Gemini API key fields")
+                raise Invalid("gemini_key_conflict", "`api_key` and `api_keys.gemini` have different values.")
             keys["gemini"] = body.api_key
         if body.analysis_model is not None:
             if "gemini" in models and models["gemini"] != body.analysis_model:
-                raise HTTPException(400, "Conflicting Gemini analysis model fields")
+                raise Invalid("gemini_model_conflict", "`analysis_model` and `analysis_models_by_provider.gemini` have different values.")
             models["gemini"] = body.analysis_model
         if (keys.keys() | models.keys() | preprocess_models.keys()) - ANALYSIS_CATALOG.keys():
-            raise HTTPException(400, "Unknown cloud analysis provider")
+            raise Invalid("cloud_provider_unknown", "A provider key is not gemini, openai or anthropic.")
         if any(not valid_analysis_model(model) for model in [*models.values(), *preprocess_models.values()]):
-            raise HTTPException(400, "Use an analysis model ID with 1–200 letters, numbers, dots, underscores, colons, or hyphens")
+            raise Invalid("model_id_invalid", "An analysis model ID must be 1–200 letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit.")
         if body.analysis_provider is not None and body.analysis_provider not in ANALYSIS_LABELS:
-            raise HTTPException(400, "Unknown analysis provider")
+            raise Invalid("analysis_provider_unknown", "The analysis provider is not local, gemini, openai or anthropic.")
         if body.tts_model is not None and body.tts_model not in TTS_MODELS:
-            raise HTTPException(400, "Unsupported tts_model")
+            raise Invalid("tts_model_unsupported", "The speech model is not one of the supported Gemini speech models.")
         tts_limits = {}
         for model, value in (body.tts_limits or {}).items():
             if model not in TTS_MODELS:
-                raise HTTPException(400, "Unsupported tts_model in rate limits")
-            tts_limits[model] = normalize_limits(value)
+                raise Invalid("tts_model_unsupported", "A speech limits model is not one of the supported Gemini speech models.")
+            tts_limits[model] = value.model_dump(exclude_none=True)
         breeze_url = None
         if body.breeze_url is not None:
             try:
                 breeze_url = breeze.normalize_base_url(body.breeze_url)
             except ValueError as error:
-                raise HTTPException(400, str(error)) from None
+                raise Invalid("breeze_url_invalid", str(error)) from None
         service_urls = {}
         for provider, value in (body.local_service_urls or {}).items():
             if provider not in local_services.SERVICES:
-                raise HTTPException(400, "Unknown local analysis service")
+                raise Invalid("local_service_unknown", "A self-hosted service ID is not local_llm, booknlp or novel_analyzer.")
             try:
                 service_urls[provider] = local_services.normalize_url(value, provider)
             except ValueError as error:
-                raise HTTPException(400, str(error)) from None
+                raise Invalid("service_url_invalid", str(error)) from None
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
                                           **body.listen_chunking.model_dump(exclude_none=True)})
         with runtime.store.lock:
             preferences = copy.deepcopy(runtime.preferences)
-            preferences["tts_limits"].update(tts_limits)
+            # A partial update merges per field over the current limits.
+            for model, given in tts_limits.items():
+                preferences["tts_limits"][model] = normalize_limits({**preferences["tts_limits"][model], **given})
             if chunking is not None:
                 preferences["listen_chunking"] = chunking
             if breeze_url is not None:
@@ -1171,8 +1203,13 @@ def create_app(data_dir: Path | None = None):
             preferences["preprocess_models_by_provider"].update(preprocess_models)
             preferences["analysis_model"] = preferences["analysis_models_by_provider"]["gemini"]
             runtime.store.save_settings(preferences)
+            # Lift a daily quota block only when what decides it changed: that model's
+            # limits, or the Gemini key (which may belong to another project).
+            key_changed = "gemini" in keys and keys["gemini"].strip() != runtime.api_keys["gemini"]
+            lift = [model for model in TTS_MODELS
+                    if key_changed or preferences["tts_limits"][model] != runtime.preferences["tts_limits"][model]]
             runtime.preferences = preferences
-            LIMITER.configure(preferences["tts_limits"])
+            LIMITER.configure(preferences["tts_limits"], lift=lift)
             runtime.api_keys.update({provider: key.strip() for provider, key in keys.items()})
             if body.breeze_api_key is not None:
                 runtime.narration_keys["breeze"] = body.breeze_api_key.strip()
@@ -1552,7 +1589,7 @@ def create_app(data_dir: Path | None = None):
     @app.get("/api/jobs")
     def jobs(request: Request, book_id: str | None = None, active: bool = False):
         # Every queued/running job, however many newer ones exist: `./bardicctl` checks this before stopping.
-        return rt(request).store.jobs(book_id, limit=None if active else 100, active=active)
+        return [public_job(job) for job in rt(request).store.jobs(book_id, limit=None if active else 100, active=active)]
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str, request: Request):
@@ -1560,7 +1597,7 @@ def create_app(data_dir: Path | None = None):
         with runtime.store.lock:
             job = runtime.store.job(job_id)
             if job["status"] not in ACTIVE:
-                return job
+                return public_job(job)
             if job['kind'] == 'series':
                 for identifier in job.get('child_job_ids', []):
                     child = runtime.store.job(identifier)
@@ -1581,8 +1618,8 @@ def create_app(data_dir: Path | None = None):
                         runtime.store.update_job(child['id'], cancel_requested=True,
                                                  message='Stopping after the requests already sent. Their audio will be saved.')
             if job["status"] == "queued":
-                return runtime.store.update_job(job_id, cancel_requested=True, status="cancelled", message="Cancelled before generation started.")
-            return runtime.store.update_job(job_id, cancel_requested=True, message="Stopping after the current request. Finished takes will be kept.")
+                return public_job(runtime.store.update_job(job_id, cancel_requested=True, status="cancelled", message="Cancelled before generation started."))
+            return public_job(runtime.store.update_job(job_id, cancel_requested=True, message="Stopping after the current request. Finished takes will be kept."))
 
     @app.get("/api/audio/{book_id}/{segment_id}")
     def audio(book_id: str, segment_id: str, request: Request):
@@ -1785,8 +1822,8 @@ def create_app(data_dir: Path | None = None):
     @app.post('/api/series/{series_id}/process')
     def process_series(series_id: str, body: SeriesProcessingRequest, request: Request):
         from .series_processing import start
-        return start(rt(request), series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
-                     limits=body.limits.model_dump(), expected_plan_fingerprint=body.expected_plan_fingerprint)
+        return public_job(start(rt(request), series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
+                                limits=body.limits.model_dump(), expected_plan_fingerprint=body.expected_plan_fingerprint))
 
     @app.get('/api/series/{series_id}/runs')
     def series_runs(series_id: str, request: Request):
@@ -1794,7 +1831,7 @@ def create_app(data_dir: Path | None = None):
         store = rt(request).store
         series_view(store, series_id)
         parents = store.jobs('series:' + series_id, limit=20)
-        return {'runs': [{**parent, 'children': [store.job(identifier) for identifier in parent.get('child_job_ids', [])]} for parent in parents]}
+        return {'runs': [{**public_job(parent), 'children': [public_job(store.job(identifier)) for identifier in parent.get('child_job_ids', [])]} for parent in parents]}
 
     @app.get('/api/series/{series_id}/map')
     def series_map(series_id: str, request: Request):
@@ -1980,7 +2017,7 @@ def create_app(data_dir: Path | None = None):
             job = store.update_job(job['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                                    model=session['model'], voice=session['voice'], intent=body.intent,
                                    scope_start_segment_id=segment['id'], focus_segment_id=segment['id'],
-                                   chunking=options, limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                                   chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
                                    calibration=calibration.view())
             coordinator = ChapterCoordinator(store, job['id'], key, runtime.narration_pool,
                                              cancelled=lambda: runtime.cancelled(job['id']))

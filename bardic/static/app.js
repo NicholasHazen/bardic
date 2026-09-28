@@ -90,6 +90,10 @@ function narrationLimitValues() {
   const ramp = text ? text.split(/[,\s]+/).filter(Boolean).map(Number) : [];
   if (ramp.some(value => !Number.isFinite(value) || value < 10 || value > 470) || ramp.length > 6) throw new Error('Quick-start steps must be up to six numbers from 10 to 470 seconds, separated by commas.');
   const whole = id => Number($(id).value);
+  for (const [id, name, max] of [['#tts-rpm', 'Requests per minute', 10000], ['#tts-tpm', 'Input tokens per minute', 100000000], ['#tts-rpd', 'Requests per day', 10000000]]) {
+    const value = whole(id);
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`${name} must be a whole number from 1 to ${max.toLocaleString('en-US')}.`);
+  }
   return {tts_limits:{[$('#tts-model').value.trim()]:{rpm:whole('#tts-rpm'),tpm:whole('#tts-tpm'),rpd:whole('#tts-rpd')}},
     listen_chunking:{ramp_seconds:ramp,target_seconds:whole('#tts-target'),concurrency:whole('#tts-concurrency')}};
 }
@@ -139,7 +143,7 @@ function modelValue(role, provider) {
   return (select.value === '__custom__' ? modelCustom(role, provider).value : select.value).trim();
 }
 function providerModels(provider) {
-  return state.status?.model_catalogs?.[provider]?.models || analysisProvider(provider)?.models || (provider === 'gemini' ? state.status?.analysis_models : []) || [];
+  return state.status?.model_catalogs?.[provider]?.models || analysisProvider(provider)?.models || [];
 }
 function modelPickerChanged(role, provider) {
   const select = modelPicker(role, provider);

@@ -29,7 +29,7 @@ from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
 from .listening import ListeningRepository
 from .resources import ResourceLedger
-from .store import now
+from .store import now, public_job
 from .take_archive import produce_take
 from .tts_limits import DEFAULT_LIMITS, LIMITER, quota_day, requests_today, seconds_until_reset
 from .errors import NotFound
@@ -233,7 +233,7 @@ def provider_problems(runtime, provider: str) -> list[str]:
         return ['Add a Gemini API key in Settings first, or choose another narrator.']
     if provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
         return ['Device narration requires macOS say and ffmpeg.']
-    if provider == 'breeze' and not runtime.preferences.get('breeze_url'):
+    if provider == 'breeze' and not runtime.breeze_url():
         return ['Add the Breeze server URL in Settings first, or choose another narrator.']
     return []
 
@@ -308,12 +308,9 @@ def job_summary(store, job_id: str | None) -> dict | None:
     if not job_id:
         return None
     try:
-        job = store.job(job_id)
+        return public_job(store.job(job_id))
     except KeyError:
         return None
-    summary = {field: job.get(field) for field in ('id', 'status', 'progress', 'total', 'message', 'error', 'resume_after')}
-    summary['child_job_id'] = job.get('child_job_id')
-    return summary
 
 
 def cast_summary(runtime, record: dict, book: dict) -> list[dict]:
@@ -609,7 +606,7 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
                     child['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                     model=model, voice=session['voice'], intent='queue',
                     scope_start_segment_id=first['id'], focus_segment_id=first['id'],
-                    chunking=options, limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
                     calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id)
                 parent = store.job(job_id)
                 store.update_job(job_id, child_job_id=child['id'],
