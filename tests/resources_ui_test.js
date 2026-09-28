@@ -25,7 +25,9 @@ function env(handler) {
     calls.push({url,method:options.method});
     return handler ? handler(url) : {ok:true,json:async () => data(Number(new URL(url,'http://localhost').searchParams.get('offset')))};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/resources.js'),'utf8'),scope);
+  vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8'),scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/resources.js'),'utf8'),scope);
   return {calls,render:scope.window.BardicResources.render,advance:n=>{now+=n;}};
 }
 function click(container, action) { const node = {dataset:{resourceAction:action},disabled:false}; container.listeners.click({target:{closest:()=>node}}); }
@@ -40,7 +42,7 @@ function click(container, action) { const node = {dataset:{resourceAction:action
   assert.ok(content.includes('CPU time'));
   assert.ok(content.includes('Current thread only'));
   assert.ok(content.includes('Unknown'));
-  assert.ok(content.includes('Saved output reused'));
+  assert.ok(content.includes('Saved result reused'));
   assert.ok(content.includes('&lt;provider&gt;') && !content.includes('<provider>'));
   assert.ok(content.includes('No account balance &lt;is&gt; inferred.'));
   assert.ok(content.includes('usage is unknown'));

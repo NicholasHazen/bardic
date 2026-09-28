@@ -58,19 +58,19 @@ function ordinary(call){
   await env.api.render(container,book,hooks);
   assert.equal(env.calls.length,0,'Rendering controls never queues a narration');
   assert.equal(container.drawer.open,false,'Rendering leaves the reader foremost');
-  assert.match(container.drawer.summary.textContent,/Full cast selected.*Default device voice.*Device.*free on this device/);
+  assert.match(container.drawer.summary.textContent,/Full cast · recorded passages only.*Default Mac voice.*Mac voices.*free, on the Bardic computer/);
   assert.equal(env.api.enabled(book),false);
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
-  assert.ok(container.innerHTML.includes('Start simple listening'));
+  assert.ok(container.innerHTML.includes('Start listening'));
   assert.ok(container.innerHTML.includes('keeps going through the book'),'Continuous listening is the default');
   assert.ok(container.innerHTML.includes('data-listen-field="continuous" checked'));
-  assert.ok(container.innerHTML.includes('aria-label="Simple narrator voice"'));
+  assert.ok(container.innerHTML.includes('aria-label="Narrator voice"'));
   assert.match(container.innerHTML, /data-listen-options >(?:\s*)<summary data-listen-summary>More listening options/,
     'Advanced controls start collapsed');
   const advancedStart=container.innerHTML.indexOf('<details');
   assert.ok(container.innerHTML.indexOf('data-listen-action="start"') < advancedStart,
     'The explicit start action is visible without opening advanced settings');
-  assert.ok(container.innerHTML.indexOf('Device narration stays') < advancedStart,
+  assert.ok(container.innerHTML.indexOf('Mac voices run on the Bardic computer') < advancedStart,
     'Provider and privacy disclosures stay beside the start action');
   assert.ok(container.innerHTML.indexOf('data-listen-action="prepare-chapter"') > advancedStart,
     'Chapter preparation remains available in the advanced disclosure');
@@ -112,7 +112,7 @@ function ordinary(call){
   change(container,'model','gemini-3.8-flash-lite-tts');
   assert.ok(container.innerHTML.includes('Google bills each request, including examples'));
   assert.ok(container.innerHTML.includes('value="Leda" selected'));
-  assert.match(container.drawer.summary.textContent,/Full cast selected.*Leda.*Gemini · paid/);
+  assert.match(container.drawer.summary.textContent,/Full cast · recorded passages only.*Leda.*Gemini · paid/);
   assert.equal(container.drawer.open,false,'Changing narrator settings does not force open the drawer');
   const persisted=JSON.parse(env.storage.get('bardic:listen:book-9'));
   assert.equal(persisted.provider,'gemini');
@@ -163,7 +163,7 @@ function ordinary(call){
   assert.equal(auditionPlay,'segment-1','Starting from enhanced mode activates simple playback');
   assert.equal(toggles,0);
   await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:true,playbackRate:2.25});
-  assert.match(auditionContainer.innerHTML,/aria-label="Pause simple listening">Pause/);
+  assert.match(auditionContainer.innerHTML,/aria-label="Pause listening">Pause/);
   assert.match(auditionContainer.innerHTML,/value="2.25" selected>2.25×/);
   click(auditionContainer,'start');
   assert.equal(toggles,1);
@@ -173,7 +173,7 @@ function ordinary(call){
   assert.equal(toggles,2,'The same control can stop a warmup through the shared transport');
   await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:false,previewing:true});
   assert.match(auditionContainer.innerHTML,/data-listen-action="preview"[^>]*disabled/);
-  assert.match(auditionContainer.innerHTML,/aria-label="Play simple listening">Play/);
+  assert.match(auditionContainer.innerHTML,/aria-label="Play with one narrator">Play/);
   assert.equal(previews.length,4,'Passive renders never restart an audition');
   // Gemini simple mode may read job status and a local chapter preview, but
   // rendering never submits narration or a chapter job.

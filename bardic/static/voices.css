@@ -1,11 +1,11 @@
 /* Cast voice assignment and the Voices tab. Uses the shared theme tokens. */
 .cast-provider { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 18px; font-size:12px; }
 .cast-provider-label { color:var(--muted); margin-right:4px; }
-.cast-provider button[data-cast-provider], .voices-filter button {
+.cast-provider button[data-cast-provider] {
   border:1px solid var(--line); background:var(--white); color:var(--ink); border-radius:999px;
   padding:7px 14px; font-size:12px; min-height:34px; cursor:pointer;
 }
-.cast-provider button[data-cast-provider].active, .voices-filter button.active {
+.cast-provider button[data-cast-provider].active {
   background:var(--green); border-color:var(--green); color:#fff;
 }
 .cast-provider [data-open-voices] { margin-left:auto; min-height:34px; }
@@ -18,12 +18,10 @@
 
 .voices-panel { display:flex; flex-direction:column; gap:18px; }
 .voices-toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
-.voices-filter { display:flex; gap:8px; }
 .voices-provider { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; border:1px solid var(--line); border-radius:5px; background:var(--canvas); padding:10px 14px; }
 .voices-provider-status { margin:0; font-size:12px; color:var(--muted); line-height:1.6; flex:1; min-width:200px; }
-.voices-message { margin:0; font-size:12px; color:var(--muted); min-height:1em; }
-.voices-message:empty { display:none; }
-.voices-error { color:#9b3b2f; }
+.voices-toolbar .choice { margin:0; }
+.voices-panel > .message { margin:0; }
 .voice-muted { color:var(--muted); font-size:12px; }
 .voice-danger { color:#9b3b2f; }
 .voice-check { display:flex; gap:8px; align-items:flex-start; font-size:12px; line-height:1.6; margin:8px 0; }
@@ -35,6 +33,7 @@
 
 .voice-designer { border:1px solid var(--green); border-radius:6px; background:var(--white); padding:22px; }
 .designer-heading { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+.designer-heading .eyebrow { text-transform:uppercase; }
 .designer-heading h3 { margin:6px 0 2px; font-family:var(--serif); font-size:24px; font-weight:400; }
 .designer-heading p { margin:0; font-size:12px; color:var(--muted); }
 .designer-fields { margin-top:8px; }
@@ -71,7 +70,7 @@
 .voice-card-top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
 .voice-card h3 { margin:0; font-family:var(--serif); font-size:22px; font-weight:400; overflow-wrap:anywhere; }
 .voice-meta { margin-top:4px; font-size:11px; letter-spacing:.04em; color:var(--muted); text-transform:uppercase; }
-.voice-badge { flex:none; font-size:11px; border-radius:999px; background:var(--green-light); color:var(--green); padding:4px 10px; }
+.voice-card-top .badge { flex:none; }
 .voice-description { font-size:12px; line-height:1.7; margin:10px 0 0; overflow-wrap:anywhere; }
 .voice-current { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
 .voice-play { min-height:32px; padding:6px 12px; }

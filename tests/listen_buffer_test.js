@@ -123,7 +123,7 @@ test('the shared speed callback keeps playback intent and saved audio without ca
   assert.equal(env.posts().length,10,'The existing rolling buffer grows for the faster shared playback rate');
   assert.equal(env.posts().filter(call=>call.body.segment_id==='p0').length,1,'The current passage is never generated again');
   assert.ok(!env.calls.some(call=>call.url.endsWith('/cancel')),'A speed choice does not cancel the listening job');
-  assert.match(env.container.innerHTML,/aria-label="Pause simple listening">Pause/);
+  assert.match(env.container.innerHTML,/aria-label="Pause listening">Pause/);
   assert.match(env.container.innerHTML,/value="2.5" selected>2.5×/);
   env.api.stop(env.book);
 });
@@ -225,7 +225,7 @@ test('a failed audition barrier preserves a retryable chapter without generating
   env.click('prepare-chapter'); await settle();
   assert.equal(env.posts().length,0);
   assert.match(env.container.innerHTML,/previous example is still running/);
-  assert.match(env.container.innerHTML,/Retry preparation/);
+  assert.match(env.container.innerHTML,/data-listen-action="retry">Try again/);
   env.click('retry'); await settle();
   assert.equal(attempts,2,'Retry must also cross the audition barrier');
   assert.deepEqual(env.posts().map(call=>call.body.segment_id),['p0','p1']);
@@ -250,7 +250,7 @@ test('a future failure preserves ready playback and requires an explicit retry',
   assert.equal(env.posts().length,2);
   assert.equal(env.api.resolve(env.book,env.book.segments[0]).asset_id,'p0');
   assert.match(env.container.innerHTML,/Provider quota unavailable/);
-  assert.match(env.container.innerHTML,/Retry preparation/);
+  assert.match(env.container.innerHTML,/data-listen-action="retry">Try again/);
   env.api.updatePlayback(env.book,env.book.segments[0]); await settle();
   assert.equal(env.posts().length,2);
   assert.equal((await env.api.prepare(env.book,env.book.segments[0])).asset_id,'p0');
@@ -309,7 +309,7 @@ test('the stopped-listen barrier waits for a late POST job using only cancellati
   while (!releaseStatus) await tick();
   assert.equal(settled,false);
   assert.ok(env.calls.some(call=>call.url==='/api/jobs/old-listen/cancel'));
-  assert.match(env.container.innerHTML,/Stopped\. Finished simple takes/,'Read-only settlement leaves the stopped panel unchanged');
+  assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/,'Read-only settlement leaves the stopped panel unchanged');
   releaseStatus([{id:'old-listen',status:'cancelled'}]);
   assert.equal(await barrier,true);
   assert.equal(env.posts().length,1,'The barrier never generates another passage');
@@ -467,12 +467,12 @@ test('Stop keeps its status when a late POST or completed-job response arrives',
     const preparing=env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
     while (!release) await tick();
     env.click('stop');
-    assert.match(env.container.innerHTML,/Stopped\. Finished simple takes/);
+    assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
     release();
     assert.equal(await preparing,null);
     await settle();
     assert.equal(env.posts().length,1);
-    assert.match(env.container.innerHTML,/Stopped\. Finished simple takes/);
+    assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
     assert.doesNotMatch(env.container.innerHTML,/Passage saved\./);
     assert.equal(env.api.getBuffer(env.book).preparing,false);
   }
@@ -485,7 +485,7 @@ test('Stop invoked during the completion notification invalidates the result and
   assert.equal(await env.api.ensure(env.book,env.book.segments[0]),null);
   await settle();
   assert.equal(env.posts().length,1);
-  assert.match(env.container.innerHTML,/Stopped\. Finished simple takes/);
+  assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
   assert.equal(env.api.getBuffer(env.book).preparing,false);
 });
 
@@ -503,7 +503,7 @@ test('a late saved-take read cannot overwrite Stop; stopped rate follows current
   while (!readStarted) await tick();
   env.api.stop(env.book);
   releaseRead(); await reading; await settle();
-  assert.match(env.container.innerHTML,/Stopped\. Finished simple takes/);
+  assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
   await env.api.render(env.container,env.book,{...env.options,playbackRate:2});
   assert.equal(env.api.getBuffer(env.book).rate,2);
   assert.match(env.container.innerHTML,/at 2×/);

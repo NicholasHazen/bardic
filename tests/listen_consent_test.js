@@ -221,7 +221,7 @@ test('Pause says Paused; the player names the voice and marks a paid narrator', 
   env.audio.paused = false;
   void env.app.togglePlayback();
   assert.equal(stops.at(-1).pause, true, 'Pause is reported as a pause');
-  assert.match(env.node('#simple-listen').innerHTML, /Paused\. Finished simple takes are saved/);
+  assert.match(env.node('#simple-listen').innerHTML, /Paused\. Finished audio is saved/);
   assert.doesNotMatch(env.node('#simple-listen').innerHTML, /Stopped\./);
   env.app.updatePlayer();
   assert.match(env.node('#player-subtitle').textContent, /^Kore · Gemini · paid · Passage 1/);
@@ -267,7 +267,7 @@ test('a new book starts with one narrator; saved Full cast and Studio takes are 
   studio.segments[0].audio = {url:'/take.wav', duration:1};
   await recorded.render(node('#c'), studio, options);
   assert.equal(recorded.getSelection(studio).mode, 'enhanced', 'a book with Studio takes plays them');
-  assert.match(node('#c').innerHTML, /Full cast \(Studio takes\)/);
+  assert.match(node('#c').innerHTML, /<option value="enhanced" selected>Full cast<\/option>/);
 });
 
 // Studio Narrate book / Narrate scene: estimate, then confirm.
@@ -464,8 +464,8 @@ test('cancelled, failed, interrupted and budget-limited chapter jobs keep distin
   assert.equal(headlines.failed, 'Chapter preparation failed · finished audio is saved');
   assert.equal(headlines.cancelled, 'Chapter preparation cancelled · finished audio is saved');
   assert.equal(headlines.interrupted, 'Chapter preparation interrupted when Bardic stopped · finished audio is saved');
-  assert.equal(headlines.budget_limited, 'Spending allowance reached · finished audio is saved', 'budget_limited is not "Not queued yet"');
-  assert.equal(headlines.quota_limited, 'Daily request quota reached · finished audio is saved');
+  assert.equal(headlines.budget_limited, 'Spending limit reached · finished audio is saved', 'budget_limited is not "Not prepared yet"');
+  assert.equal(headlines.quota_limited, 'Daily request limit reached · finished audio is saved');
   assert.equal(new Set(Object.values(headlines)).size, 5);
 });
 

@@ -93,7 +93,7 @@ test('Gemini Play starts one chapter job, waits for its chunk, and never request
   assert.equal(posts.length,1);
   assert.equal(posts[0].url,'/api/books/book-chunks/listen/chapter');
   assert.deepEqual(posts[0].body,{provider:'gemini',voice:'Kore',model:'gemini-3.8-flash-tts',segment_id:'p0',intent:'play'});
-  assert.match(env.container.innerHTML,/Stop generating/);
+  assert.match(env.container.innerHTML,/Stop preparing/);
   env.state.jobs = [{...env.state.jobs[0],chunks:[{status:'done'}]}];
   delivered = true;
   const audio = await waiting;
@@ -111,7 +111,7 @@ test('queue, stop generating, marks and chunk presets', async () => {
   const env = environment({takes:() => [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)},{segment_id:'p1',audio:clip('p1','chunk-a',3,6)},
     {segment_id:'p2',audio:clip('p2','chunk-b',0,4)}]});
   await env.init();
-  assert.match(env.container.innerHTML,/Queue chapter/);
+  assert.match(env.container.innerHTML,/Prepare rest of chapter · paid/);
   assert.match(env.container.innerHTML,/34 of 100 daily Gemini requests/, 'the local preview reports the library count');
   assert.match(env.container.innerHTML,/3 more requests for this chapter/);
   env.click('prepare-chapter');
@@ -128,8 +128,8 @@ test('queue, stop generating, marks and chunk presets', async () => {
   assert.equal(marks.get('p4').status,'generating');
   assert.equal(marks.get('p7').status,'queued');
   assert.equal(marks.has('p10'),false);
-  assert.match(env.container.innerHTML,/Generating 1 chunk/);
-  assert.match(env.container.innerHTML,/Still to generate/);
+  assert.match(env.container.innerHTML,/Preparing · 1 request in progress/);
+  assert.match(env.container.innerHTML,/Still to prepare/);
   env.click('stop-generating');
   await settle(40);
   assert.ok(env.calls.some(call => call.url === '/api/jobs/job-1/cancel'));
@@ -147,7 +147,7 @@ test('quota-limited job offers resume and explains the reset', async () => {
   const env = environment({jobs:[job]});
   await env.init();
   await settle();
-  assert.match(env.container.innerHTML,/Daily request quota reached/);
+  assert.match(env.container.innerHTML,/Daily request limit reached/);
   assert.match(env.container.innerHTML,/Resume chapter/);
   assert.match(env.container.innerHTML,/daily Gemini request quota/);
   assert.equal(env.generation().length,0,'discovering a finished job starts nothing');
@@ -163,7 +163,7 @@ test('a chapter job that stops before the selected passage clears the warmup and
   await assert.rejects(waiting,/daily Gemini request quota/);
   await settle();
   assert.doesNotMatch(env.container.innerHTML,/Preparing…/);
-  assert.match(env.container.innerHTML,/aria-label="Play simple listening">Play/);
+  assert.match(env.container.innerHTML,/aria-label="Play with one narrator">Play/);
   assert.match(env.container.innerHTML,/Resume chapter/);
 });
 
@@ -174,7 +174,7 @@ test('automatic continuation and stopped jobs never send generation requests', a
   // Continuation into an ungenerated passage with no job: no POST.
   const fresh = environment({takes:() => ready});
   await fresh.init();
-  await assert.rejects(fresh.api.prepare(fresh.book,fresh.book.segments[2],{continuation:true}),/has not been generated/);
+  await assert.rejects(fresh.api.prepare(fresh.book,fresh.book.segments[2],{continuation:true}),/is not prepared yet/);
   assert.equal(fresh.generation().length,0);
   // A failed (possibly billed) job: continuation and explicit Play both stop; Resume is explicit.
   const failed = environment({jobs:[{...stoppedJob,voice:'Kore',model:'gemini-3.8-flash-tts'}],takes:() => ready});
@@ -273,7 +273,7 @@ test('automatic continuation into a passage outside the running job fails immedi
   const env = environment({jobs:[running]});
   await env.init();
   await settle();
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{continuation:true}),/outside the chapter job/);
+  await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{continuation:true}),/outside the chapter being prepared/);
   assert.equal(env.generation().length,0);
   env.state.jobs = [{...running,status:'completed'}];
   await settle();
@@ -335,7 +335,7 @@ test('continuous: playback crossing into an unqueued chapter starts that chapter
   await env.init();
   env.api.setContinuous(env.book,false);
   await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[12],{continuation:true}),/has not been generated/);
+  await assert.rejects(env.api.prepare(env.book,env.book.segments[12],{continuation:true}),/is not prepared yet/);
   assert.equal(env.generation().length,0,'without continuous listening the chapter end stops playback');
   env.api.setContinuous(env.book,true);
   await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
