@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from .audio import _LEGACY_VOICE_FIELDS, PROVIDERS, SAMPLE_RATE, AudioError, _normalize, _wave_info
 from .store import now
+from .errors import NotFound
 
 VERSION = 1
 LIBRARY_PROVIDERS = ("breeze", "gemini")
@@ -109,7 +110,7 @@ class VoiceLibrary:
 
     def asset_path(self, asset_id: str) -> Path:
         if not isinstance(asset_id, str) or not _ASSET_ID.fullmatch(asset_id):
-            raise KeyError('Voice audio not found')
+            raise NotFound('audio_not_found', 'Voice audio not found')
         return self.asset_dir / f'{asset_id}.wav'
 
     def store_audio(self, data: bytes) -> dict:
@@ -153,11 +154,11 @@ class VoiceLibrary:
 
     def voice(self, voice_id: str) -> dict:
         if not isinstance(voice_id, str) or not _VOICE_ID.fullmatch(voice_id):
-            raise KeyError('Voice not found')
+            raise NotFound('voice_not_found', 'Voice not found')
         with self.store.lock, self.store.connect() as conn:
             voices = self._rows(conn, voice_id)
         if not voices:
-            raise KeyError('Voice not found')
+            raise NotFound('voice_not_found', 'Voice not found')
         return voices[0]
 
     @staticmethod
@@ -223,7 +224,7 @@ class VoiceLibrary:
         with self.store.lock, self.store.connect() as conn:
             voices = self._rows(conn, voice_id)
             if not voices or voices[0].get('deleted_at'):
-                raise KeyError('Voice not found')
+                raise NotFound('voice_not_found', 'Voice not found')
             voice = voices[0]
             number = max(version['version'] for version in voice['versions']) + 1
             entry = self._version(voice, number, fields)
@@ -250,7 +251,7 @@ class VoiceLibrary:
         with self.store.lock, self.store.connect() as conn:
             voices = self._rows(conn, voice_id)
             if not voices or voices[0].get('deleted_at'):
-                raise KeyError('Voice not found')
+                raise NotFound('voice_not_found', 'Voice not found')
             if fields:
                 self._save(conn, voices[0], **fields)
                 self._event(conn, 'updated', voice_id=voice_id, fields=sorted(fields))
@@ -260,7 +261,7 @@ class VoiceLibrary:
         with self.store.lock, self.store.connect() as conn:
             voices = self._rows(conn, voice_id)
             if not voices or voices[0].get('deleted_at'):
-                raise KeyError('Voice not found')
+                raise NotFound('voice_not_found', 'Voice not found')
             if version not in {entry['version'] for entry in voices[0]['versions']}:
                 raise ValueError('That version does not exist.')
             if version != voices[0]['current_version']:
@@ -273,7 +274,7 @@ class VoiceLibrary:
         with self.store.lock, self.store.connect() as conn:
             voices = self._rows(conn, voice_id)
             if not voices:
-                raise KeyError('Voice not found')
+                raise NotFound('voice_not_found', 'Voice not found')
             self._save(conn, voices[0], deleted_at=now())
             self._event(conn, 'deleted', voice_id=voice_id, server_deleted=server_deleted or [])
         return self.voice(voice_id)
@@ -324,11 +325,11 @@ class VoiceLibrary:
 
     def draft(self, draft_id: str) -> dict:
         if not isinstance(draft_id, str) or not _DRAFT_ID.fullmatch(draft_id):
-            raise KeyError('Voice draft not found')
+            raise NotFound('voice_draft_not_found', 'Voice draft not found')
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute('SELECT body FROM voice_drafts WHERE id=?', (draft_id,)).fetchone()
         if not row:
-            raise KeyError('Voice draft not found')
+            raise NotFound('voice_draft_not_found', 'Voice draft not found')
         return json.loads(row[0])
 
     def drafts(self, *, status='open') -> list[dict]:

@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+from .errors import NotFound
 
 
 SCHEMA_VERSION = 1
@@ -341,7 +342,7 @@ class ArtifactRepository:
                 JOIN artifact_versions owner ON owner.id=d.artifact_id
                 WHERE owner.book_id=? AND owner.id=? ORDER BY dependency.id''', (book_id, identifier))] if row else []
         if row is None:
-            raise KeyError('Artifact not found')
+            raise NotFound('artifact_not_found', 'Artifact not found')
         return {**_metadata(row), 'dependency_links': dependency_links, 'payload': json.loads(row[-1])}
 
     def counts(self, book_id):
@@ -356,7 +357,7 @@ class ArtifactRepository:
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute('SELECT body FROM books WHERE id=?', (book_id,)).fetchone()
             if not row:
-                raise KeyError('Book not found')
+                raise NotFound('book_not_found', 'Book not found')
             book = json.loads(row[0])
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             takes = {row[0]: json.loads(row[1]) for row in conn.execute('SELECT segment_id,body FROM takes WHERE book_id=?', (book_id,))} if 'takes' in tables else {}

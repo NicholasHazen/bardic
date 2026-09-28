@@ -32,6 +32,7 @@ from .resources import ResourceLedger
 from .store import now
 from .take_archive import produce_take
 from .tts_limits import DEFAULT_LIMITS, LIMITER, quota_day, requests_today, seconds_until_reset
+from .errors import NotFound
 
 SCHEMA_VERSION = 1
 SOURCE_KEY_VERSION = 1
@@ -92,7 +93,7 @@ class PerformanceRepository:
             row = conn.execute('SELECT body FROM performances WHERE book_id=? AND id=?',
                                (book_id, performance_id)).fetchone()
         if not row:
-            raise KeyError('Performance not found')
+            raise NotFound('performance_not_found', 'Performance not found')
         return json.loads(row[0])
 
     def list(self, book_id: str, include_archived: bool = False) -> list[dict]:

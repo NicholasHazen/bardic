@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from .store import now
+from .errors import NotFound
 
 
 def initialize_schema(conn):
@@ -122,7 +123,7 @@ class LibraryRepository:
     def require_active_series(self, series_id):
         with self.store.lock, self.store.connect() as conn:
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
-                raise KeyError('Series not found')
+                raise NotFound('series_not_found', 'Series not found')
             if is_archived(conn, 'series', series_id):
                 raise ValueError('Restore this series from Removed items before processing or editing it.')
 
@@ -206,10 +207,10 @@ class LibraryRepository:
     def cover(self, book_id):
         with self.store.lock, self.store.connect() as conn:
             if not conn.execute('SELECT 1 FROM books WHERE id=?', (book_id,)).fetchone():
-                raise KeyError('Book not found')
+                raise NotFound('book_not_found', 'Book not found')
             row = conn.execute('SELECT body,media_type,sha256 FROM book_covers WHERE book_id=?', (book_id,)).fetchone()
             if not row:
-                raise KeyError('Cover not found')
+                raise NotFound('cover_not_found', 'Cover not found')
             return bytes(row[0]), row[1], row[2]
 
     def _archive(self, kind, identifier, archived):
@@ -219,7 +220,7 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             table = 'books' if kind == 'book' else 'series'
             if not conn.execute(f'SELECT 1 FROM {table} WHERE id=?', (identifier,)).fetchone():
-                raise KeyError('Book not found' if kind == 'book' else 'Series not found')
+                raise NotFound(f'{kind}_not_found', 'Book not found' if kind == 'book' else 'Series not found')
             ids = [identifier] if kind == 'book' else [r[0] for r in conn.execute('SELECT book_id FROM series_books WHERE series_id=?', (identifier,))]
             for book_id in ids:
                 self._idle(book_id)
@@ -244,7 +245,7 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             self.require_active_series(series_id)
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
-                raise KeyError('Series not found')
+                raise NotFound('series_not_found', 'Series not found')
             if any(row[0].casefold() == name.casefold() for row in conn.execute('SELECT name FROM series WHERE id!=?', (series_id,))):
                 raise ValueError('A series with that name already exists.')
             ids = [r[0] for r in conn.execute('SELECT book_id FROM series_books WHERE series_id=?', (series_id,))]

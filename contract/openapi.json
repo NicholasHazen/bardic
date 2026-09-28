@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.1.2",
-    "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ...}`. `detail` is an English sentence, or a\n  list of issues for 422 request validation. Display it; do not parse it.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
+    "version": "0.2.0",
+    "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ..., \"code\": ...}`. `detail` is an English\n  sentence, or a list of issues for 422 request validation. Display it; do\n  not parse it. `code` is a stable snake_case identifier: branch on it.\n  Each operation lists its codes per status (`x-bardic-error-codes`). Any\n  operation can also return these global codes:\n  - `validation_error` (422): the request failed validation.\n  - `cross_origin_write` (403): the write guard rejected a browser write.\n  - `internal_error` (500): an unexpected server defect.\n  - `route_not_found` (404, 405): no route matches the method and path.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
     "/api/account-checks/{provider}": {
@@ -6722,9 +6722,9 @@
           "500": {
             "description": "Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON).",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -7599,9 +7599,9 @@
           "500": {
             "description": "Known defect: the listing failed (see description; plain-text body).",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -12645,11 +12645,16 @@
                 "type": "array"
               }
             ],
-            "description": "A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it. Machine-readable error codes are not yet provided."
+            "description": "A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it."
+          },
+          "code": {
+            "description": "Stable, machine-readable error code in lower snake_case, for example `book_not_found` or `job_active`. Each operation lists the codes it returns for each status; every operation can also return the global codes listed in the contract introduction. Branch on `code`, not on `detail`. Treat an unknown code like any other failure with the same status.",
+            "type": "string"
           }
         },
         "required": [
-          "detail"
+          "detail",
+          "code"
         ],
         "title": "Error",
         "type": "object"

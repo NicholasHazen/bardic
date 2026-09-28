@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analysis import analyze_book
@@ -37,6 +38,7 @@ from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, 
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
 from .voice_routes import import_breeze_voices, register as register_voice_routes
 from .config import data_directory
+from .errors import STATUS_CODES, ApiError, NotFound
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .lan import allowed_hosts
@@ -918,7 +920,7 @@ def create_app(data_dir: Path | None = None):
         origin = request.headers.get("origin")
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             if request.headers.get("sec-fetch-site") == "cross-site" or (origin and urlparse(origin).netloc != request.headers.get("host")):
-                return JSONResponse({"detail": "Cross-origin writes are not allowed"}, status_code=403)
+                return JSONResponse({"detail": "Cross-origin writes are not allowed", "code": "cross_origin_write"}, status_code=403)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -926,13 +928,25 @@ def create_app(data_dir: Path | None = None):
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    # Every JSON error is {"detail": sentence, "code": stable code}; see bardic/errors.py.
+    @app.exception_handler(ApiError)
+    async def api_error(request, exc):
+        return JSONResponse({"detail": exc.detail, "code": exc.code}, status_code=exc.status, headers=exc.headers)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request, exc):
+        code = STATUS_CODES.get(exc.status_code, "internal_error" if exc.status_code >= 500 else "invalid_request")
+        return JSONResponse({"detail": exc.detail, "code": code}, status_code=exc.status_code, headers=exc.headers)
+
     @app.exception_handler(KeyError)
     async def missing(request, exc):
-        return JSONResponse({"detail": str(exc).strip("'")}, status_code=404)
+        # A resource the request names raises NotFound (an ApiError). A bare KeyError is a defect,
+        # for example a dangling reference inside stored data, and must not look like "not found".
+        return JSONResponse({"detail": "The server hit an unexpected error.", "code": "internal_error"}, status_code=500)
 
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
-        return JSONResponse({"detail": str(exc)}, status_code=400)
+        return JSONResponse({"detail": str(exc), "code": "invalid_request"}, status_code=400)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
@@ -940,8 +954,14 @@ def create_app(data_dir: Path | None = None):
             # FastAPI's default validation body echoes invalid input. A
             # rejected accidental message/key must not enter this log API's
             # response either, even though it was never stored.
-            return JSONResponse({'detail': 'Invalid diagnostic event fields.'}, status_code=422)
-        return await request_validation_exception_handler(request, exc)
+            return JSONResponse({'detail': 'Invalid diagnostic event fields.', 'code': 'validation_error'}, status_code=422)
+        response = await request_validation_exception_handler(request, exc)
+        body = json.loads(response.body)
+        return JSONResponse({**body, 'code': 'validation_error'}, status_code=response.status_code)
+
+    @app.exception_handler(Exception)
+    async def unexpected(request, exc):
+        return JSONResponse({"detail": "The server hit an unexpected error.", "code": "internal_error"}, status_code=500)
 
     def rt(request):
         return request.app.state.runtime
@@ -1769,7 +1789,7 @@ def create_app(data_dir: Path | None = None):
         book = store.book(book_id)
         segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
         if segment is None:
-            raise KeyError('Passage not found in this book')
+            raise NotFound('passage_not_found', 'Passage not found in this book')
         chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
         chosen = {**runtime.preferences['listen_chunking'], **(body.chunking.model_dump(exclude_none=True) if body.chunking else {})}
         if body.intent == 'queue' and not (body.chunking and body.chunking.ramp_seconds is not None):

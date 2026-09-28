@@ -8,12 +8,13 @@ from .artifacts import record
 from .processing import BudgetReached, digest, source_hash
 from .series import SeriesRepository
 from .store import now
+from .errors import NotFound
 
 
 def series_view(store, series_id):
     series = next((s for s in SeriesRepository(store).list_series() if s['id'] == series_id), None)
     if series is None:
-        raise KeyError('Series not found')
+        raise NotFound('series_not_found', 'Series not found')
     return series
 
 

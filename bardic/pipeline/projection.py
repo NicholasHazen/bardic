@@ -17,6 +17,7 @@ from copy import deepcopy
 
 from ..processing import digest
 from .repository import PipelineRepository
+from ..errors import NotFound
 
 
 class RevisionConflict(ValueError):
@@ -171,5 +172,5 @@ def _book_row(conn, book_id):
     import json
     row = conn.execute('SELECT body FROM books WHERE id=?', (book_id,)).fetchone()
     if not row:
-        raise KeyError('Book not found')
+        raise NotFound('book_not_found', 'Book not found')
     return json.loads(row[0])

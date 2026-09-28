@@ -21,6 +21,7 @@ from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SEC
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from .errors import NotFound
 
 
 VERSION = 1
@@ -131,7 +132,7 @@ class ListeningRepository:
             row = conn.execute('SELECT body FROM listening_sessions WHERE book_id=? AND id=?',
                                (book_id, session_id)).fetchone()
         if not row:
-            raise KeyError('Listening session not found')
+            raise NotFound('listening_session_not_found', 'Listening session not found')
         return json.loads(row[0])
 
     @staticmethod
@@ -210,7 +211,7 @@ class ListeningRepository:
         book = self.store.book(book_id)
         segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
         if segment is None:
-            raise KeyError('Passage not found in this book')
+            raise NotFound('passage_not_found', 'Passage not found in this book')
         chapter = next((c for c in book['chapters'] if c['id'] == segment['chapter_id']), None)
         return self._source_inputs(book_id, session, segment, chapter, pronunciation.book_lexicon(book))
 
@@ -227,9 +228,9 @@ class ListeningRepository:
 
     def _path(self, book_id, asset_id):
         if not isinstance(book_id, str) or re.fullmatch(r'[a-zA-Z0-9_-]+', book_id) is None:
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         if not isinstance(asset_id, str) or re.fullmatch(r'[a-f0-9]{64}', asset_id) is None:
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         return self.store.root / 'listen-audio' / book_id / f'{asset_id}.wav'
 
     def asset_path(self, book_id, asset_id):
@@ -241,7 +242,7 @@ class ListeningRepository:
                      conn.execute('SELECT 1 FROM listening_chunks WHERE book_id=? AND asset_id=? LIMIT 1',
                                   (book_id, asset_id)).fetchone())
         if not found or not target.is_file():
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         return target
 
     def _present(self, book_id, metadata):
@@ -409,7 +410,7 @@ class ListeningRepository:
     def chapter_segments(self, book, chapter_id):
         chapter = next((c for c in book['chapters'] if c['id'] == chapter_id), None)
         if chapter is None:
-            raise KeyError('Chapter not found in this book')
+            raise NotFound('chapter_not_found', 'Chapter not found in this book')
         return chapter, [segment for segment in book['segments'] if segment['chapter_id'] == chapter_id]
 
     def render_chunk(self, book_id, session_id, chapter_id, segment_ids, api_key=None, *,

@@ -57,13 +57,13 @@ def test_cancelling_a_queued_job_is_immediate_and_idempotent(client):
 
 def test_unknown_job_cancel_is_not_found(client):
     response = client.post('/api/jobs/0123456789abcdef0123456789abcdef/cancel', json={})
-    assert response.status_code == 404 and response.json() == {'detail': 'Job not found'}
+    assert response.status_code == 404 and response.json() == {'detail': 'Job not found', 'code': 'job_not_found'}
 
 
 def test_diagnostics_query_validation_uses_the_generic_string_detail(client):
     response = client.get('/api/diagnostics', params={'limit': 'many'})
     assert response.status_code == 422
-    assert response.json() == {'detail': 'Invalid diagnostic event fields.'}
+    assert response.json() == {'detail': 'Invalid diagnostic event fields.', 'code': 'validation_error'}
 
 
 def test_diagnostic_identifiers_without_a_book_are_dropped_not_refused(client):

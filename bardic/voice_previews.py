@@ -15,6 +15,7 @@ from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTE
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from .errors import NotFound
 
 
 VERSION = 1
@@ -111,10 +112,10 @@ class VoicePreviewRepository:
             voice, model = voice or 'Kore', model or DEFAULT_TTS_MODEL
         segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
         if segment_id and segment is None:
-            raise KeyError('Passage not found in this book')
+            raise NotFound('passage_not_found', 'Passage not found in this book')
         character = next((c for c in book['characters'] if c['id'] == character_id), None)
         if character_id and character is None:
-            raise KeyError('Character not found in this book')
+            raise NotFound('character_not_found', 'Character not found in this book')
         if draft is not None and segment is None:
             segment = next((s for s in book['segments'] if pronunciation.first_match(s['text'], draft)), None)
         if character is not None and segment is None:
@@ -185,13 +186,13 @@ class VoicePreviewRepository:
             row = conn.execute('SELECT body FROM voice_preview_requests WHERE book_id=? AND id=?',
                                (book_id, preview_id)).fetchone()
         if not row:
-            raise KeyError('Voice preview not found')
+            raise NotFound('voice_preview_not_found', 'Voice preview not found')
         return json.loads(row[0])
 
     def _path(self, book_id, asset_id):
         if (not isinstance(book_id, str) or re.fullmatch(r'[A-Za-z0-9_-]+', book_id) is None or
                 not isinstance(asset_id, str) or re.fullmatch(r'[a-f0-9]{64}', asset_id) is None):
-            raise KeyError('Voice preview audio not found')
+            raise NotFound('audio_not_found', 'Voice preview audio not found')
         return self.store.root / 'voice-previews' / book_id / f'{asset_id}.wav'
 
     def _validated_asset(self, book_id, asset_id):
@@ -208,11 +209,11 @@ class VoicePreviewRepository:
             found = conn.execute('SELECT 1 FROM voice_preview_takes WHERE book_id=? AND asset_id=? LIMIT 1',
                                  (book_id, asset_id)).fetchone()
         if not found:
-            raise KeyError('Voice preview audio not found')
+            raise NotFound('audio_not_found', 'Voice preview audio not found')
         try:
             self._validated_asset(book_id, asset_id)
         except (OSError, EOFError, ValueError):
-            raise KeyError('Voice preview audio is missing or damaged') from None
+            raise NotFound('audio_not_found', 'Voice preview audio is missing or damaged') from None
         return path
 
     @staticmethod

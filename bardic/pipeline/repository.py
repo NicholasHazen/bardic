@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from ..artifacts import output_head, record, select_head
 from ..store import now
+from ..errors import NotFound
 
 KIND = 'step_output'
 PAYLOAD_SCHEMA = 1
@@ -112,7 +113,7 @@ class PipelineRepository:
     def step_run(self, book_id, step_run_id):
         value = self._get('pipeline_step_runs', step_run_id)
         if value['book_id'] != book_id:
-            raise KeyError('Step version not found')
+            raise NotFound('step_version_not_found', 'Step version not found')
         return value
 
     def step_runs(self, book_id, step_id=None, limit=50):
@@ -217,14 +218,14 @@ class PipelineRepository:
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute(f'SELECT body FROM {table} WHERE id=?', (identifier,)).fetchone()
         if not row:
-            raise KeyError('Pipeline record not found')
+            raise NotFound('pipeline_record_not_found', 'Pipeline record not found')
         return json.loads(row[0])
 
     def _update(self, table, identifier, fields):
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute(f'SELECT body FROM {table} WHERE id=?', (identifier,)).fetchone()
             if not row:
-                raise KeyError('Pipeline record not found')
+                raise NotFound('pipeline_record_not_found', 'Pipeline record not found')
             value = {**json.loads(row[0]), **fields, 'updated_at': now()}
             conn.execute(f'UPDATE {table} SET body=? WHERE id=?', (json.dumps(value, ensure_ascii=False), identifier))
         return value

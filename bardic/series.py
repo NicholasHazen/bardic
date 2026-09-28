@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from uuid import uuid4
+from .errors import NotFound
 
 
 def _now():
@@ -108,14 +109,14 @@ def _name(value, label):
 def _book(conn, book_id):
     row = conn.execute("SELECT body FROM books WHERE id=?", (book_id,)).fetchone()
     if not row:
-        raise KeyError("Book not found")
+        raise NotFound('book_not_found', "Book not found")
     return json.loads(row[0])
 
 
 def _series(conn, series_id):
     row = conn.execute("SELECT id,name,created_at FROM series WHERE id=?", (series_id,)).fetchone()
     if not row:
-        raise KeyError("Series not found")
+        raise NotFound('series_not_found', "Series not found")
     return dict(zip(("id", "name", "created_at"), row))
 
 
@@ -252,14 +253,14 @@ class SeriesRepository:
             if character_id in {"narrator", "unassigned"}:
                 raise ValueError("Narrator and unassigned dialogue cannot be linked to series characters.")
             if character_id not in {c["id"] for c in book.get("characters", [])}:
-                raise KeyError("Character not found")
+                raise NotFound('character_not_found', "Character not found")
             member = _membership(conn, book_id)
             if member is None:
                 raise ValueError("Add this book to a series before linking characters.")
             identity = conn.execute("SELECT series_id,name FROM series_characters WHERE id=?",
                                     (series_character_id,)).fetchone()
             if not identity:
-                raise KeyError("Series character not found")
+                raise NotFound('series_character_not_found', "Series character not found")
             if identity[0] != member["series_id"]:
                 raise ValueError("Choose a character from this book's series.")
             previous = conn.execute("""SELECT series_character_id,confirmed_at FROM series_character_links

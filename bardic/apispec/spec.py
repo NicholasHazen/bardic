@@ -16,12 +16,13 @@ from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from ..errors import GLOBAL_CODES
 from .base import Error, Op, Tag
 
 # Semantic version of the contract (not of the server). While 0.x, a breaking
 # change bumps the minor version and an additive change bumps the patch
 # version. Every change is recorded in contract/CHANGELOG.md.
-VERSION = '0.1.2'
+VERSION = '0.2.0'
 
 FAMILIES = ('system', 'library', 'series', 'books', 'inspection', 'listening', 'voices', 'pipeline')
 
@@ -87,8 +88,15 @@ reference is `contract/API-REFERENCE.md`.
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
   job, while polling itself still returns 200.
-- Errors are JSON `{"detail": ...}`. `detail` is an English sentence, or a
-  list of issues for 422 request validation. Display it; do not parse it.
+- Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
+  sentence, or a list of issues for 422 request validation. Display it; do
+  not parse it. `code` is a stable snake_case identifier: branch on it.
+  Each operation lists its codes per status (`x-bardic-error-codes`). Any
+  operation can also return these global codes:
+  - `validation_error` (422): the request failed validation.
+  - `cross_origin_write` (403): the write guard rejected a browser write.
+  - `internal_error` (500): an unexpected server defect.
+  - `route_not_found` (404, 405): no route matches the method and path.
 
 ## Compatibility rules for clients
 
@@ -224,14 +232,19 @@ def finalize(generated: dict) -> dict:
                 errors.setdefault(403, 'A browser write from another origin was rejected by the write guard (see Transport and security).')
             if 'requestBody' in operation or operation.get('parameters'):
                 errors.setdefault(422, 'The request failed validation: a missing, extra or out-of-range field or parameter.')
+            if entry.conditional:
+                responses['304'] = {'description': 'Not modified: `If-None-Match` matched the current `ETag` (empty body).'}
             for status in sorted(errors):
-                # An unhandled exception (500) produces Starlette's plain-text body, not the JSON Error;
-                # an unsatisfiable range (416) has an empty body.
+                # An unsatisfiable range (416) has an empty body.
+                documented = errors[status]
                 if status == 416:
-                    responses[str(status)] = {'description': errors[status]}
+                    responses[str(status)] = {'description': documented}
                     continue
-                body = {'text/plain': {'schema': {'type': 'string'}}} if status == 500 else {'application/json': {'schema': _ref('Error')}}
-                responses[str(status)] = {'description': errors[status], 'content': body}
+                response = {'description': documented, 'content': {'application/json': {'schema': _ref('Error')}}}
+                if isinstance(documented, dict):
+                    response['description'] = '\n'.join(f'- `{code}`: {text}' for code, text in documented.items())
+                    response['x-bardic-error-codes'] = list(documented)
+                responses[str(status)] = response
             operation['responses'] = responses
             for parameter in operation.get('parameters', []):
                 if parameter['name'] in entry.params:
@@ -325,21 +338,30 @@ def validate_response(method: str, path: str, status: int, content_type: str, bo
         return []  # Trusted-host rejection happens before routing; documented in the conventions.
     entry = match(method, path)
     if entry is None:
-        if status == 404 and body == b'{"detail":"Not Found"}':
+        if status == 404 and body == b'{"detail":"Not Found","code":"route_not_found"}':
             return []  # No route: the router's own 404.
         return [f'{method.upper()} {path} -> {status}: no contract operation matches this request']
     where = f'{entry.method} {entry.path} -> {status}'
     json_body = content_type.split(';')[0].strip() == 'application/json'
+    if status == 304 and entry.conditional:
+        return [] if not body else [f'{where}: 304 response has a body']
     if status >= 400:
         write_guard = status == 403 and entry.method != 'GET'
         request_validation = status == 422 and body.startswith(b'{"detail":[')
         range_refused = status == 416 and entry.ranges
         if status not in entry.errors and not (write_guard or request_validation or range_refused):
             return [f'{where}: undocumented error status {status}']
-        if status in (416, 500):
-            return []  # Empty (416) or plain-text (500) bodies, documented as such.
+        if status == 416:
+            return []  # Empty body, documented as such.
         if not json_body:
             return [f'{where}: error response is {content_type!r}, not JSON']
+        try:
+            code = json.loads(body).get('code')
+        except (ValueError, AttributeError):
+            code = None
+        documented = entry.errors.get(status)
+        if isinstance(documented, dict) and code not in documented and code not in GLOBAL_CODES:
+            return [f'{where}: error code {code!r} is not documented for this status (documented: {sorted(documented)})']
         target: Any = Error
     elif status != 200 and not (status == 206 and entry.ranges):
         return [f'{where}: undocumented success status {status}']

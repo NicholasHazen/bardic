@@ -14,6 +14,23 @@ from .base import View, internal
 
 Provider = Literal['system', 'gemini', 'breeze']
 
+
+class AudioRef(View):
+    """The common core of every playable audio object in a response.
+
+    Every object that carries an audio ``url`` has at least these fields,
+    with these names and meanings. Kind-specific views extend it. Build
+    them with ``bardic.audio_refs.audio_ref`` so the core stays identical.
+    """
+    url: str = Field(description='Root-relative URL of the audio bytes (WAV unless stated otherwise).')
+    asset_id: str | None = Field(description='SHA-256 hex of the file the URL serves (content address), or null when the '
+                                             'bytes are not content-addressed.')
+    duration: float | None = Field(description='Length of this audio in seconds, or null when unknown.')
+    provider: str | None = Field(description='Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown.')
+    model: str | None = Field(description='Speech model that produced the bytes, or null when unknown.')
+    voice: str | None = Field(description='Provider voice actually used, or null when unknown.')
+    created_at: str | None = Field(description='ISO 8601 UTC time the audio was retained, or null when unknown.')
+
 class AudioTakeUsage(View):
     """Provider usage measured for the request that produced a take.
 

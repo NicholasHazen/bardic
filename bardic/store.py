@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from .errors import NotFound
 
 
 def now() -> str:
@@ -90,7 +91,7 @@ class Store:
         with self.lock, self.connect() as conn:
             row = conn.execute("SELECT body FROM books WHERE id=?", (book_id,)).fetchone()
             if not row:
-                raise KeyError("Book not found")
+                raise NotFound('book_not_found', "Book not found")
             return self._hydrate(json.loads(row[0]), conn)
 
     def save_book(self, book: dict) -> dict:
@@ -201,7 +202,7 @@ class Store:
         with self.lock, self.connect() as conn:
             row = conn.execute("SELECT body FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
-                raise KeyError("Job not found")
+                raise NotFound('job_not_found', "Job not found")
             return json.loads(row[0])
 
     def create_job(self, book_id: str, kind: str, total: int = 0) -> dict:

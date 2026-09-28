@@ -22,6 +22,14 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.2.0 — 2026-09-28
+<!-- contract-sha256: a829eca635be8144319bf4f25ee903e1badad45184f0753f97f8818bf95f4ac9 -->
+
+**BREAKING.** Resolves the known issues recorded with 0.1.0 ([issue #17](https://github.com/NicholasHazen/bardic/issues/17)). (Entry in progress.)
+
+- Every JSON error body now carries a machine-readable `code` next to `detail`. Each operation lists its codes per status in `x-bardic-error-codes`.
+- An unexpected server defect is now a JSON 500 with code `internal_error`, not plain text. A dangling reference inside stored data is now a 500, no longer a 404.
+
 ## 0.1.2 — 2026-09-28
 <!-- contract-sha256: 3be45c18b27d3dd84ab1dc0eef9f2cd9b0f7c1da48b0e3f2def9dbd0fed52778 -->
 

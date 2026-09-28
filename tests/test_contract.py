@@ -84,9 +84,9 @@ def test_statuses_types_and_unknown_paths_are_checked():
     assert status is not None
     assert validate_response('GET', '/api/status', 201, 'application/json', b'{}')[0].endswith('undocumented success status 201')
     assert 'undocumented error status 403' in validate_response('GET', '/api/status', 403, 'application/json', b'{"detail":"x"}')[0]
-    assert validate_response('POST', '/api/demo', 403, 'application/json', b'{"detail":"Cross-origin writes are not allowed"}') == []
+    assert validate_response('POST', '/api/demo', 403, 'application/json', b'{"detail":"Cross-origin writes are not allowed","code":"cross_origin_write"}') == []
     assert 'undocumented error status 422' in validate_response('GET', '/api/status', 422, 'application/json', b'{"detail":"x"}')[0]
-    assert validate_response('GET', '/api/nowhere', 404, 'application/json', b'{"detail":"Not Found"}') == []
+    assert validate_response('GET', '/api/nowhere', 404, 'application/json', b'{"detail":"Not Found","code":"route_not_found"}') == []
     assert 'no contract operation' in validate_response('GET', '/api/nowhere', 200, 'application/json', b'{}')[0]
     jobs = validate_response('GET', '/api/jobs', 200, 'application/json',
                              b'[{"id":"j","book_id":"b","kind":"render","status":"queued","progress":"1","total":0,'

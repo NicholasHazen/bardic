@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.1.2
+# Bardic 0.2.0
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -45,8 +45,15 @@ reference is `contract/API-REFERENCE.md`.
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
   job, while polling itself still returns 200.
-- Errors are JSON `{"detail": ...}`. `detail` is an English sentence, or a
-  list of issues for 422 request validation. Display it; do not parse it.
+- Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
+  sentence, or a list of issues for 422 request validation. Display it; do
+  not parse it. `code` is a stable snake_case identifier: branch on it.
+  Each operation lists its codes per status (`x-bardic-error-codes`). Any
+  operation can also return these global codes:
+  - `validation_error` (422): the request failed validation.
+  - `cross_origin_write` (403): the write guard rejected a browser write.
+  - `internal_error` (500): an unexpected server defect.
+  - `route_not_found` (404, 405): no route matches the method and path.
 
 ## Compatibility rules for clients
 
@@ -2261,7 +2268,7 @@ Local only: reads SQLite and the saved Breeze and Gemini checks; never contacts 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryOverview](#schema-voicelibraryoverview) | Success. |
-| 500 | `text/plain` | Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON). |
+| 500 | [Error](#schema-error) | Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON). |
 
 <a id="clonebreezevoice"></a>
 ### `POST /api/voices/breeze/clone`
@@ -2482,7 +2489,7 @@ Lists the Google project's stored `prompted` and `replicated` voices (metadata o
 | 400 | [Error](#schema-error) | No Gemini API key is loaded ("Add a Gemini API key in Settings first."), or Gemini returned a body that is not JSON (the decoder message is the detail). |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | The Gemini key changed during the check ("Refresh again."); nothing is saved. |
-| 500 | `text/plain` | Known defect: the listing failed (see description; plain-text body). |
+| 500 | [Error](#schema-error) | Known defect: the listing failed (see description; plain-text body). |
 
 <a id="updatelibraryvoice"></a>
 ### `PATCH /api/voices/{voice_id}`
@@ -3714,7 +3721,8 @@ Error body for every non-2xx JSON response.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `detail` | string \| list of [ValidationIssue](#schema-validationissue) | yes | A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it. Machine-readable error codes are not yet provided. |
+| `detail` | string \| list of [ValidationIssue](#schema-validationissue) | yes | A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it. |
+| `code` | string | yes | Stable, machine-readable error code in lower snake_case, for example `book_not_found` or `job_active`. Each operation lists the codes it returns for each status; every operation can also return the global codes listed in the contract introduction. Branch on `code`, not on `detail`. Treat an unknown code like any other failure with the same status. |
 
 <a id="schema-generaterequest"></a>
 ### GenerateRequest
