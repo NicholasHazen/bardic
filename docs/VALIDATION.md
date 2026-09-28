@@ -6,6 +6,24 @@ This is a dated development record. Counts and account outcomes below belong to 
 
 Historical `.spintails/` backup paths and `spintails` commands below retain their original spelling. The current application is Bardic; see [rename compatibility](OPERATIONS.md#upgrading-from-spin-tails) for current launch commands and library selection.
 
+## UI foundation (tokens, primitives, style.css fold)
+
+Verified on September 28, 2026, with Node 22 and the project venv, on a keyless development server with the demo book. Chrome was driven through DevTools.
+
+- Bugs fixed:
+  - Checkboxes rendered about 1,060×40 px. They are now 13–20 px, and no screen scrolls sideways at 1440 px; the Gemini consent form was 1,452 px wide.
+  - Native controls now use the plum accent.
+  - Toasts measured 2.83:1, and error toasts 1.09:1. Both are now at least 5.4:1.
+  - `--muted` now passes AA on every app surface.
+  - Form borders are now at least 3:1.
+  - The reader focus ring is now at least 3:1 on dusk and night.
+- The tokens move, the new component files and the `style.css` fold were checked by comparing computed styles for every element. This covered 14 screen states at 1440, 1024, 800, 600 and 375 px, against the CSS before the change. There were no differences. A static cascade proof also showed the fold is equivalent. It deleted 439 declarations that could never win, and it found that loading `style.css` first would change 12 winning values.
+- `uv run --frozen pytest -q`: 1105 passed, 1 skipped. Node: 165 tests pass, including 15 for `ui.js`.
+- Not verified:
+  - Safari rendering.
+  - Hover and focus states in the browser; the static proof covers them.
+  - Screen-reader announcements for `setMessage`.
+
 ## Self-hosted analysis servers
 
 Verified on September 28, 2026, with Python 3.11.5 (worktree venv) and Node 22, against the owner's DGX Spark: BookNLP (ModernBookNLP) on :8100, the Novel Analyzer on :8200 and vLLM serving `qwen3.6-35b-a3b` on :8000. All live input was original synthetic prose (a two-chapter, 21-quotation first-person story with a non-BMP character before the dialogue). The only server used was a keyless development server with a scratch library.

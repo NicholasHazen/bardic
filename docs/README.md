@@ -11,6 +11,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 | Understand the implementation | [Architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md) |
 | Make a change as a human | [Contributing](../CONTRIBUTING.md), [development](DEVELOPMENT.md) |
 | Make a change as an agent | [AGENTS.md](../AGENTS.md), then the same architecture/development references |
+| Build or restyle browser UI | [UI guide](UI-GUIDE.md), `/static/kitchen-sink.html` |
 | Call or change an endpoint | [API guide](API.md), the app's `/openapi.json`, and [app.py](../bardic/app.py); Swagger/ReDoc pages are disabled |
 | Plan the next work | [Roadmap](ROADMAP.md), [decisions](DECISIONS.md) |
 | Inspect provenance and reusable outputs | [Data model](DATA-MODEL.md), [artifacts and storage](ARTIFACTS-AND-STORAGE.md) |
@@ -24,6 +25,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [DATA-MODEL.md](DATA-MODEL.md): SQLite/files, source coordinates, evidence, current projections, immutable artifacts, identities and reuse rules.
 - [API.md](API.md): route families, examples, errors, job semantics and generated OpenAPI.
 - [DEVELOPMENT.md](DEVELOPMENT.md): reproducible setup, isolated development, test map, extension workflows and frontend contracts.
+- [UI-GUIDE.md](UI-GUIDE.md): design tokens, the UI primitives in `ui.js`/`components.css`, when to use each, and the heading, type and consent rules. Copy from `/static/kitchen-sink.html`.
 - [OPERATIONS.md](OPERATIONS.md): keys/configuration, backups, recovery, troubleshooting and resource accounting limits.
 - [ROADMAP.md](ROADMAP.md): implemented capabilities, partial features, discussed follow-ups, acceptance criteria and undecided choices.
 - [DECISIONS.md](DECISIONS.md): the rationale and consequences of the current design.

@@ -43,6 +43,7 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 
 1. Inspect `git status --short` and preserve unrelated changes. Keep work scoped to the requested behavior.
 2. Trace the existing path from UI/API through service/storage and tests before introducing abstractions.
+   - For browser UI, use the tokens and primitives in [the UI guide](docs/UI-GUIDE.md) and copy from `/static/kitchen-sink.html`, not from a sibling feature file; `tests/test_ui_budget.py` fails if drift grows.
 3. For parallel agents, divide file ownership explicitly. Shared module edits require coordination; do not independently rewrite the same file.
 4. Change the smallest cohesive set of contracts. New retained formats need version identifiers and compatibility/reuse decisions, not just new fields.
 5. Verify the relevant invariants with focused tests. Run the full suite for changes spanning processing, storage or player integration.

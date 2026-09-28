@@ -117,6 +117,7 @@ Useful targeted suites:
 | Audio synthesis/cache/assembly | `pytest -q tests/test_audio.py tests/test_app.py` |
 | Narration providers and Breeze | `pytest -q tests/test_narration_providers.py tests/test_audio.py tests/test_listen_api.py`; also run `node --test tests/breeze_ui_test.js tests/listen_player_test.js` |
 | Voice library, Cast and Voices tabs | `pytest -q tests/test_voice_library.py tests/test_narration_providers.py`; also run `node --test tests/voices_ui_test.js tests/breeze_ui_test.js tests/workspace_ui_test.js tests/listen_player_test.js` |
+| Design tokens, UI primitives and CSS | `pytest -q tests/test_ui_budget.py tests/test_ui_contrast.py tests/test_ui_kit.py`; also run `node --test tests/ui_kit_test.js`, and check `/static/kitchen-sink.html` in a browser |
 | Library and resource use | `pytest -q tests/test_library_api.py tests/test_library_ui.py tests/test_resources.py tests/test_resources_ui.py` |
 
 The default suites use synthetic prose, temporary stores, fake provider responses, and generated test WAVs. They do not need cloud keys or paid generation. [test_progressive.py](../tests/test_progressive.py) contains a structured fake provider; [test_listen_api.py](../tests/test_listen_api.py) explicitly blocks external HTTP while exercising jobs and reported usage. [listen_player_test.js](../tests/listen_player_test.js) executes the main player's actual functions against fake media, rather than merely asserting strings in a second implementation. Run [listen_buffer_test.js](../tests/listen_buffer_test.js), [listen_job_poll_test.js](../tests/listen_job_poll_test.js) and [diagnostics_ui_test.js](../tests/diagnostics_ui_test.js) through the complete Node command for buffering, cancellation-status recovery and best-effort browser logging.
@@ -164,6 +165,8 @@ SQLite uses WAL and foreign keys. Store operations share an `RLock`; connections
 ## Frontend namespace contracts
 
 [app.js](../bardic/static/app.js) owns the selected book/chapter/passage, shared `Audio` element, reader highlighting, settings, and main job polling. [index.html](../bardic/static/index.html) loads the independent scripts before the application module. Each component owns only its mount container and scoped CSS.
+
+New UI uses the design tokens ([tokens.css](../bardic/static/tokens.css), loaded first), the primitives in [components.css](../bardic/static/components.css) and `window.BardicUI` ([ui.js](../bardic/static/ui.js), the first deferred script). [UI-GUIDE.md](UI-GUIDE.md) says when to use each; `/static/kitchen-sink.html` shows them all. `tests/test_ui_budget.py` ratchets raw colours, literal font sizes, `!important`, `*-badge|*-message|*-error|*-help` class names and escape-helper copies against `tests/ui_budget.json`; `tests/test_ui_contrast.py` checks the token and reader-theme contrast pairs.
 
 The workspace separates the library landing view from the selected book. Returning to **Library** preserves playback; reopening the selected book does not create a new listening session. Title/author filtering is local. The **Read & listen**, **Cast**, **Voices**, and **Studio** views use linked tab/tabpanel semantics, a single tab stop, and Left/Right/Home/End navigation. The chapter selector above the reader and the contents list share the same chapter-selection path. Keep these controls available on narrow layouts.
 
