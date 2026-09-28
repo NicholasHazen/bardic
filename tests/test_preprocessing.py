@@ -5,8 +5,9 @@ import pytest
 
 from bardic import preprocessing
 from bardic.importer import parse_book
-from bardic.preprocessing import census, coverage, eligible_chapters
-from bardic.processing import ProcessingStore, source_hash
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
+from bardic.preprocessing import census, eligible_chapters
+from bardic.processing import source_hash
 from bardic.store import Store
 
 

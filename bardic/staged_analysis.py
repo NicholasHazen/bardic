@@ -1,4 +1,9 @@
-"""Resumable chapter analysis and source-anchored character observations."""
+"""Resumable chapter analysis and source-anchored character observations.
+
+Legacy chapter engine behind ``/analyze`` with a store and no phase (including
+the local heuristic draft). Scheduled for deletion; see docs/CLASSIC-REMOVAL.md.
+Live code must not import this module (tests/test_legacy_isolation.py).
+"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,23 +14,13 @@ import re
 import httpx
 
 from . import analysis as a
+# Moved to a neutral module for the step pipeline and structure repair; re-exported here.
+from .analysis_common import PIPELINE_VERSION, fingerprint, split_chapter as _split_chapter  # noqa: F401
 from .store import now
-
-PIPELINE_VERSION = 1
 
 
 def _hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-
-
-def fingerprint(book, provider, model):
-    # Audio and automatic annotations are outputs, not reasons to lose a checkpoint.
-    return _hash({"version": PIPELINE_VERSION, "provider": provider, "model": model,
-                  "chapters": book["chapters"],
-                  "spans": [(s["id"], s["chapter_id"], s["start"], s["end"], s["kind"]) for s in book["segments"]],
-                  "reviewed": {name: [{k: v for k, v in item.items() if k != "audio"}
-                                       for item in book[name] if item.get("edited")]
-                               for name in ("characters", "scenes", "segments")}})
 
 
 def _aggregate(candidates):
@@ -45,23 +40,6 @@ def _aggregate(candidates):
     if len(result) > 200:
         raise ValueError("More than 200 character candidates need review. Saved chapter discoveries are retained.")
     return result
-
-
-def _split_chapter(book, chapter_id, boundaries):
-    """Publish scene boundaries with their chapter, keeping later scene objects."""
-    chapter = {"scenes": [s for s in book["scenes"] if s["chapter_id"] == chapter_id],
-               "segments": [s for s in book["segments"] if s["chapter_id"] == chapter_id]}
-    a._split_scenes(chapter, boundaries)
-    result = []
-    inserted = False
-    for scene in book["scenes"]:
-        if scene["chapter_id"] == chapter_id:
-            if not inserted:
-                result.extend(chapter["scenes"])
-                inserted = True
-        else:
-            result.append(scene)
-    book["scenes"] = result
 
 
 def _references(book, units, provider, model, previous):

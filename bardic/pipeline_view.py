@@ -6,7 +6,6 @@ import json
 import zipfile
 
 from .artifacts import ArtifactRepository
-from .preprocessing import coverage
 from .processing import ProcessingStore
 from .series import SeriesRepository
 from .store import now
@@ -87,11 +86,13 @@ def story_map(store, book):
 def pipeline(store, book, valid_audio):
     from .analysis import PROVIDER_LABELS
     from .preprocessing import eligible_chapters
+    # The legacy phase readout behind GET /pipeline; removed with the phase engine (docs/CLASSIC-REMOVAL.md).
+    from .legacy_phase import LegacyProcessingStore, coverage
     from .progressive import profile_status, checkpoint_for, direction_baseline, direction_specs, unit_key
     repository = prepare(store, book['id'])
     knowledge = coverage(book, store)
     profiles = profile_status(book, store, discovered=knowledge)
-    processing = ProcessingStore(store)
+    processing = LegacyProcessingStore(store)
     counts = repository.counts(book['id'])
     checkpoint = store.analysis_status(book['id']) or {}
     jobs = store.jobs(book['id'])

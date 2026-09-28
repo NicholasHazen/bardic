@@ -17,8 +17,8 @@ from copy import deepcopy
 
 from ... import analysis as a
 from ... import local_services as ls
-from ...progressive import direction_specs
-from ...staged_analysis import _split_chapter
+from ...analysis_common import split_chapter as _split_chapter
+from ..prompts import direction_specs
 from ..contract import LLM_PROVIDERS, Conflict, LLMRequest, ServiceRequest, Step, Unit, locked
 from .quotes import CHECK_LABELS, compare
 

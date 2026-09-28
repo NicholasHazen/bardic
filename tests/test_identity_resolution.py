@@ -3,7 +3,8 @@ from copy import deepcopy
 
 from bardic import analysis as a
 from bardic.importer import parse_book
-from bardic.processing import ProcessingStore,source_hash
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore
+from bardic.processing import source_hash
 from bardic.progressive import discoveries,profile_specs
 from bardic.staged_analysis import _references
 from bardic.store import Store

@@ -11,8 +11,8 @@ from bardic import analysis, progressive
 from bardic.artifacts import ArtifactRepository
 from bardic.importer import parse_book
 from bardic.pipeline_view import write_analysis_export
-from bardic.preprocessing import coverage
-from bardic.processing import BudgetReached, ProcessingStore, digest, source_hash
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
+from bardic.processing import BudgetReached, digest, source_hash
 from bardic.series import SeriesRepository
 from bardic.store import Store
 from test_progressive import FakeProvider, process, story
