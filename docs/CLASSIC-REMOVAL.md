@@ -157,14 +157,14 @@ Run this as a one-time maintenance migration with the owner's go. It is not part
 | --- | --- |
 | `analysis_units` and index `analysis_units_stage` | `DROP TABLE` / `DROP INDEX` |
 | `analysis_checkpoints` | `DROP TABLE`. Delete the `Store` DDL, the restart-recovery loop and the checkpoint methods in the same PR, or startup recreates an empty table. |
-| Legacy `character_observations` rows | Delete only rows that stage 2's writer did not produce. Stage 1 cannot say how to recognise them: stage 2 defines the provenance fields its rows carry. Stage 4 must write that predicate from stage 2's merged code, count the matches and show the count to the owner before deleting. Rows that series context still reads must not be deleted unless stage 2 has replaced them. |
+| Legacy `character_observations` rows | Delete only rows that stage 2's writer did not produce. Stage 1 cannot say how to recognise them: stage 2 defines the provenance fields its rows carry. Stage 4 must write that predicate from stage 2's merged code, count the matches and show the count to the owner before deleting. Rows that series context still reads must not be deleted unless stage 2 has replaced them. *Update (series memory, 2026-09-28):* stage 2 writes no observations, and series context now reads `character_references`. The table is read only to re-check that a phase-engine reference still matches its retained chapter hash; after the drop such references are left out of series context (the evidence projection replaces them at each book's next sync, except carried discovery evidence until discovery is accepted). |
 | `character_references` rows written by checkpoints | Only if stage 2 did not already rebuild the table from accepted versions on accept. Rebuild from accepted versions rather than leaving the table empty. |
 
 ### Keep
 
 | Data | Why |
 | --- | --- |
-| `character_observations` table and its stage 2 rows; `series`, `series_books`, `series_characters`, `series_character_links`, `series_volume_slots` | Series memory and confirmed identities |
+| `character_observations` table (stage 2 writes no rows; see above); `series`, `series_books`, `series_characters`, `series_character_links`, `series_volume_slots` | Series memory and confirmed identities |
 | `character_references` | Stage 2's current-book projection of accepted evidence |
 | `analysis_attempts` (including Classic-era rows) | Usage history. `RequestBudget` sums every tracked attempt for a book, so deleting old rows would silently reset a book's spending guard. |
 | `pipeline_events` (including Classic-era rows) | Validation state for displayed attempts, and resource summaries |

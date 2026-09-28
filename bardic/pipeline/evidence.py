@@ -37,12 +37,19 @@ untouched. Rows the legacy phase engine wrote as ``profile_evidence`` (no
 accepted: discovery cannot be captured as a baseline, so they are its only
 record in the current projection. They stay in ``character_observations``.
 
-The projection writes nothing to ``character_observations`` (owner decision,
-2026-09-28). Series context still reads that table, so appending accepted
-evidence would change later volumes' profile prompts mid-series and stop a
-confirmed series run. :func:`retain_history` does the append and is disabled by
-:data:`RETAIN_OBSERVATIONS`. The series-memory follow-up decides whether to
-enable it, together with changing what context reads and staged consent.
+These rows are also the series memory: a later volume's profiles read an
+earlier volume's current rows through confirmed links
+(:meth:`bardic.series.SeriesRepository.context_for_book`). The state entry
+records the chapter source hashes the rows were validated against, so a later
+volume never reads a row whose source has changed since.
+
+The projection writes nothing to ``character_observations`` (decided with the
+series-memory follow-up, 2026-09-28). Nothing reads that table for prompts any
+more; the history of accepted evidence is its step_output versions, and each
+earlier-volume entry a profile request sends is retained as a
+``character_observation`` artifact. :func:`retain_history` still does the append
+(tested) and stays disabled by :data:`RETAIN_OBSERVATIONS`; enabling it would
+only duplicate that history. Legacy rows stay until the owner-gated data drop.
 """
 from __future__ import annotations
 
@@ -54,7 +61,7 @@ from copy import deepcopy
 
 from .. import analysis as a
 from ..processing import digest
-from ..series import reference_is_valid, retain_observations
+from ..series import reference_is_valid, retain_observations, source_hash
 from ..store import now
 from .contract import RESERVED_CHARACTERS, locked
 from .repository import KIND
@@ -63,8 +70,8 @@ from .repository import KIND
 PROJECTION_VERSION = 1
 STEPS = ('discovery', 'profiles', 'directing')
 STATE_KEY = 'evidence'
-# Off until series context reads accepted evidence and series runs have staged consent
-# (SERIES-MEMORY-PLAN.md sections 2 and 4). See the module notes.
+# Off: series context reads the projection itself, and artifacts keep the history.
+# Enabling it would only duplicate history (SERIES-MEMORY-PLAN.md section 2). See the module notes.
 RETAIN_OBSERVATIONS = False
 
 
@@ -350,7 +357,8 @@ def refresh(repository, conn, book, *, force=False):
     state = repository.state(conn, book_id).get(STATE_KEY) or {}
     stored = digest(sorted(i for (i,) in conn.execute('SELECT id FROM character_references WHERE book_id=?', (book_id,))))
     inputs = _inputs(repository, conn, book)
-    if not force and state.get('inputs') == inputs and state.get('rows') == stored:
+    # A state from before chapter hashes were recorded is rebuilt once to record them.
+    if not force and state.get('inputs') == inputs and state.get('rows') == stored and 'sources' in state:
         return None
     previous = _stored(conn, book_id)
     rows, counts = build(repository, conn, book, previous)
@@ -363,7 +371,10 @@ def refresh(repository, conn, book, *, force=False):
                                    json.dumps(r, ensure_ascii=False)) for r in rows])
     if RETAIN_OBSERVATIONS:
         retain_history(conn, book_id, [r for r in rows if r['id'] not in known])
+    # The chapter sources the rows were validated against. Series context of a later
+    # volume excludes a row whose chapter text has changed since (bardic.series).
     entry = {'version': PROJECTION_VERSION, 'inputs': inputs, 'rows': digest(sorted(r['id'] for r in rows)),
+             'sources': {c['id']: source_hash(c['text']) for c in book['chapters']},
              'counts': dict(sorted(counts.items())), 'rebuilt_at': now()}
     repository.set_state(conn, book_id, **{STATE_KEY: entry})
     return entry

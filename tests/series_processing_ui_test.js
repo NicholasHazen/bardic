@@ -259,6 +259,52 @@ async function mounted(env, options = {}) {
     assert.equal(box.innerHTML, '');
   }
 
+  // Series memory: later books read earlier books, so consent shows "up to" and never turns unknown into $0.
+  {
+    const memory = {...plan, steps:['profiles'], configs:{profiles:{provider:'openai', model:'deep-model'}}, cached_units:1,
+      context_pending_books:['book-9'], up_to:{requests:4, estimated_input_tokens:900, output_token_allowance:9000, estimated_cost_usd:.05, known_cost_usd:.05},
+      books:[{...plan.books[0], context_pending:[], up_to:{requests:1, estimated_cost_usd:.01}},
+        {...plan.books[1], context_pending:['profiles'], up_to:{requests:3, estimated_cost_usd:.04}}]};
+    const env = environment();
+    const consent = env.api.consentFor(memory, defs);
+    assert.equal(consent.estimate.requests, 4);
+    assert.equal(consent.estimate.cost, .05);
+    assert.match(consent.estimate.note, /Up to 4 requests\. One later book reads the results earlier books accept during this run, so the cost can be higher/);
+    assert.ok(!consent.estimate.note.includes('saved result'), 'reuse is not promised for context-pending work');
+    const unknown = env.api.consentFor({...memory, unknown_cost_books:['book-9'], up_to:{...memory.up_to, estimated_cost_usd:null, known_cost_usd:.01}}, defs);
+    assert.equal(unknown.estimate.cost, null);
+    const shown = environment(call => call.url.endsWith('/plan') ? {data:memory} : ordinary(call));
+    const box = await mounted(shown); await submit(box);
+    const text = node(box, 'plan').innerHTML;
+    assert.ok(text.includes('up to 3 requests') && text.includes('Reads earlier books') && text.includes('Run on 2 books · about $0.05'));
+  }
+
+  // A run paused for review: say which book, link to its Analyze step, resume or stop.
+  {
+    const paused = {...running, message:'Waiting for your review of The first lamp.', waiting_for_review:{book_id:'book-1', child_job_id:'c1',
+      title:'The first lamp', position:1, steps:['profiles'], since:'2026-09-28T00:00:00+00:00'}, children:[
+      {...running.children[0], status:'completed', message:'Waiting for your review: Character profiles',
+        run:{status:'completed', outcomes:{profiles:{status:'completed', scopes:1, accepted:false}}}},
+      {...running.children[1], message:'Waiting for your review of The first lamp.'}]};
+    let resumed = false;
+    const env = environment(call => {
+      if (call.url.endsWith('/runs')) return {data:{runs:[resumed ? {...paused, waiting_for_review:null, message:'Resuming after your review.'} : paused]}};
+      if (call.url.endsWith('/resume')) { resumed = true; return {data:{...paused, waiting_for_review:null}}; }
+      return ordinary(call);
+    });
+    same(env.api.reviewWait(paused), {bookId:'book-1', title:'The first lamp', steps:['profiles'], href:'#/book/book-1/analysis/profiles'});
+    assert.equal(env.api.reviewWait({...paused, status:'cancelled'}), null);
+    const box = await mounted(env);
+    const html = node(box, 'runs').innerHTML;
+    assert.ok(html.includes('Waiting for your review of The first lamp') && html.includes('href="#/book/book-1/analysis/profiles"'));
+    assert.ok(html.includes('data-series-resume="run/1"') && html.includes('data-series-cancel="run/1"'));
+    assert.ok(html.includes('>Waiting for review<'), 'the reviewed book reads as waiting for review');
+    await node(box, 'runs').listeners.click({target:{closest:s => s === '[data-series-resume]' ? {dataset:{seriesResume:'run/1'}} : null}});
+    assert.equal(env.calls.filter(call => call.method === 'POST' && call.url === '/api/series/saga%2Fone/runs/run%2F1/resume').length, 1);
+    assert.ok(!node(box, 'runs').innerHTML.includes('data-series-resume'));
+    assert.equal(env.posts('/process').length, 0);
+  }
+
   // Map JSON stays literal text.
   {
     const maps = environment(), box = await mounted(maps);

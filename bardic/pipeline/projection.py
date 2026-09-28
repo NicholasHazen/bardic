@@ -95,8 +95,17 @@ def _record_outside_changes(repository, registry, conn, book, force):
 
 
 def stale_scopes(repository, registry, conn, book_id):
-    """{step_id: [scope, ...]} whose accepted version read superseded inputs."""
+    """{step_id: [scope, ...]} whose accepted version read superseded inputs.
+
+    Inputs are this book's accepted input versions and, for a version that
+    recorded ``series_inputs``, the accepted evidence of earlier series volumes
+    (:func:`bardic.series.evidence_inputs`): a rollback or a new acceptance there,
+    or a changed link, marks it stale here too. Nothing re-runs.
+    """
+    from ..series import evidence_inputs
+
     heads = {step.id: repository.heads(conn, book_id, step.id) for step in registry}
+    earlier = None
     result = {}
     for step in registry:
         if not step.inputs:
@@ -113,6 +122,12 @@ def stale_scopes(repository, registry, conn, book_id):
                         set(current) - set(scopes):
                     stale.append(scope)
                     break
+            else:
+                if 'series_inputs' in payload:
+                    if earlier is None:
+                        earlier = evidence_inputs(conn, book_id)
+                    if earlier.get(scope, {}) != payload['series_inputs']:
+                        stale.append(scope)
         if stale:
             result[step.id] = sorted(stale)
     return result

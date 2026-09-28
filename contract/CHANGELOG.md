@@ -22,6 +22,21 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.0 — 2026-09-28
+<!-- contract-sha256: 93c8c9b31a4ba7d9ed00ac473db4ba6bb33240c890b2e48e9999013a0e9a8e1e -->
+
+**BREAKING.** Series memory on the step pipeline: later volumes read earlier volumes' accepted evidence, series runs use staged consent, and a review gate can pause a series run. Clients must change the following.
+
+- **A series run can pause.** When a book completes with a discovery, profiles or directing version waiting for review (a `review` gate) and a later book of the run reads it, the parent `series` job stays `running` with the new `waiting_for_review` (`SeriesReviewWait`: `book_id`, `child_job_id`, `title`, `position`, `steps`, `since`) and nothing runs until the owner resumes it with the new `resumeSeriesProcessing` (`POST /api/series/{series_id}/runs/{job_id}/resume`) or cancels it. A client that only waits for a terminal status must now offer resume or cancel. Before, the run always continued past a waiting book. While paused, the waiting book accepts version decisions (`acceptAnalysisPipelineStepVersion` no longer gets 409 for it; its 409 description says so); every other reservation still holds.
+- **Series context reads accepted evidence** (`getBookSeriesContext`, and profile prompts). Entries are earlier volumes' current character references (their accepted evidence) instead of retained observations, so accepting, rolling back or setting aside a version there changes them. `SeriesContextObservation` gains `step`, `version_id` and `origin`. Entry `id`s of pipeline evidence differ from any earlier observation ID.
+- **Consent covers the unit set, not earlier-volume context.** `SeriesPlan.fingerprint` is now built from each book's new `consent_fingerprint` (its revision, `fresh`, and each step's version, provider, model and unit set, plus the exact requests of steps that are not context-pending). Before each book starts the worker compares `consent_fingerprint`, so earlier books' accepted results no longer stop the run at the next linked book. `plan_version` is 3; fingerprints from earlier previews are refused (409).
+
+Additive in the same version:
+
+- `SeriesPlanBook` gains `consent_fingerprint`, `context_pending` (step IDs whose prompts read earlier books of the run), `context_sources` and `up_to` (`SeriesBookEstimate`: every context-pending unit counted as a request, tokens from the current context). `SeriesPlan` gains `context_pending_books` and `up_to` (`SeriesEstimate`). An unknown price stays null.
+- Series child jobs gain `consent_fingerprint`, `context_pending` and `context_sources`; the parent gains `context_pending_books`.
+- New `listSeriesLinkSuggestions` (`GET /api/books/{book_id}/series/suggestions`, `BookSeriesSuggestions`): proposed identity links for unlinked characters by exact normalized name or alias match with linked characters of earlier volumes. Nothing is linked until confirmed with `linkSeriesCharacter`; namesakes are marked `ambiguous`.
+
 ## 0.2.3 — 2026-09-28
 <!-- contract-sha256: dab500d3243131d0bc6e4ababa688e65e98950905e3298dc7fda4530163883bb -->
 

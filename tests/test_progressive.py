@@ -160,7 +160,9 @@ def test_profiles_include_only_confirmed_earlier_volume_observations(setup):
     accepted = discoveries(scanned,store,ProcessingStore(store))
     spec = next(s for s in profile_specs(scanned,store,accepted) if s['name']=='Mara')
     prior = json_after(spec['prompt'],'EARLIER LINKED VOLUMES:\n')
-    assert len(prior)==1 and prior[0]['book_id']==earlier['id']
+    # The prompt shows where the evidence is from; IDs and offsets stay in the retained recipe.
+    assert len(prior)==1 and prior[0]['book_title']==earlier['title'] and 'book_id' not in prior[0]
+    assert spec['prior_observations'][0]['book_id']==earlier['id']
     assert prior[0]['quote']=='Mara used a low voice.' and prior[0]['position']==1
     series.unlink_character(book['id'],mara['id'])
     spec = next(s for s in profile_specs(scanned,store,accepted) if s['name']=='Mara')

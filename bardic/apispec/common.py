@@ -93,6 +93,10 @@ class Job(View):
     - `quota_limited`: the daily Gemini speech request quota was reached;
       `resume_after` says when it resets.
 
+    A `series` parent can also stay `running` while it waits for the owner's
+    review (`waiting_for_review` is set and no book is running); it continues
+    only when resumed (`resumeSeriesProcessing`) and ends when cancelled.
+
     Treat the first terminal status you observe as final. The server may still
     rewrite `message` afterwards (a job cancelled while queued is settled
     again when its worker slot comes up, and in a shutdown race that can turn
@@ -106,8 +110,8 @@ class Job(View):
     | --- | --- | --- |
     | `render` | enhanced narration | none |
     | `analyze` | classic analysis | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
-    | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at` |
-    | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
+    | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at`; since contract 0.3.0 also `consent_fingerprint`, `context_pending` and `context_sources` |
+    | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`; since contract 0.3.0 `context_pending_books`, and `waiting_for_review` once it has paused. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
     | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
     | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `limits` (speech), `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
     | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
@@ -210,8 +214,25 @@ class Job(View):
                           '(ChapterListenLimits).')
     plan_fingerprint: str | None = Field(
         None, description='`series`: the series plan `fingerprint` this run was confirmed against. Series child '
-                          '(`pipeline`): the book plan `fingerprint` confirmed for that book; the book is not run when '
-                          'its recomputed plan differs.')
+                          '(`pipeline`): the book plan `fingerprint` at confirmation. A child queued before contract '
+                          '0.3.0 (without `consent_fingerprint`) is not run when its recomputed plan differs.')
+    consent_fingerprint: str | None = Field(
+        None, description='Series child (`pipeline`): the `consent_fingerprint` confirmed for that book '
+                          '(`SeriesPlanBook`). Before the book starts it is recomputed; the book is not run when it '
+                          'differs. It covers the unit set, providers, models, `fresh` and step versions, but not '
+                          'the earlier-volume context in context-pending prompts.')
+    context_pending: list[str] | None = Field(
+        None, description='Series child (`pipeline`): step IDs whose prompts read earlier books of this run '
+                          '(see `SeriesPlanBook.context_pending`). Empty when none.')
+    context_sources: list[str] | None = Field(
+        None, description='Series child (`pipeline`): earlier books of this run whose accepted results this book '
+                          'reads, in no particular order. The series pauses after such a book while it has results '
+                          'waiting for review.')
+    context_pending_books: list[str] | None = Field(
+        None, description='`series`: books whose estimate was "up to" because a step reads earlier books of the run.')
+    waiting_for_review: SeriesReviewWait | None = Field(
+        None, description='`series`: set while the run is paused for the owner\'s review of one book (the parent '
+                          'stays `running`). Null after it resumes or ends. Absent on runs that never paused.')
     estimated_cost_usd: float | None = Field(
         None, description='`series`: the confirmed plan\'s `estimated_cost_usd` in USD, or null when any book\'s cost '
                           'was unknown. Approximate; not an invoice.')
@@ -262,6 +283,21 @@ class Job(View):
     closing: bool | None = Field(
         None, description='`listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 '
                           'until the job ends.')
+
+
+class SeriesReviewWait(View):
+    """The book a paused series run waits on.
+
+    Review the book's waiting versions in its Analysis tab (accept or set them
+    aside), then call `resumeSeriesProcessing`. While paused, that book accepts
+    version decisions; every other reservation still holds.
+    """
+    book_id: str = Field(description='Book waiting for review.')
+    child_job_id: str = Field(description='The completed series child job of that book.')
+    title: str = Field(description='Book title when the run was queued; empty when unknown.')
+    position: float = Field(description='The book\'s reading-order position.')
+    steps: list[str] = Field(description='Step IDs whose version from this run is waiting for a decision.')
+    since: str = Field(description='When the run paused: ' + TIME)
 
 
 class SeriesJobLimits(View):

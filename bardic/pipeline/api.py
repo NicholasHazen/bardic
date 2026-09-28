@@ -449,7 +449,10 @@ def build_router(registry: Registry):
         for job in runtime.store.jobs(book_id):
             if job['status'] in ACTIVE and job['kind'] != 'pipeline':
                 raise HTTPException(409, 'Another job is changing this book. Let it finish before accepting a version.')
-        if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', []) for j in runtime.store.jobs(limit=None)):
+        # A series run paused for the owner's review of this book lets it be decided;
+        # it holds every other reservation (bardic.series_processing).
+        if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
+               and (j.get('waiting_for_review') or {}).get('book_id') != book_id for j in runtime.store.jobs(limit=None)):
             raise HTTPException(409, 'This book is reserved by an active series run.')
 
     def selected(scopes, body):

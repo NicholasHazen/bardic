@@ -19,6 +19,7 @@ class ProfilesStep(Step):
     capturable = True
     scope = 'character'
     inputs = ('discovery',)
+    reads_series_context = True
     parallel = 3
     owns = tuple('characters.' + name for name in FIELDS)
 
@@ -33,13 +34,18 @@ class ProfilesStep(Step):
             # Legacy code skips 'edited' characters; here only locked profile text counts.
             character['edited'] = locked(character, 'description') and locked(character, 'direction')
         units = []
-        for spec in profile_specs(work, ctx.store, observations):
+        # Only characters with accepted evidence in this book get a unit, so earlier
+        # volumes change what a unit says, never which units exist (series consent).
+        for spec in profile_specs(work, ctx.store, observations, require_current_evidence=True):
             units.append(Unit(key=spec['character_id'], scope=spec['character_id'],
                               label=f"{spec['name']} · {spec['priority']} profile",
                               request=LLMRequest(spec['prompt'], spec['schema'], spec['output_cap']),
                               data={'evidence': spec['evidence'], 'name': spec['name'], 'aliases': spec['aliases'],
                                     'priority': spec['priority']},
-                              dependencies=tuple(spec.get('series_context_artifact_ids', []))))
+                              # Earlier volumes' accepted evidence versions, the observation artifacts
+                              # sent and the link artifacts that selected them.
+                              dependencies=tuple(spec.get('series_context_artifact_ids', [])),
+                              series_inputs=dict(spec.get('series_inputs') or {})))
         return units
 
     def validate(self, ctx, unit, result):

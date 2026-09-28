@@ -6,6 +6,14 @@
   const panels = new WeakMap();
   const path = id => encodeURIComponent(id);
   const active = run => ['queued','running'].includes(run.status);
+  /** The book a paused series run waits on, with where to review it; null when it is not paused. */
+  function reviewWait(run) {
+    const wait = active(run) ? run.waiting_for_review : null;
+    if (!wait?.book_id) return null;
+    const step = (wait.steps || [])[0];
+    return {bookId:wait.book_id, title:wait.title || 'this book', steps:wait.steps || [],
+      href:`#/book/${path(wait.book_id)}/analysis${step ? `/${path(step)}` : ''}`};
+  }
   const live = panel => panels.get(panel.container) === panel;
   const base = panel => `/api/series/${path(panel.series.id)}`;
   const STATES = {queued:'Waiting', running:'Running', completed:'Done', failed:'Failed', cancelled:'Cancelled',
@@ -56,16 +64,22 @@
     const skipped = (plan.skipped_volumes || []).length;
     const scope = `${fmt.plural(books.length, 'book')} in reading order${skipped ? `; ${fmt.plural(skipped, 'missing or planned volume')} skipped` : ''}`;
     const notes = [];
-    if (plan.cached_units > 0) notes.push(`${fmt.plural(plan.cached_units, 'saved result')} reused.`);
+    const pending = (plan.context_pending_books || []).length;
+    const upTo = pending ? plan.up_to || {} : null;
+    if (plan.cached_units > 0 && !pending) notes.push(`${fmt.plural(plan.cached_units, 'saved result')} reused.`);
     let estimate;
     if (!sending) estimate = {free:true, note:[...notes, local ? 'Runs on this computer.' : 'Nothing new to request.'].join(' ')};
     else if (service) estimate = {free:true, note:[`${fmt.plural(plan.service_calls, 'call')} to your server.`, ...notes].join(' ')};
     else {
       const unknown = (plan.unknown_cost_books || []).length;
+      const known = pending ? upTo.known_cost_usd : plan.known_cost_usd;
       if (unknown) notes.push(`No catalog price for ${config.model || 'this model'}: cost unknown for ${unknown} of ${fmt.plural(books.length, 'book')}`
-        + (plan.known_cost_usd > 0 ? `; the priced books come to ${fmt.money(plan.known_cost_usd, {approx:true})}.` : '.'));
+        + (known > 0 ? `; the priced books come to ${fmt.money(known, {approx:true})}.` : '.'));
+      // Later books read what earlier books accept during the run: count their work as new, and say prompts can grow.
+      if (pending) notes.push(`Up to ${fmt.plural(upTo.requests, 'request')}. ${pending === 1 ? 'One later book reads' : `${pending} later books read`} the results earlier books accept during this run, so the cost can be higher than this estimate.`);
       notes.push('Retries and evidence repairs can add requests.');
-      estimate = {requests:plan.requests, cost:plan.estimated_cost_usd, note:notes.join(' ')};
+      estimate = pending ? {requests:upTo.requests, cost:upTo.estimated_cost_usd, note:notes.join(' ')}
+        : {requests:plan.requests, cost:plan.estimated_cost_usd, note:notes.join(' ')};
     }
     let blocked = null;
     const titles = Object.fromEntries(books.map(book => [book.book_id, book.title]));
@@ -120,7 +134,8 @@
     const settings = def.settings || {};
     const uses = def.method === 'plain' ? 'Runs on this computer.'
       : `Uses ${esc(providerLabel(panel.defs, settings.provider))}${settings.model ? ` · ${esc(settings.model)}` : ''}. Choose the provider and model in the Analysis tab.`;
-    note.innerHTML = `${esc(def.summary || '')} ${uses}`;
+    const hold = settings.gate === 'review' ? ' Results are held for your review. A later book that reads a book waits until you review it.' : '';
+    note.innerHTML = `${esc(def.summary || '')} ${uses}${hold}`;
   }
   function paintSteps(panel) {
     const {esc} = ui();
@@ -138,11 +153,12 @@
     const target = panel.container.querySelector('[data-series-plan]');
     const labelOf = id => stepDef(panel.defs, id)?.label || id;
     const rows = (plan.books || []).map(book => {
-      const p = book.plan || {};
+      const pending = (book.context_pending || []).length > 0;
+      const p = pending ? {...book.plan, ...book.up_to, cached_units:0} : book.plan || {};
       const missing = Object.values((plan.missing_inputs || {})[book.book_id] || {}).flat();
       const cost = p.service_calls > 0 && !p.requests ? fmt.plural(p.service_calls, 'server call')
-        : p.requests ? `${fmt.plural(p.requests, 'request')} · ${p.estimated_cost_usd === null ? 'cost unknown' : fmt.money(p.estimated_cost_usd, {approx:true})}` : 'nothing new to request';
-      return `<li><span class="series-processing-position">${esc(book.position)}</span><span class="series-processing-title">${esc(book.title)}</span><span class="series-processing-detail">${esc(cost)}${p.cached_units ? ` · ${esc(fmt.plural(p.cached_units, 'saved result'))} reused` : ''}</span>${missing.length ? badge(`Needs ${missing.map(labelOf).join(', ')}`, 'warn') : ''}</li>`;
+        : p.requests ? `${pending ? 'up to ' : ''}${fmt.plural(p.requests, 'request')} · ${p.estimated_cost_usd === null ? 'cost unknown' : fmt.money(p.estimated_cost_usd, {approx:true})}` : 'nothing new to request';
+      return `<li><span class="series-processing-position">${esc(book.position)}</span><span class="series-processing-title">${esc(book.title)}</span><span class="series-processing-detail">${esc(cost)}${p.cached_units ? ` · ${esc(fmt.plural(p.cached_units, 'saved result'))} reused` : ''}</span>${pending ? badge('Reads earlier books', 'info') : ''}${missing.length ? badge(`Needs ${missing.map(labelOf).join(', ')}`, 'warn') : ''}</li>`;
     }).join('');
     target.innerHTML = consent({id:`series-consent-${panel.consentCount = (panel.consentCount || 0) + 1}`, ...consentFor(plan, panel.defs)})
       + (rows ? `<ol class="series-processing-books" aria-label="Books in reading order">${rows}</ol>` : '')
@@ -150,7 +166,7 @@
     ui().openConsent(target.querySelector('[data-consent]'));
   }
   function paintRuns(panel, result) {
-    const {esc, fmt, statusBadge, button} = ui();
+    const {esc, fmt, statusBadge, button, callout} = ui();
     rememberTitles(panel, panel.series.books);
     const labelOf = id => stepDef(panel.defs, id)?.label || id;
     panel.container.querySelector('[data-series-runs]').innerHTML = (result.runs || []).slice(0, 5).map(run => {
@@ -161,7 +177,14 @@
         return `<li><span class="series-processing-title">${esc(child.title || panel.titles.get(child.book_id) || child.book_id)}</span>${statusBadge(state, stateLabel(state))}<span class="series-processing-detail">${esc(child.message || '')}</span></li>`;
       }).join('');
       const stop = active(run) ? button({label:'Stop series run', busyLabel:'Stopping…', busy:panel.cancelling.has(run.id), size:'small', attrs:{'data-series-cancel':run.id}}) : '';
-      return `<article class="series-processing-run"><header><h4>${esc((run.steps || []).map(labelOf).join(', ') || 'Series run')}</h4>${statusBadge(run.status, stateLabel(run.status))}<span class="series-processing-detail">${esc(fmt.number(done, {digits:0}))} of ${esc(fmt.plural(kids.length, 'book'))} done</span></header><p>${esc(run.message || '')}</p>${run.error ? `<p class="series-processing-failure">${esc(run.error)}</p>` : ''}<ol>${children}</ol>${stop}</article>`;
+      const wait = reviewWait(run);
+      const title = wait ? panel.titles.get(wait.bookId) || wait.title : '';
+      const paused = wait ? callout({tone:'warn', title:`Waiting for your review of ${title}`,
+        text:'A later book reads its results. Accept or set aside what waits in its Analyze tab, then resume. Later books only read accepted results.',
+        html:`<p><a href="${esc(wait.href)}" data-series-review="${esc(wait.bookId)}">Review ${esc(title)} in Analyze →</a></p>`,
+        actions:button({label:'Resume series run', busyLabel:'Resuming…', busy:panel.resuming.has(run.id), variant:'primary', size:'small', attrs:{'data-series-resume':run.id}})}) : '';
+      const state = wait ? statusBadge('needs_review', 'Waiting for your review') : statusBadge(run.status, stateLabel(run.status));
+      return `<article class="series-processing-run"><header><h4>${esc((run.steps || []).map(labelOf).join(', ') || 'Series run')}</h4>${state}<span class="series-processing-detail">${esc(fmt.number(done, {digits:0}))} of ${esc(fmt.plural(kids.length, 'book'))} done</span></header><p>${esc(run.message || '')}</p>${run.error ? `<p class="series-processing-failure">${esc(run.error)}</p>` : ''}${paused}<ol>${children}</ol>${stop}</article>`;
     }).join('') || '<p class="series-processing-detail">No series runs yet.</p>';
   }
 
@@ -288,6 +311,26 @@
       if (live(panel)) { panel.cancelling.delete(id); if (panel.runs) paintRuns(panel, panel.runs); }
     }
   }
+  async function resume(panel, id) {
+    if (!id || !live(panel) || panel.resuming.has(id)) return;
+    panel.resuming.add(id);
+    if (panel.runs) paintRuns(panel, panel.runs);
+    try {
+      await request(`${base(panel)}/runs/${path(id)}/resume`, {});
+      if (!live(panel)) return;
+      display(panel, 'Series run resumed.', 'good');
+      panel.options.onChange?.();
+    } catch (error) { if (live(panel)) display(panel, error.message, 'bad'); }
+    finally {
+      if (live(panel)) { panel.resuming.delete(id); await refresh(panel); }
+    }
+  }
+  function runsClick(panel, event) {
+    const target = event.target;
+    const resumeId = target.closest?.('[data-series-resume]')?.dataset?.seriesResume;
+    if (resumeId) return resume(panel, resumeId);
+    return cancel(panel, event);
+  }
   function context(series, options) {
     return JSON.stringify([series.id, series.updated_at, series.books, series.volumes,
       options.status?.analysis_models_by_provider, options.status?.preprocess_models_by_provider]);
@@ -311,7 +354,7 @@
     }
     if (panel) clearTimeout(panel.timer);
     panel = {container, series, options, context:signature, defs:null, preview:null, body:null, timer:null,
-      planVersion:0, runsVersion:0, mapVersion:0, starting:false, planning:false, titles:new Map(), cancelling:new Set(), runs:null};
+      planVersion:0, runsVersion:0, mapVersion:0, starting:false, planning:false, titles:new Map(), cancelling:new Set(), resuming:new Set(), runs:null};
     panels.set(container, panel);
     rememberTitles(panel, series.books);
     const {sectionHead, button, message} = ui();
@@ -331,9 +374,9 @@
     container.querySelector('[data-series-plan]').addEventListener('click', event => planClick(panel, event));
     container.querySelector('[data-series-map]').addEventListener('click', () => showMap(panel));
     container.querySelector('[data-series-refresh]').addEventListener('click', () => refresh(panel));
-    container.querySelector('[data-series-runs]').addEventListener('click', event => cancel(panel, event));
+    container.querySelector('[data-series-runs]').addEventListener('click', event => runsClick(panel, event));
     controls(panel);
     return Promise.all([loadDefinitions(panel), refresh(panel)]).then(() => undefined);
   }
-  window.BardicSeriesProcessing = {render, consentFor, childState};
+  window.BardicSeriesProcessing = {render, consentFor, childState, reviewWait};
 })();

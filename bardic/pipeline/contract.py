@@ -89,6 +89,10 @@ class Unit:
     chapter_id: str | None = None
     # Other retained artifact IDs this unit's request actually read (e.g. series context).
     dependencies: tuple[str, ...] = ()
+    # Accepted evidence of earlier series volumes this unit can read: {book_id: digest}
+    # (bardic.series.evidence_inputs). Recorded on the scope's version; a later
+    # difference marks the version stale. Empty outside a series.
+    series_inputs: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -162,6 +166,9 @@ class Step:
     capturable: bool = False
     # apply() only adds (never replaces); accepting applies just the changed scopes.
     accumulative: bool = False
+    # units() read earlier series volumes' accepted evidence (their prompts, never their
+    # unit set, depend on it). A series run marks such a step context-pending in later books.
+    reads_series_context: bool = False
 
     # --- planning and execution -------------------------------------------------
     def units(self, ctx: StepContext) -> list[Unit]:

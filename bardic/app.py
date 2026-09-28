@@ -1309,6 +1309,11 @@ def create_app(data_dir: Path | None = None):
     def get_book_series_context(book_id: str, request: Request):
         return SeriesRepository(rt(request).store).context_for_book(book_id)
 
+    @app.get("/api/books/{book_id}/series/suggestions")
+    def get_book_series_suggestions(book_id: str, request: Request):
+        # Proposals only: confirming one uses the link route above.
+        return SeriesRepository(rt(request).store).suggestions(book_id)
+
     @app.get("/api/books/{book_id}/analysis")
     def get_analysis(book_id: str, request: Request):
         runtime = rt(request)
@@ -1544,6 +1549,11 @@ def create_app(data_dir: Path | None = None):
                                                  message='Series cancelled before this book started.')
                     elif child['status'] == 'running':
                         runtime.store.update_job(identifier, cancel_requested=True, message='Stopping after current request.')
+                if job.get('waiting_for_review'):
+                    # Paused for review: no worker is running to settle it, so it ends now.
+                    from .series_processing import cancel_paused
+                    runtime.store.update_job(job_id, cancel_requested=True)
+                    return cancel_paused(runtime, runtime.store.job(job_id))
             if job['kind'] == 'performance':
                 # A performance runs Gemini chapters as child jobs; stop the active one too.
                 for child in runtime.store.jobs(job['book_id'], limit=None, active=True):
@@ -1741,6 +1751,11 @@ def create_app(data_dir: Path | None = None):
     def series_runs(series_id: str, request: Request):
         from .series_processing import runs
         return runs(rt(request), series_id)
+
+    @app.post('/api/series/{series_id}/runs/{job_id}/resume')
+    def resume_series_run(series_id: str, job_id: str, request: Request):
+        from .series_processing import resume
+        return resume(rt(request), pipeline_registry, series_id, job_id)
 
     @app.get('/api/series/{series_id}/map')
     def series_map(series_id: str, request: Request):

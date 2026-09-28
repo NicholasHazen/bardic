@@ -179,7 +179,7 @@ def test_rebuild_is_idempotent_and_writes_no_observations(api):
     run(api, book['id'], ['discovery', 'profiles', 'directing'])
     rows = references(api, book['id'])
     recorded = state(api, book['id'])
-    # Series context reads observations; the projection must not change it (RETAIN_OBSERVATIONS is off).
+    # Series context reads the projection itself; artifacts keep the history (RETAIN_OBSERVATIONS is off).
     assert evidence.RETAIN_OBSERVATIONS is False
     assert observations(api, book['id']) == []
     retained = []
@@ -310,7 +310,7 @@ def repository_state(store, repository):
 
 
 def test_retaining_history_when_enabled_appends_new_rows_once(library, monkeypatch):
-    # Disabled today; kept working for the series-memory follow-up that may enable it.
+    # Disabled: it would only duplicate artifact history. Kept working in case the owner wants the table back.
     monkeypatch.setattr(evidence, 'RETAIN_OBSERVATIONS', True)
     store, repository, registry = library
     first = store.book('book')['chapters'][0]

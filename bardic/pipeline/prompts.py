@@ -65,21 +65,67 @@ def spread(items, limit):
     return [items[round(i * (len(items) - 1) / (limit - 1))] for i in range(limit)]
 
 
-def profile_specs(book, store, accepted):
-    from ..artifacts import capture_series
+# What a profile prompt shows of each earlier-volume entry. IDs, offsets, hashes and
+# producers stay in the retained recipe and artifacts; in the prompt they would only
+# turn an unchanged reading into a new request (and a new charge).
+EARLIER_PROMPT_FIELDS = ('book_title', 'position', 'chapter_title', 'kind', 'quote', 'description', 'direction')
+# The retained observation record (bardic.series.observation_of) plus its provenance.
+OBSERVATION_FIELDS = ('id', 'book_id', 'character_id', 'chapter_id', 'segment_id', 'start', 'end', 'source_hash',
+                      'quote', 'kind', 'description', 'direction', 'provider', 'model', 'confidence',
+                      'step', 'version_id', 'origin')
 
+
+def _earlier_entries(store, book, series, skip):
+    """Entries sent per character, with the artifacts they read (inside the store lock).
+
+    Each sent entry is retained as a ``character_observation`` artifact in its own
+    book (with its verified source as a dependency). The dependencies are those
+    artifacts, the accepted step_output versions the rows came from, and the
+    membership/link artifacts that selected them. Another volume's membership may
+    change while a profile request is in flight.
+    """
+    from ..artifacts import capture_observation, capture_series, output_head
+    from ..series import evidence_inputs
+
+    previous = {c['character_id']: spread(c['observations'], 6) for c in series['characters'] if c['character_id'] not in skip}
+    dependencies = {}
+    with store.connect() as conn:
+        inputs = evidence_inputs(conn, book['id'])
+        books = {o['book_id'] for entries in previous.values() for o in entries}
+        linked = {bid: capture_series(conn, bid) for bid in {book['id'], *books}} if books else {}
+        chapters = {}
+        for bid in books:
+            row = conn.execute('SELECT body FROM books WHERE id=?', (bid,)).fetchone()
+            chapters[bid] = {c['id']: c for c in json.loads(row[0]).get('chapters', [])} if row else {}
+        for character_id, entries in previous.items():
+            identifiers = {linked[bid] for bid in {book['id'], *(o['book_id'] for o in entries)}} if entries else set()
+            for entry in entries:
+                # A book from before artifact records has no retained source yet; its
+                # history is backfilled from the legacy observation table instead.
+                if output_head(conn, entry['book_id'], 'source', entry['chapter_id']):
+                    payload = {field: entry.get(field) for field in OBSERVATION_FIELDS}
+                    identifiers.add(capture_observation(conn, entry['book_id'], payload, chapters[entry['book_id']],
+                                                        legacy_provenance=entry.get('version_id') is None))
+                if entry.get('version_id') and conn.execute('SELECT 1 FROM artifact_versions WHERE id=?', (entry['version_id'],)).fetchone():
+                    identifiers.add(entry['version_id'])
+            dependencies[character_id] = sorted(identifiers)
+    return previous, dependencies, inputs
+
+
+def profile_specs(book, store, accepted, *, require_current_evidence=False):
+    """One profile request per character with evidence.
+
+    ``require_current_evidence`` (the step pipeline) skips a character that has no
+    accepted evidence in this book, so earlier volumes never decide which units
+    exist: a series run's consent then covers the same unit set whatever the
+    earlier volumes accept meanwhile. The phase engine keeps its old rule.
+    """
     local = census(book, store)
     stats = {c['id']: c for c in local['characters']}
-    # Capture the links that actually selected this evidence. Another volume's
-    # membership may change while a profile request is in flight.
+    skip = {c['id'] for c in book['characters'] if c['id'] in {'narrator', 'unassigned'} or c.get('edited')}
     with store.lock:
         series = SeriesRepository(store).context_for_book(book['id'], max_chars=30000, max_observations_per_character=16)
-        prior_book_ids = {o['book_id'] for character in series['characters'] for o in character['observations']}
-        series_artifacts = {}
-        if prior_book_ids:
-            with store.connect() as conn:
-                series_artifacts = {bid: capture_series(conn, bid) for bid in {book['id'], *prior_book_ids}}
-    prior = {c['character_id']: c for c in series['characters']}
+        earlier, earlier_dependencies, earlier_inputs = _earlier_entries(store, book, series, skip)
     chapters = {c['id']: (i, c) for i, c in enumerate(book['chapters'])}
     specs = []
     for character in book['characters']:
@@ -103,8 +149,8 @@ def profile_specs(book, store, accepted):
         observations = list({digest(o): o for o in observations}.values())
         metric = stats.get(character['id'], {})
         observations = spread(observations, metric.get('recommended_evidence_limit', 5))
-        previous = spread(prior.get(character['id'], {}).get('observations', []), 6)
-        if not observations and not previous:
+        previous = earlier.get(character['id'], [])
+        if not observations and (require_current_evidence or not previous):
             continue
         quoted = [o['quote'] for o in [*observations, *previous]]
         candidate = {'name': character['name'], 'aliases': character.get('aliases', []),
@@ -115,14 +161,18 @@ def profile_specs(book, store, accepted):
                   'distinguish a stable voice from temporary emotion. Return exactly one character. Every evidence quotation must be copied '
                   'from ONE supplied quote without joining passages, at most 8 short quotations. Do not invent accents, gender, age or vocal traits.\n\nCANDIDATES:\n' +
                   json.dumps([candidate], ensure_ascii=False) + '\n\nCURRENT BOOK OBSERVATIONS:\n' + json.dumps(observations, ensure_ascii=False) +
-                  '\n\nEARLIER LINKED VOLUMES:\n' + json.dumps(previous, ensure_ascii=False))
-        specs.append({'stage': 'profiles', 'character_id': character['id'], 'prompt': prompt, 'schema': a.CAST_SCHEMA,
-                      'evidence': quoted, 'name': character['name'], 'aliases': character.get('aliases', []),
-                      'priority': metric.get('priority', 'basic'), 'output_cap': 3000,
-                      'input_unit_keys': sorted({observation_units[digest(o)] for o in observations}),
-                      'prior_observations': previous,
-                      'series_context_artifact_ids': sorted(series_artifacts[bid] for bid in
-                                                           {book['id'], *(o['book_id'] for o in previous)}) if previous else []})
+                  '\n\nEARLIER LINKED VOLUMES:\n' +
+                  json.dumps([{field: o[field] for field in EARLIER_PROMPT_FIELDS} for o in previous], ensure_ascii=False))
+        spec = {'stage': 'profiles', 'character_id': character['id'], 'prompt': prompt, 'schema': a.CAST_SCHEMA,
+                'evidence': quoted, 'name': character['name'], 'aliases': character.get('aliases', []),
+                'priority': metric.get('priority', 'basic'), 'output_cap': 3000,
+                'input_unit_keys': sorted({observation_units[digest(o)] for o in observations}),
+                'prior_observations': previous,
+                'series_context_artifact_ids': earlier_dependencies.get(character['id'], []) if previous else []}
+        if earlier_inputs.get(character['id']):
+            # The earlier volumes' accepted evidence this character can read, for staleness.
+            spec['series_inputs'] = earlier_inputs[character['id']]
+        specs.append(spec)
     return specs
 
 
