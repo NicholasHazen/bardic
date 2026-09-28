@@ -14,7 +14,7 @@ The local heuristic provider also respects chapter selection and saves chapter r
 
 ## Evidence and profiles
 
-Quotes must anchor to immutable source text. Comparison tolerates whitespace, canonical Unicode, curly quotation marks, dash typography, ellipsis typography, and soft hyphens. Accepted quotes are replaced with the exact original source slice; this never edits book text. Spelling changes, paraphrases, inserted ellipses, and concatenated quotations are rejected. Reconciled profile quotes must fit within one supplied evidence excerpt, not across artificial joins between snippets.
+Quotes must anchor to immutable source text. Comparison tolerates whitespace, canonical Unicode, curly quotation marks, dash typography, ellipsis typography, and soft hyphens. It also tolerates one quotation mark the model added at either edge of an excerpt that starts or ends inside dialogue, provided the rest is at least two words and matches exactly; the added mark is not kept. Accepted quotes are replaced with the exact original source slice; this never edits book text. Spelling changes, paraphrases, inserted ellipses, and concatenated quotations are rejected. Reconciled profile quotes must fit within one supplied evidence excerpt, not across artificial joins between snippets.
 
 An evidence validation failure triggers at most one corrective model response for that request. If it still fails, the job stops with chapter/stage and quotation diagnostics. Unsupported evidence is never silently accepted or dropped. Transport retries retain the existing provider adapter's bounded behavior; evidence correction is a separate, single attempt.
 

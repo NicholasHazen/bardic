@@ -53,6 +53,42 @@ def test_words_case_order_and_punctuation_are_never_fuzzy_matched(quotation):
         analysis._evidence_spans([quotation], 'Mara whispered.', "character evidence")
 
 
+@pytest.mark.parametrize("quotation,expected", [
+    # Closing mark added where the speech continues in the source.
+    ('"The kettle never sings for strangers, Mara."', '“The kettle never sings for strangers, Mara.'),
+    # Opening mark added where the excerpt starts mid-speech.
+    ('"the lanterns are late again?" she asked.', 'the lanterns are late again?” she asked.'),
+    # Both, around the middle of a longer speech.
+    ('"Owls prefer the east tower."', 'Owls prefer the east tower.'),
+    ("'Owls prefer the east tower.'", 'Owls prefer the east tower.'),
+])
+def test_quote_mark_added_at_an_excerpt_edge_anchors_the_exact_source(quotation, expected):
+    source = ('Tobin sighed. “The kettle never sings for strangers, Mara. Give it time.” '
+              '“So the lanterns are late again?” she asked. '
+              '“Bats nest low. Owls prefer the east tower. Mind the ladder.”')
+    span, = analysis._evidence_spans([quotation], source, "character evidence")
+    assert span["quote"] == expected
+    assert source[span["start"]:span["end"]] == expected
+    assert span["match"] == "quote_boundary"
+
+
+@pytest.mark.parametrize("quotation", [
+    '"Yes."',                      # one word: too weak to anchor without its marks
+    '"Mara whispered softly."',    # words still differ
+    'Mara "whispered".',           # only edge marks are ever removed
+    '""Mara whispered.""',         # at most one mark per edge
+])
+def test_quote_boundary_tolerance_is_not_fuzzy_matching(quotation):
+    with pytest.raises(analysis.EvidenceValidationError, match="does not occur"):
+        analysis._evidence_spans([quotation], 'Mara whispered. Yes. Mara whispered.', "character evidence")
+
+
+def test_quote_mark_present_in_source_is_kept():
+    source = 'He said, “Mara whispered.” Then left.'
+    span, = analysis._evidence_spans(['"Mara whispered."'], source, "character evidence")
+    assert span["quote"] == '“Mara whispered.”' and span["match"] == "typography"
+
+
 @pytest.mark.parametrize("source,quotation", [('…', '.'), ('é', 'e'), ('ü', 'u')])
 def test_normalization_cannot_match_only_part_of_an_expanded_source_glyph(source, quotation):
     with pytest.raises(analysis.EvidenceValidationError):
@@ -165,7 +201,12 @@ def test_one_bounded_repair_regenerates_quotes_from_supplied_source():
     assert len(calls) == 2 and calls[0] == ''
     assert 'SOURCE EVIDENCE CORRECTION' in calls[1]
     assert 'profile 1' in calls[1]
+    assert 'check every quotation' in calls[1]
     assert 'Mara says.' not in calls[1]
+
+
+def test_director_instruction_forbids_adding_edge_quote_marks():
+    assert 'do not add opening or closing quotation marks' in analysis.DIRECTOR_INSTRUCTION
 
 
 def test_second_invalid_response_stops_instead_of_dropping_or_trusting_evidence():

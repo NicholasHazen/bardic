@@ -153,7 +153,7 @@ def tts_usage(payload, model, *, today=None):
 def _aggregate(rows):
     result = {'operations': len(rows), 'requests': sum(r.get('request_count') or 0 for r in rows),
               'cached_operations': sum(bool(r.get('cached')) for r in rows),
-              'failed_operations': sum(r.get('status') in {'failed', 'uncertain', 'interrupted'} or r.get('validation_state') == 'rejected' for r in rows),
+              'failed_operations': sum(r.get('status') in {'failed', 'uncertain', 'not_sent', 'interrupted'} or r.get('validation_state') == 'rejected' for r in rows),
               'running_operations': sum(r.get('status') in {'running', 'reserved'} for r in rows)}
     for field in (*_NUMBERS, 'input_tokens', 'output_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_bytes'):
         # Token/remote-cost coverage concerns provider requests only. Local work

@@ -184,7 +184,16 @@ class RequestBudget:
             self._started[attempt['id']] = time.perf_counter()
             return attempt
 
-    def finish(self, attempt, payload=None, http_status=None):
+    def finish(self, attempt, payload=None, http_status=None, *, not_sent=False):
+        if not_sent:
+            # The connection failed before the request was written: nothing to bill.
+            started = self._started.pop(attempt['id'], None)
+            attempt.update(status='not_sent', http_status=None, input_tokens=0, output_tokens=0, cached_input_tokens=0,
+                           cache_write_input_tokens=0, charged_estimate_usd=0.0, cost_basis='not_sent',
+                           elapsed_seconds=max(0., time.perf_counter() - started) if started is not None else None,
+                           completed_at=now())
+            self.repository.save_attempt(attempt)
+            return
         usage = (payload or {}).get('usageMetadata' if attempt['provider'] == 'gemini' else 'usage', {})
         usage = usage if isinstance(usage, dict) else {}
         def integer(value):
