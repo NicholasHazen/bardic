@@ -488,7 +488,7 @@ def test_breeze_voice_example_pins_the_voice_in_its_retained_recipe(breeze_clien
     again = breeze_client.post(f"/api/books/{book['id']}/voice-preview", json={"provider": "breeze", "voice": "narrator"}).json()
     assert again["cached"] is True and len(fake_breeze.speech) == 1
     missing = breeze_client.post(f"/api/books/{book['id']}/voice-preview", json={"provider": "breeze", "voice": "nobody"})
-    assert missing.status_code == 400 and "Refresh Breeze voices" in missing.json()["detail"]
+    assert missing.status_code == 400 and missing.json()["code"] == "breeze_voice_unavailable"
 
 
 def test_breeze_job_errors_redact_the_server_key(breeze_client, fake_breeze, monkeypatch):

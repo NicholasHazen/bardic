@@ -9,6 +9,8 @@ from copy import deepcopy
 import re
 from urllib.parse import unquote, urlsplit
 
+from .errors import Invalid
+
 
 STRUCTURE_VERSION = 2
 CHAPTER_FIELDS = ("title", "kind", "title_source", "source_href", "logical_sections", "narrative_order")
@@ -187,18 +189,20 @@ def _apply_structure(target, source):
     old_titles = {chapter["id"]: chapter["title"] for chapter in target["chapters"]}
     by_id = {chapter["id"]: chapter for chapter in source["chapters"]}
     if old_titles.keys() != by_id.keys():
-        raise ValueError("Structure refresh cannot match the saved chapter identities. Existing work was preserved.")
+        raise Invalid("structure_mismatch", "Structure refresh cannot match the saved chapter identities. Existing work was preserved.")
     for chapter in target["chapters"]:
         updated = by_id.get(chapter["id"])
         if updated is None or chapter["text"] != updated["text"]:
-            raise ValueError("Structure refresh cannot match the saved source text. Existing work was preserved.")
+            raise Invalid("structure_mismatch", "Structure refresh cannot match the saved source text. Existing work was preserved.")
         for field in CHAPTER_FIELDS:
             chapter.pop(field, None)
             if field in updated:
                 chapter[field] = deepcopy(updated[field])
     for scene in target.get("scenes", []):
         old_title = old_titles[scene["chapter_id"]]
-        if not scene.get("edited") and re.fullmatch(re.escape(old_title) + r" · Scene \d+", scene.get("title", "")):
+        fields = scene.get("edited_fields")
+        title_edited = ("*" in fields or "title" in fields) if isinstance(fields, list) else bool(scene.get("edited"))
+        if not title_edited and re.fullmatch(re.escape(old_title) + r" · Scene \d+", scene.get("title", "")):
             scene["title"] = by_id[scene["chapter_id"]]["title"] + scene["title"][len(old_title):]
     target["structure_version"] = STRUCTURE_VERSION
 
@@ -210,7 +214,7 @@ def repair_structure(book, filename, data):
     if len(parsed["chapters"]) != len(book["chapters"]) or any(
         old["text"] != new["text"] for old, new in zip(book["chapters"], parsed["chapters"])
     ):
-        raise ValueError("Structure refresh cannot match the saved source text. Existing work was preserved.")
+        raise Invalid("structure_mismatch", "Structure refresh cannot match the saved source text. Existing work was preserved.")
     result = deepcopy(book)
     for old, new in zip(book["chapters"], parsed["chapters"]):
         new["id"] = old["id"]
@@ -226,6 +230,6 @@ def transform_checkpoint_structure(checkpoint, updated_book):
     titles = {chapter["id"]: chapter["title"] for chapter in updated_book["chapters"]}
     for row in result.get("chapters", []):
         if row["id"] not in titles:
-            raise ValueError("Structure refresh cannot match saved chapter progress.")
+            raise Invalid("structure_mismatch", "Structure refresh cannot match saved chapter progress.")
         row["title"] = titles[row["id"]]
     return result
