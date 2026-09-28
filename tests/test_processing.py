@@ -113,7 +113,35 @@ def test_authentication_and_billing_failures_never_retry(repository, priced, pro
     assert len(repository.attempts('book')) == 1
 
 
-@pytest.mark.parametrize('error', [httpx.ConnectError, httpx.ReadTimeout, httpx.WriteError])
+@pytest.mark.parametrize('error', [httpx.ConnectError, httpx.ConnectTimeout])
+def test_failed_connection_is_not_billed_and_retried_once(repository, priced, error):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise error('No connection', request=request)
+        return httpx.Response(200, json={'usage': {'input_tokens': 10, 'output_tokens': 3}})
+    transport_request(RequestBudget(repository, 'book'), handler)
+    first, second = repository.attempts('book')
+    assert first['status'] == 'not_sent' and first['charged_estimate_usd'] == 0 and first['cost_basis'] == 'not_sent'
+    assert first['input_tokens'] == 0 and first['output_tokens'] == 0
+    assert second['status'] == 'received'
+    assert repository.usage('book')['unknown_usage_attempts'] == 0
+
+
+def test_failed_connection_retry_is_bounded_and_reserved(repository, priced):
+    def handler(request):
+        raise httpx.ConnectError('No connection', request=request)
+    with pytest.raises(ValueError, match='No request was sent'):
+        transport_request(RequestBudget(repository, 'book'), handler)
+    assert [a['status'] for a in repository.attempts('book')] == ['not_sent', 'not_sent']
+    # The retry still passes the run request guard before it is attempted.
+    with pytest.raises(BudgetReached, match='request limit'):
+        transport_request(RequestBudget(repository, 'other', max_requests=1), handler)
+    assert len(repository.attempts('other')) == 1
+
+
+@pytest.mark.parametrize('error', [httpx.ReadTimeout, httpx.WriteError, httpx.RemoteProtocolError])
 def test_uncertain_network_failure_keeps_reservation_and_does_not_repeat(repository, priced, error):
     def handler(request):
         raise error('Unknown delivery state', request=request)
