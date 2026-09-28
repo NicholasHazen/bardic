@@ -24,6 +24,7 @@ let mediaBuffering = false;
 const listeningPreloads = new Map();
 
 function toast(message, error = false) {
+  state.lastToast = {message, error, at:Date.now()};
   clearTimeout(toastTimer);
   $('#toast').textContent = message;
   $('#toast').classList.toggle('error', error);
@@ -293,11 +294,11 @@ function saveProgress() {
   safeWrite(progressKey(), {chapterId:state.chapterId, segmentId:state.segmentId, currentTime:time});
   safeWrite('bardic:lastBook', state.book.id);
 }
-function stopAudio({clear = false} = {}) {
+function stopAudio({clear = false, keepAhead = false} = {}) {
   window.BardicVoicePreview?.stop();
   finishVoicePreview();
   playGeneration++; preparingListen = false; mediaBuffering = false;
-  window.BardicListen?.stop(state.book);
+  window.BardicListen?.stop(state.book, {keepAhead});
   clearListeningPreloads();
   audio.pause();
   if (clear) { audio.removeAttribute('src'); audio.load(); state.audioSegmentId = null; state.pendingOffset = 0; previewEnhanced = false; }
@@ -414,12 +415,14 @@ function updateListeningBuffer() {
   if (!segment) return;
   window.BardicListen?.updatePlayback?.(state.book, segment, {playbackRate:audio.playbackRate, currentTime:passageTime()});
   // Warm only the next two locally generated files. Fetching these URLs cannot
-  // start synthesis and never crosses a chapter or narrator selection. Chunk
+  // start synthesis; it follows playback across chapters only when continuous
+  // listening allows, and never crosses a narrator selection. Chunk
   // clips share one file, so look ahead for the next two different files.
-  const segments = chapterSegments();
+  const segments = orderedSegments();
   const index = segments.findIndex(item => item.id === segment.id);
   const urls = new Set();
-  for (const item of segments.slice(index + 1)) {
+  for (const [offset, item] of segments.slice(index + 1).entries()) {
+    if (!window.BardicListen?.allowsAdvance(state.book, segments[index + offset], item)) break;
     const url = listeningAudio(item)?.url;
     if (!url) break;
     if (url !== audio.getAttribute('src')) urls.add(url);
@@ -482,8 +485,272 @@ async function finishClip() {
   } else {
     window.BardicListen?.stop(state.book); clearListeningPreloads();
     updatePlayer(); saveProgress();
-    toast(simpleActive() ? 'Chapter complete. Choose the next chapter when you are ready.' : 'The end. A good place to linger.');
+    toast(index < segments.length - 1 ? 'Chapter complete. Choose the next chapter when you are ready.' : 'The end. A good place to linger.');
   }
+}
+// Book cover art for the player and the lock screen. The book detail omits
+// the list's cover URL, so derive it from the saved cover's hash.
+function coverUrl(book) {
+  if (!book?.cover) return null;
+  return book.cover.url || (book.cover.sha256 ? `/api/books/${encodeURIComponent(book.id)}/cover?v=${encodeURIComponent(book.cover.sha256)}` : null);
+}
+let shownCover;
+function updatePlayerCover() {
+  const url = coverUrl(state.book) || '';
+  if (shownCover === url) return;
+  shownCover = url;
+  const node = $('#player-cover');
+  node.innerHTML = url ? `<img src="${escapeHTML(url)}" alt="" loading="lazy">` : icon('book');
+  node.classList.toggle('has-cover', Boolean(url));
+}
+// Lock-screen and headphone controls. Pause there stops like the player's
+// Pause, so it also ends lookahead generation.
+let mediaSessionKey = '';
+function updateMediaSession() {
+  const session = typeof navigator === 'undefined' ? null : navigator.mediaSession;
+  if (!session || !state.book) return;
+  const chapter = currentChapter(), art = coverUrl(state.book);
+  const key = JSON.stringify([state.book.id, chapter?.id, art]);
+  if (key !== mediaSessionKey && typeof MediaMetadata !== 'undefined') {
+    mediaSessionKey = key;
+    session.metadata = new MediaMetadata({title:chapter?.title || state.book.title || 'Untitled', artist:state.book.author || '', album:state.book.title || '',
+      artwork:art ? [{src:new URL(art, location.href).href, sizes:`${state.book.cover.width || 96}x${state.book.cover.height || 96}`}] : []});
+  }
+  session.playbackState = state.voicePreview ? 'none' : preparingListen || !audio.paused ? 'playing' : 'paused';
+}
+function setupMediaSession() {
+  const session = typeof navigator === 'undefined' ? null : navigator.mediaSession;
+  if (!session) return;
+  const handlers = {
+    play:() => { if (audio.paused && !preparingListen) void togglePlayback(); },
+    pause:() => { if (!audio.paused || preparingListen) void togglePlayback(); },
+    previoustrack:() => moveSegment(-1), nexttrack:() => moveSegment(1),
+  };
+  for (const [action, handler] of Object.entries(handlers)) { try { session.setActionHandler(action, handler); } catch { /* Unsupported action. */ } }
+}
+// Keep the screen on while listening in the reader, as a book app would.
+let wakeLock = null, wakeLockPending = false;
+function keepAwake(on) {
+  const lock = typeof navigator === 'undefined' ? null : navigator.wakeLock;
+  if (!lock) return;
+  if (on && !wakeLock && !wakeLockPending && document.visibilityState === 'visible') {
+    wakeLockPending = true;
+    lock.request('screen').then(sentinel => {
+      wakeLockPending = false;
+      wakeLock = sentinel;
+      sentinel.addEventListener?.('release', () => { if (wakeLock === sentinel) wakeLock = null; });
+      if (!state.readerMode || audio.paused) keepAwake(false);
+    }, () => { wakeLockPending = false; });
+  } else if (!on && wakeLock) { const sentinel = wakeLock; wakeLock = null; sentinel.release().catch(() => {}); }
+}
+// iOS lets a page start audio after an await only once that media element
+// has been started from a tap. Starting and pausing it on the first tap
+// grants that, so narration can begin when its first passage is ready.
+// Until something has really played, every tap on an empty player tries again
+// (a scroll or a refused tap does not count); the empty start/pause events it
+// causes are ignored by the media handlers.
+let audioUnlocked = false, unlockingAudio = false, unlockTimer;
+function unlockAudio() {
+  if (audioUnlocked || !audio.paused || audio.getAttribute('src')) return;
+  unlockingAudio = true;
+  clearTimeout(unlockTimer);
+  unlockTimer = setTimeout(() => { unlockingAudio = false; }, 600);
+  try { audio.play()?.catch?.(() => {}); audio.pause(); } catch { /* Playback stays tap-started. */ }
+}
+const unlockEvent = () => unlockingAudio && !audio.getAttribute('src');
+// Reader view: the chapter text, the player and nothing else. Appearance is a
+// per-browser preference; the reading position is the book's usual bookmark.
+const READER_THEMES = [['paper','Paper','#ffffff'],['sepia','Sepia','#f6efe2'],['dusk','Dusk','#2b2b2e'],['night','Night','#000000']];
+const READER_CHOICES = {font:[['serif','Serif'],['sans','Sans']], spacing:[['compact','Tight'],['normal','Normal'],['relaxed','Loose']], width:[['narrow','Narrow'],['normal','Medium'],['wide','Wide']]};
+const READER_SIZES = [16, 32];
+function readerPrefs() {
+  if (!state.readerPrefs) {
+    const saved = safeRead('bardic:reader', {}) || {};
+    const pick = (key, list, fallback) => list.some(([id]) => id === saved[key]) ? saved[key] : fallback;
+    state.readerPrefs = {theme:pick('theme', READER_THEMES, 'paper'), font:pick('font', READER_CHOICES.font, 'serif'),
+      spacing:pick('spacing', READER_CHOICES.spacing, 'normal'), width:pick('width', READER_CHOICES.width, 'normal'),
+      size:Math.min(READER_SIZES[1], Math.max(READER_SIZES[0], Number(saved.size) || 21)), follow:saved.follow !== false};
+  }
+  return state.readerPrefs;
+}
+function applyReaderPrefs() {
+  const prefs = readerPrefs(), body = document.body;
+  Object.assign(body.dataset, {readerTheme:prefs.theme, readerFont:prefs.font, readerSpacing:prefs.spacing, readerWidth:prefs.width});
+  body.style.setProperty('--reader-size', `${prefs.size}px`);
+  $('meta[name="theme-color"]')?.setAttribute('content', state.readerMode ? READER_THEMES.find(([id]) => id === prefs.theme)[2] : '#faf9f6');
+}
+function setReaderPref(key, value) {
+  const prefs = readerPrefs();
+  prefs[key] = key === 'size' ? Math.min(READER_SIZES[1], Math.max(READER_SIZES[0], Number(value) || prefs.size)) : value;
+  safeWrite('bardic:reader', prefs);
+  applyReaderPrefs(); renderReaderAppearance();
+  if (state.readerMode) updateHighlight({scroll:true, force:key !== 'follow' || value});
+}
+function renderReaderAppearance() {
+  const panel = $('#reader-appearance');
+  if (panel.hidden) return;
+  const prefs = readerPrefs();
+  const group = (key, label) => `<div class="reader-setting"><span>${label}</span><div class="reader-segmented" role="group" aria-label="${label}">${READER_CHOICES[key].map(([id, name]) => `<button type="button" data-reader-pref="${key}" data-value="${id}" aria-pressed="${prefs[key] === id}">${name}</button>`).join('')}</div></div>`;
+  const html = `<div class="reader-setting"><span>Colour</span><div class="reader-themes" role="group" aria-label="Colour">${READER_THEMES.map(([id, name]) => `<button type="button" class="reader-theme-swatch" data-reader-pref="theme" data-value="${id}" data-swatch="${id}" aria-pressed="${prefs.theme === id}"><span aria-hidden="true">Aa</span>${name}</button>`).join('')}</div></div>
+    <div class="reader-setting"><span>Text size</span><div class="reader-size"><button type="button" data-reader-size="-1" aria-label="Smaller text" ${prefs.size <= READER_SIZES[0] ? 'disabled' : ''}>A−</button><output aria-live="polite">${prefs.size}</output><button type="button" data-reader-size="1" aria-label="Larger text" ${prefs.size >= READER_SIZES[1] ? 'disabled' : ''}>A+</button></div></div>
+    ${group('font', 'Font')}${group('spacing', 'Line spacing')}${group('width', 'Page width')}
+    <label class="reader-toggle"><input type="checkbox" data-reader-follow ${prefs.follow ? 'checked' : ''}> Follow the narration</label>`;
+  if (panel.innerHTML !== html) panel.innerHTML = html;
+}
+function toggleReaderAppearance(open = $('#reader-appearance').hidden) {
+  $('#reader-appearance').hidden = !open;
+  $('#reader-appearance-button').setAttribute('aria-expanded', String(open));
+  renderReaderAppearance();
+}
+function renderReaderBar() {
+  if (!state.readerMode || !state.book) return;
+  $('#reader-bar-book').textContent = state.book.title || 'Untitled';
+  const picker = $('#reader-bar-chapter'), key = `${state.book.id}:${state.book.revision}:${state.book.chapters.length}`;
+  if (picker.dataset.book !== key) {
+    picker.innerHTML = state.book.chapters.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.title)}</option>`).join('');
+    picker.dataset.book = key;
+  }
+  picker.value = state.chapterId;
+}
+function enterReader() {
+  if (!state.book) return;
+  if (state.tab !== 'read') setTab('read');
+  state.readerMode = true; state.manualScrollAt = 0;
+  safeWrite('bardic:readerMode', true);
+  document.body.classList.add('reader-mode');
+  document.body.classList.remove('reader-chrome-hidden');
+  $('#reader-bar').hidden = false;
+  applyReaderPrefs(); renderReaderBar(); updatePlayer();
+  if (!document.querySelector('dialog[open]')) $('#exit-reader').focus({preventScroll:true});
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+}
+function exitReader() {
+  if (!state.readerMode) return;
+  state.readerMode = false;
+  safeWrite('bardic:readerMode', false);
+  document.body.classList.remove('reader-mode', 'reader-chrome-hidden');
+  $('#reader-bar').hidden = true; $('#reader-follow').hidden = true;
+  toggleReaderAppearance(false);
+  applyReaderPrefs(); keepAwake(false); updatePlayer();
+  if (!state.libraryView) $('#open-reader').focus({preventScroll:true});
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+}
+// After the reader scrolls away by hand, stop following for a while and offer
+// a way back instead of pulling the page out from under them.
+const MANUAL_SCROLL_MS = 12000;
+function activePassage() { return $$('.passage').find(el => el.dataset.segment === state.segmentId); }
+function readingBand() {
+  const bar = $('#player').getBoundingClientRect();
+  return {top:state.readerMode ? 70 : 80, bottom:Math.min(window.innerHeight, bar.height ? bar.top : window.innerHeight) - 20};
+}
+// A passage taller than the screen counts as in view while it spans it.
+function passageInView(element) {
+  const box = element.getBoundingClientRect(), band = readingBand();
+  return (box.top >= band.top && box.top < band.bottom - 40) || (box.top < band.top && box.bottom > band.bottom - 40);
+}
+function scrollToPassage(element) {
+  const box = element.getBoundingClientRect(), band = readingBand();
+  element.scrollIntoView({behavior:'smooth', block:box.height > (band.bottom - band.top) * .6 ? 'start' : 'center'});
+}
+function updateFollowButton() {
+  const active = state.readerMode && !audio.paused && activePassage();
+  $('#reader-follow').hidden = !active || passageInView(active);
+}
+
+// Listen sheet: narrator, voice and speed, then a short buffer, then the reader.
+const SHEET_SPEEDS = [.75,1,1.25,1.5,1.75,2,2.25,2.5];
+const SHEET_PROVIDER_NOTES = {system:'Free · voices on the Bardic computer', gemini:'Cloud · may incur charges', breeze:'Your Breeze server'};
+let listenSheetTimer = null, listenSheetHtml = '';
+function openListenSheet() {
+  if (!state.book) return;
+  state.listenError = '';
+  renderReader();
+  renderListenSheet();
+  const sheet = $('#listen-sheet');
+  if (!sheet.open) sheet.showModal();
+}
+function renderListenSheet() {
+  const body = $('#listen-sheet-body'), listen = window.BardicListen;
+  const choice = state.book && listen?.choices?.(state.book);
+  if (!body || !choice) return;
+  const chapter = currentChapter();
+  let html;
+  if (state.listenStart) {
+    const buffer = listen.getBuffer?.(state.book) || {seconds:0, targetSeconds:10};
+    const chunkedStart = choice.chunked && choice.mode === 'simple';
+    // The sheet only waits for the warmup; the rolling buffer continues in the reader.
+    const target = Math.min(buffer.targetSeconds || 10, 10), ready = Math.min(Math.floor(buffer.seconds || 0), target);
+    html = `<div class="listen-sheet-buffering" role="status" aria-live="polite"><span class="listen-spinner" aria-hidden="true"></span>
+      <strong>Getting your narrator ready…</strong>
+      ${chunkedStart ? '<progress aria-label="Preparing the first audio"></progress>' : `<progress max="${target}" value="${ready}" aria-label="Audio ready before playback"></progress>`}
+      <p>${chunkedStart ? escapeHTML(choice.message || 'Generating the first chunk. Longer chunks follow while you listen.') : `${ready} of ${target} seconds ready`}</p>
+      <p class="field-help">The reader opens when the first audio plays.</p>
+      <button type="button" class="button subtle" data-sheet-action="cancel">Cancel</button></div>`;
+  } else {
+    const listening = !audio.paused && simpleActive();
+    const previewing = Boolean(state.voicePreview);
+    const note = choice.provider === 'gemini'
+      ? `Gemini narrates in large chunks paced to your request limits and may incur charges.${choice.continuous ? ' While you listen, the next chapter is queued about 10 minutes ahead.' : ''} Pause stops new requests.`
+      : choice.provider === 'breeze' ? 'Breeze narrates at about real-time speed on your server; faster listening may pause to buffer.'
+      : 'Device narration runs on the computer serving Bardic, with no charges.';
+    const unavailable = choice.provider === 'gemini' ? 'Add a Gemini API key in Providers & settings to generate narration. Saved audio still plays.'
+      : choice.provider === 'breeze' ? 'Connect Breeze and choose a voice to generate narration. Saved audio still plays.' : 'Device voices are unavailable on this server.';
+    html = `<p class="listen-sheet-where">${listening ? 'Listening to' : 'Starts at'} <strong>${escapeHTML(chapter?.title || state.book.title || '')}</strong>${!listening && state.pendingOffset ? ', where you left off' : ''}.</p>
+      <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-provider-label">Narration</span><div class="listen-sheet-providers" role="radiogroup" aria-labelledby="listen-sheet-provider-label">${choice.providers.map(item => `<button type="button" role="radio" data-sheet-provider="${item.id}" aria-checked="${item.id === choice.provider}"><strong>${escapeHTML(item.label)}</strong><small>${escapeHTML(item.available ? SHEET_PROVIDER_NOTES[item.id] : 'Not set up')}</small></button>`).join('')}</div></div>
+      <div class="listen-sheet-field"><label class="field-label" for="listen-sheet-voice">Voice</label><div class="listen-sheet-voice"><select id="listen-sheet-voice">${choice.voices.map(voice => `<option value="${escapeHTML(voice.id)}" ${voice.id === choice.voice ? 'selected' : ''} ${voice.usable || voice.id === choice.voice ? '' : 'disabled'}>${escapeHTML(voice.name)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`).join('')}</select><button type="button" class="button subtle" data-sheet-action="example" ${choice.provider === 'breeze' && !choice.breezeVoiceReady ? 'disabled' : ''}>${previewing ? 'Stop example' : 'Hear example'}</button></div></div>
+      <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-speed-label">Speed</span><div class="listen-sheet-speeds" role="radiogroup" aria-labelledby="listen-sheet-speed-label">${SHEET_SPEEDS.map(rate => `<button type="button" role="radio" data-sheet-speed="${rate}" aria-checked="${rate === audio.playbackRate}">${rate}×</button>`).join('')}</div></div>
+      <label class="listen-sheet-toggle"><input type="checkbox" data-sheet-continuous ${choice.continuous ? 'checked' : ''}> Keep going into the next chapter</label>
+      <p class="field-help">${escapeHTML(note)}</p>
+      ${choice.available ? '' : `<p class="inline-error">${escapeHTML(unavailable)}</p>`}
+      ${state.listenError || choice.error ? `<p class="inline-error" role="alert">${escapeHTML(state.listenError || choice.error)}</p>` : ''}
+      <div class="listen-sheet-actions"><button type="button" class="button subtle" data-sheet-action="read">${state.readerMode ? 'Back to reading' : 'Just read'}</button><button type="button" class="button primary" data-sheet-action="start">${listening ? 'Continue listening' : 'Start listening'}</button></div>`;
+  }
+  // The browser reserializes innerHTML differently, so compare with what was written.
+  if (listenSheetHtml === html && body.childElementCount) return;
+  listenSheetHtml = html;
+  // Keep keyboard focus on the same control across repaints.
+  const focused = body.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = focused && ['sheetAction','sheetProvider','sheetSpeed'].find(key => focused.dataset[key] !== undefined);
+  const focusSelector = focused?.id === 'listen-sheet-voice' ? '#listen-sheet-voice' : focused?.dataset.sheetContinuous !== undefined ? '[data-sheet-continuous]'
+    : focusKey ? `[data-${focusKey.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}="${focused.dataset[focusKey]}"]` : null;
+  body.innerHTML = html;
+  if (focusSelector) $(focusSelector, body)?.focus({preventScroll:true});
+}
+async function startListening() {
+  const listen = window.BardicListen;
+  if (!state.book || state.listenStart || !listen) return;
+  if (!audio.paused && simpleActive()) { $('#listen-sheet').close(); enterReader(); return; }
+  const segment = segmentById(state.segmentId) || chapterSegments()[0];
+  if (!segment) return;
+  // Switching to one narrator stops and clears playback, so read the bookmark first.
+  const offset = state.audioSegmentId === segment.id && audio.getAttribute('src') ? passageTime() : state.pendingOffset || 0;
+  if (!simpleActive()) listen.choose(state.book, 'mode', 'simple');
+  unlockAudio();
+  const token = state.listenStart = {}, since = Date.now();
+  state.listenError = '';
+  renderListenSheet();
+  clearInterval(listenSheetTimer);
+  listenSheetTimer = setInterval(renderListenSheet, 500);
+  try { await startSegment(segment.id, {offset, scroll:true}); }
+  finally { if (state.listenStart === token) clearInterval(listenSheetTimer); }
+  if (state.listenStart !== token) return;
+  state.listenStart = null;
+  if (!audio.paused && $('#listen-sheet').open) { $('#listen-sheet').close(); enterReader(); return; }
+  // Toasts sit under the dialog's backdrop; repeat the reason inside the sheet.
+  if (audio.paused) state.listenError = state.lastToast?.at >= since ? state.lastToast.message : 'Narration could not start. Check the narrator and try again.';
+  renderListenSheet();
+}
+function cancelListenStart() {
+  if (!state.listenStart) return;
+  state.listenStart = null;
+  clearInterval(listenSheetTimer);
+  stopAudio();
+  renderListenSheet();
+}
+function previewNarratorFromSheet() {
+  if (state.voicePreview) { window.BardicVoicePreview?.stop(); return; }
+  const selection = window.BardicListen?.getSelection?.(state.book);
+  if (selection) previewNarrator({...selection, segment_id:state.segmentId || null});
 }
 function reportPlaybackIssue(event, details = {}) {
   const example = state.voicePreview ? window.BardicVoicePreview?.getState() : null;
@@ -497,7 +764,7 @@ function renderLibrary() {
   const books = state.books.filter(book => !query || `${book.title || 'Untitled'} ${book.author || ''}`.toLocaleLowerCase().includes(query));
   $('#library-list').innerHTML = books.length ? books.map(book => {
     const active = !state.libraryView && state.book?.id === book.id;
-    return `<button class="library-item ${active ? 'active' : ''}" data-book="${escapeHTML(book.id)}" ${active ? 'aria-current="true"' : ''}><span class="cover-thumb" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : escapeHTML((book.title || 'B').charAt(0))}</span><span><strong>${escapeHTML(book.title || 'Untitled')}</strong><small>${escapeHTML(book.author || 'Personal edition')}</small></span></button>`;
+    return `<button class="library-item ${active ? 'active' : ''}" data-book="${escapeHTML(book.id)}" ${active ? 'aria-current="true"' : ''}><span class="cover-thumb" aria-hidden="true">${coverUrl(book) ? `<img src="${escapeHTML(coverUrl(book))}" alt="" loading="lazy">` : escapeHTML((book.title || 'B').charAt(0))}</span><span><strong>${escapeHTML(book.title || 'Untitled')}</strong><small>${escapeHTML(book.author || 'Personal edition')}</small></span></button>`;
   }).join('') : `<p class="sidebar-hint">${state.books.length ? `No books match “${escapeHTML(query)}”. Try another title or author.` : 'Your next great listen starts here.'}</p>`;
   const status = $('#library-search-status');
   if (status) status.textContent = query ? `${books.length} ${books.length === 1 ? 'book' : 'books'} found` : '';
@@ -506,7 +773,7 @@ function renderLibrary() {
   if (shelf) {
     $('#home-library').hidden = !state.books.length;
     $('#home-library-count').textContent = `${query ? `${books.length} of ` : ''}${state.books.length} ${state.books.length === 1 ? 'book' : 'books'}`;
-    shelf.innerHTML = books.length ? books.map(book => `<button type="button" class="shelf-book" data-book="${escapeHTML(book.id)}"><span class="shelf-cover" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : `<span>${escapeHTML((book.title || 'B').charAt(0))}</span>`}</span><span class="shelf-title">${escapeHTML(book.title || 'Untitled')}</span><span class="shelf-author">${escapeHTML(book.author || 'Personal edition')}</span><span class="shelf-meta">${state.book?.id === book.id ? 'Return to book' : 'Open book'} ${icon('arrow')}</span></button>`).join('') : `<p class="empty-state">No books match “${escapeHTML(query)}”. Try another title or author.</p>`;
+    shelf.innerHTML = books.length ? books.map(book => `<button type="button" class="shelf-book" data-book="${escapeHTML(book.id)}"><span class="shelf-cover" aria-hidden="true">${coverUrl(book) ? `<img src="${escapeHTML(coverUrl(book))}" alt="" loading="lazy">` : `<span>${escapeHTML((book.title || 'B').charAt(0))}</span>`}</span><span class="shelf-title">${escapeHTML(book.title || 'Untitled')}</span><span class="shelf-author">${escapeHTML(book.author || 'Personal edition')}</span><span class="shelf-meta">${state.book?.id === book.id ? 'Return to book' : 'Open book'} ${icon('arrow')}</span></button>`).join('') : `<p class="empty-state">No books match “${escapeHTML(query)}”. Try another title or author.</p>`;
   }
 }
 async function refreshStatus({syncSettings = true} = {}) {
@@ -668,12 +935,7 @@ function renderReader() {
     onToggle:() => { if (state.voicePreview) window.BardicVoicePreview?.stop(); return togglePlayback(); },
     onRateChange:setPlaybackRate,
     beforeChapterPrepare:() => window.BardicVoicePreview?.waitForStopped?.(),
-    onPreview:config => {
-      const voice = config.voice || '';
-      const label = voice.startsWith('library:') ? voiceHelpers()?.findVoice(state.voiceLibrary, voice.slice(8))?.name || 'Library voice'
-        : voice || (config.provider === 'breeze' ? 'Default Breeze voice' : 'Default device voice');
-      startVoicePreview(config, `${label} · Narrator example`);
-    },
+    onPreview:previewNarrator,
     onRefreshBreeze:() => refreshBreeze(),
     onJob:job => {
       if (!job || job.book_id !== state.book?.id) return;
@@ -723,8 +985,15 @@ function renderReader() {
   $('#next-chapter').disabled = chapterIndex === state.book.chapters.length - 1;
   const ready = segments.filter(listeningReady).length;
   const chunkedListening = simpleActive() && chunkedProvider(window.BardicListen?.getSelection?.(state.book)?.provider);
-  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
+  renderReaderBar();
+  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? `Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
   renderPassageDetail();
+}
+function previewNarrator(config) {
+  const voice = config.voice || '';
+  const label = voice.startsWith('library:') ? voiceHelpers()?.findVoice(state.voiceLibrary, voice.slice(8))?.name || 'Library voice'
+    : voice || (config.provider === 'breeze' ? 'Default Breeze voice' : 'Default device voice');
+  startVoicePreview(config, `${label} · Narrator example`);
 }
 function renderPassageDetail() {
   const segment = segmentById(state.segmentId);
@@ -974,6 +1243,7 @@ function showLibrary() {
   // current selection. Its late response or error must not navigate us away.
   if (state.loading) { state.selectionVersion++; state.loading = false; if (state.book) void pollJobs(false); }
   state.libraryView = true;
+  exitReader();
   syncWorkspaceNavigation();
   const heading = $('#welcome h1');
   heading?.setAttribute('tabindex', '-1');
@@ -989,6 +1259,7 @@ function navigateTabs(event) {
   setTab(tabs[next].dataset.tab, {focus:true});
 }
 function openListeningSettings() {
+  if (state.readerMode) { openListenSheet(); return; }
   setTab('read');
   const panel = $('#simple-listen');
   const disclosure = panel.closest('details');
@@ -1006,20 +1277,26 @@ function openAnalysisPlanning() {
 }
 function setChapter(id, {scroll = true} = {}) {
   if (!state.book?.chapters.some(c => c.id === id)) return;
+  // In the reader, choosing a chapter while listening keeps listening there.
+  const keepListening = state.readerMode && simpleActive() && (preparingListen || !audio.paused);
   saveProgress();
-  stopAudio({clear:true});
+  stopAudio({clear:true, keepAhead:keepListening});
   state.chapterId = id;
   state.segmentId = chapterSegments()[0]?.id;
   state.pendingOffset = 0;
   renderReader(); renderStudio(); updatePlayer(); saveProgress();
   if (scroll) window.scrollTo({top:0, behavior:'smooth'});
+  if (keepListening && state.segmentId) void startSegment(state.segmentId, {autoplay:true});
 }
-function updateHighlight({scroll = false} = {}) {
+function updateHighlight({scroll = false, force = false} = {}) {
   $$('.passage').forEach(el => { const active = el.dataset.segment === state.segmentId; el.classList.toggle('active', active); if (active) el.setAttribute('aria-current','true'); else el.removeAttribute('aria-current'); });
   if (scroll && state.tab === 'read') {
-    const active = $$('.passage').find(el => el.dataset.segment === state.segmentId);
-    if (active) { const box = active.getBoundingClientRect(); if (box.top < 80 || box.bottom > window.innerHeight - 135) active.scrollIntoView({behavior:'smooth', block:'center'}); }
+    const active = activePassage();
+    const held = state.readerMode && !force && (!readerPrefs().follow || Date.now() - (state.manualScrollAt || 0) < MANUAL_SCROLL_MS);
+    if (active && !held && !passageInView(active)) scrollToPassage(active);
+    if (force) state.manualScrollAt = 0;
   }
+  if (state.readerMode) updateFollowButton();
   renderPassageDetail();
 }
 async function startSegment(id, {autoplay = true, offset = 0, scroll = false, enhanced = false, continuation = false} = {}) {
@@ -1029,7 +1306,8 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
   // Repeated passage clicks share the pending request. Selecting another
   // passage or a studio preview stops that request's playback intent.
   if (preparingListen && state.segmentId === id && !enhanced) return;
-  if (!continuation || enhanced) { window.BardicListen?.stop(state.book); clearListeningPreloads(); }
+  // Moving to another passage keeps generation already queued ahead; Pause and Stop cancel it.
+  if (!continuation || enhanced) { window.BardicListen?.stop(state.book, {keepAhead:!enhanced}); clearListeningPreloads(); }
   preparingListen = false; mediaBuffering = false;
   const playToken = ++playGeneration;
   const bookVersion = state.selectionVersion;
@@ -1119,8 +1397,12 @@ async function togglePlayback() {
     ? passageTime() : state.pendingOffset;
   await startSegment(segment.id, {offset});
 }
+// Reading order is rebuilt only when the book object changes (it is read on every time update).
+let orderedCache = {book:null, list:[]};
 function orderedSegments() {
-  return state.book ? state.book.chapters.flatMap(chapter => state.book.segments.filter(segment => segment.chapter_id === chapter.id)) : [];
+  if (!state.book) return [];
+  if (orderedCache.book !== state.book) orderedCache = {book:state.book, list:state.book.chapters.flatMap(chapter => state.book.segments.filter(segment => segment.chapter_id === chapter.id))};
+  return orderedCache.list;
 }
 async function moveSegment(delta, autoplay = !audio.paused, continuation = false) {
   const segments = orderedSegments();
@@ -1211,9 +1493,11 @@ function updatePlayer() {
     $('#audio-progress').disabled = !hasAudio || !duration;
     $('#audio-progress').setAttribute('aria-valuetext', `${formatTime(hasAudio ? audio.currentTime : 0)} of ${formatTime(duration)}`);
     $('#player-progress').textContent = '';
+    if (!state.listenStart && $('#listen-sheet').open) renderListenSheet();
     return;
   }
   $('#voice-preview-panel').hidden = true;
+  if (!state.listenStart && $('#listen-sheet').open && document.activeElement?.id !== 'listen-sheet-voice') renderListenSheet();
   $('#play-button').disabled = false;
   const segment = segmentById(state.segmentId);
   const chapter = currentChapter();
@@ -1245,6 +1529,8 @@ function updatePlayer() {
   const ordered = orderedSegments();
   $('#previous-segment').disabled = ordered.findIndex(s => s.id === state.segmentId) <= 0;
   $('#next-segment').disabled = ordered.findIndex(s => s.id === state.segmentId) >= ordered.length - 1;
+  updatePlayerCover(); updateMediaSession();
+  keepAwake(Boolean(state.readerMode && isPlaying));
 }
 function updateProviderHint() {
   const provider = $('#render-provider').value;
@@ -1618,6 +1904,63 @@ cloudProviders.forEach(provider => {
 $$('[data-refresh-models]').forEach(button => button.addEventListener('click', () => refreshModels(button.dataset.refreshModels)));
 $('#settings-dialog').addEventListener('close', clearKeyInputs);
 
+// The first tap anywhere prepares the media element for iOS playback.
+document.addEventListener('click', unlockAudio, true);
+document.addEventListener('touchend', unlockAudio, true);
+$('#start-listening').addEventListener('click', openListenSheet);
+$('#open-reader').addEventListener('click', enterReader);
+$('#exit-reader').addEventListener('click', exitReader);
+$('#reader-listen-button').addEventListener('click', openListenSheet);
+$('#reader-appearance-button').addEventListener('click', () => toggleReaderAppearance());
+$('#reader-bar-chapter').addEventListener('change', event => setChapter(event.target.value));
+$('#reader-follow').addEventListener('click', () => { updateHighlight({scroll:true, force:true}); $('#reader-follow').hidden = true; });
+$('#reader-appearance').addEventListener('click', event => {
+  const pref = event.target.closest('[data-reader-pref]');
+  if (pref) { setReaderPref(pref.dataset.readerPref, pref.dataset.value); return; }
+  const size = event.target.closest('[data-reader-size]');
+  if (size) setReaderPref('size', readerPrefs().size + Number(size.dataset.readerSize));
+});
+$('#reader-appearance').addEventListener('change', event => { if (event.target.dataset.readerFollow !== undefined) setReaderPref('follow', event.target.checked); });
+document.addEventListener('click', event => {
+  // The panel repaints on each choice, so test the dispatch path, not the now-detached target.
+  if ($('#reader-appearance').hidden || event.composedPath().some(node => ['reader-appearance','reader-appearance-button'].includes(node.id))) return;
+  // A tap outside only closes the panel; it must not also jump narration to a passage.
+  event.stopPropagation(); event.preventDefault();
+  toggleReaderAppearance(false);
+}, true);
+// Only scrolling the text counts; dragging the scrubber or a panel does not.
+for (const name of ['touchmove','wheel']) window.addEventListener(name, event => {
+  if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) state.manualScrollAt = Date.now();
+}, {passive:true});
+let lastScrollY = window.scrollY;
+window.addEventListener('scroll', () => {
+  if (!state.readerMode) return;
+  const y = window.scrollY, delta = y - lastScrollY;
+  lastScrollY = y;
+  // Hide the reader bar while reading down; show it again on the way up.
+  if (Math.abs(delta) > 6 && $('#reader-appearance').hidden) document.body.classList.toggle('reader-chrome-hidden', delta > 0 && y > 80);
+  updateFollowButton();
+}, {passive:true});
+$('#listen-sheet-body').addEventListener('click', event => {
+  const target = event.target.closest('[data-sheet-action],[data-sheet-provider],[data-sheet-speed]');
+  if (!target || !state.book) return;
+  const listen = window.BardicListen;
+  if (target.dataset.sheetProvider) { listen?.choose(state.book, 'provider', target.dataset.sheetProvider); renderListenSheet(); return; }
+  if (target.dataset.sheetSpeed) { setPlaybackRate(Number(target.dataset.sheetSpeed)); renderListenSheet(); return; }
+  const action = target.dataset.sheetAction;
+  if (action === 'start') void startListening();
+  else if (action === 'cancel') cancelListenStart();
+  else if (action === 'example') previewNarratorFromSheet();
+  else if (action === 'read') { $('#listen-sheet').close(); enterReader(); }
+});
+$('#listen-sheet-body').addEventListener('change', event => {
+  if (!state.book) return;
+  if (event.target.id === 'listen-sheet-voice') window.BardicListen?.choose(state.book, 'voice', event.target.value);
+  else if (event.target.dataset.sheetContinuous !== undefined) window.BardicListen?.setContinuous(state.book, event.target.checked);
+  renderListenSheet();
+});
+$('#listen-sheet').addEventListener('close', () => { cancelListenStart(); if (state.voicePreview) window.BardicVoicePreview?.stop(); });
+
 // Clip-boundary synchronization: no fabricated word timing.
 $('#play-button').addEventListener('click', togglePlayback);
 $('#close-voice-preview').addEventListener('click', () => window.BardicVoicePreview?.stop());
@@ -1645,11 +1988,11 @@ audio.addEventListener('loadedmetadata', () => {
   updatePlayer();
 });
 audio.addEventListener('timeupdate', () => { followClip(); updatePlayer(); updateListeningBuffer(); if (Date.now() - state.lastSave > 1000) { saveProgress(); state.lastSave = Date.now(); } });
-audio.addEventListener('play', () => { updatePlayer(); renderReader(); });
-audio.addEventListener('waiting', () => { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); });
+audio.addEventListener('play', () => { if (unlockEvent()) return; updatePlayer(); renderReader(); });
+audio.addEventListener('waiting', () => { if (unlockEvent()) return; mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); });
 audio.addEventListener('stalled', () => { if (!audio.paused) { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); } });
-audio.addEventListener('playing', () => { if (mediaBuffering) reportPlaybackIssue('playback_resumed'); mediaBuffering = false; updatePlayer(); updateListeningBuffer(); });
-audio.addEventListener('pause', () => { updatePlayer(); saveProgress(); renderReader(); });
+audio.addEventListener('playing', () => { audioUnlocked = true; if (mediaBuffering) reportPlaybackIssue('playback_resumed'); mediaBuffering = false; updatePlayer(); updateListeningBuffer(); });
+audio.addEventListener('pause', () => { if (unlockEvent()) return; updatePlayer(); saveProgress(); renderReader(); });
 audio.addEventListener('ended', () => finishClip());
 audio.addEventListener('error', () => {
   if (!audio.getAttribute('src')) return;
@@ -1671,18 +2014,27 @@ audio.addEventListener('error', () => {
 });
 window.addEventListener('pagehide', () => { saveProgress(); stopAudio(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.readerMode && !document.querySelector('dialog[open]')) { if (!$('#reader-appearance').hidden) toggleReaderAppearance(false); else exitReader(); } });
 document.addEventListener('keydown', event => { if (event.code === 'Space' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.repeat && !event.target.closest('input,textarea,select,button,[role="button"],a,dialog') && state.book) { event.preventDefault(); togglePlayback(); } });
 
 async function init() {
+  let restoringReader = false;
   try {
+    // Put the reader chrome up before the book loads so the workspace does not flash.
+    restoringReader = Boolean(safeRead('bardic:readerMode', false));
+    if (restoringReader) { document.body.classList.add('reader-mode'); applyReaderPrefs(); }
     await Promise.all([refreshStatus(), refreshLibrary(), loadVoiceLibrary()]);
     const saved = safeRead('bardic:lastBook');
     const book = state.books.find(item => item.id === saved) || state.books[0];
     if (book) await selectBook(book.id); else renderBook();
+    if (restoringReader && state.book) enterReader();
+    else if (restoringReader) document.body.classList.remove('reader-mode');
   } catch (error) {
+    if (restoringReader) document.body.classList.remove('reader-mode');
     $('#fatal-error').hidden = false;
     $('#fatal-error').textContent = `The local studio could not connect: ${error.message}. Check that the Bardic server is running, then reload this page.`;
   }
 }
 setupVoicePreviews();
+setupMediaSession();
 init();

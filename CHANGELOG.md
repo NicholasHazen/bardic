@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Simple listening now keeps going across chapters until you pause or stop, a request limit is reached, generation fails or the book ends (D08 amended). Device voices and Breeze extend their bounded lookahead into the next chapter; Gemini queues the next chapter's job about 10 minutes ahead while playback runs, once per chapter per Play, and never after a quota stop, a failed or stopped job, or **Stop generating**. **Continue into the next chapter** (per book) restores the chapter stop.
+- Added a **reader view** for tablets and phones: full-screen chapter text and the player, with Paper, Sepia, Dusk and Night colours, text size, font, spacing and width, follow-the-narration with **Back to narration**, an auto-hiding top bar with the chapter menu, and safe-area spacing. **Start listening** opens a sheet (narrator, voice, speed, continue toggle) that buffers with a spinner and then opens the reader.
+- The player shows the book cover at every width, and the sidebar keeps covers after a book refresh. Lock-screen and headphone controls (Media Session) show the book, chapter and cover; the screen stays awake while listening in the reader; the first tap prepares audio so iOS Safari can start narration after it buffers.
 - Integration fixes across Cast, Voices and Analysis:
   - Saving a Cast card now records as edited only the fields that changed, so a voice-only save no longer locks the character's profile text.
   - Accepting an analysis version clears only the takes that acceptance invalidates, keeping takes hidden by a voice switch. It gives device voices only to newly added characters, and updates the Cast attribution line.

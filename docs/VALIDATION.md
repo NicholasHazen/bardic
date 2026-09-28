@@ -6,6 +6,15 @@ This is a dated development record. Counts and account outcomes below belong to 
 
 Historical `.spintails/` backup paths and `spintails` commands below retain their original spelling. The current application is Bardic; see [rename compatibility](OPERATIONS.md#upgrading-from-spin-tails) for current launch commands and library selection.
 
+## Continuous listening and reader view
+
+Verified on September 28, 2026, with Python 3.12 (project venv) and Node 22.
+
+- `uv run --frozen pytest -q`: 994 passed, 1 skipped. All 20 Node UI suites pass, including new continuous-listening cases: the device/Breeze lookahead crossing chapters within its 12-passage bound; Gemini queue-ahead once per chapter per Play with full-size chunks; no queueing after a quota stop, after Stop generating or after Pause; Pause cancelling an automatically started job (including one whose request was still in flight) while moving within the book keeps it; a crossing waiting for an in-flight lookahead request instead of sending a second; no automatic back matter; the continuous setting off restoring the chapter stop; and the player crossing chapters and stopping at the end of the book.
+- Two adversarial reviews (cost logic; iPad UI) found and fixed: an automatic next-chapter job surviving Pause or closing the page; back matter being queued; a duplicate quick-start request on crossing; the once-per-chapter guard re-arming; the listen sheet repainting several times a second (breaking the voice picker); the first-tap audio unlock leaving a false "Buffering…"; start errors hidden behind the sheet; choosing a chapter in the reader stopping narration; tall passages keeping **Back to narration** visible.
+- A development server with a synthetic three-chapter EPUB and free macOS device voices, driven in Chrome emulating iPad portrait/landscape and a phone: the listen sheet buffered, opened the reader and played through all three chapters to "The end" at 2.5×; themes, text settings, reload persistence and the player cover were checked, with no horizontal scroll at 390 px.
+- Not verified: real iPad Safari (the first-tap unlock, lock-screen controls, Wake Lock, and playback continuing with the screen locked across files), and live Gemini or Breeze continuation. Tests use mocked providers.
+
 ## Service control (`bardicctl`)
 
 Verified on September 27, 2026, with Python 3.11.5 (worktree venv) and uv 0.8.17 on macOS (Darwin 27).

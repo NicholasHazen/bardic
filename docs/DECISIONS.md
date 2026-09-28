@@ -82,6 +82,8 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Revisit when:** Quality testing supports larger scene-aware takes, controlled prefetch, simple-mode chapter preparation/export or voice design. Retain source-span mapping and both old and replacement takes.
 
+**Amended 2026-09-28 (continuous listening):** At the owner's request, simple listening now keeps going through the book by default. Play is the explicit action that authorizes generation until the listener pauses or stops, a request limit is reached, generation fails, or the book ends. Device voices and Breeze extend the bounded lookahead (at most 12 future passages, about 45 listening seconds) across chapter boundaries. Gemini queues the next chapter's job while playback runs, at most once per chapter per Play, when less than about 10 minutes of generated audio is ahead. It never does so after a quota or budget stop, after a failed, cancelled or interrupted job for that chapter, or after **Stop generating**; those still need an explicit **Resume chapter** or Play. A job started this way belongs to the listening that asked for it: Pause, Stop or leaving the page cancels it (requests already sent finish and are kept), while moving to another passage or chapter keeps it. Continuous listening stops before back matter (notes, index) unless listening started there. Uncertain requests are still never resent. A per-book **Continue into the next chapter** setting restores the chapter-boundary stop.
+
 ## D09 · Honest synchronization and audio validation
 
 **Decision:** Highlight the current passage using measured clip boundaries. Validate audio format/frame completeness and reject empty/silent output. Do not claim word-level alignment or transcript fidelity.

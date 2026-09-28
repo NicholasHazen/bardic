@@ -14,8 +14,9 @@ function story(count=20) {
     id:`p${i}`,chapter_id:i<count ? 'chapter-a' : 'chapter-b',start:i*20,end:i*20+10,text:`Original passage ${i}.`,
   }))};
 }
-function environment({book=story(),duration=12,handler,records}={}) {
+function environment({book=story(),duration=12,handler,records,continuous}={}) {
   const calls=[], container=new Container(), storage=new Map();
+  if (continuous !== undefined) storage.set(`bardic:listen:${book.id}`,JSON.stringify({continuous}));
   let plays=0;
   const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id,available:true});
   const normal=call=>call.url.endsWith('/cancel') ? {status:'cancelled'} : {
@@ -127,15 +128,34 @@ test('the shared speed callback keeps playback intent and saved audio without ca
   env.api.stop(env.book);
 });
 
-test('short passages obey the warmup cap and 12-future-passage bound, without crossing chapters',async()=>{
+test('short passages obey the warmup cap and 12-future-passage bound, without crossing chapters when continuous is off',async()=>{
   for (const count of [2,30]) {
-    const env=environment({book:story(count),duration:.1}); await env.init();
+    const env=environment({book:story(count),duration:.1,continuous:false}); await env.init();
     await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
     assert.equal(env.posts().length,Math.min(3,count));
     env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5});
     await settle();
     assert.equal(env.posts().length,Math.min(13,count));
     assert.ok(env.posts().every(call=>Number(call.body.segment_id.slice(1))<count));
+    env.api.stop(env.book);
+  }
+});
+
+test('continuous listening carries warmup and the rolling queue into the next chapter, still bounded',async()=>{
+  for (const count of [2,30]) {
+    const env=environment({book:story(count),duration:.1}); await env.init();
+    await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+    assert.equal(env.posts().length,3,'Warmup may include the next chapter\'s opening passages');
+    env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5});
+    await settle();
+    assert.equal(env.posts().length,Math.min(13,count+2),'At most 12 future passages, across the chapter boundary');
+    assert.equal(env.posts().some(call=>Number(call.body.segment_id.slice(1))>=count),count<12);
+    // Playback moving into the next chapter keeps the same intent and queue.
+    const next=env.book.segments[count];
+    env.api.updatePlayback(env.book,next,{playbackRate:2.5});
+    assert.equal(env.api.getBuffer(env.book).preparing || env.api.getBuffer(env.book).seconds>0,true);
+    const continued=await env.api.prepare(env.book,next,{playbackRate:2.5,continuation:true});
+    assert.equal(continued?.asset_id,next.id);
     env.api.stop(env.book);
   }
 });

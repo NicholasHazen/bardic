@@ -274,3 +274,138 @@ test('automatic continuation into a passage outside the running job fails immedi
   env.state.jobs = [{...running,status:'completed'}];
   await settle();
 });
+
+// Continuous listening: while Play runs, the next chapter is queued ahead of
+// the listener, once per chapter, and never after a quota stop or Stop generating.
+const chapterA = () => Array.from({length:12},(_,i) => ({segment_id:`p${i}`,audio:clip(`p${i}`,'chunk-a',i*3,i*3+3)}));
+const nextChapterJob = (status = 'running') => ({id:'job-b',kind:'listen_chapter',status,chapter_id:'chapter-b',session_id:'session-g',chunks:[],projection:[]});
+const startsNext = (call, state) => { state.jobs = [nextChapterJob()]; return {session:{id:'session-g'},job:state.jobs[0],joined:false}; };
+async function playing(env) {
+  await env.api.prepare(env.book,env.book.segments[0],{playbackRate:1});
+  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:1,currentTime:1});
+  await settle();
+}
+
+test('continuous: playing queues the next chapter once, with full-size chunks', async () => {
+  const env = environment({takes:chapterA,chapterPost:startsNext});
+  await env.init();
+  assert.equal(env.generation().length,0,'rendering queues nothing');
+  await playing(env);
+  assert.equal(env.generation().length,1);
+  assert.equal(env.generation()[0].body.segment_id,'p12','the first passage without audio, in the next chapter');
+  assert.equal(env.generation()[0].body.intent,'queue');
+  env.state.jobs = [nextChapterJob('completed')];
+  await settle();
+  env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+  await settle();
+  assert.equal(env.generation().length,1,'one automatic attempt per chapter per Play');
+  env.api.stop(env.book);
+  env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+  await settle();
+  assert.equal(env.generation().length,1,'no queueing after Stop');
+});
+
+test('continuous: queueing ahead waits for an explicit Resume after a quota stop or Stop generating', async () => {
+  const limited = environment({takes:chapterA,jobs:[{...nextChapterJob('quota_limited'),chapter_id:'chapter-a',voice:'Kore',model:'gemini-3.8-flash-tts'}]});
+  await limited.init();
+  await settle();
+  await playing(limited);
+  assert.equal(limited.generation().length,0,'a quota stop is not retried automatically');
+
+  const held = environment({takes:chapterA,jobs:[{...nextChapterJob('running'),chapter_id:'chapter-a',voice:'Kore',model:'gemini-3.8-flash-tts'}]});
+  await held.init();
+  await settle();
+  held.click('stop-generating');
+  await settle();
+  held.state.jobs = [{...held.state.jobs[0],status:'cancelled'}];
+  await settle();
+  // Play with continuation keeps the hold; only a fresh explicit Play lifts it.
+  await held.api.prepare(held.book,held.book.segments[0],{playbackRate:1,continuation:true});
+  held.api.updatePlayback(held.book,held.book.segments[0],{playbackRate:1});
+  await settle();
+  assert.ok(!held.generation().some(call => call.url.endsWith('/listen/chapter')),'Stop generating holds automatic queueing');
+});
+
+test('continuous: playback crossing into an unqueued chapter starts that chapter; turning it off restores the stop', async () => {
+  const env = environment({takes:chapterA,chapterPost:startsNext});
+  await env.init();
+  env.api.setContinuous(env.book,false);
+  await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
+  await assert.rejects(env.api.prepare(env.book,env.book.segments[12],{continuation:true}),/has not been generated/);
+  assert.equal(env.generation().length,0,'without continuous listening the chapter end stops playback');
+  env.api.setContinuous(env.book,true);
+  await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
+  const waiting = env.api.prepare(env.book,env.book.segments[12],{continuation:true});
+  await settle();
+  assert.equal(env.generation().length,1);
+  assert.equal(env.generation()[0].body.segment_id,'p12');
+  env.api.stop(env.book);
+  assert.equal(await waiting,null);
+  env.state.jobs = [nextChapterJob('completed')];
+  await settle();
+});
+
+const cancels = env => env.calls.filter(call => call.url === '/api/jobs/job-b/cancel').length;
+const chapterPosts = env => env.generation().filter(call => call.url.endsWith('/listen/chapter'));
+
+test('continuous: Pause cancels a job it queued automatically, and the next Play may restart it', async () => {
+  const env = environment({takes:chapterA,chapterPost:startsNext});
+  await env.init();
+  await playing(env);
+  assert.equal(chapterPosts(env).length,1);
+  env.api.stop(env.book,{keepAhead:true});
+  assert.equal(cancels(env),0,'moving within the book keeps the job queued ahead');
+  await playing(env);
+  assert.equal(chapterPosts(env).length,1,'the running job is not queued twice');
+  env.api.stop(env.book);
+  assert.equal(cancels(env),1,'Pause or Stop cancels the automatic job');
+  await settle();
+  // The pause-cancelled job does not demand Resume chapter: explicit Play restarts it.
+  const again = env.api.prepare(env.book,env.book.segments[12],{});
+  await settle();
+  assert.equal(chapterPosts(env).length,2);
+  env.api.stop(env.book);
+  assert.equal(await again,null);
+  env.state.jobs = [nextChapterJob('completed')];
+  await settle();
+});
+
+test('continuous: Pause while the automatic request is in flight cancels the job it creates', async () => {
+  let release;
+  const env = environment({takes:chapterA,chapterPost:(call,state) => new Promise(resolve => { release = () => resolve(startsNext(call,state)); })});
+  await env.init();
+  await playing(env);
+  assert.ok(release,'lookahead request sent');
+  env.api.stop(env.book);
+  release();
+  await settle();
+  assert.equal(cancels(env),1);
+  env.state.jobs = [nextChapterJob('cancelled')];
+  await settle();
+});
+
+test('continuous: crossing while the lookahead request is in flight waits for it instead of sending another', async () => {
+  let release;
+  const env = environment({takes:chapterA,chapterPost:(call,state) => new Promise(resolve => { release = () => resolve(startsNext(call,state)); })});
+  await env.init();
+  await playing(env);
+  const crossing = env.api.prepare(env.book,env.book.segments[12],{continuation:true});
+  await settle();
+  release();
+  await settle();
+  assert.deepEqual(chapterPosts(env).map(call => call.body.intent),['queue'],'one request, not a second quick-start');
+  env.api.stop(env.book,{keepAhead:true});
+  assert.equal(await crossing,null);
+  env.state.jobs = [nextChapterJob('completed')];
+  await settle();
+});
+
+test('continuous: listening does not run on into back matter', async () => {
+  const book = {...story(),chapters:[{id:'chapter-a',kind:'chapter'},{id:'chapter-b',kind:'back_matter'}]};
+  const env = environment({book,takes:chapterA,chapterPost:startsNext});
+  await env.init();
+  await playing(env);
+  assert.equal(chapterPosts(env).length,0,'notes or an index are not narrated automatically');
+  assert.equal(env.api.allowsAdvance(book,book.segments[11],book.segments[12]),false);
+  env.api.stop(env.book);
+});
