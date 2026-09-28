@@ -34,7 +34,7 @@ function environment(){
     Audio:class {constructor(){this.src='';}load(){}removeAttribute(){this.src='';}},
     safeRead:(_key,fallback)=>fallback,safeWrite:(key,value)=>{if(key.startsWith('bardic:progress:'))calls.positions.push(value);},
     escapeHTML:value=>String(value??''),toast:()=>{},updateHighlight:()=>{calls.highlights++;},renderReader:()=>{},renderStudio:()=>{},renderJob:()=>{},renderPassageDetail:()=>{}};
-  vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false,mediaBuffering=false; const listeningPreloads=new Map();\n${helpers}\n${functions}\nglobalThis.player={startSegment,updatePlayer,saveProgress,passageTime};`,context);
+  vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false,mediaBuffering=false; const listeningPreloads=new Map();\n${helpers}\n${functions}\nglobalThis.player={startSegment,updatePlayer,saveProgress,passageTime,beginVoicePreview};`,context);
   return {state,audio,calls,events,nodes,takes,player:context.player};
 }
 
@@ -94,4 +94,14 @@ test('a clip that ends before its file when the next passage lives elsewhere sto
   assert.equal(env.audio.src,'/c.wav','the next passage loads its own file');
   assert.equal(env.calls.loads,2);
   assert.equal(env.audio.paused,false,'playback continues after the switch');
+});
+
+test('a voice example during chunk playback keeps the passage-relative position', async()=>{
+  const env=environment();
+  await env.player.startSegment('s2');
+  env.audio.currentTime=3.5;  // 1.5 s into s2's clip (2-5 s)
+  env.player.beginVoicePreview();
+  assert.equal(env.state.voicePreview.offset,1.5);
+  assert.equal(env.state.pendingOffset,1.5);
+  assert.equal(env.state.segmentId,'s2');
 });

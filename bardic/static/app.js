@@ -252,7 +252,7 @@ function setPlaybackRate(rate) {
   updateListeningBuffer(); renderReader(); updatePlayer();
 }
 function beginVoicePreview() {
-  const offset = state.voicePreview?.offset ?? (state.audioSegmentId === state.segmentId ? audio.currentTime || 0 : state.pendingOffset || 0);
+  const offset = state.voicePreview?.offset ?? (state.audioSegmentId === state.segmentId ? passageTime() : state.pendingOffset || 0);
   saveProgress();
   stopAudio({clear:true});
   state.pendingOffset = offset;
@@ -496,7 +496,7 @@ function renderBook() {
 }
 function renderReader() {
   window.BardicListen?.render($('#simple-listen'), state.book, {
-    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, playbackRate:audio.playbackRate, busy:Boolean(busyJob() && busyJob().kind !== 'listen_chapter'),
+    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, playbackRate:audio.playbackRate, busy:Boolean(busyJob()), busyKind:busyJob()?.kind,
     onSettings:status => { state.status = status; },
     playing:!audio.paused && !state.voicePreview, preparing:preparingListen, previewing:Boolean(state.voicePreview),
     onChange:() => { renderReader(); updatePlayer(); },
@@ -916,7 +916,7 @@ async function pollJobs(refreshBookOnComplete = true, {jobsOnly = false} = {}) {
   const wasBusy = Boolean(busyJob());
   const schedule = delay => {
     if (!current() || !busyJob()) return;
-    const onlyListening = state.jobs.filter(job => ['queued','running'].includes(job.status)).every(job => ['listen','voice_preview'].includes(job.kind));
+    const onlyListening = state.jobs.filter(job => ['queued','running'].includes(job.status)).every(job => ['listen','voice_preview','listen_chapter'].includes(job.kind));
     state.poll = setTimeout(() => pollJobs(!onlyListening, {jobsOnly:onlyListening}), delay);
   };
   try {

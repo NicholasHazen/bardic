@@ -16,7 +16,7 @@ function story(count = 12) {
 const clip = (id, chunk, start, end) => ({url:`/api/books/book-chunks/listen/audio/${chunk}`,asset_id:chunk,chunk_id:chunk,
   clip_start:start,clip_end:end,duration:end-start,chunk_duration:40,timing:'estimated',mode:'simple',available:true});
 
-function environment({book = story(), jobs, takes = () => [], preview} = {}) {
+function environment({book = story(), jobs, takes = () => [], preview, chapterPost, jobsGet} = {}) {
   const calls = [], container = new Container(), storage = new Map();
   const state = {jobs:jobs || [], takes};
   const scope = {window:{},setTimeout:fn => setImmediate(fn),localStorage:{getItem:key => storage.get(key) || null,setItem:(key,value) => storage.set(key,value)},
@@ -25,12 +25,17 @@ function environment({book = story(), jobs, takes = () => [], preview} = {}) {
       calls.push(call);
       let data;
       if (url.endsWith('/listen/chapter/preview')) data = preview || {session:{id:'session-g'},requests_needed:3,quota:{requests_today:34,rpd:100,resets_at:'2026-09-28T07:00:00+00:00'},chunks:[]};
+      else if (url.endsWith('/listen/chapter') && chapterPost) {
+        const result = await chapterPost(call,state);
+        if (result?.statusCode) return {ok:false,status:result.statusCode,json:async () => ({detail:result.detail})};
+        data = result;
+      }
       else if (url.endsWith('/listen/chapter')) {
         const job = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',chunks:[],projection:[],
           chunking:{concurrency:2},limits:{rpm:10},quota:{requests_today:35,rpd:100},calibration:{chars_per_second:14,realtime_factor:2}};
         state.jobs = [job];
         data = {session:{id:'session-g'},job,joined:false};
-      } else if (url.startsWith('/api/jobs?')) data = state.jobs;
+      } else if (url.startsWith('/api/jobs?')) data = jobsGet ? await jobsGet(state) : state.jobs;
       else if (url.includes('/listen/takes')) data = {session:{id:'session-g'},takes:state.takes()};
       else if (url.endsWith('/cancel')) { state.jobs = state.jobs.map(job => ({...job,status:'cancelled'})); data = state.jobs[0]; }
       else if (url === '/api/settings') data = {listen_chunking:{...call.body.listen_chunking}};
@@ -124,7 +129,7 @@ test('queue, stop generating, marks and chunk presets', async () => {
   assert.equal(marks.get('p7').status,'queued');
   assert.equal(marks.has('p10'),false);
   assert.match(env.container.innerHTML,/Generating 1 chunk/);
-  assert.match(env.container.innerHTML,/Left to generate/);
+  assert.match(env.container.innerHTML,/Still to generate/);
   env.click('stop-generating');
   await settle(40);
   assert.ok(env.calls.some(call => call.url === '/api/jobs/job-1/cancel'));
@@ -186,5 +191,86 @@ test('automatic continuation and stopped jobs never send generation requests', a
   assert.equal(failed.generation().length,1);
   assert.equal(failed.generation()[0].body.intent,'queue','Resume is an explicit queue request');
   failed.state.jobs = [{...failed.state.jobs[0],status:'completed'}];
+  await settle();
+});
+
+test('a narrator change during an in-flight Play cancels that job and never binds its session', async () => {
+  let release;
+  const env = environment({chapterPost:() => new Promise(resolve => { release = () => resolve({session:{id:'session-kore'},joined:false,
+    job:{id:'job-kore',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-kore',chunks:[],projection:[]}}); })});
+  await env.init();
+  const playing = env.api.prepare(env.book,env.book.segments[0],{});
+  await settle(10);
+  env.change('voice','Puck');
+  release();
+  await assert.rejects(playing,/narrator changed/);
+  assert.ok(env.calls.some(call => call.url === '/api/jobs/job-kore/cancel'));
+  assert.notEqual(env.api.getChapterJob(env.book)?.id,'job-kore');
+});
+
+test('rejected Play clears the warmup; device voices get no chunk marks; onJob reaches the app', async () => {
+  const rejected = environment({chapterPost:() => ({statusCode:409,detail:'A job is already working on this book.'})});
+  await rejected.init();
+  await assert.rejects(rejected.api.prepare(rejected.book,rejected.book.segments[0],{}),/already working/);
+  assert.doesNotMatch(rejected.container.innerHTML,/Preparing…/);
+  const jobs = [];
+  const shared = environment({takes:() => [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)}]});
+  shared.options.onJob = job => jobs.push(job.id);
+  await shared.init();
+  shared.click('prepare-chapter');
+  await settle();
+  assert.ok(jobs.includes('job-1'),'the app shell learns about the chapter job');
+  shared.state.jobs = [{...shared.state.jobs[0],status:'completed'}];
+  await settle();
+  shared.change('provider','system');
+  assert.equal(shared.api.chapterMarks(shared.book,'chapter-a').size,0,'device voices have no chunk marks');
+});
+
+test('status polling re-renders only on change, stops on book switch and never overwrites a newer job', async () => {
+  let renders = 0, hold = null;
+  const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
+    chunks:[{status:'requesting',first_segment_id:'p0',last_segment_id:'p3'}],projection:[],chunking:{concurrency:2},limits:{rpm:10},quota:{requests_today:1,rpd:100}};
+  const env = environment({jobs:[running],
+    chapterPost:() => ({session:{id:'session-g'},joined:false,job:{...running,id:'job-2',chunks:[]}}),
+    jobsGet:state => {
+      if (state.hold && !hold) return new Promise(resolve => { hold = () => resolve([running]); });
+      return state.jobs;
+    }});
+  env.options.onChange = () => { renders++; };
+  await env.init();
+  await settle(40);
+  const before = renders;
+  await settle(80);
+  assert.equal(renders,before,'unchanged polls do not re-render the reader');
+  // A status read for job-1 is in flight when job-2 starts; it must not win.
+  env.state.hold = true;
+  await settle(40);
+  assert.ok(hold,'a job read is in flight');
+  env.state.jobs = [{...running,status:'cancelled'}];
+  await env.api.prepareChapter(env.book,env.book.segments[0]);
+  assert.equal(env.api.getChapterJob(env.book).id,'job-2');
+  env.state.hold = false;
+  hold();
+  await settle(20);
+  assert.equal(env.api.getChapterJob(env.book).id,'job-2','the late job-1 read was ignored');
+  env.state.jobs = [{...running,id:'job-2',status:'running'}];
+  // Switching books stops polling for the hidden book.
+  const other = {...story(3),id:'other-book'};
+  await env.api.render(env.container,other,{...env.options,chapterId:'chapter-a',segmentId:'p0'});
+  await settle(20);
+  const polls = env.calls.filter(call => call.url === '/api/jobs?book_id=book-chunks').length;
+  await settle(80);
+  assert.equal(env.calls.filter(call => call.url === '/api/jobs?book_id=book-chunks').length,polls,'no polling for a hidden book');
+});
+
+test('automatic continuation into a passage outside the running job fails immediately', async () => {
+  const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
+    chunks:[{status:'requesting',first_segment_id:'p6',last_segment_id:'p9'}],projection:[]};
+  const env = environment({jobs:[running]});
+  await env.init();
+  await settle();
+  await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{continuation:true}),/outside the chapter job/);
+  assert.equal(env.generation().length,0);
+  env.state.jobs = [{...running,status:'completed'}];
   await settle();
 });
