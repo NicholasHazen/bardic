@@ -227,7 +227,7 @@ def test_series_reservation_and_archived_book_prevent_generation(client, rendere
     runtime.store.update_job(parent['id'], status='completed')
     from bardic.library import LibraryRepository
     LibraryRepository(runtime.store).archive_book(book['id'])
-    assert begin(client, book).status_code == 400
+    assert begin(client, book).status_code == 409
 
 
 def test_executor_failure_and_cancelled_future_settle_job(client, renderer, monkeypatch):

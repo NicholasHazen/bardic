@@ -105,12 +105,9 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     assert len(calls) == len(book['segments']), 'completed takes should be reused'
     export = client.get(f'{url}/export')
     assert export.status_code == 200
+    # The export is a GET: it records no resource operation.
     operations = client.get(f'{url}/resources').json()['operations']
-    measured_export = next(row for row in operations if row['stage'] == 'audio_export')
-    assert measured_export['status'] == 'completed'
-    assert measured_export['output_bytes'] == len(export.content)
-    assert measured_export['elapsed_seconds'] >= 0
-    assert measured_export['request_count'] == 0
+    assert not any(row['stage'] == 'audio_export' for row in operations)
     with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
         manifest = json.loads(archive.read('timeline.json'))
         assert manifest['complete'] is True

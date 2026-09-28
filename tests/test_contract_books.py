@@ -40,5 +40,5 @@ def test_scene_edit_rejects_unknown_items_and_archived_books(client):
     assert client.patch(f"/api/books/missing/scenes/{scene_id}", json={'title': 'X'}).status_code == 404
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
     archived = client.patch(f"/api/books/{book['id']}/scenes/{scene_id}", json={'title': 'X'})
-    assert archived.status_code == 400
+    assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
     assert client.get(f"/api/books/{book['id']}").json()['revision'] == book['revision']

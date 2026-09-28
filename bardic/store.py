@@ -7,7 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
-from .errors import NotFound
+from .errors import Conflict, NotFound
 
 
 def now() -> str:
@@ -69,7 +69,10 @@ class Store:
     def books(self, include_archived=False) -> list[dict]:
         with self.lock, self.connect() as conn:
             where = '' if include_archived else " WHERE NOT EXISTS(SELECT 1 FROM library_archives a WHERE a.kind='book' AND a.entity_id=books.id)"
-            return [self._hydrate(json.loads(row[0]), conn) for row in conn.execute("SELECT body FROM books" + where + " ORDER BY rowid DESC")]
+            # Most recently imported first. Books saved without an import time sort last, in stable row order
+            # (a save updates the row in place, so it keeps its rowid).
+            order = " ORDER BY json_extract(body,'$.created_at') DESC, rowid DESC"
+            return [self._hydrate(json.loads(row[0]), conn) for row in conn.execute("SELECT body FROM books" + where + order)]
 
     def is_archived(self, book_id: str) -> bool:
         from .library import is_archived
@@ -79,7 +82,7 @@ class Store:
     def require_active(self, book_id: str):
         self.book(book_id)
         if self.is_archived(book_id):
-            raise ValueError('Restore this book from Removed items before processing or editing it.')
+            raise Conflict('book_archived', 'This book is archived. Restore it first.')
 
     def _hydrate(self, book, conn):
         takes = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT segment_id,body FROM takes WHERE book_id=?", (book["id"],))}
@@ -108,7 +111,8 @@ class Store:
             # Upgrade-time writes must retain the old projection before replacing it.
             capture_book(conn, self._hydrate(json.loads(previous[0]), conn), legacy_provenance=True, only_missing=True)
         persist_cover(conn, book)
-        conn.execute("INSERT OR REPLACE INTO books(id,body) VALUES (?,?)", (book["id"], json.dumps(book, ensure_ascii=False)))
+        conn.execute("INSERT INTO books(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
+                     (book["id"], json.dumps(book, ensure_ascii=False)))
         conn.execute("DELETE FROM takes WHERE book_id=?", (book["id"],))
         conn.executemany("INSERT INTO takes(book_id,segment_id,body) VALUES (?,?,?)", [(book["id"], s["id"], json.dumps(s["audio"])) for s in book["segments"] if s.get("audio")])
         capture_book(conn, book)

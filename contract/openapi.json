@@ -275,7 +275,7 @@
         "operationId": "listBooks",
         "responses": {
           "200": {
-            "description": "Book summaries, most recently saved first.",
+            "description": "Book summaries, most recently imported first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -288,7 +288,7 @@
             }
           }
         },
-        "description": "Summaries of every book that is not removed: counts, cover metadata, series membership and measured storage. This is not the prose projection; fetch `GET /api/books/{book_id}` for that. Books are ordered most recently saved first: any save of the book (a metadata edit, an analysis result, a manual edit) moves it to the front. Removed books are never listed here; use `GET /api/library?include_archived=true`.\n\nEach call measures the book's media folders on disk and its database payload, so it is proportionally slower for large libraries. Counts distinguish narrative chapters (`chapter_count`) from other sections (`section_count`); see docs/STRUCTURE.md.",
+        "description": "Summaries of every book that is not removed: counts, cover metadata, series membership and measured storage. This is not the prose projection; fetch `GET /api/books/{book_id}` for that. Books are ordered by import time, most recently imported first (`created_at` descending). Saving a book (a metadata edit, an analysis result, a manual edit) does not change its place. Books stored without `created_at` come last, in a stable order. Removed books are never listed here; use `GET /api/library?include_archived=true`.\n\nRead-only. Each call measures the book's media folders on disk and its database payload, and checks which takes are still current (`audio_count`), so it is proportionally slower for large libraries. Counts distinguish narrative chapters (`chapter_count`) from other sections (`section_count`); see docs/STRUCTURE.md.",
         "tags": [
           "Library"
         ],
@@ -319,14 +319,19 @@
             }
           },
           "400": {
-            "description": "The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary data, unreadable/unsafe/encrypted EPUB, or no readable text. `detail` explains which.",
+            "description": "- `book_file_invalid`: The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary data, unreadable, unsafe or encrypted EPUB, or no readable text. `detail` says which.\n- `cover_unreadable`: The EPUB's cover image could not be read safely.\n- `invalid_request`: The multipart body could not be parsed.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_file_invalid",
+              "cover_unreadable",
+              "invalid_request"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -339,14 +344,17 @@
             }
           },
           "413": {
-            "description": "The upload is larger than 30 MiB.",
+            "description": "- `upload_too_large`: The upload is larger than 30 MiB.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "upload_too_large"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -359,7 +367,7 @@
             }
           }
         },
-        "description": "Imports a DRM-free EPUB or UTF-8 TXT uploaded as multipart form data with the single field `file`, and returns the new book as the full presented book document (the same shape as `GET /api/books/{book_id}`).\n\n- The format is chosen by the uploaded **file name's extension** (`.epub` or `.txt`, any case); the part's content type is ignored. A part without a file name is treated as `book.txt`.\n- Upload maximum is 30 MiB (31,457,280 bytes); a larger upload is rejected with 413 (the whole request body is still received first). EPUBs are additionally limited to 100 MB / 5,000 files when expanded.\n- The title comes from EPUB metadata, or for TXT from the file name (without extension, underscores as spaces); the author from EPUB creators, or an empty string. An EPUB cover image becomes a JPEG thumbnail.\n- The book starts with a free local draft (`analysis.provider` `local`, status `draft`): chapters, scenes and passages are split locally; dialogue passages are `unassigned` until analysis. The narrator and `unassigned` entries get installed device (macOS) voices when available. No provider is contacted.\n- The original bytes are saved in the data directory (`originals/{book_id}/source.{ext}`) for later `refreshBookMetadata` and structure repair. A resource record (stage `import`) is written.\n- Not idempotent and not deduplicated: every call creates a new book with a new ID, even for the same file.\n\nExample (synthetic file): `curl --fail --request POST http://127.0.0.1:8765/api/books --form 'file=@/absolute/path/to/synthetic-story.txt;type=text/plain'`",
+        "description": "Imports a DRM-free EPUB or UTF-8 TXT uploaded as multipart form data with the single field `file`, and returns the new book as the full presented book document (the same shape as `GET /api/books/{book_id}`).\n\n- The format is chosen by the uploaded **file name's extension** (`.epub` or `.txt`, any case); the part's content type is ignored. A part without a file name is treated as `book.txt`.\n- Upload maximum is 30 MiB (31,457,280 bytes) of file content. A request whose `Content-Length` exceeds that limit plus 64 KiB of multipart framing is refused with 413 before its body is read; a body sent without `Content-Length` is read only up to that limit. EPUBs are additionally limited to 100 MB / 5,000 files when expanded.\n- The title comes from EPUB metadata, or for TXT from the file name (without extension, underscores as spaces); the author from EPUB creators, or an empty string. An EPUB cover image becomes a JPEG thumbnail.\n- The book starts with a free local draft (`analysis.provider` `local`, status `draft`): chapters, scenes and passages are split locally; dialogue passages are `unassigned` until analysis. The narrator and `unassigned` entries get installed device (macOS) voices when available. No provider is contacted.\n- The original bytes are saved in the data directory (`originals/{book_id}/source.{ext}`) for later `refreshBookMetadata` and structure repair. A resource record (stage `import`) measures the import.\n- A failed import leaves nothing behind: no book, no saved original and no resource record.\n- Not idempotent and not deduplicated: every call creates a new book with a new ID, even for the same file.\n\nExample (synthetic file): `curl --fail --request POST http://127.0.0.1:8765/api/books --form 'file=@/absolute/path/to/synthetic-story.txt;type=text/plain'`",
         "tags": [
           "Library"
         ],
@@ -1545,16 +1553,6 @@
               }
             }
           },
-          "400": {
-            "description": "The book is already removed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -1566,24 +1564,31 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is working on this book, or an active series run has reserved it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run has reserved this book.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -1596,7 +1601,7 @@
             }
           }
         },
-        "description": "Reversibly removes the book from normal library views (`listBooks`, the default `getLibrary`, series `books` lists) and returns `{id, archived: true, retained: true}`. No request body.\n\nThere is no destructive book-delete endpoint. Removal (archiving) changes visibility only: the original upload, analysis, audio, series links and history are retained and remain readable (for example `GET /api/books/{book_id}`, the cover and the export keep working), and no disk space is reclaimed. Active processing and most edits reject a removed book with 400 until it is restored. Removal of a series member leaves the series intact; the book appears in the series' `volumes` with status `archived`.\n\nEach successful call records a `library_state` artifact in the book's history. Removing an already removed book is refused with 400 (not idempotent). Refused while any job is queued or running for the book or an active series run has reserved it.",
+        "description": "Reversibly removes the book from normal library views (`listBooks`, the default `getLibrary`, series `books` lists) and returns `{id, archived: true, retained: true}`. No request body.\n\nThere is no destructive book-delete endpoint. Removal (archiving) changes visibility only: the original upload, analysis, audio, series links and history are retained and remain readable (for example `GET /api/books/{book_id}`, the cover and the export keep working), and no disk space is reclaimed. Active processing and most edits reject a removed book with 409 `book_archived` until it is restored. Removal of a series member leaves the series intact; the book appears in the series' `volumes` with status `archived`.\n\nIdempotent: removing an already removed book succeeds with the same response and changes nothing. A call that removes the book records a `library_state` artifact in its history. Refused while any job is queued or running for the book or an active series run has reserved it.",
         "tags": [
           "Library"
         ],
@@ -2182,15 +2187,22 @@
               }
             }
           },
+          "304": {
+            "description": "Not modified: `If-None-Match` matched the current `ETag` (empty body)."
+          },
           "404": {
-            "description": "No book has this ID (`Book not found`), or the book has no saved cover (`Cover not found`).",
+            "description": "- `book_not_found`: No book has this ID.\n- `cover_not_found`: The book has no saved cover.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "cover_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -2203,7 +2215,7 @@
             }
           }
         },
-        "description": "The saved cover thumbnail bytes. Covers are always stored as JPEG (at most 240 x 360 pixels, at most 256 KiB), so the content type is `image/jpeg`. Works for removed books too. Use the `cover.url` from a summary, which appends `?v={sha256}` as a cache-busting token; the server ignores any query parameters.\n\nCaching, as actually sent: the response has an `ETag` header whose value is the SHA-256 hex of the bytes **without the quotes** HTTP requires, and `Cache-Control: no-store` (the route asks for `private, max-age=300`, but the `/api/` middleware overrides it). Conditional requests are not supported: `If-None-Match` is ignored and the full image is always returned with 200.",
+        "description": "The saved cover thumbnail bytes. Covers are always stored as JPEG (at most 240 x 360 pixels, at most 256 KiB), so the content type is `image/jpeg`. Works for removed books too. Read-only.\n\nCaching: the response has a strong `ETag`, the quoted SHA-256 hex of the bytes (`\"{sha256}\"`, where `sha256` is `cover.sha256` in a summary). A request whose `If-None-Match` lists that tag (weak comparison, or `*`) gets 304 Not Modified with an empty body. With `?v=` equal to the current `sha256` (the summary's `cover.url`), the response carries `Cache-Control: private, max-age=31536000, immutable`, because that URL always names these bytes; any other URL gets `Cache-Control: private, no-cache` (revalidate with the `ETag`). Errors are `no-store` like every other `/api/` response. Other query parameters are ignored.",
         "tags": [
           "Library"
         ],
@@ -2250,24 +2262,31 @@
             }
           },
           "400": {
-            "description": "No passage has a valid enhanced take (`Generate some audio before exporting`), or a take file is not a readable mono 24 kHz 16-bit PCM WAV.",
+            "description": "- `export_audio_missing`: No passage has a current enhanced take.\n- `take_unreadable`: A take file is not a readable mono 24 kHz 16-bit PCM WAV.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "export_audio_missing",
+              "take_unreadable"
+            ]
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "416": {
             "description": "The requested `Range` cannot be satisfied (empty body; see `Content-Range`)."
@@ -2283,7 +2302,7 @@
             }
           }
         },
-        "description": "Builds and downloads an audiobook ZIP from the book's valid enhanced (cast) takes. Requires at least one valid take; a take is valid when it still matches the passage's current text, speaker, voice, scene direction and provider/model, and its WAV file exists. Simple-listening and voice-example audio are not included. Works for removed books and does not require the book to be idle.\n\nThe response is `application/zip` with `Content-Disposition: attachment` and a file name derived from the title (characters other than letters, digits, underscore, space, `.` and `-` removed; at most 80 characters; `audiobook` if nothing remains) plus `.zip`. The archive is assembled synchronously in a temporary folder before the response starts, so a large book takes a while. A resource record (stage `audio_export`) is written: this GET writes local bookkeeping but never contacts a provider.\n\nArchive contents:\n\n- `production.json`: the raw stored book JSON (pretty-printed UTF-8), not the presented document: no `leading_text`/`trailing_text` or audio URLs, and each passage's `audio` is its stored take metadata (or null), including takes that are no longer current. Treat its fields as storage, not as a contract.\n- `README.txt`: a short plain-text explanation.\n- `takes/{segment_id}.wav`: one file per passage with a valid take, even when its chapter is incomplete.\n- `chapters/NNN.txt`: the text of every section, numbered from `001` in book order (all sections, not only narrative chapters).\n- `chapters/NNN.wav`: the concatenated takes of a section whose passages all have valid takes (mono 24 kHz 16-bit PCM). Incomplete sections get no chapter WAV; sections without passages get none either.\n- `timeline.json`: `{title, timing_kind: \"segment\", complete, chapters, missing_segment_ids}`. `complete` is true when every passage has a valid take. Each `chapters` entry is `{id, title, complete, segments, audio?}` where `audio` is the chapter WAV path inside the archive (only for assembled sections) and `segments` lists `{segment_id, start, end}` in seconds within that WAV (empty for unassembled sections). Timings mark exact passage boundaries, not words. `missing_segment_ids` lists passages without a valid take.",
+        "description": "Builds and downloads an audiobook ZIP from the book's valid enhanced (cast) takes. Requires at least one valid take; a take is valid when it still matches the passage's current text, speaker, voice, scene direction and provider/model, and its WAV file exists. Simple-listening and voice-example audio are not included. Works for removed books and does not require the book to be idle.\n\nThe response is `application/zip` with `Content-Disposition: attachment` and a file name derived from the title (characters other than letters, digits, underscore, space, `.` and `-` removed; at most 80 characters; `audiobook` if nothing remains) plus `.zip`. The archive is assembled synchronously in a temporary folder before the response starts, so a large book takes a while. Read-only: it records nothing and never contacts a provider; the temporary folder is deleted after the response.\n\nArchive layout:\n\n- `production.json`: the book exactly as `GET /api/books/{book_id}` presents it at export time (the `Book` schema, pretty-printed UTF-8), including `leading_text`/`trailing_text`; each passage's `audio` is its current take or null. Its audio `url` values point at this server, not into the archive; use `takes/`.\n- `README.txt`: a short plain-text explanation.\n- `takes/{segment_id}.wav`: one file per passage with a valid take, even when its chapter is incomplete.\n- `chapters/NNN.txt`: the text of every section, numbered from `001` in book order (all sections, not only narrative chapters).\n- `chapters/NNN.wav`: the concatenated takes of a section whose passages all have valid takes (mono 24 kHz 16-bit PCM). Incomplete sections get no chapter WAV; sections without passages get none either.\n- `timeline.json`: `{title, timing_kind: \"segment\", complete, chapters, missing_segment_ids}`. `complete` is true when every passage has a valid take. Each `chapters` entry is `{id, title, complete, segments, audio?}` where `audio` is the chapter WAV path inside the archive (only for assembled sections) and `segments` lists `{segment_id, start, end}` in seconds within that WAV (empty for unassembled sections). Timings mark exact passage boundaries, not words. `missing_segment_ids` lists passages without a valid take.",
         "tags": [
           "Library"
         ],
@@ -2785,14 +2804,17 @@
             }
           },
           "400": {
-            "description": "The book is removed (restore it first), or the normalized title is empty, or a value contains control characters.",
+            "description": "- `metadata_invalid`: The normalized title is empty, or a value contains control characters.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "metadata_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -2805,27 +2827,35 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is working on this book, or an active series run has reserved it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run has reserved this book.\n- `book_archived`: The book is removed (archived); restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
-            "description": "Missing `title`, a title or author longer than 500 characters, or an unknown field.",
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2835,7 +2865,7 @@
             }
           }
         },
-        "description": "Sets the display title and author and returns the updated summary. Whitespace is normalized (runs of spaces, tabs and newlines become one space; leading and trailing whitespace is removed). Title is required (1–500 characters); author defaults to an empty string (maximum 500).\n\nBoth fields are then marked as reviewed: a later `refreshBookMetadata` never overwrites either of them, even the author when it was sent empty. The edit increments the book's `revision`, retains the previous projection in history, and moves the book to the front of the library order. It does not rename the original file or change the text.\n\nRefused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.",
+        "description": "Sets the display title and author and returns the updated summary. Whitespace is normalized (runs of spaces, tabs and newlines become one space; leading and trailing whitespace is removed). Title is required (1–500 characters); author defaults to an empty string (maximum 500). A missing `title`, a value longer than 500 characters or an unknown field is a 422 validation error.\n\nEach field whose value this edit changes is marked as reviewed: a later `refreshBookMetadata` never overwrites it. A field sent with its current value is not marked, and earlier marks are kept. An edit that changes a field increments the book's `revision` and retains the previous projection in history; an edit that changes nothing saves nothing. It does not rename the original file, change the text, or change the book's place in the library order.\n\nRefused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.",
         "tags": [
           "Library"
         ],
@@ -3908,14 +3938,20 @@
             }
           },
           "400": {
-            "description": "The book is removed; the saved original is unavailable (for example the demo book, which has none) or larger than the import limit; or it can no longer be parsed or its cover read.",
+            "description": "- `original_unavailable`: The book has no readable saved original (for example the demo book).\n- `original_too_large`: The saved original is larger than the import limit.\n- `original_unreadable`: The saved original can no longer be parsed. `detail` says why.\n- `cover_unreadable`: The original's cover image could not be read safely.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "original_unavailable",
+              "original_too_large",
+              "original_unreadable",
+              "cover_unreadable"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -3928,24 +3964,32 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A job is working on this book, or an active series run has reserved it.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run has reserved this book.\n- `book_archived`: The book is removed (archived); restore it first.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active",
+              "book_archived"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -3958,7 +4002,7 @@
             }
           }
         },
-        "description": "Re-parses the saved original EPUB or TXT (locally; it does not download metadata from the web) and returns the updated summary. No request body.\n\n- Title and author are replaced by the values parsed from the original, except a field that was set by `updateBookMetadata` (reviewed display metadata is preserved; that edit marks both fields).\n- If the original yields a cover thumbnail, it replaces the saved cover. A missing cover in the original does not remove an existing one.\n- Chapters, passages, analysis and audio are not changed; use `POST /api/books/{book_id}/repair-structure` for structure.\n- Always increments the book's `revision` and retains the previous projection in history, even when nothing changed.\n- A resource record (stage `metadata_refresh`) is written for every attempt, including failed ones (also for an unknown ID).\n\nRefused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.",
+        "description": "Re-parses the saved original EPUB or TXT (locally; it does not download metadata from the web) and returns the updated summary. No request body.\n\n- Title and author are replaced by the values parsed from the original, except a field that an `updateBookMetadata` call changed (reviewed display metadata is preserved per field).\n- If the original yields a cover thumbnail, it replaces the saved cover. A missing cover in the original does not remove an existing one.\n- Chapters, passages, analysis and audio are not changed; use `POST /api/books/{book_id}/repair-structure` for structure.\n- Always increments the book's `revision` and retains the previous projection in history, even when nothing changed.\n- A resource record (stage `metadata_refresh`) measures each refresh that reaches the original, including one that fails to parse it. A refused request (unknown, removed or busy book) records nothing.\n\nRefused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.",
         "tags": [
           "Library"
         ],
@@ -4266,16 +4310,6 @@
               }
             }
           },
-          "400": {
-            "description": "A job is queued or running for this book.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
             "content": {
@@ -4287,24 +4321,31 @@
             }
           },
           "404": {
-            "description": "No book has this ID.",
+            "description": "- `book_not_found`: No book has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found"
+            ]
           },
           "409": {
-            "description": "A run of the book's series is queued or running.",
+            "description": "- `job_active`: A job is queued or running for this book.\n- `series_run_active`: A run of the book's series is queued or running.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_active",
+              "series_run_active"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -4317,7 +4358,7 @@
             }
           }
         },
-        "description": "Restores a removed book to normal library views and returns `{id, archived: false, retained: true}`. No request body. Everything retained during removal becomes usable again.\n\nIdempotent in effect: restoring a book that is not removed succeeds with the same response (and, like every successful call, records a `library_state` artifact in the book's history). Respects series-run guards: refused while a run of the book's series is queued or running (even if the series itself is removed). Restoring a book does not restore its removed series.",
+        "description": "Restores a removed book to normal library views and returns `{id, archived: false, retained: true}`. No request body. Everything retained during removal becomes usable again.\n\nIdempotent: restoring a book that is not removed succeeds with the same response and changes nothing. A call that restores the book records a `library_state` artifact in its history. Refused while a job is queued or running for the book, or while a run of the book's series is queued or running (even if the series itself is removed). Restoring a book does not restore its removed series.",
         "tags": [
           "Library"
         ],
@@ -5219,7 +5260,7 @@
             }
           }
         },
-        "description": "Creates the built-in original sample story (\"The Last Light\") with a free local heuristic draft analysis (explicit speech tags only; `analysis.provider` `local`) and returns it as the full presented book document. No request body and no provider contact.\n\nNot idempotent: every call creates another copy with a new ID. The demo has no saved original file, so `refreshBookMetadata` on it fails with 400 and its `storage.original_bytes` is 0.",
+        "description": "Creates the built-in original sample story (\"The Last Light\") with a free local heuristic draft analysis (explicit speech tags only; `analysis.provider` `local`) and returns it as the full presented book document. No request body and no provider contact.\n\nNot idempotent: every call creates another copy with a new ID. The demo has no saved original file, so `refreshBookMetadata` on it fails with 400 `original_unavailable` and its `storage.original_bytes` is 0.",
         "tags": [
           "Library"
         ],
@@ -5520,7 +5561,7 @@
             }
           }
         },
-        "description": "The library-management view: `{books, series, storage}` with book summaries (the `listBooks` shape), series entries with their books and volume placeholders, and library-wide measured storage.\n\nBooks are ordered most recently saved first: any save of the book (a metadata edit, an analysis result, a manual edit) moves it to the front. With `include_archived=true`, removed books and removed series are included (each flagged `archived`); otherwise both are omitted. A series' `volumes` always include its removed books (status `archived`).\n\nStorage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or free space exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. Removed items retain their files and data. Every call walks the data directory to measure sizes.",
+        "description": "The library-management view: `{books, series, storage}` with book summaries (the `listBooks` shape), series entries with their books and volume placeholders, and library-wide measured storage.\n\nBooks are ordered by import time, most recently imported first (`created_at` descending). Saving a book (a metadata edit, an analysis result, a manual edit) does not change its place. Books stored without `created_at` come last, in a stable order. With `include_archived=true`, removed books and removed series are included (each flagged `archived`); otherwise both are omitted. A series' `volumes` always include its removed books (status `archived`).\n\nRead-only. Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or free space exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. Removed items retain their files and data. Every call walks the data directory to measure sizes.",
         "tags": [
           "Library"
         ],
@@ -13489,7 +13530,7 @@
             "type": "string"
           },
           "url": {
-            "description": "Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. The `v` query value is a cache-busting token only; the server ignores it.",
+            "description": "Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. Because the `v` value names these exact bytes, the server lets clients cache this URL indefinitely (see `getBookCover`); a changed cover gets a new URL.",
             "type": "string"
           }
         },
@@ -13637,11 +13678,7 @@
             "type": "integer"
           },
           "segment_count": {
-            "description": "Number of passages (reader units).",
-            "type": "integer"
-          },
-          "passage_count": {
-            "description": "Same value as `segment_count`; \"passage\" and \"segment\" name the same unit.",
+            "description": "Number of passages (reader units; \"passage\" and \"segment\" name the same unit).",
             "type": "integer"
           },
           "scene_count": {
@@ -13649,7 +13686,7 @@
             "type": "integer"
           },
           "audio_count": {
-            "description": "Passages that have a stored selected enhanced take, whether or not that take is still current. The book document shows only current takes, so this can exceed the playable count.",
+            "description": "Passages whose selected enhanced (cast) take is current and playable: it still matches the passage's text, speaker, resolved voice, scene direction and provider/model, and its audio file exists. Equals the number of passages with a non-null `audio` in `GET /api/books/{book_id}`. Superseded or stale takes stay stored but are not counted.",
             "type": "integer"
           },
           "membership": {
@@ -13694,7 +13731,6 @@
           "character_count",
           "text_character_count",
           "segment_count",
-          "passage_count",
           "scene_count",
           "audio_count",
           "membership",
@@ -13708,7 +13744,7 @@
         "description": "The library-management view: books, series and storage in one response.",
         "properties": {
           "books": {
-            "description": "Book summaries, most recently saved first (any save of a book, including a metadata edit, moves it to the front). Removed books are included only with `include_archived=true`.",
+            "description": "Book summaries, most recently imported first (see `listBooks` for the exact order). Removed books are included only with `include_archived=true`.",
             "items": {
               "$ref": "#/components/schemas/LibraryBookSummary"
             },

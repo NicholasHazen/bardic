@@ -1926,6 +1926,8 @@ $('#import-form').addEventListener('submit', async event => {
   event.preventDefault();
   const file = $('#book-file').files[0];
   if (!file) return;
+  // The server refuses larger uploads before reading them; say so without sending the file.
+  if (file.size > 30 * 1024 * 1024) { showInlineError('#import-error', 'Choose an EPUB or TXT of at most 30 MB.'); return; }
   const button = $('#import-submit'); button.disabled = true; button.textContent = 'Opening your book…'; $('#import-error').hidden = true;
   try {
     const data = new FormData(); data.append('file', file);
