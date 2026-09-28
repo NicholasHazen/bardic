@@ -200,5 +200,5 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 .player-book > div:last-child { min-width:0; }
 .player-settings-link { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* The paid-narration question above the player follows the reader's colours. */
-body.reader-mode .paid-consent { left:16px; background:var(--reader-bg); color:var(--reader-ink); border-color:var(--reader-line); box-shadow:inset 3px 0 var(--reader-accent), 0 10px 30px rgba(0,0,0,.18); }
+body.reader-mode .paid-consent { left:16px; background:var(--reader-bg); color:var(--reader-ink); border-color:var(--reader-line); box-shadow:inset 3px 0 var(--reader-accent), var(--shadow-2); }
 body.reader-mode .paid-consent .field-help { color:var(--reader-muted); }

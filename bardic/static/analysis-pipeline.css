@@ -26,20 +26,20 @@
 .ap-run .ap-run-fields { margin-top: 0; }
 .ap .ap-check { display: inline-flex; align-items: center; gap: 7px; font-size: .78rem; font-weight: 400; color: var(--ink, #292730); min-height: 40px; }
 .ap-check input { margin: 0; }
-/* style.css widens every input; keep checkboxes and radios at their natural size. */
+/* A fixed 16px box keeps checkboxes and radios aligned with the step controls. */
 .ap input[type="checkbox"], .ap input[type="radio"] { box-sizing: border-box; width: 16px; min-width: 16px; max-width: 16px; height: 16px; min-height: 0; padding: 0; flex: 0 0 16px; }
 .ap-active-run { margin-top: 12px; }
 .ap-last-run { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line, #dfdce1); font-size: .76rem; color: var(--muted, #6f6b75); }
 .ap-last-run strong, .ap-active-run strong { color: var(--ink, #292730); }
 .ap-last-run .ap-dismiss { float: right; margin: -4px 0 4px 12px; }
 /* The step's one state, with its explanation beside it. */
-.ap-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 10px 0 4px; font-size: .8rem; line-height: 1.5; }
-.ap-status .ap-chip { font-size: .7rem; }
-.ap-stale { font-size: .74rem; }
+.ap-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 10px 0 4px; font-size: var(--text-sm); line-height: 1.5; }
+.ap-status .ap-chip { font-size: var(--text-2xs); }
+.ap-stale { font-size: var(--text-xs); }
 /* Why Run is disabled, next to the button, with the control that fixes it. */
-.ap-run-reason { margin: 6px 0 4px; font-size: .78rem; line-height: 1.5; color: var(--ink, #292730); }
+.ap-run-reason { margin: 6px 0 4px; font-size: var(--text-xs); line-height: 1.5; color: var(--ink); }
 .ap-run-reason p { margin: 0 0 4px; }
-.ap .ap-setup, .ap-error .ap-setup { min-height: 0; margin-left: 4px; padding: 3px 10px; font-size: .76rem; vertical-align: baseline; }
+.ap .ap-setup, .ap-error .ap-setup { min-height: 0; margin-left: 4px; padding: 3px 10px; font-size: var(--text-xs); vertical-align: baseline; }
 .ap-next { margin-top: 10px; }
 .ap-needs p { margin: 0; }
 .ap-needs .ap-actions { padding-top: 8px; justify-content: flex-start; }
@@ -127,8 +127,8 @@
 .ap-result-table thead th { position: sticky; top: 0; background: var(--surface, #fff); }
 .ap-result-table td { max-width: 46ch; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Section and scene headings between result rows (instead of repeating them in every row). */
-.ap-result-table tr.ap-group th { padding: 12px 8px 6px; background: var(--canvas, #f0eeeb); color: var(--ink, #292730); font-weight: 600; font-size: .74rem; }
-.ap-impact-list small { display: inline; margin-left: 6px; color: var(--muted, #6f6b75); }
+.ap-result-table tr.ap-group th { padding: 12px 8px 6px; background: var(--canvas); color: var(--ink); font-weight: 600; font-size: var(--text-xs); }
+.ap-impact-list small { display: inline; margin-left: 6px; color: var(--muted); }
 .ap-row-added td:first-child { box-shadow: inset 3px 0 #708355; }
 .ap-row-changed td:first-child { box-shadow: inset 3px 0 #b68d5b; }
 .ap-cell-changed { background: #faf1e2; }

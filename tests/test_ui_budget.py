@@ -12,7 +12,7 @@ from pathlib import Path
 STATIC = Path(__file__).resolve().parents[1] / 'bardic' / 'static'
 BASELINE = Path(__file__).with_name('ui_budget.json')
 COLOR = re.compile(r'#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\(')
-FONT_SIZE = re.compile(r'font-size\s*:\s*(?!var\(|inherit|initial|unset)', re.I)
+FONT_SIZE = re.compile(r'font-size\s*:(?!\s*(?:var\(|inherit|initial|unset))', re.I)
 FAMILY = re.compile(r'\b[a-z0-9]+(?:-[a-z0-9]+)*-(?:badge|message|error|help)\b')
 ESCAPE = re.compile(r"""\.replace\(/\[&<>"'\]/g""")
 
