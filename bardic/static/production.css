@@ -23,7 +23,7 @@
 .production-stage-field { margin-top: 18px; }
 .production-limit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0 12px; }
 .production-pipeline .production-token-only { display: flex; align-items: flex-start; gap: 8px; max-width: 100%; min-width: 0; font-size: .77rem; font-weight: 400; line-height: 1.5; }
-.production-token-only input[type="checkbox"] { box-sizing: border-box; width: 16px; min-width: 16px; max-width: 16px; height: 16px; padding: 0; margin: 3px 0 0; flex: 0 0 16px; }
+.production-token-only input[type="checkbox"] { width: 16px; height: 16px; margin: 3px 0 0; flex: 0 0 16px; }
 .production-token-limits { margin: 12px 0; }
 .production-token-limits summary { color: var(--muted, #736e65); font-weight: 400; }
 .production-plan-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding-top: 15px; margin-top: 18px; border-top: 1px solid var(--line, #ddd6c9); }

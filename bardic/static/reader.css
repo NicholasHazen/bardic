@@ -50,6 +50,8 @@ body.reader-mode .passage:hover { background:none; }
 body.reader-mode .passage.active:hover { background:var(--reader-highlight); }
 @media (hover:hover) { body.reader-mode .passage:not(.active):hover { background:color-mix(in srgb, var(--reader-highlight) 55%, transparent); } }
 body.reader-mode .passage:focus-visible { outline-color:var(--reader-accent); }
+/* Focus rings follow the reader theme (the plum ring is below 3:1 on dusk and night); light dialogs keep theirs. */
+body.reader-mode :focus-visible:not(dialog, dialog *) { outline-color:var(--reader-accent); }
 body.reader-mode .chapter-navigation { border-top-color:var(--reader-line); }
 body.reader-mode .chapter-navigation .button { color:var(--reader-accent); min-height:44px; font-size:14px; }
 

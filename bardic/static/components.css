@@ -1,0 +1,153 @@
+/* Bardic UI primitives. Built from tokens.css only: no raw colours, no literal font sizes.
+   Markup comes from bardic/static/ui.js (window.BardicUI); kitchen-sink.html shows every
+   variant. Copy from the kitchen sink, not from a sibling feature file. docs/UI-GUIDE.md
+   explains when to use each one.
+
+   Loaded after tokens.css and before the legacy stylesheets, so legacy contextual rules
+   (".x .button") still win inside legacy screens. New screens should not need them. */
+
+/* 1. Buttons: sizes, danger and busy. The base .button, .primary, .subtle and
+   .text-button live in style.css. */
+.button.small { min-height:var(--control-sm); padding:var(--space-1-5) var(--space-3); font-size:var(--text-xs); gap:var(--space-1-5); }
+.button.large { min-height:var(--control-lg); padding:0 var(--space-5); font-size:var(--text-lg); }
+.button.danger { color:var(--tone-bad-text); border-color:var(--tone-bad-text); background:var(--color-surface); }
+.button.danger:hover { background:var(--tone-bad-bg); }
+.button.primary.danger { color:var(--color-on-accent); background:var(--tone-bad-text); border-color:var(--tone-bad-text); }
+.button.primary.danger:hover { background:var(--tone-bad-text); filter:brightness(.9); }
+.button[aria-busy=true] { cursor:progress; }
+.button[aria-busy=true]::before {
+  content:""; width:1em; height:1em; flex:none; border-radius:50%;
+  border:2px solid currentColor; border-right-color:transparent;
+  animation:ui-spin .8s linear infinite;
+}
+@keyframes ui-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .button[aria-busy=true]::before { animation:none; border-right-color:currentColor; opacity:.5; } }
+
+/* 2. Badge: one status pill. Tone from BardicUI.statusTone(state). */
+.badge {
+  display:inline-flex; align-items:center; gap:var(--space-1);
+  padding:var(--space-0-5) var(--space-2); border-radius:var(--radius-pill);
+  font-family:var(--font-sans); font-size:var(--text-2xs); font-weight:var(--weight-semibold); line-height:var(--leading-ui);
+  white-space:nowrap; background:var(--tone-neutral-bg); color:var(--tone-neutral-text);
+}
+.badge[data-tone=good] { background:var(--tone-good-bg); color:var(--tone-good-text); }
+.badge[data-tone=info] { background:var(--tone-info-bg); color:var(--tone-info-text); }
+.badge[data-tone=warn] { background:var(--tone-warn-bg); color:var(--tone-warn-text); }
+.badge[data-tone=bad] { background:var(--tone-bad-bg); color:var(--tone-bad-text); }
+.badge[data-tone=accent] { background:var(--tone-accent-bg); color:var(--tone-accent-text); }
+
+/* 3. Callout (a block that stays) and message (a live line that changes). */
+.callout {
+  display:grid; gap:var(--space-1); margin:var(--space-3) 0; padding:var(--space-3) var(--space-4);
+  border-left:3px solid var(--tone-neutral-text); border-radius:var(--radius-sm);
+  background:var(--tone-neutral-bg); color:var(--color-text);
+  font-size:var(--text-sm); line-height:var(--leading-ui);
+}
+.callout > * { margin:0; }
+.callout-title { font-weight:var(--weight-semibold); }
+.callout-actions { display:flex; flex-wrap:wrap; gap:var(--space-2); margin-top:var(--space-1); }
+.callout[data-tone=good] { background:var(--tone-good-bg); border-left-color:var(--tone-good-text); }
+.callout[data-tone=info] { background:var(--tone-info-bg); border-left-color:var(--tone-info-text); }
+.callout[data-tone=warn] { background:var(--tone-warn-bg); border-left-color:var(--tone-warn-text); }
+.callout[data-tone=bad] { background:var(--tone-bad-bg); border-left-color:var(--tone-bad-text); }
+.callout[data-tone=accent] { background:var(--tone-accent-bg); border-left-color:var(--tone-accent-text); }
+.message { margin:var(--space-2) 0 0; font-size:var(--text-xs); line-height:var(--leading-help); color:var(--color-text-muted); }
+.message:empty { display:none; }
+.message[data-tone=good] { color:var(--tone-good-text); }
+.message[data-tone=info] { color:var(--tone-info-text); }
+.message[data-tone=warn] { color:var(--tone-warn-text); }
+.message[data-tone=bad] { color:var(--tone-bad-text); font-weight:var(--weight-medium); }
+
+/* 4. Section head: the H2 names the job, the lead has at most two sentences, one Next. */
+.section-head {
+  display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:var(--space-2) var(--space-6);
+  margin:0 0 var(--space-6); padding-bottom:var(--space-4); border-bottom:1px solid var(--color-border);
+}
+.section-head-text { min-width:0; }
+.section-head-eyebrow {
+  margin:0 0 var(--space-1-5); font-size:var(--text-2xs); font-weight:var(--weight-semibold);
+  letter-spacing:var(--tracking-eyebrow); text-transform:uppercase; color:var(--color-text-muted);
+}
+.section-head h2, .section-head h3 {
+  margin:0; font-family:var(--font-serif); font-weight:var(--weight-regular); color:var(--color-text);
+  font-size:var(--text-3xl); line-height:var(--leading-tight); letter-spacing:-.02em;
+}
+.section-head h3 { font-size:var(--text-2xl); }
+.section-head-lead { margin:var(--space-2) 0 0; max-width:62ch; font-size:var(--text-md); line-height:var(--leading-help); color:var(--color-text-muted); }
+.section-head-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:var(--space-2); }
+.section-head-next {
+  grid-column:1 / -1; justify-self:start; display:inline-flex; align-items:center; gap:var(--space-1-5);
+  min-height:var(--control-touch); padding:0; border:0; background:none; cursor:pointer;
+  font-size:var(--text-sm); font-weight:var(--weight-semibold); color:var(--color-accent);
+}
+.section-head-next:hover { color:var(--color-accent-hover); text-decoration:underline; text-underline-offset:4px; }
+
+/* 5. Steps: one ordered status list. Compact strip, or stage cards (the Pipeline explorer look). */
+.steps { list-style:none; margin:0; padding:0; font-family:var(--font-sans); }
+.steps[data-variant=compact] { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-4); font-size:var(--text-xs); }
+.steps[data-variant=compact] .step { display:inline-flex; align-items:center; gap:var(--space-1-5); min-height:var(--control-sm); color:var(--color-text-muted); }
+.steps[data-variant=compact] .step-label { color:var(--color-text); font-weight:var(--weight-medium); }
+.steps[data-variant=compact] .step[aria-current=step] .step-label { font-weight:var(--weight-semibold); }
+.step-dot { width:var(--space-2); height:var(--space-2); flex:none; border-radius:var(--radius-pill); background:var(--tone-neutral-text); }
+.step[data-tone=good] .step-dot { background:var(--tone-good-text); }
+.step[data-tone=info] .step-dot { background:var(--tone-info-text); }
+.step[data-tone=warn] .step-dot { background:var(--tone-warn-text); }
+.step[data-tone=bad] .step-dot { background:var(--tone-bad-text); }
+.step[data-tone=accent] .step-dot { background:var(--tone-accent-text); }
+.steps[data-variant=cards] { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:var(--space-3); }
+.step-card {
+  display:grid; align-content:start; gap:var(--space-2); min-width:0; padding:var(--space-4);
+  border:1px solid var(--color-border); border-radius:var(--radius-lg); background:var(--color-surface);
+}
+.step-card[aria-current=step] { background:var(--color-accent-soft); box-shadow:inset 3px 0 var(--color-accent); }
+.step-card-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:var(--space-2); }
+.step-card-title { margin:0; font-size:var(--text-sm); font-weight:var(--weight-semibold); color:var(--color-text); }
+.step-card-detail { margin:0; font-size:var(--text-xs); line-height:var(--leading-help); color:var(--color-text-muted); }
+.step-card > .button { justify-self:start; }
+.step-card-uses { margin:0; padding-top:var(--space-2); border-top:1px solid var(--color-border); font-size:var(--text-2xs); line-height:var(--leading-help); color:var(--color-text-muted); }
+.steps-next { margin-left:auto; }
+
+/* 6. Consent: scope, what is sent where, the estimate, and a confirm that names the cost. */
+.consent {
+  display:grid; gap:var(--space-3); margin:var(--space-4) 0; padding:var(--space-4) var(--space-5);
+  border:1px solid var(--color-border); border-radius:var(--radius-xl); background:var(--color-surface);
+  font-size:var(--text-sm); line-height:var(--leading-ui);
+}
+.consent:focus { outline:none; }
+.consent:focus-visible { outline:var(--focus-width) solid var(--color-focus); outline-offset:var(--focus-offset); }
+.consent-title { margin:0; font-size:var(--text-md); font-weight:var(--weight-semibold); }
+.consent-facts { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:var(--space-1-5) var(--space-4); margin:0; }
+.consent-facts dt { color:var(--color-text-muted); font-size:var(--text-xs); }
+.consent-facts dd { margin:0; }
+.consent-facts ul { margin:0; padding-left:var(--space-4); }
+.consent-unknown { font-weight:var(--weight-semibold); color:var(--tone-warn-text); }
+.consent-note { margin:0; font-size:var(--text-xs); line-height:var(--leading-help); color:var(--color-text-muted); }
+.consent-blocked { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-3); margin:0; padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); background:var(--tone-warn-bg); color:var(--tone-warn-text); font-size:var(--text-xs); }
+.consent-blocked .button.text-button { min-height:var(--control-sm); padding:0; color:var(--color-accent); }
+.consent-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:var(--space-2); }
+
+/* 7. Choice: one control, three looks. Radio groups use role=radio + aria-checked and a
+   roving tabindex (arrow keys move and select); toggles use aria-pressed. */
+.choice { display:flex; flex-wrap:wrap; gap:var(--space-1-5); margin:var(--space-1-5) 0 0; }
+.choice > button { font:inherit; color:var(--color-text); cursor:pointer; }
+.choice > button:disabled { cursor:default; }
+.choice[data-kind=segmented] > button {
+  flex:1; min-height:var(--control-touch); padding:0 var(--space-3);
+  border:1px solid var(--color-border); border-radius:var(--radius-xl); background:var(--color-surface); font-size:var(--text-sm);
+}
+.choice[data-kind=segmented] > [aria-checked=true], .choice[data-kind=segmented] > [aria-pressed=true] { background:var(--color-accent); border-color:var(--color-accent); color:var(--color-on-accent); }
+.choice[data-kind=cards] { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:var(--space-2); }
+.choice[data-kind=cards] > button {
+  display:grid; align-content:start; gap:var(--space-0-5); min-height:58px; padding:var(--space-2) var(--space-3); text-align:left;
+  border:1px solid var(--color-border); border-radius:var(--radius-xl); background:var(--color-surface);
+}
+.choice[data-kind=cards] > button strong { font-size:var(--text-md); font-weight:var(--weight-semibold); }
+.choice[data-kind=cards] > button small { font-size:var(--text-2xs); line-height:var(--leading-snug); color:var(--color-text-muted); }
+.choice[data-kind=cards] > [aria-checked=true], .choice[data-kind=cards] > [aria-pressed=true] { border-color:var(--color-accent); box-shadow:inset 0 0 0 1px var(--color-accent); background:var(--color-accent-soft); }
+.choice[data-kind=chips] > button {
+  min-width:54px; min-height:var(--control-touch); padding:0 var(--space-3);
+  border:1px solid var(--color-border); border-radius:var(--radius-pill); background:var(--color-surface);
+  font-size:var(--text-sm); font-variant-numeric:tabular-nums;
+}
+.choice[data-kind=chips] > [aria-checked=true], .choice[data-kind=chips] > [aria-pressed=true] { background:var(--color-accent); border-color:var(--color-accent); color:var(--color-on-accent); }
+@media (max-width:620px) { .choice[data-kind=cards] { grid-template-columns:1fr; } .section-head { grid-template-columns:1fr; } .section-head-actions { justify-content:flex-start; } }
