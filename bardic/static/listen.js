@@ -1142,7 +1142,7 @@
     const breeze = status.providers?.find(provider => provider.id === 'breeze');
     // Breeze needs a chosen voice or a default voice before anything can be requested.
     const breezeVoiceReady = Boolean(state.voices.breeze || state.library?.defaults?.breeze);
-    const availability = {system:system?.available !== false,breeze:breeze?.available === true,gemini:Boolean(status.has_api_key || gemini?.available)};
+    const availability = {system:system?.available !== false,breeze:breeze?.available === true,gemini:gemini?.available === true};
     const available = state.provider === 'breeze' ? availability.breeze && breezeVoiceReady : availability[state.provider];
     const defaultName = breezeDefaultName(state);
     const voices = state.provider === 'system'

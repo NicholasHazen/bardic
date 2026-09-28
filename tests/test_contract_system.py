@@ -158,12 +158,11 @@ def test_environment_breeze_url_is_used_but_never_saved(tmp_path, monkeypatch):
 def test_status_has_no_alias_or_server_path(client):
     status = client.get('/api/status').json()
     assert 'analysis_models' not in status and 'data_directory' not in status
+    assert 'analysis_model' not in status and 'has_api_key' not in status
     assert status['model_catalogs']['gemini']['models']
 
 
 @pytest.mark.parametrize('body, code', [
-    ({'api_key': 'one', 'api_keys': {'gemini': 'two'}}, 'gemini_key_conflict'),
-    ({'analysis_model': 'model-a', 'analysis_models_by_provider': {'gemini': 'model-b'}}, 'gemini_model_conflict'),
     ({'api_keys': {'mistral': 'x'}}, 'cloud_provider_unknown'),
     ({'analysis_models_by_provider': {'openai': 'bad model'}}, 'model_id_invalid'),
     ({'analysis_provider': 'mistral'}, 'analysis_provider_unknown'),

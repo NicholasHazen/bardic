@@ -211,9 +211,7 @@ class TtsLimitsUpdate(StrictModel):
 
 
 class SettingsRequest(StrictModel):
-    api_key: str | None = Field(default=None, max_length=500)
     tts_model: str | None = None
-    analysis_model: str | None = None
     api_keys: dict[str, Annotated[str, Field(max_length=500)]] | None = None
     analysis_models_by_provider: dict[str, str] | None = None
     preprocess_models_by_provider: dict[str, str] | None = None
@@ -1161,9 +1159,11 @@ def create_app(data_dir: Path | None = None):
             preferences = copy.deepcopy(runtime.preferences)
             preferences.pop("breeze_catalog", None)
             preferences.pop("gemini_voice_catalog", None)
+            # Saved for older versions only; `analysis_models_by_provider.gemini` is the one public value.
+            preferences.pop("analysis_model", None)
             breeze_view = runtime.breeze_view()
             breeze_ready = breeze_view["configured"] and any(voice["usable"] for voice in breeze_view["voices"])
-            return {"has_api_key": bool(runtime.api_key), **preferences,
+            return {**preferences,
                     "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg"))},
                                   {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)},
                                   {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
@@ -1231,14 +1231,6 @@ def create_app(data_dir: Path | None = None):
         keys = dict(body.api_keys or {})
         models = dict(body.analysis_models_by_provider or {})
         preprocess_models = dict(body.preprocess_models_by_provider or {})
-        if body.api_key is not None:
-            if "gemini" in keys and keys["gemini"].strip() != body.api_key.strip():
-                raise Invalid("gemini_key_conflict", "`api_key` and `api_keys.gemini` have different values.")
-            keys["gemini"] = body.api_key
-        if body.analysis_model is not None:
-            if "gemini" in models and models["gemini"] != body.analysis_model:
-                raise Invalid("gemini_model_conflict", "`analysis_model` and `analysis_models_by_provider.gemini` have different values.")
-            models["gemini"] = body.analysis_model
         if (keys.keys() | models.keys() | preprocess_models.keys()) - ANALYSIS_CATALOG.keys():
             raise Invalid("cloud_provider_unknown", "A provider key is not gemini, openai or anthropic.")
         if any(not valid_analysis_model(model) for model in [*models.values(), *preprocess_models.values()]):

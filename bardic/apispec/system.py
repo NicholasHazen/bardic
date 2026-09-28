@@ -157,8 +157,13 @@ class AnalysisProviderStatus(View):
     """An analysis provider and whether it is usable."""
     id: AnalysisProviderId = Field(description='Analysis provider ID: `local` (offline draft analysis, no key) or a cloud provider `gemini`, `openai`, `anthropic`.')
     label: str = Field(description='Display name.')
-    available: bool = Field(description='`local` is always available; a cloud provider is available when its key is loaded.')
-    has_api_key: bool = Field(description='True when a key is loaded (always false for `local`). The key is never returned.')
+    available: bool = Field(description='Whether analysis with this provider can start without further configuration. '
+                                        '`local` needs no key, so it is always available; a cloud provider is available '
+                                        'exactly when its key is loaded.')
+    has_api_key: bool = Field(description='Whether an API key is loaded for this provider (from `POST /api/settings` or the '
+                                          'server environment). Always false for `local`, which uses no key; this is where '
+                                          'it differs from `available`. The key is never returned. The `gemini` entry also '
+                                          'tells whether Gemini narration and voice design have a key.')
     model: str | None = Field(description='The saved analysis model for this provider, or null for `local`.')
     models: list[str] = Field(description='Curated model IDs (empty for `local`). A saved custom model may be absent from this list.')
 
@@ -186,11 +191,9 @@ class Status(View):
     Preference fields are those saved by `POST /api/settings`; the rest are
     derived at request time.
     """
-    has_api_key: bool = Field(description='True when a Gemini API key is loaded (from Settings or the environment).')
     # Saved preferences
     tts_model: str = Field(description='Selected Gemini speech model; one of `tts_models`.')
     analysis_provider: AnalysisProviderId = Field(description='Default provider for classic analysis.')
-    analysis_model: str = Field(description='Compatibility alias of `analysis_models_by_provider.gemini`.')
     analysis_models_by_provider: dict[CloudProvider, str] = Field(
         description='Selected analysis model per cloud provider (always all three).')
     preprocess_models_by_provider: dict[CloudProvider, str] = Field(
@@ -296,12 +299,10 @@ OPS: list[Op] = [
        '**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, '
        '`local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or '
        'self-hosted server URL that comes from the server\'s environment is used but never saved. API keys '
-       '(`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, '
+       '(`api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, '
        'when keys come from the environment again. An empty key string clears that runtime key.\n\n'
        '**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting '
-       'unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` '
-       'and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. '
-       'Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models '
+       'unchanged. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models '
        'are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown '
        'name are request validation errors (422).\n\n'
        '**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) '
@@ -311,9 +312,6 @@ OPS: list[Op] = [
        'a new key shows the curated list until refreshed.',
        response=Status, cost='none',
        errors={400: {
-           'gemini_key_conflict': '`api_key` and `api_keys.gemini` are both sent with different values.',
-           'gemini_model_conflict': '`analysis_model` and `analysis_models_by_provider.gemini` are both sent with '
-                                    'different values.',
            'cloud_provider_unknown': 'A key of `api_keys`, `analysis_models_by_provider` or '
                                      '`preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.',
            'model_id_invalid': 'An analysis or preprocessing model ID is malformed.',
@@ -433,10 +431,7 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
     'SettingsRequest': {
         '__doc__': 'A partial settings update. Every field is optional; omitted fields stay unchanged. Unknown '
                    'fields are refused (422).',
-        'api_key': 'Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is '
-                   'removed and an empty string clears the key. Up to 500 characters.',
         'tts_model': 'Gemini speech model; must be one of `tts_models` from status. Saved.',
-        'analysis_model': 'Compatibility alias for `analysis_models_by_provider.gemini`. Saved.',
         'api_keys': 'Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. '
                     'Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; '
                     'providers not included keep their key. A different Gemini key lifts every daily quota block.',

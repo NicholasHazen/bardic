@@ -64,12 +64,14 @@ def test_import_preserves_unicode_text_and_presented_gaps(client):
 
 
 def test_key_is_never_returned_or_saved(client):
-    response = client.post('/api/settings', json={'api_key': 'secret-example-key'})
+    def gemini_key(status):
+        return next(p for p in status['analysis_providers'] if p['id'] == 'gemini')['has_api_key']
+    response = client.post('/api/settings', json={'api_keys': {'gemini': 'secret-example-key'}})
     assert response.status_code == 200
-    assert response.json()['has_api_key']
+    assert gemini_key(response.json())
     assert 'secret-example-key' not in response.text
     assert 'secret-example-key' not in json.dumps(client.app.state.runtime.store.settings())
-    assert client.post('/api/settings', json={'api_key': ''}).json()['has_api_key'] is False
+    assert gemini_key(client.post('/api/settings', json={'api_keys': {'gemini': ''}}).json()) is False
 
 
 def test_cloud_requires_key_and_unknown_fields_rejected(client):
@@ -90,7 +92,7 @@ def test_reject_foreign_origins_and_dns_rebinding(client):
 
 def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     calls = fake_audio(monkeypatch)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     first = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
@@ -133,7 +135,7 @@ def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):
             raise ValueError('Simulated provider timeout')
         return original(*args)
     monkeypatch.setattr(module, 'synthesize', fail_second)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
@@ -187,7 +189,7 @@ def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, mon
         assert release.wait(3)
         return original(*args)
     monkeypatch.setattr(module, 'synthesize', delayed)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()

@@ -425,7 +425,8 @@ def test_development_server_runs_isolated_and_restarts_with_its_library(tmp_path
         addresses = listening_addresses(first["port"])
         assert f"127.0.0.1:{first['port']}" in addresses and "*:" not in addresses  # Loopback only.
         with urllib.request.urlopen(f"http://127.0.0.1:{first['port']}/api/status", timeout=10) as response:
-            assert json.load(response)["has_api_key"] is False
+            gemini = next(p for p in json.load(response)["analysis_providers"] if p["id"] == "gemini")
+            assert gemini["has_api_key"] is False
         assert service.main(["dev", "start", "--name", "t1"]) == 0  # Already running: no second server.
         assert "already running" in capsys.readouterr().out
 
@@ -451,7 +452,7 @@ def test_development_server_with_keys_is_live_only_until_restarted_without_them(
 
     def has_key(record):
         with urllib.request.urlopen(f"http://127.0.0.1:{record['port']}/api/status", timeout=10) as response:
-            return json.load(response)["has_api_key"]
+            return next(p for p in json.load(response)["analysis_providers"] if p["id"] == "gemini")["has_api_key"]
 
     try:
         assert service.main(["dev", "start", "--name", "k", "--keys"]) == 0

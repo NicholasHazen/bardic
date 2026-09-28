@@ -69,7 +69,7 @@ const analysisLabels = {local:'Local draft', gemini:'Gemini', openai:'OpenAI', a
 const cloudProviders = ['gemini','openai','anthropic'];
 const providerField = (name, provider) => $(`#${name}${provider === 'gemini' ? '' : `-${provider}`}`);
 const analysisProvider = (id) => state.status?.analysis_providers?.find(provider => provider.id === id);
-const providerHasKey = (id) => analysisProvider(id)?.has_api_key ?? (id === 'gemini' && Boolean(state.status?.has_api_key));
+const providerHasKey = (id) => Boolean(analysisProvider(id)?.has_api_key);
 function fillSettings() {
   $('#settings-analysis-provider').value = state.status?.analysis_provider || 'local';
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
@@ -80,7 +80,7 @@ function fillSettings() {
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
-      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || (provider === 'gemini' ? state.status?.analysis_model : '') || '',
+      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || '',
       preprocess: state.status?.preprocess_models_by_provider?.[provider] || '',
     });
   }

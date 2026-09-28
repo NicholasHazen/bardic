@@ -114,7 +114,7 @@ def test_old_stored_lock_shape_still_locks_both_fields(client):
 
 def test_audio_count_counts_only_current_playable_takes(client, monkeypatch):
     fake_audio(monkeypatch)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = imported(client, content='Chapter One\n\nThe lamps were lit.\n\n“Come in,” Mara said.\n'.encode())
     url = f"/api/books/{book['id']}"
     assert wait_job(client, client.post(f'{url}/render', json={'provider': 'gemini'}).json()['id'])['status'] == 'completed'
@@ -281,7 +281,7 @@ def test_library_summary_has_segment_count_without_alias(client):
 
 def test_export_writes_presented_book_and_no_ledger_row(client, monkeypatch):
     fake_audio(monkeypatch)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = imported(client, content='Chapter One\n\nThe lamps were lit.\n\n“Come in,” Mara said.\n'.encode())
     url = f"/api/books/{book['id']}"
     assert wait_job(client, client.post(f'{url}/render', json={'provider': 'gemini'}).json()['id'])['status'] == 'completed'

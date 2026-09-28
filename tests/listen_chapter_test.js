@@ -45,7 +45,7 @@ function environment({book = story(), jobs, takes = () => [], preview, chapterPo
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen.js'),'utf8'),scope);
   const api = scope.window.BardicListen;
   const options = {chapterId:'chapter-a',segmentId:'p0',playbackRate:1.5,
-    status:{has_api_key:true,providers:[{id:'system',available:false},{id:'gemini',available:true}],tts_model:'gemini-3.8-flash-tts',
+    status:{providers:[{id:'system',available:false},{id:'gemini',available:true}],tts_model:'gemini-3.8-flash-tts',
       tts_models:['gemini-3.8-flash-tts'],listen_chunking:{ramp_seconds:[30,60],target_seconds:420,concurrency:2}}};
   const click = action => container.listeners.click({target:{closest:() => ({dataset:{listenAction:action}})}});
   const change = (field, value) => container.listeners.change({target:{dataset:{listenField:field},value}});

@@ -17,7 +17,7 @@ def client(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
     with TestClient(create_app(tmp_path)) as client:
-        client.post("/api/settings", json={"api_key": "fake-key"})
+        client.post("/api/settings", json={"api_keys": {"gemini": "fake-key"}})
         yield client
 
 

@@ -26,7 +26,7 @@ const capabilities = {
   breeze:{performance_direction:true,chunked_listening:false,seeded_takes:true,cost:'self_hosted'},
 };
 function status(extra = {}) {
-  return {has_api_key:true,tts_model:'gemini-3.8-flash-tts',tts_models:['gemini-3.8-flash-tts'],system_voices:[],
+  return {tts_model:'gemini-3.8-flash-tts',tts_models:['gemini-3.8-flash-tts'],system_voices:[],
     providers:[{id:'system',available:true},{id:'gemini',available:true},{id:'breeze',available:true,reason:null}],
     narration_providers:Object.fromEntries(Object.entries(capabilities).map(([id, value]) => [id,{id,capabilities:value}])),
     breeze:{configured:true,state:'ready',message:'Connected',default_voice_id:'storyteller',voices:[

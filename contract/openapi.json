@@ -7342,7 +7342,7 @@
             }
           },
           "400": {
-            "description": "- `gemini_key_conflict`: `api_key` and `api_keys.gemini` are both sent with different values.\n- `gemini_model_conflict`: `analysis_model` and `analysis_models_by_provider.gemini` are both sent with different values.\n- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.",
+            "description": "- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7351,8 +7351,6 @@
               }
             },
             "x-bardic-error-codes": [
-              "gemini_key_conflict",
-              "gemini_model_conflict",
               "cloud_provider_unknown",
               "model_id_invalid",
               "analysis_provider_unknown",
@@ -7383,7 +7381,7 @@
             }
           }
         },
-        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).\n\n**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
+        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).\n\n**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
         "tags": [
           "System"
         ],
@@ -9721,11 +9719,11 @@
             "type": "string"
           },
           "available": {
-            "description": "`local` is always available; a cloud provider is available when its key is loaded.",
+            "description": "Whether analysis with this provider can start without further configuration. `local` needs no key, so it is always available; a cloud provider is available exactly when its key is loaded.",
             "type": "boolean"
           },
           "has_api_key": {
-            "description": "True when a key is loaded (always false for `local`). The key is never returned.",
+            "description": "Whether an API key is loaded for this provider (from `POST /api/settings` or the server environment). Always false for `local`, which uses no key; this is where it differs from `available`. The key is never returned. The `gemini` entry also tells whether Gemini narration and voice design have a key.",
             "type": "boolean"
           },
           "model": {
@@ -22737,18 +22735,6 @@
       },
       "SettingsRequest": {
         "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 500
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is removed and an empty string clears the key. Up to 500 characters."
-          },
           "tts_model": {
             "anyOf": [
               {
@@ -22759,17 +22745,6 @@
               }
             ],
             "description": "Gemini speech model; must be one of `tts_models` from status. Saved."
-          },
-          "analysis_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Compatibility alias for `analysis_models_by_provider.gemini`. Saved."
           },
           "api_keys": {
             "anyOf": [
@@ -22898,10 +22873,6 @@
       "Status": {
         "description": "Runtime status and preferences. Never contains key values and never contacts a provider.\n\nPreference fields are those saved by `POST /api/settings`; the rest are\nderived at request time.",
         "properties": {
-          "has_api_key": {
-            "description": "True when a Gemini API key is loaded (from Settings or the environment).",
-            "type": "boolean"
-          },
           "tts_model": {
             "description": "Selected Gemini speech model; one of `tts_models`.",
             "type": "string"
@@ -22914,10 +22885,6 @@
               "openai",
               "anthropic"
             ],
-            "type": "string"
-          },
-          "analysis_model": {
-            "description": "Compatibility alias of `analysis_models_by_provider.gemini`.",
             "type": "string"
           },
           "analysis_models_by_provider": {
@@ -23059,10 +23026,8 @@
           }
         },
         "required": [
-          "has_api_key",
           "tts_model",
           "analysis_provider",
-          "analysis_model",
           "analysis_models_by_provider",
           "preprocess_models_by_provider",
           "tts_limits",
