@@ -10,12 +10,26 @@
   // Finished runs already shown to the owner, by book: their summary is not shown again.
   const acknowledged = new Map();
   const ACTIVE = new Set(['queued', 'running']);
-  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+  // The one escape helper lives in ui.js (loaded first); every value below goes through it.
+  const ui = () => window.BardicUI;
+  const escapeHtml = value => ui().esc(value);
   const path = value => encodeURIComponent(value);
   const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
   const CUSTOM = '__custom__';
   const PAGE_SIZE = 200;
   const POLL_MS = 2000;
+  // Filters read every row, fetched in pages of the server's largest size, up to this many pages.
+  const ALL_ROWS_PAGE = 1000;
+  const ALL_ROWS_PAGES = 20;
+  // Speaker attributions below 0.65 stay unassigned, and a BookNLP disagreement caps confidence at 0.65
+  // (docs/ANALYSIS-PIPELINE.md): "low" is at or below that floor, so assigned-but-doubtful lines show too.
+  const LOW_CONFIDENCE = .65;
+  // After this step's run the script has speakers: the run summary hands off to Cast and Script & record.
+  const HANDOFF_STEP = 'directing';
+  // Below this width the step list stacks above the step panel (analysis-pipeline.css).
+  const NARROW = '(max-width: 900px)';
+  const PRESET_VERSION = 1;
+  const PROBLEM_KEYS = new Set(['failed', 'interrupted', 'cancelled', 'budget_limited']);
   const TIERS = [['economy', 'Economy · quick and inexpensive'], ['balanced', 'Balanced'], ['deep', 'Deep · most thorough'], ['other', 'Other models']];
   // Visible names only: "Set aside" is the reject decision, which keeps the version in history.
   const VERSION_STATES = {running:'Running', candidate:'Waiting for review', accepted:'Accepted', partly_accepted:'Partly accepted',
@@ -77,12 +91,20 @@
   }
 
   // --- panel state -------------------------------------------------------------------
-  const freshView = () => ({compare:'accepted', changedOnly:false, scope:'', offset:0});
+  const freshView = () => ({compare:'accepted', changedOnly:false, scope:'', offset:0, filter:''});
   const freshRun = () => ({concurrency:'2', fresh:false});
   // Everything the owner picked or opened during one visit to the tab.
   const visitState = () => ({selected:null, chapterId:'', run:freshRun(), custom:{}, versions:null, versionsKey:'',
     versionId:null, result:null, resultLoading:false, resultError:null, view:freshView(), plan:null, impact:null, working:null,
-    message:'', messageError:false});
+    message:'', messageError:false, presetForm:null, presetNote:null, presetSaving:false});
+  // A step asked for from outside the tab (the lifecycle strip, a #/book/<id>/analysis/<step> link):
+  // the next visit opens on it. The panel that last rendered handles a request while it is shown.
+  let requestedStep = null;
+  let lastPanel = null;
+  // Saved step settings from the last successful save, until the app passes a newer status object.
+  let presetCache = null;
+  // Where Show in text left the results table, so the next visit returns to it.
+  let returnTo = null;
 
   function create(container) {
     const panel = {container, book:null, bookId:null, revision:null, busy:false, options:{}, status:null, shell:false,
@@ -253,10 +275,11 @@
   const actionable = status => status.key === 'review' || (status.ready && !status.inUse && !['running', 'loading'].includes(status.key));
 
   // The step the tab opens on: a version waiting for review first (it holds up later steps), then the first
-  // step whose requirements are met and which has nothing in use, else the first step.
-  // entries: [{id, status}] in pipeline order.
+  // step whose requirements are met and which has nothing in use, else the first step. Optional steps
+  // (the free Prep group) come after required ones. entries: [{id, status, optional?}] in pipeline order.
   function startStep(entries) {
-    return (entries.find(entry => entry.status.key === 'review') || entries.find(entry => actionable(entry.status)) || entries[0])?.id || null;
+    return (entries.find(entry => entry.status.key === 'review') || entries.find(entry => actionable(entry.status) && !entry.optional)
+      || entries.find(entry => actionable(entry.status)) || entries[0])?.id || null;
   }
 
   // After a run of `afterId` completes: review it if it is waiting, else the next step that reads its
@@ -305,7 +328,9 @@
       running:Boolean(active && ACTIVE.has(active.status) && (active.steps || []).includes(def.id))});
   }
 
-  const statusEntries = panel => (panel.defs?.steps || []).map(def => ({id:def.id, inputs:def.inputs || [], status:statusOf(panel, def)}));
+  // Local steps are free and optional preparation: the list groups them as "Prep".
+  const isPrep = def => def?.method === 'plain';
+  const statusEntries = panel => (panel.defs?.steps || []).map(def => ({id:def.id, inputs:def.inputs || [], optional:isPrep(def), status:statusOf(panel, def)}));
 
   function missingProviders(panel, configs) {
     return [...new Set(Object.entries(configs).filter(([stepId, config]) => !offline(stepDef(panel, stepId), config.provider))
@@ -360,6 +385,7 @@
   }
 
   const reducedMotion = () => Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+  const narrow = () => Boolean(globalThis.matchMedia?.(NARROW)?.matches);
 
   // Scroll a region's heading into view and focus it; no smooth scrolling when motion is reduced.
   function reveal(panel, key) {
@@ -395,17 +421,55 @@
   function runSummary(panel, run, active) {
     const labels = (run.steps || []).map(id => stepDef(panel, id)?.label || id).join(', ');
     const outcomes = Object.entries(run.outcomes || {}).filter(([, outcome]) => outcome && (outcome.reason || outcome.error || outcome.status !== 'completed'));
-    return `<div class="${active ? 'ap-note ap-active-run' : 'ap-last-run'}">${active ? '' : '<button type="button" class="button subtle ap-dismiss" data-ap-action="dismiss-run" data-ap-key="dismiss-run" aria-label="Dismiss the latest run summary">Dismiss</button>'}<strong>${active ? 'Run in progress' : 'Latest run'}</strong> ·<span class="ap-chip ${escapeHtml(run.status === 'completed' ? 'accepted' : PROBLEM_STATUS.has(run.status) ? 'failed' : 'running')}">${escapeHtml(RUN_STATUS[run.status] || run.status || 'Unknown')}</span> · ${escapeHtml(labels)} · ${escapeHtml(when(run.created_at))}${active ? '<p class="ap-help">Cancel it from the job banner above. Validated units are kept and reused.</p>' : ''}${outcomes.length ? `<ul class="ap-outcomes">${outcomes.map(([id, outcome]) => `<li><strong>${escapeHtml(stepDef(panel, id)?.label || id)}</strong>: ${escapeHtml(RUN_STATUS[outcome.status] || outcome.status || '')}${outcome.reason ? ` · ${escapeHtml(outcome.reason)}` : ''}${outcome.error ? ` · ${escapeHtml(outcome.error)}` : ''}</li>`).join('')}</ul>` : ''}${run.error ? `<p class="ap-error">${escapeHtml(run.error)}</p>` : ''}${active ? '' : nextHtml(panel, run)}</div>`;
+    return `<div class="${active ? 'ap-note ap-active-run' : 'ap-last-run'}">${active ? '' : '<button type="button" class="button subtle ap-dismiss" data-ap-action="dismiss-run" data-ap-key="dismiss-run" aria-label="Dismiss the latest run summary">Dismiss</button>'}<strong>${active ? 'Run in progress' : 'Latest run'}</strong> ·<span class="ap-chip ${escapeHtml(run.status === 'completed' ? 'accepted' : PROBLEM_STATUS.has(run.status) ? 'failed' : 'running')}">${escapeHtml(RUN_STATUS[run.status] || run.status || 'Unknown')}</span> · ${escapeHtml(labels)} · ${escapeHtml(when(run.created_at))}${active ? '<p class="ap-help">Cancel it from the job banner above. Validated units are kept and reused.</p>' : ''}${outcomes.length ? `<ul class="ap-outcomes">${outcomes.map(([id, outcome]) => `<li><strong>${escapeHtml(stepDef(panel, id)?.label || id)}</strong>: ${escapeHtml(RUN_STATUS[outcome.status] || outcome.status || '')}${outcome.reason ? ` · ${escapeHtml(outcome.reason)}` : ''}${outcome.error ? ` · ${escapeHtml(outcome.error)}` : ''}</li>`).join('')}</ul>` : ''}${run.error ? `<p class="ap-error">${escapeHtml(run.error)}</p>` : ''}${active ? '' : nextHtml(panel, run) + retryHtml(panel, run)}</div>`;
   }
 
-  // After a completed run: one action that opens the step to do next.
+  // After a completed run: one action that opens the step to do next. Once Speakers & delivery is in use,
+  // analysis has done its job: hand off to the cast and the script instead of suggesting more steps.
   function nextHtml(panel, run) {
     if (run.status !== 'completed' || !panel.defs || !panel.overview) return '';
     const last = (run.steps || []).at(-1);
+    if (last === HANDOFF_STEP && stepDef(panel, last)) {
+      const status = statusOf(panel, stepDef(panel, last));
+      if (status.key !== 'review' && status.inUse) return handoffHtml(panel);
+    }
     const next = last ? nextStep(statusEntries(panel), last) : null;
     if (!next || next.id === panel.selected) return '';
     const label = stepLabel(panel, next.id);
     return `<div class="ap-next"><button type="button" class="button primary" data-ap-step="${escapeHtml(next.id)}" data-ap-key="go-next">${escapeHtml(next.review ? `Next: review ${label}` : `Next: ${label}`)} →</button></div>`;
+  }
+
+  // Links, not buttons: the routes (shell.js) open the tab, and Back returns here.
+  function handoffHtml(panel) {
+    const route = tab => `#/book/${encodeURIComponent(panel.bookId)}/${tab}`;
+    return `<div class="ap-next ap-handoff"><p>${escapeHtml(stepLabel(panel, HANDOFF_STEP))} results are in the book. Next:</p><div class="ap-handoff-actions"><a class="button primary" href="${escapeHtml(route('cast'))}" data-ap-key="handoff-cast">Review the cast →</a><a class="button subtle" href="${escapeHtml(route('studio'))}" data-ap-key="handoff-script">Open the script →</a></div></div>`;
+  }
+
+  // The newest run of a step, if it ended early (failed, interrupted, cancelled or stopped at the allowance).
+  function problemRun(panel, stepId) {
+    const run = (panel.overview?.recent_runs || []).find(item => (item.steps || []).includes(stepId));
+    return run && PROBLEM_STATUS.has(run.status) ? run : null;
+  }
+
+  // Whether the run summary above already offers Try again for this step (one control, not two).
+  function summaryRetries(panel, stepId) {
+    const recent = panel.overview?.active_run ? null : panel.overview?.recent_runs?.[0];
+    return Boolean(recent) && acknowledged.get(panel.bookId) !== recent.id && PROBLEM_STATUS.has(recent.status) && retryStepOf(panel, recent) === stepId;
+  }
+
+  // The step a finished run should retry: the first that did not complete.
+  function retryStepOf(panel, run) {
+    const steps = (run.steps || []).filter(id => stepDef(panel, id));
+    return steps.find(id => run.outcomes?.[id] && run.outcomes[id].status !== 'completed') || steps[0] || null;
+  }
+
+  // A run that ended early: Try again opens the usual preview with that run's settings; validated
+  // results are reused, so the estimate covers only what is missing. Consent is unchanged.
+  function retryHtml(panel, run) {
+    if (!PROBLEM_STATUS.has(run.status) || !panel.defs || panel.overview?.active_run) return '';
+    const stepId = retryStepOf(panel, run);
+    if (!stepId) return '';
+    return `<div class="ap-next ap-retry"><button type="button" class="button primary" data-ap-action="retry" data-ap-retry="${escapeHtml(stepId)}" data-ap-run="${escapeHtml(run.id || '')}" data-ap-key="retry-run">Try again</button><p class="ap-help">Opens a new estimate first. Validated results are reused, so only the missing work is counted.</p></div>`;
   }
 
   // The active run, or the latest finished one until it is dismissed or the visit ends.
@@ -421,8 +485,10 @@
     if (!plan) { put(panel, 'plan', ''); return; }
     const labels = plan.body.steps.map(id => stepDef(panel, id)?.label || id);
     const chapterScoped = plan.body.steps.some(id => stepDef(panel, id)?.chapter_scoped);
-    const sections = plan.body.chapter_ids ? scopeLabel(panel, plan.body.chapter_ids[0]) : 'All story sections';
-    const head = `<h3 tabindex="-1" data-ap-key="plan-heading">Review before running</h3><p class="ap-help">${escapeHtml(labels.join(', '))}${chapterScoped ? ` · Sections: ${escapeHtml(sections)}` : ''}</p>`;
+    const ids = plan.body.chapter_ids || [];
+    const sections = !ids.length ? 'All story sections' : ids.length === 1 ? scopeLabel(panel, ids[0]) : plural(ids.length, 'section');
+    const retry = plan.retry ? `<p class="ap-help" data-ap-retry-note>Trying again with the settings of the ${escapeHtml((PROBLEM_LABELS[plan.retry.status] || 'earlier').toLowerCase())} run${plan.retry.where ? ` (${escapeHtml(plan.retry.where)})` : ''}. Validated results are reused, so only the missing work is estimated.</p>` : '';
+    const head = `<h3 tabindex="-1" data-ap-key="plan-heading">Review before running</h3><p class="ap-help">${escapeHtml(labels.join(', '))}${chapterScoped ? ` · Sections: ${escapeHtml(sections)}` : ''}</p>${retry}`;
     let body = '';
     if (plan.loading) body = '<p class="ap-help" role="status">Estimating the work… No requests are sent.</p>';
     else if (plan.value) {
@@ -454,13 +520,18 @@
   const kindLabel = (panel, def) => def.method === 'plain' ? 'Local' : isService(panel, def.settings?.provider) ? 'Service'
     : providerDef(panel, def.settings?.provider)?.self_hosted ? 'Your model' : 'Model';
 
+  // Two groups: free local preparation, then the steps that find characters and speakers.
   function paintSteps(panel) {
     if (!panel.defs) { put(panel, 'steps', '<p class="ap-help">Loading steps…</p>'); return; }
-    put(panel, 'steps', `<ol class="ap-step-list">${panel.defs.steps.map((def, index) => {
+    const prep = panel.defs.steps.filter(isPrep);
+    const main = panel.defs.steps.filter(def => !isPrep(def));
+    const item = (def, index) => {
       const selected = def.id === panel.selected;
       const id = escapeHtml(def.id);
-      return `<li class="ap-step${selected ? ' selected' : ''}"><button type="button" data-ap-step="${id}" data-ap-key="step-${id}" aria-current="${selected ? 'true' : 'false'}"><span class="ap-step-name"><span class="ap-step-index" aria-hidden="true">${index + 1}</span>${escapeHtml(def.label)}</span><span class="ap-step-meta"><span class="ap-method ${def.method === 'plain' ? 'plain' : 'llm'}">${kindLabel(panel, def)}</span>${statusChip(statusOf(panel, def))}</span></button></li>`;
-    }).join('')}</ol><p class="ap-help">Steps do not have to run in order. A step that needs another step’s accepted results says so and waits for them; the others can run at any time.</p>`);
+      return `<li class="ap-step${selected ? ' selected' : ''}"><button type="button" data-ap-step="${id}" data-ap-key="step-${id}" aria-current="${selected ? 'true' : 'false'}"><span class="ap-step-name"><span class="ap-step-index" aria-hidden="true">${index}</span>${escapeHtml(def.label)}</span><span class="ap-step-meta"><span class="ap-method ${def.method === 'plain' ? 'plain' : 'llm'}">${kindLabel(panel, def)}</span>${statusChip(statusOf(panel, def))}</span></button></li>`;
+    };
+    const group = (key, title, defs, offset) => defs.length ? `<section class="ap-step-group" aria-labelledby="ap-group-${key}"><h3 class="ap-step-group-title" id="ap-group-${key}">${escapeHtml(title)}</h3><ol class="ap-step-list" start="${offset + 1}">${defs.map((def, index) => item(def, offset + index + 1)).join('')}</ol></section>` : '';
+    put(panel, 'steps', `${group('prep', 'Prep (free, optional)', prep, 0)}${group('story', 'Characters & speakers', main, prep.length)}<p class="ap-help">Steps do not have to run in order. A step that needs another step’s accepted results says so and waits for them; the others can run at any time.</p>`);
   }
 
   function modelField(panel, def) {
@@ -512,11 +583,11 @@
     // Staleness is context, not a state: list a few sections, count the rest.
     const staleNames = stale.slice(0, 5).map(scope => scopeLabel(panel, scope)).join(', ') + (stale.length > 5 ? `, and ${number(stale.length - 5)} more` : '');
     const notes = [
-      state ? `<div class="ap-status" data-ap-status="${escapeHtml(status.key)}">${statusChip(status)}${status.detail && !missing.length ? `<span>${escapeHtml(status.detail)}</span>` : ''}</div>` : '',
+      state ? `<div class="ap-status" data-ap-status="${escapeHtml(status.key)}">${statusChip(status)}${status.detail && !missing.length ? `<span>${escapeHtml(status.detail)}</span>` : ''}${PROBLEM_KEYS.has(status.key) && status.action?.kind === 'run' && !reason && !summaryRetries(panel, def.id) ? ui().button({label:'Try again', size:'small', attrs:{'data-ap-action':'retry', 'data-ap-retry':def.id, 'data-ap-run':problemRun(panel, def.id)?.id || '', 'data-ap-key':'retry-step'}}) : ''}</div>` : '',
       recorded ? `<p class="ap-help">${plural(recorded, 'accepted result')} ${recorded === 1 ? 'was' : 'were'} recorded from existing work; producer unknown.</p>` : '',
       stale.length ? `<p class="ap-help ap-stale">${plural(stale.length, 'accepted result')} ${stale.length === 1 ? 'was' : 'were'} accepted using inputs that have since changed: ${escapeHtml(staleNames)}. Staleness compares whole steps, so the change may not affect ${stale.length === 1 ? 'it' : 'them'}; run this step again to refresh.</p>` : '',
     ].join('');
-    put(panel, 'detail', `<div class="ap-detail-head"><div><span class="eyebrow">${def.method === 'plain' ? 'LOCAL STEP' : 'MODEL STEP'}</span><h3 tabindex="-1" data-ap-key="detail-heading">${escapeHtml(def.label)}</h3></div></div>${notes}${needs}<p>${escapeHtml(def.summary || '')}</p><p class="ap-help">${inputs} Produces ${escapeHtml(scopes)}.</p>${method}${chapterField}${gate}${runControls(panel, def, reason, missing)}<details class="ap-technical"><summary>Technical details</summary><dl><div><dt>Step ID</dt><dd><code>${id}</code></dd></div><div><dt>Recipe version</dt><dd>${escapeHtml(def.version)}</dd></div><div><dt>Updates</dt><dd>${def.owns?.length ? def.owns.map(field => `<code>${escapeHtml(field)}</code>`).join(' ') : 'Nothing in the book'}</dd></div><div><dt>Units at once</dt><dd>${escapeHtml(def.parallel)}</dd></div></dl></details>`);
+    put(panel, 'detail', `<div class="ap-detail-head"><div><span class="eyebrow">${def.method === 'plain' ? 'LOCAL STEP' : 'MODEL STEP'}</span><h3 tabindex="-1" data-ap-key="detail-heading">${escapeHtml(def.label)}</h3></div></div>${notes}${needs}<p>${escapeHtml(def.summary || '')}</p><p class="ap-help">${inputs} Produces ${escapeHtml(scopes)}.</p>${presetsHtml(panel, def)}${method}${chapterField}${gate}${runControls(panel, def, reason, missing)}<details class="ap-technical"><summary>Technical details</summary><dl><div><dt>Step ID</dt><dd><code>${id}</code></dd></div><div><dt>Recipe version</dt><dd>${escapeHtml(def.version)}</dd></div><div><dt>Updates</dt><dd>${def.owns?.length ? def.owns.map(field => `<code>${escapeHtml(field)}</code>`).join(' ') : 'Nothing in the book'}</dd></div><div><dt>Units at once</dt><dd>${escapeHtml(def.parallel)}</dd></div></dl></details>`);
   }
 
   function runControls(panel, def, reason, missing) {
@@ -539,6 +610,160 @@
   }
 
   const setupButton = (provider, key) => `<button type="button" class="button subtle ap-setup" data-ap-action="setup" data-ap-provider="${escapeHtml(provider)}" data-ap-key="${escapeHtml(key)}">Set up in Providers &amp; settings →</button>`;
+
+  // --- saved step settings (owner-authored presets) -------------------------------------------
+  // A saved set is {id, name, step, config:{provider, model, custom_model, gate, concurrency, fresh, chapter_id}, version:1},
+  // stored with the app settings (POST /api/settings analysis_step_presets) so every browser sees it. "Custom" is
+  // simply the panel as it is: the select shows a saved set only while the panel matches it exactly, and nothing
+  // changes until a set is applied or saved.
+  const PRESET_KEYS = ['provider', 'model', 'gate', 'concurrency', 'fresh', 'chapter_id'];
+  function presetList(panel) {
+    const list = presetCache && presetCache.status === panel.status ? presetCache.list : panel.status?.analysis_step_presets;
+    return Array.isArray(list) ? list.filter(item => item && typeof item === 'object' && item.config && typeof item.config === 'object') : [];
+  }
+  const stepPresets = (panel, def) => presetList(panel).filter(item => item.step === def.id);
+
+  // The panel's settings in saved-set form.
+  function currentConfig(panel, def) {
+    const settings = def.settings || {};
+    const withModel = needsModel(panel, def, settings.provider);
+    const model = withModel && typeof settings.model === 'string' ? settings.model : null;
+    return {provider:settings.provider || null, model, custom_model:Boolean(model) && !catalog(panel, settings.provider).some(item => item.id === model),
+      gate:settings.gate === 'review' ? 'review' : 'auto', concurrency:Number(panel.run.concurrency) || 2, fresh:Boolean(panel.run.fresh),
+      chapter_id:def.chapter_scoped && panel.chapterId ? panel.chapterId : null};
+  }
+  const sameConfig = (a, b) => PRESET_KEYS.every(key => (a?.[key] ?? null) === (b?.[key] ?? null));
+
+  // Why a saved set cannot be applied to this step in this book now, or null. Nothing is guessed or substituted.
+  function presetProblem(panel, def, preset) {
+    const config = preset?.config || {};
+    if (preset?.version !== PRESET_VERSION) return {text:'It was saved by a different version of Bardic.'};
+    if (preset.step !== def.id) return {text:`It is for ${stepLabel(panel, preset.step)}, not ${def.label}.`};
+    if (!stepProviders(panel, def).some(provider => provider.id === config.provider)) return {text:`${providerName(config.provider)} is not offered for ${def.label}.`};
+    if (config.provider !== 'local' && !offline(def, config.provider) && !providerHasKey(panel, config.provider)) {
+      return {text:`${providerName(config.provider)} has no ${providerDef(panel, config.provider)?.needs === 'url' ? 'server URL' : 'API key'}.`, setup:config.provider};
+    }
+    if (needsModel(panel, def, config.provider)) {
+      if (typeof config.model !== 'string' || !MODEL_ID.test(config.model)) return {text:'It has no valid model.'};
+      if (!config.custom_model && !catalog(panel, config.provider).some(item => item.id === config.model)) {
+        return {text:`The model “${config.model}” is no longer in the ${providerName(config.provider)} model list.`};
+      }
+    }
+    if (def.chapter_scoped && config.chapter_id && !chapters(panel).some(chapter => chapter.id === config.chapter_id)) {
+      return {text:'The section it was saved with is not in this book.'};
+    }
+    if (config.concurrency !== undefined && ![1, 2, 3, 4].includes(Number(config.concurrency))) return {text:'Its requests at once are out of range.'};
+    return null;
+  }
+
+  function presetsHtml(panel, def) {
+    if (def.method === 'plain' || !panel.overview) return '';
+    const id = escapeHtml(def.id);
+    const saved = stepPresets(panel, def);
+    const current = currentConfig(panel, def);
+    const matching = saved.find(item => sameConfig(item.config, current));
+    const options = saved.map(item => `<option value="${escapeHtml(item.id)}" ${item === matching ? 'selected' : ''}>${escapeHtml(item.name)}${presetProblem(panel, def, item) ? ' · can’t apply here' : ''}</option>`).join('');
+    const form = panel.presetForm?.stepId === def.id ? panel.presetForm : null;
+    const note = panel.presetNote?.stepId === def.id ? panel.presetNote : null;
+    const canSave = !needsModel(panel, def, current.provider) || Boolean(current.model);
+    const select = saved.length ? `<label for="ap-preset-${id}">Saved settings</label><select id="ap-preset-${id}" name="ap_preset" data-ap-key="preset"><option value="" ${matching ? '' : 'selected'}>Custom</option>${options}</select>` : '';
+    const actions = form ? '' : `<div class="ap-preset-actions">${ui().button({label:'Save these settings as…', variant:'text', size:'small', disabled:!canSave || panel.presetSaving, attrs:{'data-ap-action':'preset-open', 'data-ap-key':'preset-open'}})}${matching ? ui().button({label:`Remove “${matching.name}”`, variant:'text', size:'small', disabled:panel.presetSaving, attrs:{'data-ap-action':'preset-delete', 'data-ap-preset':matching.id, 'data-ap-key':'preset-delete'}}) : ''}</div>`;
+    const formHtml = form ? `<div class="ap-preset-form"><label for="ap-preset-name-${id}">Name these settings</label><input id="ap-preset-name-${id}" name="ap_preset_name" data-ap-key="preset-name" maxlength="60" autocomplete="off" spellcheck="false" placeholder="For example: Quick scan" value="${escapeHtml(form.name || '')}"><p class="ap-help">Saves the provider, model, review choice, requests at once, fresh samples${def.chapter_scoped ? ' and sections' : ''} for ${escapeHtml(def.label)}. A set with the same name is replaced.</p>${form.error ? `<p class="ap-error" role="alert">${escapeHtml(form.error)}</p>` : ''}<div class="ap-actions">${ui().button({label:'Cancel', size:'small', attrs:{'data-ap-action':'preset-cancel'}})}${ui().button({label:'Save', variant:'primary', size:'small', busy:panel.presetSaving, busyLabel:'Saving…', attrs:{'data-ap-action':'preset-save', 'data-ap-key':'preset-save'}})}</div></div>` : '';
+    const noteHtml = note ? ui().callout({tone:note.tone || 'warn', title:note.title, text:note.text, actions:note.setup ? setupButton(note.setup, 'setup-preset') : ''}) : '';
+    return `<div class="ap-presets"${saved.length || form || note ? '' : ' data-empty'}>${select}${actions}${formHtml}${noteHtml}</div>`;
+  }
+
+  // Applying a set saves the step's provider, model and review choice (as picking them by hand does) and sets
+  // this visit's requests at once, fresh samples and sections. It never starts work.
+  function applyPreset(panel, presetId) {
+    const def = stepDef(panel, panel.selected);
+    if (!def) return;
+    const preset = stepPresets(panel, def).find(item => item.id === presetId);
+    if (!preset) { panel.presetNote = null; paint(panel); return; }
+    const problem = presetProblem(panel, def, preset);
+    if (problem) {
+      panel.presetNote = {stepId:def.id, tone:'warn', title:`“${preset.name}” can’t be applied`, text:`${problem.text} Nothing was changed.`, setup:problem.setup};
+      paint(panel);
+      focusRegion(panel, 'preset');
+      return;
+    }
+    const config = preset.config;
+    panel.presetNote = null;
+    panel.custom[def.id] = null;
+    panel.run.concurrency = String(Number(config.concurrency) || 2);
+    panel.run.fresh = Boolean(config.fresh);
+    if (def.chapter_scoped) panel.chapterId = config.chapter_id || '';
+    const provider = config.provider;
+    const model = needsModel(panel, def, provider) ? config.model : null;
+    const settings = def.settings || {};
+    if (settings.provider === provider && (settings.model ?? null) === model && (settings.gate === 'review' ? 'review' : 'auto') === config.gate) {
+      const closed = discardPlan(panel, null);
+      paint(panel);
+      say(panel, `Applied “${preset.name}”.${closed ? ' The open preview was closed; preview again for the new estimate.' : ''}`);
+      return;
+    }
+    void saveSettings(panel, def.id, {provider, model, gate:config.gate}, {note:`Applied “${preset.name}”.`});
+  }
+
+  async function storePresets(panel, list) {
+    panel.presetSaving = true;
+    paint(panel);
+    const status = panel.status;
+    try {
+      const value = await call('/api/settings', {method:'POST', body:{analysis_step_presets:list}});
+      const saved = Array.isArray(value?.analysis_step_presets) ? value.analysis_step_presets : list;
+      presetCache = {status, list:saved};
+      return saved;
+    } finally {
+      panel.presetSaving = false;
+    }
+  }
+
+  const presetId = () => `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+  async function savePreset(panel) {
+    const def = stepDef(panel, panel.selected);
+    const form = panel.presetForm;
+    if (!def || !form || form.stepId !== def.id || panel.presetSaving) return;
+    const name = String(form.name || '').replace(/\s+/g, ' ').trim();
+    if (!name || name.length > 60) { form.error = 'Use a name of 1–60 characters.'; paint(panel); focusRegion(panel, 'preset-name'); return; }
+    const config = currentConfig(panel, def);
+    const list = presetList(panel);
+    const same = list.find(item => item.step === def.id && String(item.name).toLowerCase() === name.toLowerCase());
+    const entry = {id:same?.id || presetId(), name, step:def.id, config, version:PRESET_VERSION};
+    const next = same ? list.map(item => item === same ? entry : item) : [...list, entry];
+    const bookId = panel.bookId;
+    try {
+      await storePresets(panel, next);
+      if (panel.bookId !== bookId) return;
+      panel.presetForm = null;
+      panel.presetNote = null;
+      paint(panel);
+      say(panel, `${same ? 'Replaced' : 'Saved'} “${name}” for ${def.label}. Choose it from Saved settings to use it again.`);
+      focusRegion(panel, 'preset');
+    } catch (error) {
+      if (panel.bookId !== bookId || !panel.presetForm) return;
+      panel.presetForm.error = `Could not save: ${error.message}`;
+      paint(panel);
+    }
+  }
+
+  async function deletePreset(panel, id) {
+    const def = stepDef(panel, panel.selected);
+    const list = presetList(panel);
+    const preset = list.find(item => item.id === id);
+    if (!def || !preset || panel.presetSaving) return;
+    const bookId = panel.bookId;
+    try {
+      await storePresets(panel, list.filter(item => item.id !== id));
+      if (panel.bookId !== bookId) return;
+      panel.presetNote = null;
+      paint(panel);
+      say(panel, `Removed “${preset.name}”. The step’s current settings are unchanged.`);
+    } catch (error) {
+      if (panel.bookId === bookId) { paint(panel); say(panel, `Could not remove “${preset.name}”: ${error.message}`, true); }
+    }
+  }
 
   function unitsText(item) {
     const units = item.units || {};
@@ -593,12 +818,122 @@
     return `<strong>${what}</strong> · your ${escapeHtml(field)}${conflict.reason ? ` — ${escapeHtml(conflict.reason)}` : ''}${place}`;
   }
 
+  // --- result review: filters, evidence and Show in text ---------------------------------------------
+  // Each filter needs its column in the step's table (only Speakers & delivery has them all today).
+  const FILTERS = [
+    {id:'no-speaker', label:'No speaker', column:'speaker', test:(row, ctx) => {
+      const speaker = String(row.speaker ?? '').trim();
+      return !speaker || speaker.toLowerCase() === 'unassigned' || speaker === ctx.unassigned;
+    }},
+    {id:'low-confidence', label:'Low confidence', column:'confidence', test:row => finite(row.confidence) && row.confidence <= LOW_CONFIDENCE},
+    // The BookNLP check column reads "Differs · BookNLP: <name>" (bardic/pipeline/steps/quotes.py CHECK_LABELS).
+    {id:'booknlp-differs', label:'BookNLP disagrees', column:'check', test:row => /^Differs\b/.test(String(row.check ?? ''))},
+    {id:'edited', label:'Your edits', column:'edited', test:row => Boolean(String(row.edited ?? '').trim())},
+  ];
+  const filtersFor = columns => FILTERS.filter(filter => columns.some(column => column.key === filter.column));
+  const filterContext = panel => ({unassigned:(panel.book?.characters || []).find(item => item.id === 'unassigned')?.name || null});
+
+  // Passages by ID, rebuilt when the app passes a new book object.
+  function segmentIndex(panel) {
+    if (panel.segments?.book !== panel.book) {
+      panel.segments = {book:panel.book, map:new Map((panel.book?.segments || []).filter(item => item?.id).map(item => [item.id, item]))};
+    }
+    return panel.segments.map;
+  }
+  const characterName = (panel, id) => (panel.book?.characters || []).find(item => item.id === id)?.name || id || '';
+  const speakerEdited = segment => {
+    const fields = Array.isArray(segment.edited_fields) ? segment.edited_fields : segment.edited ? ['*'] : [];
+    return fields.includes('speaker_id') || fields.includes('*');
+  };
+  const quotesOf = value => Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()) : [];
+
+  // Exact evidence quotes, never reconstructed. A row may carry its version's own quotes (evidence_quotes). Otherwise
+  // the book's stored evidence is shown only where it justifies this row's speaker: the passage has that speaker and
+  // no one changed it by hand (a manual speaker change keeps the old evidence). Anything else is unknown here.
+  function evidenceFor(panel, row, segment) {
+    if (Array.isArray(row.evidence_quotes)) return {quotes:quotesOf(row.evidence_quotes), known:true, source:'From this version.'};
+    const speaker = characterName(panel, segment.speaker_id);
+    if ((segment.evidence === undefined || Array.isArray(segment.evidence)) && !speakerEdited(segment) && speaker && row.speaker !== undefined && speaker === String(row.speaker ?? '')) {
+      return {quotes:quotesOf(segment.evidence), known:true, source:`Recorded in the book for ${speaker}.`};
+    }
+    return {quotes:[], known:false, source:''};
+  }
+
+  function evidenceCell(panel, row, segment) {
+    if (!segment) return '<td>—</td>';
+    const evidence = evidenceFor(panel, row, segment);
+    const show = ui().button({label:'Show in text', variant:'text', size:'small', attrs:{'data-ap-action':'show-passage', 'data-ap-segment':row.id, 'data-ap-key':`show-${row.id}`}});
+    const body = evidence.quotes.length
+      ? `<p class="ap-evidence-source">${escapeHtml(evidence.source)}</p><ul>${evidence.quotes.map(quote => `<li><q>${escapeHtml(quote)}</q></li>`).join('')}</ul>`
+      : `<p>${evidence.known ? 'No evidence recorded.' : 'This version’s evidence is not included in this table.'}</p>`;
+    if (row.kind === 'narration' && !evidence.quotes.length) return `<td class="ap-passage-cell">${show}</td>`;
+    return `<td class="ap-passage-cell">${show}<details class="ap-evidence"><summary>${evidence.quotes.length ? `Evidence (${number(evidence.quotes.length)})` : 'Evidence'}</summary>${body}</details></td>`;
+  }
+
+  // The event another view (Script & record) can handle and cancel; shell.js falls back to Read & listen.
+  function showPassage(panel, segmentId) {
+    const segment = segmentIndex(panel).get(segmentId);
+    const doc = globalThis.document;
+    if (!segment || typeof doc?.dispatchEvent !== 'function' || typeof globalThis.CustomEvent !== 'function') return;
+    // Coming back (Back, or the Analyze tab) reopens this step and version with the same filter, once.
+    requestedStep = panel.selected;
+    returnTo = {bookId:panel.bookId, step:panel.selected, versionId:panel.versionId, filter:panel.view.filter || ''};
+    doc.dispatchEvent(new globalThis.CustomEvent('bardic:show-passage', {cancelable:true,
+      detail:{bookId:panel.bookId, segmentId, chapterId:segment.chapter_id || null}}));
+  }
+
+  function takeReturnFilter(panel, stepId, versionId) {
+    const back = returnTo;
+    returnTo = null;
+    return back && back.bookId === panel.bookId && back.step === stepId && back.versionId === versionId ? back.filter : '';
+  }
+
+  function filtersHtml(panel, columns, result) {
+    const available = filtersFor(columns);
+    if (!available.length) return '';
+    const rows = result?.all ? result.rows || [] : null;
+    const ctx = filterContext(panel);
+    const count = filter => rows ? ` (${number(rows.filter(row => filter.test(row, ctx)).length)})` : '';
+    const options = [{value:'all', label:'All rows'}, ...available.map(filter => ({value:filter.id, label:`${filter.label}${count(filter)}`}))];
+    const chips = ui().choice({kind:'chips', label:'Show rows', name:'ap-filter', value:panel.view.filter || 'all', options})
+      .replace(/data-value="([\w-]+)"/g, 'data-value="$1" data-ap-filter="$1" data-ap-key="filter-$1"');
+    const help = panel.view.filter === 'low-confidence' ? '<p class="ap-help">Confidence of 65% or less. Below 65% a speaker stays unassigned, and a BookNLP disagreement caps confidence at 65%.</p>'
+      : panel.view.filter === 'booknlp-differs' ? '<p class="ap-help">Lines where BookNLP’s quote attribution names a different speaker.</p>' : '';
+    return `<div class="ap-filters">${chips}${help}</div>`;
+  }
+
+  // Choosing a filter reads every row once (in pages); later filter changes reuse them.
+  function setFilter(panel, value) {
+    const filter = value === 'all' ? '' : FILTERS.some(item => item.id === value) ? value : '';
+    if (filter === panel.view.filter) return;
+    panel.view.filter = filter;
+    panel.view.offset = 0;
+    if (panel.result?.all) { paintResult(panel); return; }
+    panel.seq.impact++;
+    panel.impact = null;
+    void loadResult(panel);
+  }
+
+  // Rows the pagination can reach: every matching row when rows are paged here, else the server's count.
+  function shownTotal(panel) {
+    const result = panel.result;
+    if (!result) return 0;
+    if (!result.all) return result.total_rows || 0;
+    const filter = filtersFor(result.columns || []).find(item => item.id === panel.view.filter);
+    const rows = result.rows || [];
+    return filter ? rows.filter(row => filter.test(row, filterContext(panel))).length : rows.length;
+  }
+  const pageResult = panel => { if (panel.result?.all) paintResult(panel); else void loadResult(panel); };
+
   // Confidence columns read as percentages, like the rest of the app.
   const valueText = (column, value) => /confidence/i.test(`${column.key} ${column.label || ''}`) && finite(value) && value >= 0 && value <= 1 ? formatPercent(value) : cell(value);
 
   // Result rows are grouped under their section (and scene) instead of repeating it in every row.
   // A column that already names the result (Section, Character) replaces the grouping.
+  // Rows that are passages (Speakers & delivery) get an Evidence column with Show in text.
   function resultRows(panel, columns, rows) {
+    const segments = segmentIndex(panel);
+    const passages = rows.some(row => segments.has(row.id));
     const name = row => scopeLabel(panel, row.scope);
     const named = columns.some(column => rows.every(row => cell(row[column.key]) === name(row)));
     const scene = named ? null : columns.find(column => column.key === 'scene');
@@ -614,7 +949,7 @@
     let previous = null;
     const body = rows.map(row => {
       const heading = named ? '' : group(row);
-      const head = !named && heading !== previous ? `<tr class="ap-group"><th scope="colgroup" colspan="${shown.length + 1}">${escapeHtml(heading)}</th></tr>` : '';
+      const head = !named && heading !== previous ? `<tr class="ap-group"><th scope="colgroup" colspan="${shown.length + 1 + (passages ? 1 : 0)}">${escapeHtml(heading)}</th></tr>` : '';
       previous = heading;
       const changed = new Set(Array.isArray(row._changed) ? row._changed : []);
       const kind = row._diff === 'added' ? 'added' : row._diff === 'changed' ? 'changed' : '';
@@ -623,9 +958,9 @@
         if (!changed.has(column.key)) return `<td>${escapeHtml(value)}</td>`;
         const before = valueText(column, row._previous?.[column.key]);
         return `<td class="ap-cell-changed" title="${escapeHtml(clip(`Previously: ${before}`, 400))}"><span class="sr-only">Changed. Now: </span>${escapeHtml(value)}<del class="ap-previous"><span class="sr-only">Previously: </span>${escapeHtml(before)}</del></td>`;
-      }).join('')}</tr>`;
+      }).join('')}${passages ? evidenceCell(panel, row, segments.get(row.id)) : ''}</tr>`;
     }).join('');
-    return `<thead><tr><th scope="col">Change</th>${shown.map(column => `<th scope="col">${escapeHtml(column.label || column.key)}</th>`).join('')}</tr></thead><tbody>${body}</tbody>`;
+    return `<thead><tr><th scope="col">Change</th>${shown.map(column => `<th scope="col">${escapeHtml(column.label || column.key)}</th>`).join('')}${passages ? '<th scope="col">Evidence</th>' : ''}</tr></thead><tbody>${body}</tbody>`;
   }
 
   function paintResult(panel) {
@@ -647,13 +982,24 @@
     else if (!result) table = `<p class="ap-help" role="status">${item.state === 'running' ? 'Results appear when this step finishes.' : 'Loading results…'}</p>`;
     else {
       const columns = Array.isArray(result.columns) ? result.columns : [];
-      const rows = Array.isArray(result.rows) ? result.rows : [];
+      const loaded = Array.isArray(result.rows) ? result.rows : [];
+      // Every row is loaded while a filter is (or was) on: page in the browser. Otherwise the server pages.
+      const local = result.all === true;
+      const filter = filtersFor(columns).find(item => item.id === view.filter) || null;
+      const ctx = filterContext(panel);
+      const matching = local && filter ? loaded.filter(row => filter.test(row, ctx)) : loaded;
+      const rows = local ? matching.slice(view.offset, view.offset + PAGE_SIZE) : loaded;
+      const offset = local ? view.offset : result.offset || 0;
+      const total = local ? matching.length : result.total_rows || 0;
       const diff = result.diff || {};
       const stats = Object.entries(result.stats || {});
       const compared = diff.compared_with ? `<p class="ap-diff-summary">Compared with ${escapeHtml(diff.compared_with === 'accepted' ? 'the accepted version' : 'the chosen version')}: ${number(diff.same)} same · ${number(diff.changed)} changed · ${number(diff.added)} new · ${number(diff.removed)} only in the other version${finite(diff.agreement) ? ` · ${formatPercent(diff.agreement)} agreement` : ''}.</p>` : view.compare === 'none' ? '' : '<p class="ap-help">Nothing to compare with yet.</p>';
-      const start = rows.length ? (result.offset || 0) + 1 : 0;
-      const end = (result.offset || 0) + rows.length;
-      table = `${stats.length ? `<dl class="ap-stats">${stats.map(([key, value]) => `<div><dt>${escapeHtml(key.replaceAll('_', ' '))}</dt><dd>${escapeHtml(cell(value))}</dd></div>`).join('')}</dl>` : ''}${compared}${rows.length && columns.length ? `<div class="ap-table-wrap ap-result-table"><table><caption class="sr-only">Results of this version</caption>${resultRows(panel, columns, rows)}</table></div>` : `<p class="ap-help">${view.changedOnly ? 'No changed rows.' : 'This version has no rows to show.'}</p>`}<div class="ap-pagination"><span>${number(start)}–${number(end)} of ${number(result.total_rows || 0)} rows</span><div><button type="button" class="button subtle" data-ap-action="prev-page" data-ap-key="prev-page" ${panel.resultLoading || !(result.offset > 0) ? 'disabled' : ''}>Previous</button><button type="button" class="button subtle" data-ap-action="next-page" data-ap-key="next-page" ${panel.resultLoading || end >= (result.total_rows || 0) ? 'disabled' : ''}>Next</button></div></div>`;
+      const start = rows.length ? offset + 1 : 0;
+      const end = offset + rows.length;
+      const counted = filter ? `${number(total)} matching ${total === 1 ? 'row' : 'rows'} (of ${number(result.total_rows || 0)})` : `${number(total)} rows`;
+      const partial = local && result.complete === false ? `<p class="ap-help">Filters cover the first ${number(loaded.length)} of ${number(result.total_rows || 0)} rows. Choose one section under Show to filter the rest.</p>` : '';
+      const empty = filter ? `No rows match “${filter.label}”.` : view.changedOnly ? 'No changed rows.' : 'This version has no rows to show.';
+      table = `${stats.length ? `<dl class="ap-stats">${stats.map(([key, value]) => `<div><dt>${escapeHtml(key.replaceAll('_', ' '))}</dt><dd>${escapeHtml(cell(value))}</dd></div>`).join('')}</dl>` : ''}${compared}${filtersHtml(panel, columns, result)}${partial}${rows.length && columns.length ? `<div class="ap-table-wrap ap-result-table"><table><caption class="sr-only">Results of this version</caption>${resultRows(panel, columns, rows)}</table></div>` : `<p class="ap-help">${escapeHtml(empty)}</p>`}<div class="ap-pagination"><span>${number(start)}–${number(end)} of ${counted}</span><div><button type="button" class="button subtle" data-ap-action="prev-page" data-ap-key="prev-page" ${panel.resultLoading || !(offset > 0) ? 'disabled' : ''}>Previous</button><button type="button" class="button subtle" data-ap-action="next-page" data-ap-key="next-page" ${panel.resultLoading || end >= total ? 'disabled' : ''}>Next</button></div></div>`;
     }
     put(panel, 'result', `<div class="ap-result-head"><div><h4>${escapeHtml(VERSION_STATES[item.state] || 'Version')} · ${escapeHtml(versionSource(item))}</h4><p class="ap-help">${escapeHtml(when(item.created_at))}${item.state === 'accepted' ? ' · This is the version the book uses.' : restore ? ' · Restoring makes the book use this earlier version again.' : ''}</p>${item.origin !== 'run' ? '<p class="ap-help">Recorded from existing work; producer unknown.</p>' : ''}</div><div class="ap-actions">${actions}</div></div>${impactHtml(panel, item)}<div class="ap-result-filters">${compare}${scopeField}${changedOnly}</div>${table}`);
   }
@@ -699,7 +1045,7 @@
       if (!items.some(item => item.id === panel.versionId)) {
         const chosen = items.find(item => item.state === 'candidate') || items.find(item => ['accepted', 'partly_accepted'].includes(item.state)) || items[0];
         panel.versionId = chosen?.id || null;
-        panel.view = freshView();
+        panel.view = {...freshView(), filter:takeReturnFilter(panel, stepId, panel.versionId)};
         panel.result = null; panel.resultError = null; panel.impact = null; panel.seq.impact++;
         forceResult = true;
       }
@@ -721,14 +1067,31 @@
     const seq = ++panel.seq.result;
     if (!versionId) { panel.result = null; paint(panel); return; }
     const view = panel.view;
-    const query = new URLSearchParams({compare:view.compare, offset:String(view.offset), limit:String(PAGE_SIZE)});
-    if (view.changedOnly && view.compare !== 'none') query.set('changed_only', 'true');
-    if (view.scope) query.set('scope', view.scope);
+    // A filter reads every row: pages of the largest size the server allows, up to ALL_ROWS_PAGES of them.
+    const all = Boolean(view.filter);
+    const url = (offset, limit) => {
+      const query = new URLSearchParams({compare:view.compare, offset:String(offset), limit:String(limit)});
+      if (view.changedOnly && view.compare !== 'none') query.set('changed_only', 'true');
+      if (view.scope) query.set('scope', view.scope);
+      return `${base(panel)}/steps/${path(stepId)}/versions/${path(versionId)}?${query}`;
+    };
+    const stillCurrent = () => current(panel, bookId, 'result', seq) && panel.selected === stepId && panel.versionId === versionId;
     panel.resultLoading = true;
     paintResult(panel);
     try {
-      const value = await call(`${base(panel)}/steps/${path(stepId)}/versions/${path(versionId)}?${query}`);
-      if (!current(panel, bookId, 'result', seq) || panel.selected !== stepId || panel.versionId !== versionId) return;
+      let value = await call(all ? url(0, ALL_ROWS_PAGE) : url(view.offset, PAGE_SIZE));
+      if (!stillCurrent()) return;
+      if (all) {
+        const rows = Array.isArray(value.rows) ? [...value.rows] : [];
+        const total = Number(value.total_rows) || 0;
+        for (let page = 1; rows.length < total && page < ALL_ROWS_PAGES; page++) {
+          const more = await call(url(rows.length, ALL_ROWS_PAGE));
+          if (!stillCurrent()) return;
+          if (!Array.isArray(more.rows) || !more.rows.length) break;
+          rows.push(...more.rows);
+        }
+        value = {...value, rows, offset:0, all:true, complete:rows.length >= total};
+      }
       panel.result = value;
       panel.resultError = null;
     } catch (error) {
@@ -741,7 +1104,18 @@
   }
 
   // A new visit opens on the first actionable step (see startStep); a step chosen during the visit stays.
+  // A step requested from outside the tab wins; it is used once.
   function pickStep(panel) {
+    const requested = requestedStep;
+    requestedStep = null;
+    if (requested && stepDef(panel, requested) && requested !== panel.selected) {
+      if (panel.selected) {
+        panel.seq.versions++; panel.seq.result++; panel.seq.impact++;
+        Object.assign(panel, {versions:null, versionsKey:'', versionId:null, result:null, resultError:null, impact:null, view:freshView()});
+      }
+      panel.selected = requested;
+      return 'requested';
+    }
     if (panel.selected && stepDef(panel, panel.selected)) return false;
     panel.selected = startStep(statusEntries(panel));
     return true;
@@ -751,19 +1125,21 @@
     paint(panel);
     await Promise.all([loadDefs(panel), loadOverview(panel)]);
     if (!panel.defs) { paint(panel); return; }
-    pickStep(panel);
+    const picked = pickStep(panel);
     paint(panel);
+    if (picked === 'requested') reveal(panel, 'detail-heading');
     await loadVersions(panel);
     schedule(panel);
   }
 
   async function refresh(panel, {result = false} = {}) {
     if (!panel.defs) { await initial(panel); return; }
-    if (!panel.selected) {
-      // A new visit: the overview decides which step to open.
+    if (!panel.selected || (requestedStep && requestedStep !== panel.selected)) {
+      // A new visit: the overview decides which step to open, unless one was asked for.
       await loadOverview(panel);
-      pickStep(panel);
+      const picked = pickStep(panel);
       paint(panel);
+      if (picked === 'requested') reveal(panel, 'detail-heading');
       await loadVersions(panel);
     } else {
       await Promise.all([loadOverview(panel), loadVersions(panel, {forceResult:result})]);
@@ -800,7 +1176,7 @@
     return true;
   }
 
-  async function saveSettings(panel, stepId, changes) {
+  async function saveSettings(panel, stepId, changes, {note} = {}) {
     const def = stepDef(panel, stepId);
     if (!def) return;
     const previous = def.settings || {};
@@ -818,7 +1194,7 @@
       if (panel.seq.settings[stepId] !== seq) return;
       const latest = stepDef(panel, stepId);
       if (latest) latest.settings = saved;
-      say(panel, `Saved settings for ${def.label}.${closed ? ' The open preview was closed; preview again for the new estimate.' : ''}`);
+      say(panel, `${note || `Saved settings for ${def.label}.`}${closed ? ' The open preview was closed; preview again for the new estimate.' : ''}`);
     } catch (error) {
       if (panel.seq.settings[stepId] !== seq) return;
       const latest = stepDef(panel, stepId);
@@ -882,28 +1258,40 @@
     void saveSettings(panel, def.id, {provider, model});
   }
 
-  async function preparePlan(panel, stepIds) {
+  // overrides (Try again): {configs:{step:{provider, model}}, chapterIds, gates, retry:{status, where}} replace the
+  // panel's settings for this one preview; the server validates the plan exactly as for any other run.
+  async function preparePlan(panel, stepIds, overrides = {}) {
     const reason = blocked(panel);
     if (reason) { say(panel, reason, true); return; }
     const defs = stepIds.map(id => stepDef(panel, id)).filter(Boolean);
     if (!defs.length) { say(panel, 'Tick at least one step to run.', true); return; }
     const unmet = unmetFor(panel, defs[0].id);
     if (unmet) { say(panel, unmet, true); return; }
-    const unready = defs.map(def => providerReadiness(panel, def)).find(provider => provider && !provider.ready);
+    const configOf = def => overrides.configs?.[def.id] || def.settings || {};
+    const unready = defs.map(def => {
+      const provider = configOf(def).provider;
+      if (def.method === 'plain' || !provider || provider === 'local' || offline(def, provider)) return null;
+      return providerHasKey(panel, provider) ? null : {label:providerName(provider), what:providerDef(panel, provider)?.needs === 'url' ? 'server URL' : 'API key'};
+    }).find(Boolean);
     if (unready) { say(panel, `${unready.label} has no ${unready.what}. Add it in Providers & settings first.`, true); return; }
-    const noModel = defs.find(def => needsModel(panel, def, def.settings?.provider) && !(typeof def.settings?.model === 'string' && MODEL_ID.test(def.settings.model)));
+    const noModel = defs.find(def => needsModel(panel, def, configOf(def).provider) && !(typeof configOf(def).model === 'string' && MODEL_ID.test(configOf(def).model)));
     if (noModel) { say(panel, `Choose a model for ${noModel.label} first.`, true); return; }
     const body = {steps:defs.map(def => def.id), configs:{}, fresh:Boolean(panel.run.fresh)};
     const gates = {};
     for (const def of defs) {
+      const config = configOf(def);
       body.configs[def.id] = def.method === 'plain' ? {provider:'local', model:null}
-        : {provider:def.settings.provider, model:needsModel(panel, def, def.settings.provider) ? def.settings.model : null};
-      gates[def.id] = def.settings?.gate === 'review' ? 'review' : 'auto';
+        : {provider:config.provider, model:needsModel(panel, def, config.provider) ? config.model : null};
+      const gate = overrides.gates?.[def.id] ?? def.settings?.gate;
+      gates[def.id] = gate === 'review' ? 'review' : 'auto';
     }
-    if (panel.chapterId && defs.some(def => def.chapter_scoped)) body.chapter_ids = [panel.chapterId];
+    const known = new Set(chapters(panel).map(chapter => chapter.id));
+    const chapterIds = Array.isArray(overrides.chapterIds) ? overrides.chapterIds.filter(id => known.has(id)) : null;
+    if (chapterIds?.length && defs.some(def => def.chapter_scoped)) body.chapter_ids = chapterIds;
+    else if (!chapterIds && panel.chapterId && defs.some(def => def.chapter_scoped)) body.chapter_ids = [panel.chapterId];
     const bookId = panel.bookId;
     const seq = ++panel.seq.plan;
-    panel.plan = {body, gates, value:null, loading:true, error:null, starting:false, stale:false};
+    panel.plan = {body, gates, value:null, loading:true, error:null, starting:false, stale:false, retry:overrides.retry || null};
     say(panel, '');
     paint(panel);
     // The preview opens below the step settings, often below the fold: bring it into view.
@@ -1050,11 +1438,53 @@
     discardPlan(panel, null);
     panel.message = '';
     panel.messageError = false;
+    panel.presetForm = null;
+    panel.presetNote = null;
     panel.selected = stepId;
     panel.seq.versions++; panel.seq.result++; panel.seq.impact++;
     Object.assign(panel, {versions:null, versionsKey:'', versionId:null, result:null, resultError:null, impact:null, view:freshView()});
     paint(panel);
     void loadVersions(panel);
+  }
+
+  // Try again after a run that ended early: the same step, provider, model, sections, review choice, requests at
+  // once and fresh samples as that run (or, when the run has aged out of the recent list, as its latest version).
+  // It opens the usual preview; Confirm is still the only thing that starts work.
+  function retry(panel, stepId, runId) {
+    const def = stepDef(panel, stepId);
+    if (!def) return;
+    if (stepId !== panel.selected) selectStep(panel, stepId);
+    const run = (panel.overview?.recent_runs || []).find(item => item.id === runId && (item.steps || []).includes(stepId)) || problemRun(panel, stepId);
+    const latest = stepState(panel, stepId)?.latest || null;
+    const recorded = run?.configs?.[stepId] || (latest?.provider ? {provider:latest.provider, model:latest.model ?? null} : null);
+    const config = recorded && typeof recorded.provider === 'string' && (def.method === 'plain' || stepProviders(panel, def).some(p => p.id === recorded.provider)) ? recorded : null;
+    const chapterIds = run ? run.chapter_ids : latest?.chapter_ids;
+    const known = new Set(chapters(panel).map(chapter => chapter.id));
+    if (Array.isArray(chapterIds) && chapterIds.some(id => !known.has(id))) {
+      say(panel, 'The sections that run covered are no longer in this book. Choose sections and run the step again.', true);
+      return;
+    }
+    if (run && [1, 2, 3, 4].includes(Number(run.concurrency))) panel.run.concurrency = String(Number(run.concurrency));
+    if (run && typeof run.fresh === 'boolean') panel.run.fresh = run.fresh;
+    panel.chapterId = Array.isArray(chapterIds) && chapterIds.length === 1 ? chapterIds[0] : '';
+    const where = config && def.method !== 'plain' ? `${providerName(config.provider)}${config.model ? ` · ${config.model}` : ''}` : '';
+    void preparePlan(panel, [stepId], {configs:config ? {[stepId]:config} : null, chapterIds:Array.isArray(chapterIds) ? chapterIds : null,
+      gates:run?.gates || null, retry:{status:run?.status || latest?.status || null, where, runId:run?.id || null}});
+  }
+
+  // Open a step from outside the tab. While the tab is showing it switches at once; otherwise the next visit opens on it.
+  function requestStep(stepId) {
+    const id = typeof stepId === 'string' ? stepId : '';
+    if (!id) return false;
+    const panel = lastPanel;
+    if (panel?.shown && panel.defs) {
+      if (!stepDef(panel, id)) return false;
+      selectStep(panel, id);
+      reveal(panel, 'detail-heading');
+      return true;
+    }
+    requestedStep = id;
+    return true;
   }
 
   function selectVersion(panel, versionId) {
@@ -1101,6 +1531,7 @@
       }
       case 'ap_changed_only': reloadResult(panel, {changedOnly:Boolean(field.checked), offset:0}); return;
       case 'ap_scope': reloadResult(panel, {scope:String(field.value || ''), offset:0}); return;
+      case 'ap_preset': applyPreset(panel, String(field.value || '')); return;
       default: return;
     }
     paintDetail(panel); paintPlan(panel);
@@ -1110,6 +1541,7 @@
     const name = field?.name;
     // Typing updates state only; repainting the field would move the caret.
     if (name === 'ap_custom_model' && panel.custom[panel.selected]) panel.custom[panel.selected].text = String(field.value ?? '');
+    if (name === 'ap_preset_name' && panel.presetForm) panel.presetForm.name = String(field.value ?? '');
   }
 
   function bind(panel) {
@@ -1122,15 +1554,21 @@
         selectStep(panel, step.dataset.apStep);
         // "Go to" links live in the detail region they replace; move focus to the new step.
         if (step.dataset.apKey?.startsWith('go-')) focusRegion(panel, 'detail-heading');
+        // On a narrow screen the step panel sits below the list: bring it into view.
+        else if (narrow()) reveal(panel, 'detail-heading');
         return;
       }
+      const chip = target.closest('[data-ap-filter]');
+      if (chip) { if (!chip.disabled) setFilter(panel, chip.dataset.apFilter); return; }
       const version = target.closest('[data-ap-version]');
       if (version) { selectVersion(panel, version.dataset.apVersion); return; }
       const button = target.closest('[data-ap-action]');
       if (!button || button.disabled) return;
       switch (button.dataset.apAction) {
         case 'plan-step': void preparePlan(panel, [panel.selected]); break;
-        case 'replan': if (panel.plan) void preparePlan(panel, panel.plan.body.steps); break;
+        // A retried preview keeps the failed run's settings when it is estimated again.
+        case 'replan': if (panel.plan) void preparePlan(panel, panel.plan.body.steps, panel.plan.retry
+          ? {configs:panel.plan.body.configs, chapterIds:panel.plan.body.chapter_ids || null, gates:panel.plan.gates, retry:panel.plan.retry} : {}); break;
         case 'confirm-run': void confirmRun(panel); break;
         case 'cancel-plan': panel.seq.plan++; panel.plan = null; paint(panel); break;
         case 'accept': void previewAccept(panel); break;
@@ -1139,16 +1577,28 @@
         case 'reject': void reject(panel); break;
         case 'setup': openSetup(panel, button.dataset.apProvider || providerReadiness(panel, stepDef(panel, panel.selected))?.id); break;
         case 'prev-page':
-          if (!panel.resultLoading && panel.view.offset > 0) { panel.view.offset = Math.max(0, panel.view.offset - PAGE_SIZE); void loadResult(panel); }
+          if (!panel.resultLoading && panel.view.offset > 0) { panel.view.offset = Math.max(0, panel.view.offset - PAGE_SIZE); pageResult(panel); }
           break;
         case 'next-page':
-          if (!panel.resultLoading && panel.view.offset + PAGE_SIZE < (panel.result?.total_rows || 0)) { panel.view.offset += PAGE_SIZE; void loadResult(panel); }
+          if (!panel.resultLoading && panel.view.offset + PAGE_SIZE < shownTotal(panel)) { panel.view.offset += PAGE_SIZE; pageResult(panel); }
           break;
+        case 'retry': retry(panel, button.dataset.apRetry, button.dataset.apRun); break;
+        case 'show-passage': showPassage(panel, button.dataset.apSegment); break;
+        case 'preset-open':
+          panel.presetForm = {stepId:panel.selected, name:'', error:null};
+          panel.presetNote = null;
+          paintDetail(panel);
+          focusRegion(panel, 'preset-name');
+          break;
+        case 'preset-cancel': panel.presetForm = null; paintDetail(panel); focusRegion(panel, 'preset-open'); break;
+        case 'preset-save': void savePreset(panel); break;
+        case 'preset-delete': void deletePreset(panel, button.dataset.apPreset); break;
         case 'refresh': void refresh(panel, {result:true}); break;
         case 'dismiss-run': {
           const last = panel.overview?.recent_runs?.[0];
           if (last) acknowledged.set(panel.bookId, last.id);
           paintRuns(panel);
+          paintDetail(panel);
           focusRegion(panel, 'refresh');
           break;
         }
@@ -1160,6 +1610,24 @@
     // Forms are not used, but Enter in the custom model field should save rather than do nothing.
     container.addEventListener('keydown', event => {
       if (event.key === 'Enter' && event.target?.name === 'ap_custom_model') { event.preventDefault?.(); saveCustom(panel, event.target.value); }
+      if (event.key === 'Enter' && event.target?.name === 'ap_preset_name') {
+        event.preventDefault?.();
+        if (panel.presetForm) panel.presetForm.name = String(event.target.value ?? '');
+        void savePreset(panel);
+      }
+      if (event.key === 'Escape' && event.target?.name === 'ap_preset_name') { panel.presetForm = null; paintDetail(panel); focusRegion(panel, 'preset-open'); }
+      // The row filters are one radio group: arrow keys, Home and End move and choose (as BardicUI.bindChoices does).
+      const chip = event.target?.closest?.('[data-ap-filter]');
+      if (chip) {
+        const chips = Array.from(chip.parentElement?.children || []).filter(node => node.dataset?.apFilter);
+        const index = ui().nextChoiceIndex(event.key, chips.indexOf(chip), chips.map(node => Boolean(node.disabled)));
+        if (index < 0) return;
+        event.preventDefault?.();
+        const value = chips[index].dataset.apFilter;
+        chips[index].focus?.();
+        setFilter(panel, value);
+        focusRegion(panel, `filter-${value}`);
+      }
     });
   }
 
@@ -1167,6 +1635,7 @@
     if (!container) return Promise.resolve();
     let panel = panels.get(container);
     if (!panel) { panel = create(container); panels.set(container, panel); bind(panel); }
+    lastPanel = panel;
     const status = options.status || null;
     const statusChanged = panel.status !== status;
     panel.options = options;
@@ -1196,6 +1665,8 @@
     return Promise.resolve();
   }
 
-  // The pure helpers are exported for tests and for other views that summarize analysis state.
-  window.BardicAnalysisPipeline = {render, stepStatus, startStep, nextStep, formatMoney, formatRate, formatPercent};
+  // selectStep(stepId) opens a step from outside the tab (lifecycle strip, #/book/<id>/analysis/<step>); it returns
+  // false for a step the loaded registry does not have. The pure helpers are exported for tests and other views.
+  window.BardicAnalysisPipeline = {render, selectStep:requestStep, stepStatus, startStep, nextStep, formatMoney, formatRate, formatPercent,
+    FILTERS:FILTERS.map(({id, label, column}) => ({id, label, column})), LOW_CONFIDENCE};
 })();

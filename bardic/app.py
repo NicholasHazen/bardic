@@ -165,6 +165,31 @@ class DiagnosticRequest(StrictModel):
     operation: Literal['request', 'poll', 'play', 'prefetch', 'media', 'prepare', 'settle', 'cache_read'] | None = None
 
 
+class StepPresetConfig(StrictModel):
+    """What an owner-authored saved step setting captures (version 1).
+
+    ``chapter_id`` null means all story sections; a chapter ID only applies in the book that has it.
+    ``custom_model`` marks a model ID typed by hand, which the browser accepts although it is not in the catalog."""
+    provider: str = Field(min_length=1, max_length=40)
+    model: str | None = Field(default=None, max_length=200)
+    custom_model: bool = False
+    gate: Literal['auto', 'review'] = 'auto'
+    concurrency: int = Field(default=2, ge=1, le=4, strict=True)
+    fresh: bool = False
+    chapter_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class StepPreset(StrictModel):
+    id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,40}$')
+    name: str = Field(min_length=1, max_length=60)
+    step: str = Field(pattern=r'^[a-z][a-z0-9_]{0,39}$')
+    config: StepPresetConfig
+    version: Literal[1] = 1
+
+
+MAX_STEP_PRESETS = 50
+
+
 class SettingsRequest(StrictModel):
     api_key: str | None = Field(default=None, max_length=500)
     tts_model: str | None = None
@@ -179,6 +204,19 @@ class SettingsRequest(StrictModel):
     breeze_api_key: str | None = Field(default=None, max_length=500)
     # Self-hosted analysis servers by provider ID (see local_services.SERVICES); "" clears one.
     local_service_urls: dict[str, Annotated[str, Field(max_length=500)]] | None = None
+    # Owner-authored saved step settings; the list replaces the saved one ([] removes them all).
+    analysis_step_presets: list[StepPreset] | None = Field(default=None, max_length=MAX_STEP_PRESETS)
+
+
+def saved_step_presets(saved):
+    """Well-formed saved step settings from storage; malformed entries are dropped, never repaired."""
+    result = []
+    for item in saved if isinstance(saved, list) else []:
+        try:
+            result.append(StepPreset.model_validate(item).model_dump())
+        except (ValueError, TypeError):
+            continue
+    return result[:MAX_STEP_PRESETS]
 
 
 def valid_analysis_model(model):
@@ -300,6 +338,8 @@ class Runtime:
                                    if isinstance(saved.get("narration_defaults"), dict) else None},
             # Last listing of the Google project's stored voices (metadata only).
             "gemini_voice_catalog": saved.get("gemini_voice_catalog") if isinstance(saved.get("gemini_voice_catalog"), dict) else None,
+            # Saved step settings the owner authored on the Analyze tab (shared by every browser).
+            "analysis_step_presets": saved_step_presets(saved.get("analysis_step_presets")),
         }
         LIMITER.configure(self.preferences["tts_limits"])
         self.breeze_checking = False
@@ -1013,6 +1053,35 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(409, "The key changed during the refresh. Refresh the current key's models again.")
         return result
 
+    def step_presets(items):
+        """Validate saved step settings against the step registry: a known step, a provider and model
+        that step accepts, unique IDs and unique names per step. Model availability in a catalog and
+        provider keys are checked when a set is applied, because both change after saving."""
+        from .pipeline.api import _validate_config
+        result, ids, names = [], set(), set()
+        for item in items:
+            try:
+                step = pipeline_registry.get(item.step)
+            except KeyError:
+                raise HTTPException(400, f"Unknown analysis step in saved settings: {item.step}") from None
+            name = " ".join(item.name.split())
+            if not name:
+                raise HTTPException(400, "Name each saved setting.")
+            if item.id in ids:
+                raise HTTPException(400, "Each saved setting needs its own ID.")
+            if (item.step, name.casefold()) in names:
+                raise HTTPException(400, f"Two saved settings for {step.label} are both named “{name}”.")
+            ids.add(item.id)
+            names.add((item.step, name.casefold()))
+            config = item.config.model_dump()
+            config.update(_validate_config(step, {"provider": config["provider"], "model": config["model"]}))
+            if config["model"] is None:
+                config["custom_model"] = False
+            if not step.chapter_scoped:
+                config["chapter_id"] = None
+            result.append({"id": item.id, "name": name, "step": item.step, "config": config, "version": 1})
+        return result
+
     @app.post("/api/settings")
     def settings(body: SettingsRequest, request: Request):
         runtime = rt(request)
@@ -1054,6 +1123,9 @@ def create_app(data_dir: Path | None = None):
                 service_urls[provider] = local_services.normalize_url(value, provider)
             except ValueError as error:
                 raise HTTPException(400, str(error)) from None
+        presets = None
+        if body.analysis_step_presets is not None:
+            presets = step_presets(body.analysis_step_presets)
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
@@ -1063,6 +1135,8 @@ def create_app(data_dir: Path | None = None):
             preferences["tts_limits"].update(tts_limits)
             if chunking is not None:
                 preferences["listen_chunking"] = chunking
+            if presets is not None:
+                preferences["analysis_step_presets"] = presets
             if breeze_url is not None:
                 preferences["breeze_url"] = breeze_url
             preferences["local_service_urls"].update(service_urls)

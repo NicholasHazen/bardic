@@ -67,16 +67,21 @@
         detail:'An analysis run is in progress. Its progress shows in the job banner.', next:{label:'See analysis progress', tab:'analysis'}};
     }
     if (review) {
+      // Next opens Analyze on the first step with a version waiting (BardicAnalysisPipeline.selectStep).
+      const waiting = overview.steps.find(step => count(step.pending_versions) > 0)?.id;
       return {...base, state:'needs_review', stateLabel:`${plural(review, 'result')} to review`, done:false, known:true, review,
         detail:`${plural(review, 'new version')} ${review === 1 ? 'is' : 'are'} waiting for you to accept or set aside.`,
-        next:{label:'Review analysis results', tab:'analysis'}};
+        next:{label:'Review analysis results', tab:'analysis', ...(waiting ? {step:waiting} : {})}};
     }
     if (!missing.length) {
       return {...base, state:'complete', stateLabel:'Done', done:true, known:true, review:0,
         detail:`Accepted results from ${joined(uses)} are in use.`};
     }
+    // "Run <step>" opens that step; a fresh book lets Analyze choose its first actionable step.
+    const first = REQUIRED_STEPS.find(item => !done.includes(item));
     return {...base, state:started ? 'in_progress' : 'not_started', stateLabel:started ? `${done.length} of ${REQUIRED_STEPS.length} steps` : 'Not started',
-      done:false, known:true, review:0, detail:`Still needed: ${joined(missing)}.`, next:{label:started ? `Run ${missing[0]}` : 'Analyze the story', tab:'analysis'}};
+      done:false, known:true, review:0, detail:`Still needed: ${joined(missing)}.`,
+      next:started ? {label:`Run ${first[1]}`, tab:'analysis', step:first[0]} : {label:'Analyze the story', tab:'analysis'}};
   }
 
   function speakingCharacters(book) {
@@ -151,7 +156,7 @@
   function strip(model, {expanded = false, label = 'Book progress'} = {}) {
     const ui = root.BardicUI;
     if (!ui || !model) return '';
-    const nextAttrs = next => ({'data-lifecycle-go':next.tab, 'data-lifecycle-target':next.target || false});
+    const nextAttrs = next => ({'data-lifecycle-go':next.tab, 'data-lifecycle-target':next.target || false, 'data-lifecycle-step':next.step || false});
     const steps = model.stages.map(stage => ({
       id:stage.id, label:stage.label, state:stage.state, stateLabel:stage.stateLabel, current:stage.id === model.current,
       detail:stage.detail, uses:stage.uses,

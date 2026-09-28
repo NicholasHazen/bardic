@@ -126,8 +126,11 @@ function environment(handler = ordinary, {observer = false, globals = {}} = {}) 
       return {ok:value.ok !== false, status:value.status || 200, json:async () => value.data};
     }};
   if (observer) scope.MutationObserver = class { constructor(fn) { this.fn = fn; observers.push(this); } observe() {} };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/analysis-pipeline.js'), 'utf8'), scope);
-  return {calls, timers, observers, render:scope.window.BardicAnalysisPipeline.render,
+  // ui.js (the one escape helper and the primitives) loads first, as in index.html.
+  const context = vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/ui.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/analysis-pipeline.js'), 'utf8'), context);
+  return {calls, timers, observers, render:scope.window.BardicAnalysisPipeline.render, api:scope.window.BardicAnalysisPipeline,
     writes:() => calls.filter(call => call.method !== 'GET')};
 }
 const book = {id:'book/1', revision:4, chapters:[{id:'c1', title:'The <Gate>'}], characters:[{id:'mira', name:'Mira & Co'}]};
@@ -1012,4 +1015,448 @@ test('kept edits on passages show the passage text, not its ID', async () => {
   assert.ok(panel.includes('<strong>“&quot;Stay &lt;here&gt;,&quot; she said.”</strong> · your speaker'));
   assert.ok(panel.includes('<small>The &lt;Gate&gt;</small>'));
   assert.ok(panel.includes('An item no longer in the book') && !panel.includes('seg-9') && !panel.includes('>gone<'));
+});
+
+// --- phase 3: the Analyze workflow ---------------------------------------------------------------------
+// A click on any element carrying these data-* attributes (the plain `click` helper sets only one).
+function press(container, dataset) {
+  const node = {dataset, disabled:false};
+  const attr = selector => selector.match(/^\[data-([\w-]+)\]$/)?.[1];
+  container.listeners.click({target:{closest:selector => attr(selector) && camel(attr(selector)) in dataset ? node : null}});
+}
+const heading = container => container.regions.detail.innerHTML.match(/data-ap-key="detail-heading">([^<]*)<\/h3>/)?.[1];
+
+test('the free local steps are grouped as Prep, and the tab opens on a required step first', async () => {
+  const env = environment(withOverview(value => {
+    nothingToReview(value);
+    value.steps.find(step => step.id === 'census').accepted_scopes = 0;
+  }));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  const steps = container.regions.steps.innerHTML;
+  const prep = steps.slice(steps.indexOf('Prep (free, optional)'), steps.indexOf('Characters &amp; speakers'));
+  assert.ok(prep.includes('data-ap-step="structure"') && prep.includes('data-ap-step="census"'));
+  assert.ok(!prep.includes('data-ap-step="discovery"'));
+  assert.ok(steps.indexOf('data-ap-step="discovery"') > steps.indexOf('Characters &amp; speakers'));
+  assert.equal(heading(container), 'Character discovery', 'an unrun optional Prep step does not come first');
+  const {startStep} = env.api;
+  const s = (key, ready = true, inUse = false) => ({key, ready, inUse});
+  assert.equal(startStep([{id:'census', optional:true, status:s('not-run')}, {id:'discovery', status:s('not-run')}]), 'discovery');
+  assert.equal(startStep([{id:'census', optional:true, status:s('not-run')}, {id:'discovery', status:s('in-use', true, true)}]), 'census');
+});
+
+const failedRun = {id:'run-9', status:'failed', steps:['discovery'], created_at:'2026-09-27T10:00:00Z', chapter_ids:['c1'],
+  configs:{discovery:{provider:'openai', model:'gpt-b'}}, gates:{discovery:'review'}, concurrency:3, fresh:true,
+  outcomes:{discovery:{status:'failed', error:'Rate limited'}}};
+const withFailure = value => {
+  nothingToReview(value);
+  value.recent_runs = [failedRun];
+  value.steps.find(step => step.id === 'discovery').latest = {id:'v3', state:'empty', status:'failed', provider:'openai', model:'gpt-b', chapter_ids:['c1']};
+};
+
+test('Try again opens the usual preview with the failed run\'s settings, and only Confirm starts work', async () => {
+  const env = environment(withOverview(withFailure));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.equal(heading(container), 'Character discovery');
+  const runs = container.regions.runs.innerHTML;
+  assert.ok(runs.includes('data-ap-action="retry" data-ap-retry="discovery" data-ap-run="run-9"') && runs.includes('>Try again<'));
+  assert.ok(!runs.includes('go-next'), 'a failed run offers no Next');
+  assert.ok(!container.regions.detail.innerHTML.includes('data-ap-action="retry"'), 'one Try again while the summary shows it');
+  click(container, 'ap-action', 'dismiss-run');
+  assert.match(container.regions.detail.innerHTML, /data-ap-status="failed".*data-ap-action="retry"/s, 'after Dismiss the step panel offers it');
+  press(container, {apAction:'retry', apRetry:'discovery', apRun:'run-9'});
+  await settle();
+  const planned = env.writes();
+  assert.equal(planned.length, 1, 'only the estimate is requested');
+  // The step's saved model is gpt-a; the failed run used gpt-b, one section and fresh samples.
+  assert.deepEqual(planned[0].body, {steps:['discovery'], configs:{discovery:{provider:'openai', model:'gpt-b'}}, fresh:true, chapter_ids:['c1']});
+  const preview = container.regions.plan.innerHTML;
+  assert.ok(preview.includes('Trying again with the settings of the failed run (OpenAI · gpt-b)'));
+  assert.ok(preview.includes('only the missing work is estimated') && preview.includes('Confirm and run'));
+  assert.ok(!env.calls.some(call => call.url.endsWith('/runs')));
+  click(container, 'ap-action', 'confirm-run');
+  await settle();
+  const run = env.calls.find(call => call.url.endsWith('/runs'));
+  assert.deepEqual(run.body, {steps:['discovery'], configs:{discovery:{provider:'openai', model:'gpt-b'}}, fresh:true, chapter_ids:['c1'],
+    gates:{discovery:'review'}, mode:'serial', concurrency:3, expected_fingerprint:'fp-123'});
+});
+
+test('Try again refuses sections that are gone and needs the provider\'s key', async () => {
+  const gone = environment(withOverview(value => { withFailure(value); value.recent_runs = [{...failedRun, chapter_ids:['c-removed']}]; }));
+  const container = new Container();
+  await gone.render(container, book, {status});
+  await settle();
+  press(container, {apAction:'retry', apRetry:'discovery', apRun:'run-9'});
+  await settle();
+  assert.equal(gone.writes().length, 0);
+  assert.ok(container.regions.message.innerHTML.includes('no longer in this book'));
+  const keyless = environment(withOverview(value => { withFailure(value); value.recent_runs = [{...failedRun, configs:{discovery:{provider:'gemini', model:'gem-flash'}}}]; }));
+  const other = new Container();
+  await keyless.render(other, book, {status});
+  await settle();
+  press(other, {apAction:'retry', apRetry:'discovery', apRun:'run-9'});
+  await settle();
+  assert.equal(keyless.writes().length, 0, 'no estimate without the key');
+  assert.ok(other.regions.message.innerHTML.includes('Gemini has no API key'));
+});
+
+// Speakers & delivery rows (bardic/pipeline/steps/directing.py summarize), with passages in the book.
+const directingColumns = [{key:'scene', label:'Scene'}, {key:'text', label:'Passage'}, {key:'speaker', label:'Speaker'}, {key:'confidence', label:'Confidence'},
+  {key:'direction', label:'Delivery'}, {key:'check', label:'BookNLP check'}, {key:'edited', label:'Your edit (kept)'}];
+function directingRows(count) {
+  return Array.from({length:count}, (_, i) => ({id:`s${i}`, scope:'c1', scene:'', kind:'dialogue', text:`Line ${i} <by> the quay.`,
+    speaker:i % 10 === 0 ? 'Unassigned dialogue' : i % 10 === 1 ? '' : 'Mira & Co', confidence:[0, .2, .65, .66, .9, null][i % 6],
+    direction:'', check:i % 7 === 0 ? 'Differs · BookNLP: Elio' : i % 7 === 1 ? 'Suggests a speaker · BookNLP: Elio' : 'Agrees', edited:i % 9 === 0 ? 'speaker' : ''}));
+}
+function directingHandler(rows, extra = {}) {
+  return call => {
+    const url = new URL(call.url, 'http://localhost');
+    if (call.method === 'GET' && url.pathname.includes('/versions/v2')) {
+      const offset = Number(url.searchParams.get('offset')), limit = Number(url.searchParams.get('limit'));
+      return {data:{stats:{}, columns:directingColumns, rows:rows.slice(offset, offset + limit), diff:{}, total_rows:rows.length, offset, limit, scopes:[{scope:'c1'}], revision:4, ...extra}};
+    }
+    return ordinary(call);
+  };
+}
+const passageBook = rows => ({...book, characters:[...book.characters, {id:'unassigned', name:'Unassigned dialogue'}, {id:'elio', name:'Elio'}],
+  segments:rows.map(row => ({id:row.id, chapter_id:'c1', text:row.text, speaker_id:'mira', evidence:[]}))});
+const rowCount = html => (html.match(/data-ap-action="show-passage"/g) || []).length;
+
+test('result filters read every row and find no speaker, low confidence, BookNLP disagreements and your edits', async () => {
+  const rows = directingRows(1205);
+  const env = environment(directingHandler(rows));
+  const container = new Container();
+  await env.render(container, passageBook(rows), {status});
+  await settle();
+  let table = container.regions.result.innerHTML;
+  for (const label of ['All rows', 'No speaker', 'Low confidence', 'BookNLP disagrees', 'Your edits']) assert.ok(table.includes(`>${label}`), label);
+  assert.ok(table.includes('1–200 of 1,205 rows'), 'unfiltered rows are paged by the server');
+  const count = keep => rows.filter(keep).length;
+  const expected = {
+    'no-speaker':count(row => row.speaker === '' || row.speaker === 'Unassigned dialogue'),
+    'low-confidence':count(row => typeof row.confidence === 'number' && row.confidence <= .65),
+    'booknlp-differs':count(row => row.check.startsWith('Differs')),
+    edited:count(row => row.edited !== ''),
+  };
+  const before = env.calls.length;
+  click(container, 'ap-filter', 'no-speaker');
+  await settle();
+  const pages = env.calls.slice(before).map(call => new URL(call.url, 'http://localhost').searchParams);
+  assert.deepEqual(pages.map(query => [query.get('offset'), query.get('limit')]), [['0', '1000'], ['1000', '1000']], 'every row, in the largest pages');
+  table = container.regions.result.innerHTML;
+  assert.ok(table.includes(`of ${expected['no-speaker']} matching rows (of 1,205)`));
+  assert.ok(table.includes(`No speaker (${expected['no-speaker']})`) && table.includes(`Your edits (${expected.edited})`));
+  assert.match(table, /aria-checked="true"[^>]*data-value="no-speaker"/);
+  for (const [filter, total] of Object.entries(expected)) {
+    const calls = env.calls.length;
+    click(container, 'ap-filter', filter);
+    await settle();
+    assert.equal(env.calls.length, calls, 'changing between filters reuses the loaded rows');
+    const html = container.regions.result.innerHTML;
+    assert.ok(html.includes(`of ${total.toLocaleString('en-US')} matching rows`), `${filter}: ${total}`);
+    assert.equal(rowCount(html), Math.min(total, 200), `${filter} shows its rows, a page at a time`);
+  }
+  // The low-confidence boundary: 65% is low; 66% and unknown are not.
+  click(container, 'ap-filter', 'low-confidence');
+  await settle();
+  const low = container.regions.result.innerHTML;
+  assert.ok(low.includes('<td>65%</td>') && low.includes('<td>0%</td>') && !low.includes('<td>66%</td>') && !low.includes('<td>90%</td>'));
+  assert.ok(low.includes('Confidence of 65% or less'));
+  // Paging within the matching rows happens here, without requests.
+  const calls = env.calls.length;
+  click(container, 'ap-action', 'next-page');
+  assert.equal(env.calls.length, calls);
+  assert.ok(container.regions.result.innerHTML.includes(`201–${Math.min(400, expected['low-confidence'])} of`));
+  click(container, 'ap-filter', 'all');
+  await settle();
+  assert.ok(container.regions.result.innerHTML.includes('1–200 of 1,205 rows'));
+  assert.equal(env.writes().length, 0, 'filters only read');
+});
+
+test('the filter list is fixed and its low-confidence line is the 65% assignment floor', () => {
+  const env = environment();
+  assert.deepEqual([...env.api.FILTERS.map(filter => filter.id)], ['no-speaker', 'low-confidence', 'booknlp-differs', 'edited']);
+  assert.equal(env.api.LOW_CONFIDENCE, .65);
+});
+
+test('filters appear only for steps whose table has those columns', async () => {
+  const env = environment();
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.ok(!container.regions.result.innerHTML.includes('data-ap-filter='), 'discovery rows have no speaker or confidence columns');
+});
+
+test('evidence shows exact quotes where they are recorded and says so where they are not', async () => {
+  const row = (id, fields) => ({id, scope:'c1', text:`"${id}"`, speaker:'Mira & Co', confidence:.9, check:'', edited:'', ...fields});
+  const rows = [
+    row('q1', {evidence_quotes:['"Stay," said <b>Mira</b>']}),
+    row('q2', {}),
+    row('q3', {speaker:'Elio'}),
+    row('q4', {edited:'speaker'}),
+    row('q5', {evidence_quotes:[]}),
+    row('q6', {}),
+    row('q7', {}),
+    row('q8', {kind:'narration', speaker:'Narrator'}),
+    row('not-a-passage', {}),
+  ];
+  const segments = [
+    {id:'q1', chapter_id:'c1', speaker_id:'mira', evidence:['book quote']},
+    {id:'q2', chapter_id:'c1', speaker_id:'mira', evidence:['Mira <i>spoke</i> first', 42]},
+    {id:'q3', chapter_id:'c1', speaker_id:'mira', evidence:['belongs to Mira']},
+    {id:'q4', chapter_id:'c1', speaker_id:'mira', evidence:['old evidence'], edited_fields:['speaker_id']},
+    {id:'q5', chapter_id:'c1', speaker_id:'mira', evidence:['ignored: the version has none']},
+    {id:'q6', chapter_id:'c1', speaker_id:'mira', evidence:[]},
+    {id:'q7', chapter_id:'c1', speaker_id:'mira'},
+    {id:'q8', chapter_id:'c1', speaker_id:'narrator'},
+  ];
+  const env = environment(directingHandler(rows));
+  const container = new Container();
+  await env.render(container, {...book, characters:[...book.characters, {id:'elio', name:'Elio'}, {id:'narrator', name:'Narrator'}], segments}, {status});
+  await settle();
+  const table = container.regions.result.innerHTML;
+  const cellOf = id => { const start = table.indexOf(`data-ap-segment="${id}"`); return start < 0 ? '' : table.slice(start, table.indexOf('</td>', start)); };
+  assert.ok(table.includes('<th scope="col">Evidence</th>'));
+  assert.ok(cellOf('q1').includes('<q>&quot;Stay,&quot; said &lt;b&gt;Mira&lt;/b&gt;</q>') && cellOf('q1').includes('From this version.') && !cellOf('q1').includes('book quote'));
+  assert.ok(cellOf('q2').includes('<q>Mira &lt;i&gt;spoke&lt;/i&gt; first</q>') && cellOf('q2').includes('Recorded in the book for Mira &amp; Co.') && cellOf('q2').includes('Evidence (1)'));
+  assert.ok(cellOf('q3').includes('not included in this table') && !cellOf('q3').includes('belongs to Mira'), 'the book\'s evidence justifies another speaker');
+  assert.ok(cellOf('q4').includes('not included in this table') && !cellOf('q4').includes('old evidence'), 'a hand-changed speaker keeps stale evidence');
+  assert.ok(cellOf('q5').includes('No evidence recorded.') && !cellOf('q5').includes('ignored'));
+  assert.ok(cellOf('q6').includes('No evidence recorded.'));
+  assert.ok(cellOf('q7').includes('No evidence recorded.'), 'a passage whose analysis stored no evidence field');
+  assert.ok(cellOf('q8').includes('Show in text') && !cellOf('q8').includes('Evidence'), 'narration needs no speaker evidence');
+  assert.ok(!table.includes('data-ap-segment="not-a-passage"'));
+  assert.ok(!/<(b|i)>/.test(table), 'quotes are text, never markup');
+});
+
+test('Show in text announces the passage for other views to open', async () => {
+  const rows = directingRows(3);
+  const events = [];
+  class CustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; this.cancelable = Boolean(init.cancelable); } }
+  const document = {activeElement:null, getElementById:() => null, dispatchEvent:event => { events.push(event); return true; }};
+  const env = environment(directingHandler(rows), {globals:{document, CustomEvent}});
+  const container = new Container();
+  await env.render(container, passageBook(rows), {status});
+  await settle();
+  assert.ok(container.regions.result.innerHTML.includes('data-ap-action="show-passage" data-ap-segment="s2"'));
+  press(container, {apAction:'show-passage', apSegment:'s2'});
+  press(container, {apAction:'show-passage', apSegment:'unknown'});
+  assert.equal(events.length, 1, 'only passages in the book are announced');
+  assert.equal(events[0].type, 'bardic:show-passage');
+  assert.equal(events[0].cancelable, true, 'a view that handles it can cancel the fallback');
+  assert.deepEqual({...events[0].detail}, {bookId:'book/1', segmentId:'s2', chapterId:'c1'});
+  assert.equal(env.writes().length, 0);
+});
+
+const presets = [
+  {id:'p-quick', name:'Quick <scan>', step:'discovery', version:1, config:{provider:'openai', model:'gpt-b', custom_model:false, gate:'review', concurrency:3, fresh:true, chapter_id:'c1'}},
+  {id:'p-gone-model', name:'Retired model', step:'discovery', version:1, config:{provider:'openai', model:'gpt-retired', custom_model:false, gate:'auto', concurrency:2, fresh:false, chapter_id:null}},
+  {id:'p-custom', name:'My custom', step:'discovery', version:1, config:{provider:'openai', model:'my-model:1', custom_model:true, gate:'auto', concurrency:1, fresh:false, chapter_id:null}},
+  {id:'p-nokey', name:'Gemini flash', step:'discovery', version:1, config:{provider:'gemini', model:'gem-flash', custom_model:false, gate:'auto', concurrency:2, fresh:false, chapter_id:null}},
+  {id:'p-other-book', name:'Chapter nine', step:'discovery', version:1, config:{provider:'openai', model:'gpt-a', custom_model:false, gate:'auto', concurrency:2, fresh:false, chapter_id:'c9'}},
+  {id:'p-profiles', name:'Deep profiles', step:'profiles', version:1, config:{provider:'openai', model:'gpt-b', custom_model:false, gate:'review', concurrency:2, fresh:false, chapter_id:null}},
+];
+const presetStatus = () => ({...status, analysis_step_presets:JSON.parse(JSON.stringify(presets))});
+const settingsEcho = call => call.method === 'POST' && call.url === '/api/settings' ? {data:{...status, analysis_step_presets:call.body.analysis_step_presets}} : ordinary(call);
+
+test('a saved step setting applies to its step: settings are saved, run options set, nothing starts', async () => {
+  const env = environment(withOverview(nothingToReview, settingsEcho));
+  const container = new Container();
+  await env.render(container, book, {status:presetStatus()});
+  await settle();
+  let detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('<option value="" selected>Custom</option>'), 'the panel as it is: Custom');
+  assert.ok(detail.includes('Quick &lt;scan&gt;</option>') && !detail.includes('Deep profiles'), 'only this step\'s saved settings');
+  assert.ok(detail.includes('Retired model · can’t apply here') && detail.includes('Gemini flash · can’t apply here') && detail.includes('Chapter nine · can’t apply here'));
+  assert.ok(detail.includes('>My custom</option>'), 'a hand-typed model ID is kept as typed');
+  change(container, 'ap_preset', 'p-quick');
+  await settle();
+  const writes = env.writes();
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].body, {provider:'openai', model:'gpt-b', gate:'review'});
+  assert.equal(writes[0].url, '/api/analysis-pipeline/steps/discovery/settings');
+  detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('<option value="p-quick" selected>'), 'the panel now matches the saved set');
+  assert.ok(detail.includes('<option value="3" selected>3</option>') && /name="ap_fresh"[^>]*checked/.test(detail));
+  assert.ok(detail.includes('<option value="c1" selected>'));
+  assert.ok(container.regions.message.innerHTML.includes('Applied “Quick &lt;scan&gt;”.'));
+  // Changing any field makes it Custom again; no saved set is changed.
+  change(container, 'ap_concurrency', '1');
+  assert.ok(container.regions.detail.innerHTML.includes('<option value="" selected>Custom</option>'));
+  assert.ok(!env.calls.some(call => call.url.endsWith('/plan') || call.url.endsWith('/runs') || call.url === '/api/settings'));
+});
+
+test('a saved step setting that cannot apply says why and changes nothing', async () => {
+  const env = environment(withOverview(nothingToReview, settingsEcho));
+  const container = new Container();
+  await env.render(container, book, {status:presetStatus()});
+  await settle();
+  for (const [id, reason] of [['p-gone-model', 'The model “gpt-retired” is no longer in the OpenAI model list.'], ['p-nokey', 'Gemini has no API key.'],
+    ['p-other-book', 'The section it was saved with is not in this book.']]) {
+    change(container, 'ap_preset', id);
+    await settle();
+    const detail = container.regions.detail.innerHTML;
+    assert.ok(detail.includes(reason) && detail.includes('Nothing was changed.'), reason);
+    assert.ok(detail.includes('<option value="" selected>Custom</option>'));
+  }
+  change(container, 'ap_preset', 'p-nokey');
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('data-ap-provider="gemini" data-ap-key="setup-preset"'), 'a missing key offers Set up');
+  assert.equal(env.writes().length, 0);
+  change(container, 'ap_preset', 'p-custom');
+  await settle();
+  assert.deepEqual(env.writes()[0].body, {provider:'openai', model:'my-model:1', gate:'auto'});
+});
+
+test('Save these settings as… stores a named set with the settings API; same name replaces; remove deletes', async () => {
+  const env = environment(withOverview(nothingToReview, settingsEcho));
+  const container = new Container();
+  const statusValue = presetStatus();
+  await env.render(container, book, {status:statusValue});
+  await settle();
+  click(container, 'ap-action', 'preset-open');
+  assert.ok(container.regions.detail.innerHTML.includes('name="ap_preset_name"'));
+  press(container, {apAction:'preset-save'});
+  await settle();
+  assert.equal(env.writes().length, 0);
+  assert.ok(container.regions.detail.innerHTML.includes('Use a name of 1–60 characters.'));
+  change(container, 'ap_chapter', 'c1');
+  click(container, 'ap-action', 'preset-open');
+  input(container, 'ap_preset_name', '  Night   run ');
+  press(container, {apAction:'preset-save'});
+  await settle();
+  const saved = env.writes().at(-1);
+  assert.equal(saved.url, '/api/settings');
+  const list = saved.body.analysis_step_presets;
+  assert.equal(list.length, presets.length + 1, 'the whole list is sent, the others unchanged');
+  assert.deepEqual(list.slice(0, presets.length), presets);
+  const entry = list.at(-1);
+  assert.match(entry.id, /^p_[a-z0-9]+$/);
+  assert.deepEqual({...entry, id:null, config:{...entry.config}}, {id:null, name:'Night run', step:'discovery', version:1,
+    config:{provider:'openai', model:'gpt-a', custom_model:false, gate:'auto', concurrency:2, fresh:false, chapter_id:'c1'}});
+  assert.ok(container.regions.message.innerHTML.includes('Saved “Night run” for Character discovery.'));
+  assert.ok(container.regions.detail.innerHTML.includes(`<option value="${entry.id}" selected>Night run</option>`), 'the new set matches the panel');
+  assert.equal(statusValue.analysis_step_presets.length, presets.length, 'the app\'s status object is not mutated');
+  // Saving again under the same name (any case) replaces it and keeps its ID.
+  change(container, 'ap_concurrency', '4');
+  click(container, 'ap-action', 'preset-open');
+  input(container, 'ap_preset_name', 'NIGHT RUN');
+  press(container, {apAction:'preset-save'});
+  await settle();
+  const replaced = env.writes().at(-1).body.analysis_step_presets;
+  assert.equal(replaced.length, presets.length + 1);
+  assert.equal(replaced.at(-1).id, entry.id);
+  assert.equal(replaced.at(-1).config.concurrency, 4);
+  press(container, {apAction:'preset-delete', apPreset:entry.id});
+  await settle();
+  assert.deepEqual(env.writes().at(-1).body.analysis_step_presets, presets);
+  assert.ok(container.regions.message.innerHTML.includes('Removed “NIGHT RUN”.'));
+  assert.ok(!env.calls.some(call => call.url.endsWith('/plan') || call.url.endsWith('/runs')));
+});
+
+test('a failed save keeps the form open with the reason', async () => {
+  const env = environment(withOverview(nothingToReview, call => call.url === '/api/settings' ? {ok:false, status:400, data:{detail:'Two saved settings for Character discovery are both named “x”.'}} : ordinary(call)));
+  const container = new Container();
+  await env.render(container, book, {status:presetStatus()});
+  await settle();
+  click(container, 'ap-action', 'preset-open');
+  input(container, 'ap_preset_name', 'x');
+  press(container, {apAction:'preset-save'});
+  await settle();
+  const detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('Could not save: Two saved settings') && detail.includes('name="ap_preset_name"'));
+});
+
+test('after Speakers & delivery completes, Next hands off to the cast and the script', async () => {
+  const done = value => {
+    value.recent_runs = [{id:'run-5', status:'completed', steps:['directing'], created_at:'2026-09-27T10:00:00Z'}];
+    Object.assign(value.steps.find(step => step.id === 'discovery'), {pending_versions:0, accepted_scopes:2, has_accepted:true, latest:null});
+    Object.assign(value.steps.find(step => step.id === 'directing'), {accepted_scopes:2, has_accepted:true, latest:{id:'d2', state:'accepted', status:'completed'}});
+  };
+  const env = environment(withOverview(done));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  const runs = container.regions.runs.innerHTML;
+  assert.ok(runs.includes('href="#/book/book%2F1/cast"') && runs.includes('Review the cast →'));
+  assert.ok(runs.includes('href="#/book/book%2F1/studio"') && runs.includes('Open the script →'));
+  assert.ok(!runs.includes('go-next'), 'no further analysis step is suggested');
+  // While its version waits for review, review comes first.
+  const review = environment(withOverview(value => { done(value); Object.assign(value.steps.find(step => step.id === 'directing'), {pending_versions:1, latest:{id:'d3', state:'candidate', status:'completed'}}); }));
+  const other = new Container();
+  await review.render(other, book, {status});
+  await settle();
+  assert.ok(!other.regions.runs.innerHTML.includes('Review the cast'));
+  assert.equal(heading(other), 'Speakers &lt;&amp;&gt; delivery', 'the version waiting for review opens');
+});
+
+test('selectStep opens a step from outside the tab: on the next visit, or at once while it shows', async () => {
+  const env = environment(withOverview(nothingToReview), {observer:true});
+  const container = new Container({hidden:true});
+  await env.render(container, book, {status});
+  assert.equal(env.api.selectStep('profiles'), true, 'remembered for the next visit');
+  container.hidden = false;
+  env.observers[0].fn();
+  await settle();
+  assert.equal(heading(container), 'Character profiles');
+  assert.ok(env.calls.some(call => call.url.endsWith('/steps/profiles/versions?limit=50')));
+  assert.equal(env.api.selectStep('census'), true);
+  await settle();
+  assert.equal(heading(container), 'Name census', 'switches at once while shown');
+  assert.equal(env.api.selectStep('no-such-step'), false);
+  assert.equal(env.api.selectStep(''), false);
+  // Used once: the next visit opens on the first actionable step again.
+  container.hidden = true;
+  env.observers[0].fn();
+  container.hidden = false;
+  env.observers[0].fn();
+  await settle();
+  assert.equal(heading(container), 'Character discovery');
+});
+
+test('on a narrow screen, choosing a step brings its panel into view', async () => {
+  for (const narrowScreen of [true, false]) {
+    const target = {scrolled:0, scrollIntoView() { this.scrolled++; }, focus() {}};
+    class Watched extends Container {
+      querySelector(selector) { return selector === '[data-ap-key="detail-heading"]' ? target : super.querySelector(selector); }
+    }
+    const env = environment(ordinary, {globals:{matchMedia:query => ({matches:narrowScreen && query.includes('max-width')})}});
+    const container = new Watched();
+    await env.render(container, book, {status});
+    await settle();
+    click(container, 'ap-step', 'profiles');
+    await settle();
+    assert.equal(target.scrolled, narrowScreen ? 1 : 0);
+  }
+});
+
+test('coming back after Show in text reopens the same step and filter, once', async () => {
+  const rows = directingRows(30);
+  class CustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
+  const document = {activeElement:null, getElementById:() => null, dispatchEvent:() => true};
+  const env = environment(directingHandler(rows), {observer:true, globals:{document, CustomEvent}});
+  const container = new Container();
+  await env.render(container, passageBook(rows), {status});
+  await settle();
+  click(container, 'ap-step', 'directing');
+  await settle();
+  click(container, 'ap-filter', 'no-speaker');
+  await settle();
+  press(container, {apAction:'show-passage', apSegment:'s10'});
+  container.hidden = true;           // Read & listen opens
+  env.observers[0].fn();
+  container.hidden = false;          // Back
+  env.observers[0].fn();
+  await settle();
+  assert.equal(heading(container), 'Speakers &lt;&amp;&gt; delivery');
+  assert.match(container.regions.result.innerHTML, /aria-checked="true"[^>]*data-value="no-speaker"/);
+  container.hidden = true;
+  env.observers[0].fn();
+  container.hidden = false;
+  env.observers[0].fn();
+  await settle();
+  assert.equal(heading(container), 'Character discovery', 'a later visit starts fresh');
 });
