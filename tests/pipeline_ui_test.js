@@ -74,7 +74,7 @@ function ordinary(call) {
   if (call.url.endsWith('/story-map')) return {data:story};
   if (call.url.includes('/search?')) {
     const params = new URL(call.url,'http://localhost').searchParams;
-    return {data:{available:true,query:params.get('q'),scope:params.get('scope'),results:[{
+    return {data:{available:true,query:params.get('q'),scope:params.get('scope'),items:[{
       book_id:'earlier-book',book_title:'Earlier <Book>',chapter_id:'chapter-1',chapter_title:'The & Gate',
       passage_id:'passage-1',start:12,end:55,text:'Mira said <script>alert("x")</script>.',rank:-1.234
     }],note:'Lexical passage matches only.'}};
@@ -220,8 +220,8 @@ function environment(handler = ordinary) {
 
   // Empty, unavailable and failed search outcomes are distinct and recoverable.
   for (const [result, expected] of [
-    [{data:{available:true,query:'missing',scope:'book',results:[]}}, 'No passages matched'],
-    [{data:{available:false,query:'Mira',scope:'book',results:[],note:'FTS5 is unavailable.'}}, 'Source search is unavailable'],
+    [{data:{available:true,query:'missing',scope:'book',items:[]}}, 'No passages matched'],
+    [{data:{available:false,query:'Mira',scope:'book',items:[],note:'FTS5 is unavailable.'}}, 'Source search is unavailable'],
     [{ok:false,status:400,data:{detail:'Unsupported query syntax.'}}, 'Unsupported query syntax.']
   ]) {
     const searchEnv = environment(call => call.url.includes('/search?') ? result : ordinary(call));
@@ -263,7 +263,7 @@ function environment(handler = ordinary) {
   search(searchRaceContainer,'Mira');
   await tick();
   await searchRace.render(searchRaceContainer,{id:'different-book',revision:1},{});
-  oldSearch({data:{available:true,query:'old source',scope:'book',results:[],note:'Wrong book results.'}});
+  oldSearch({data:{available:true,query:'old source',scope:'book',items:[],note:'Wrong book results.'}});
   await settle();
   assert.ok(!searchRaceContainer.nodes['search-results'].innerHTML.includes('Wrong book results.'));
 

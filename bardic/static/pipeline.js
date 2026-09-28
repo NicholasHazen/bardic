@@ -127,7 +127,7 @@
       node.innerHTML = `<p class="pipeline-note">Source search is unavailable in this local installation.</p><p class="pipeline-help">${escape(value.note || 'Saved artifacts and source references can still be inspected above.')}</p>`;
       return;
     }
-    const results = value.results || [];
+    const results = value.items || [];
     const scope = value.scope === 'earlier' ? 'this book and earlier series books' : 'this book';
     node.innerHTML = `<p class="pipeline-help">${number(results.length)} match${results.length === 1 ? '' : 'es'} shown for “${escape(value.query)}” in ${scope}. Search rank measures lexical relevance, not identity or speaker confidence.</p>${value.note ? `<p class="pipeline-help">${escape(value.note)}</p>` : ''}${results.length ? `<ol class="pipeline-search-results">${results.map(result => `<li><div><strong>${escape(result.book_title)}</strong><span>${escape(result.chapter_title)}</span></div><blockquote>${escape(result.text)}</blockquote><p class="pipeline-help">Source offsets ${number(result.start)}–${number(result.end)}${typeof result.rank === 'number' && Number.isFinite(result.rank) ? ` · Search rank ${escape(result.rank)}` : ''}</p><details><summary>Source reference</summary><code>Book: ${escape(result.book_id)}<br>Chapter: ${escape(result.chapter_id)}<br>Passage: ${escape(result.passage_id)}</code></details></li>`).join('')}</ol>` : '<p class="pipeline-help">No passages matched. Try a character name or a shorter phrase. This search does not resolve pronouns or infer character identity.</p>'}`;
   }

@@ -105,7 +105,7 @@ Breeze versions are separate server voices with generated IDs `bardic-<8 hex>` a
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [performances.py](../bardic/performances.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 36 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [performances.py](../bardic/performances.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 37 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -126,7 +126,7 @@ Jobs can be queued, running, completed, failed, cancelled, interrupted, or budge
 | --- | --- | --- |
 | `analysis_units` | PK `(book_id, unit_key)`; `stage`, `source_hash`, `body` | Accepted result cache, indexed by book/stage/source. Payload includes actual provider/model and source range or character scope. |
 | `analysis_attempts` | PK `id`; `book_id`, `run_id`, `body` | One row reserved before each HTTP attempt, then updated with response/uncertainty, usage, timing, and estimated cost. |
-| `book_preprocessing` | PK `book_id`; `fingerprint`, `body` | Latest matching local census. Prior census artifacts can remain after replacement. |
+| `book_preprocessing` | PK `book_id`; `fingerprint`, `body` | Latest matching local census: a disposable derived cache that read-only views may write. Analysis runs and plan previews also retain it as a `census` artifact; prior census artifacts can remain after replacement. |
 | `pipeline_events` | PK `id`; `book_id`, `run_id`, `unit_key`, `stage`, `body` | Append events such as cache reuse/rejection and validation acceptance/rejection; connects validation state to attempts. |
 | `resource_operations` | PK `id`; `book_id`, `run_id`, `stage`, `body` | Local and narration leaf-operation measurements, updated from running to completion/failure. Analysis requests remain in their own ledger to avoid double counting. |
 
@@ -168,6 +168,7 @@ Moving a book to another series clears its current character links, while histor
 | `artifact_versions` | PK `id`; `book_id`, `kind`, `logical_key`, `label`, `stage`, nullable `provider`/`model`, `schema_version`, `legacy_provenance`, `payload`, `payload_bytes`, JSON `dependencies`, `created_at` | Immutable retained version. |
 | `artifact_heads` | PK `(book_id, kind, logical_key)`; `artifact_id` FK to versions, `updated_at` | Current version for a logical scope. |
 | `artifact_dependencies` | PK `(artifact_id, dependency_id)`; both FKs to versions | Immutable verified lineage edges; indexed in reverse for input lookup. |
+| `artifact_backfills` | PK `book_id`; `version`, `completed_at` | Books whose legacy data has been retained as artifacts, and at which backfill version. |
 
 `record()` computes `artifact_<sha256>` from canonical JSON containing book/scope, kind, stage, schema, producer, legacy flag, payload content, and sorted unique dependency IDs. It excludes display label and operational timestamps (`created_at`, `updated_at`, `recorded_at`, `checked_at`, `completed_at`, `exported_at`) from content identity. Re-recording the same identity retains the first payload/metadata and selects that version as current.
 
@@ -195,7 +196,7 @@ Principal artifact kinds are:
 
 Current snapshots and model results are different kinds on purpose. A scene-map snapshot can exist immediately after import without successful semantic directing. Artifact count therefore does not mean a stage is complete. Audio bytes and simple-listening take records also have their own storage; not every application datum is an artifact.
 
-When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, accepted units/checkpoint units, observations, census, and membership. It marks unknown provenance and never reconstructs prompts or outputs that were already lost.
+When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, accepted units/checkpoint units, observations, census, and membership. It marks unknown provenance and never reconstructs prompts or outputs that were already lost. Backfill runs once per book at app startup (recorded in `artifact_backfills`), never from a read-only view: GET routes create no artifacts.
 
 ### Analysis pipeline
 
