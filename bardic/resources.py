@@ -175,7 +175,8 @@ def resource_summary(store, book_id, *, limit=100, offset=0, run_id=None):
     from .processing import ProcessingStore
     repository = ProcessingStore(store)
     ResourceLedger(store)
-    limit, offset = max(1, min(200, int(limit))), max(0, int(offset))
+    from .artifacts import MAX_OFFSET
+    limit, offset = max(1, min(200, int(limit))), max(0, min(MAX_OFFSET, int(offset)))
     with store.lock, store.connect() as conn:
         events = [json.loads(r[0]) for r in conn.execute('SELECT body FROM pipeline_events WHERE book_id=?', (book_id,))]
         operations = [json.loads(r[0]) for r in conn.execute('SELECT body FROM resource_operations WHERE book_id=?', (book_id,))]

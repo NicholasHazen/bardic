@@ -640,14 +640,14 @@ Returns every active (non-removed) series ordered by name (case-insensitive), th
 
 **Create a series** · operation `createSeries` · cost `none`
 
-Creates an empty series. Whitespace in the name is collapsed. Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).
+Creates an empty series. Whitespace in the name is collapsed. The name is validated as for a rename (control characters other than tab and newlines are refused). Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).
 
 Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCreated](#schema-seriescreated) | Success. |
-| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. - `text_invalid`: The name contains control characters other than tab and newlines. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -755,7 +755,9 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 
 Previews staged analysis over the supplied, active books of an active series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.
 
-The response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill disposable local caches; it creates no jobs or records.
+The response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). The preview creates no jobs.
+
+Side effects, all local and none of them changing a book, the same as `POST /api/books/{book_id}/analysis-plan` for each planned book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -783,7 +785,7 @@ The server recomputes the plan under its store lock and compares the supplied fi
 
 **Jobs.** The parent job has `kind: "series"` and `book_id: "series:SERIES_ID"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.
 
-**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book.
+**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book. When the run is queued, each supplied book's current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -908,6 +910,8 @@ Returns the full reader projection: chapters with canonical text, scenes, passag
 
 Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as `{"gemini": {"id": "Kore"}}` plus a device (`system`) voice chosen from the installed voices the same way imported characters get one (none when no suitable voice is installed), then any `voices` sent are applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always including `name`) are locked against generated analysis, so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a non-archived, idle book (409). Returns the full, presented book.
 
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
+
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
@@ -939,6 +943,8 @@ Edits require a book that is not archived (409 `book_archived`) and that no queu
 After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
 
 Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -983,6 +989,8 @@ Re-parses the saved original EPUB or TXT and replaces only chapter structure met
 
 Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.
 
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
+
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
@@ -1012,6 +1020,8 @@ Edits require a book that is not archived (409 `book_archived`) and that no queu
 After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
 
 Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1044,6 +1054,8 @@ Edits require a book that is not archived (409 `book_archived`) and that no queu
 After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
 
 Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1117,14 +1129,14 @@ Changing pronunciations requires an idle book. A render recipe records only the 
 
 Limits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.
 
-The body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).
+A partial update (body `PronunciationPatch`): every field is optional, fields left out keep their saved values, and `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling` (so `null` for either is 400), and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
 | `entry_id` | path | string | yes | Pronunciation entry ID (`pr_…`). |
 
-Request body (`application/json`): [PronunciationEntry](#schema-pronunciationentry)
+Request body (`application/json`): [PronunciationPatch](#schema-pronunciationpatch)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
@@ -1191,7 +1203,7 @@ The classic engine may be retired in favor of the step pipeline.
 
 Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without provider inference. Returns the requested phase, provider and configured models, pending requests, cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` (with defaults applied; the preview does not enforce them).
 
-The estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works on archived books and while a job is running.
+The estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works while a job is running. Because it retains records (below), an archived book is refused (409 `book_archived`).
 
 Side effects, all local and none of them changing the book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.
 
@@ -1230,6 +1242,7 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 | 400 | [Error](#schema-error) | - `unknown_chapter`: The body's `chapter_id` is not a chapter of this book. - `unknown_provider`: The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived. Restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="startclassicanalysis"></a>
@@ -1266,7 +1279,7 @@ such a section. The main UI uses whole-book scan/profiles and selected-chapter d
 
 The provider and configured models are snapshotted when the job is queued; the job carries `provider`, `model`, `scan_model`, `phase` and `chapter_id`.
 
-Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published. The run retains the census and any validated discovery imported from an older checkpoint as artifacts.
+Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published. The run retains the census and any validated discovery imported from an older checkpoint as artifacts. When the job is queued, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions) when the history does not already explain it, so the state the analysis replaces stays restorable.
 
 The classic engine may be retired in favor of the step pipeline.
 
@@ -1369,9 +1382,9 @@ Read-only: it records nothing and contacts no server. When the book changed outs
 
 Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.
 
-Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned.
+Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned. Checks, in order: every step ID in `steps` and `configs` must be known (400 `unknown_step`), the book must exist (404), then `configs` and `chapter_ids` are validated (400).
 
-The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.
+The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `scheduling`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.
 
 Not purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.
 
@@ -1384,7 +1397,7 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelinePlan](#schema-pipelineplan) | Success. |
-| 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
@@ -1396,7 +1409,7 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 
 Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.
 
-Checks, in order: every step ID must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
+Checks, in order: every step ID in `steps`, `configs` and `gates` must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
 
 Provider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.
 
@@ -1409,7 +1422,7 @@ Request body (`application/json`): [RunRequest](#schema-runrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineRunStarted](#schema-pipelinerunstarted) | The queued job and run. Not a result: poll the job until it is terminal. |
-| 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. - `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL). - `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured. - `step_inputs_missing`: A step's required input has no accepted result and is not in this run. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. - `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL). - `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured. - `step_inputs_missing`: A step's required input has no accepted result and is not in this run. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: A job is already working on this book. - `plan_stale`: The plan changed since the preview (`expected_fingerprint` does not match). Preview again; nothing was queued. |
@@ -1452,7 +1465,7 @@ Rows are summarized against the book's current state (current names and passage 
 | `compare` | query | string |  | What to diff against: `accepted` (default), another step version ID of this step, or `none`. (default `"accepted"`) |
 | `scope` | query | string \| null |  | Return only rows of this scope (a chapter ID, character ID or `book`). Filters rows, not `diff` counts. |
 | `changed_only` | query | boolean |  | When true, return only rows whose `_diff` is `changed` or `added` (none without a comparison). Default false. (default `false`) |
-| `offset` | query | integer |  | Rows to skip (default 0). A negative value is treated as 0. (default `0`) |
+| `offset` | query | integer |  | Rows to skip (default 0), clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
 | `limit` | query | integer |  | Page size (default 200), clamped to 1–1000. (default `200`) |
 
 | Status | Body | Meaning |
@@ -1589,7 +1602,7 @@ No provider is contacted. This GET creates and changes no domain records: no art
 
 `{items, total, offset, limit}` page of artifact metadata owned by the book, newest first. Payloads are not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge.
 
-`limit` and `offset` are clamped (to 1–200 and at least 0); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.
+`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1598,7 +1611,7 @@ No provider is contacted. This GET creates and changes no domain records: no art
 | `stage` | query | string \| null |  | Only this artifact stage (exact match). Optional. |
 | `current` | query | boolean \| null |  | `true` for current selections only, `false` for non-current versions only; omit for all versions. |
 | `limit` | query | integer |  | Page size; default 30, clamped to 1–200. (default `30`) |
-| `offset` | query | integer |  | Versions to skip; default 0, negative values become 0. (default `0`) |
+| `offset` | query | integer |  | Versions to skip; default 0, clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
@@ -1652,7 +1665,7 @@ No provider is contacted. This GET creates and changes no domain records: no art
 
 Recorded work for the book: analysis HTTP attempts (the analysis ledger), local and narration operations (which supplement it without double-counting), and cache reuse. Returns `schema_version`, the book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, `total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source URLs and interpretation notes.
 
-`limit` and `offset` are clamped (to 1–200 and at least 0), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
+`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
 
 Operations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts a provider or backfills guessed usage. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
@@ -1660,7 +1673,7 @@ Operations distinguish request count, reported tokens and cache tokens, retained
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID, from the library or the import response. |
 | `limit` | query | integer |  | Page size for `operations`; default 100, clamped to 1–200. (default `100`) |
-| `offset` | query | integer |  | Rows to skip in `operations`; default 0, negative values become 0. (default `0`) |
+| `offset` | query | integer |  | Rows to skip in `operations`; default 0, clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
 | `run_id` | query | string \| null |  | Only rows (and the run) with this job ID. Optional. |
 
 | Status | Body | Meaning |
@@ -2959,7 +2972,7 @@ One page of artifact metadata, newest first.
 | --- | --- | --- | --- |
 | `items` | list of [ArtifactSummary](#schema-artifactsummary) | yes | This page of artifact versions matching the filters, newest first (by creation time). Empty past the end. |
 | `total` | integer | yes | Versions matching the filters. |
-| `offset` | integer | yes | Effective offset after clamping to >= 0 (versions skipped). |
+| `offset` | integer | yes | Effective offset (versions skipped) after clamping to 0–9007199254740991 (2^53 − 1). |
 | `limit` | integer | yes | Effective page size after clamping to 1–200. |
 
 <a id="schema-artifactsummary"></a>
@@ -3556,8 +3569,6 @@ Character fields to change (edit) or set (create). Omitted or null fields are ig
 | `aliases` | list of string \| null |  | Complete replacement list of other names for the character. |
 | `description` | string \| null |  | Voice and personality profile, at most 3,000 characters. |
 | `voices` | map of string → [VoiceChoice](#schema-voicechoice) \| null \| null |  | Per-provider voice choices: `{provider: VoiceChoice \| null}` where provider is `system`, `gemini` or `breeze` (another key is 400 `voice_provider_unknown`). Only the providers present change; `null`, or a choice whose `id` is empty or blank, removes that provider's choice, which means Default. This rule is the same for every provider. The stored map is returned in `characters[].voices` (library references stay references). |
-| `voice` | string \| null |  | Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is treated as `voices.gemini = {id}`, with the same rules (an empty or blank string removes it). Ignored for Gemini when `voices` also names `gemini`. |
-| `system_voice` | string \| null |  | Compatibility alias for the device (`system`) choice, with the same rules as `voice`. |
 | `direction` | string \| null |  | Standing performance direction, at most 3,000 characters. |
 
 <a id="schema-characterreference"></a>
@@ -4528,12 +4539,13 @@ One recorded analysis HTTP attempt (classic or step pipeline).
 The pipeline inspector lists the newest 100 for the book; the analysis
 export's `analysis-attempts.json` lists all of them in this same shape.
 Fields come from the stored attempt through a fixed allowlist and may be
-absent on records from older versions. Prompts, responses, credentials,
-price rates and server process IDs are never included.
+absent on records from older versions. Prompts, responses, credentials
+and server process IDs are never included.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Attempt ID. |
+| `book_id` | string \| null |  | Book the attempt was made for. |
 | `run_id` | string \| null |  | Job ID of the run that sent it. |
 | `stage` | string \| null |  | Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID. |
 | `unit_key` | string \| null |  | Opaque cache key of the unit of work. |
@@ -4552,6 +4564,8 @@ price rates and server process IDs are never included.
 | `reserved_output_tokens` | integer \| null |  | Output allowance reserved before sending. |
 | `charged_estimate_usd` | number \| null |  | Conservative USD estimate for this attempt; null when unknown. |
 | `cost_basis` | string \| null |  | How `charged_estimate_usd` was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent` or `unknown`. |
+| `input_rate` | number \| null |  | Input price used for the estimate, in USD per million input tokens; null when the model has no known price. |
+| `output_rate` | number \| null |  | Output price used for the estimate, in USD per million output tokens; null when the model has no known price. `charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + output tokens × `output_rate`) / 1,000,000, using reported usage when present and the reservation otherwise. |
 | `price_as_of` | string \| null |  | Date of the price table used for the estimate, or null. |
 | `price_source` | string \| null |  | URL of the price source used, or null. |
 | `elapsed_seconds` | number \| null |  | Measured wall time of the request in seconds; null when unknown. |
@@ -4890,7 +4904,7 @@ Created with `status: queued`; the job worker adds `started_at`, then
 | `job_id` | string | yes | The `pipeline` job executing it (poll and cancel through the jobs API). |
 | `status` | `"queued"` \| `"running"` \| `"completed"` \| `"failed"` \| `"budget_limited"` \| `"cancelled"` \| `"interrupted"` \| `"quota_limited"` | yes | `queued`, `running`, then `completed`, `failed`, `budget_limited` (a limit stopped it), `cancelled`, or `interrupted` (server restart, or the job ended before the run settled). If the job ended before work began, the run takes the job's final status (so `quota_limited` is theoretically possible). |
 | `steps` | list of string | yes | Requested steps, deduplicated, in pipeline order. |
-| `mode` | `"serial"` \| `"parallel"` | yes | `serial`: steps run one after another in pipeline order. `parallel`: each step starts as soon as the in-run inputs it reads have finished, so independent steps overlap. |
+| `scheduling` | `"serial"` \| `"parallel"` | yes | `serial`: steps run one after another in pipeline order. `parallel`: each step starts as soon as the in-run inputs it reads have finished, so independent steps overlap. |
 | `chapter_ids` | list of string \| null | yes | Sorted chapter selection, or null for all eligible chapters. |
 | `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) | yes | Provider and model snapshotted per requested step. |
 | `gates` | map of string → `"auto"` \| `"review"` | yes | Gate snapshotted per requested step. |
@@ -5108,7 +5122,7 @@ render generically: show `stats` as label/value pairs and each column's
 | `columns` | list of [PipelineResultColumn](#schema-pipelineresultcolumn) | yes | Columns to display, in order. |
 | `diff` | [PipelineVersionDiff](#schema-pipelineversiondiff) | yes |  |
 | `total_rows` | integer | yes | Rows after the `scope` and `changed_only` filters, before paging. |
-| `offset` | integer | yes | Rows skipped: the `offset` query parameter, raised to 0 when negative. |
+| `offset` | integer | yes | Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1). |
 | `limit` | integer | yes | The page size used: the `limit` query parameter clamped to 1–1000. |
 | `rows` | list of [PipelineDirectingRow](#schema-pipelinedirectingrow) \| [PipelineQuotesRow](#schema-pipelinequotesrow) \| [PipelineProfilesRow](#schema-pipelineprofilesrow) \| [PipelineDiscoveryRow](#schema-pipelinediscoveryrow) \| [PipelineCensusRow](#schema-pipelinecensusrow) \| [PipelineStructureRow](#schema-pipelinestructurerow) | yes | The requested page of rows. Most cell values reflect the book's current names and passages; census rows use the names stored in the result and structure rows use the version's own titles. The row shape depends on the step (one variant per step); every row has `id` and `scope`. |
 | `scopes` | list of [PipelineVersionScope](#schema-pipelineversionscope) | yes | Every scope of the displayed version. |
@@ -5159,7 +5173,7 @@ Which steps to estimate, over which chapters, with which providers.
 | --- | --- | --- | --- |
 | `steps` | list of string | yes | Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
 | `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`). |
-| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not requested are ignored. |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `fresh` | boolean |  | When true, cached validated units are not reused: new samples are requested (for comparing a model with itself). Part of the plan fingerprint. Default false. (default `false`) |
 
 <a id="schema-profilefreshness"></a>
@@ -5176,11 +5190,11 @@ Currency of one character's vocal profile.
 <a id="schema-pronunciationentry"></a>
 ### PronunciationEntry
 
-A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left out keep their saved values. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example.
+A pronunciation entry. For adding, `term` and `respelling` are required. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example. Changing a saved entry uses `PronunciationPatch`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | string \| null |  | Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved version replaces; omit it for a new word. |
+| `id` | string \| null |  | Ignored when adding (the server assigns one). In a voice example, the entry this unsaved version replaces; omit it for a new word. |
 | `term` | string | yes | The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one letter or digit (the request accepts up to 200 before normalization). (max length `200`) |
 | `respelling` | string | yes | How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, parentheses, braces and backslashes are refused. (max length `300`) |
 | `providers` | map of string → string \| null \| null |  | Per-narrator overrides keyed by `system`, `gemini` or `breeze`. An empty or null value drops that override; an override equal to the term leaves that narrator reading the word unchanged. |
@@ -5208,6 +5222,20 @@ The book's pronunciations.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `pronunciations` | list of [PronunciationWithUsage](#schema-pronunciationwithusage) | yes | All entries, in saved order, each with its usage. |
+
+<a id="schema-pronunciationpatch"></a>
+### PronunciationPatch
+
+Changes to a saved pronunciation. Every field is optional: a field left out keeps its saved value, and `null` clears it. The path names the entry, so there is no `id`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `term` | string \| null |  | New word or phrase, with the same rules as when adding. `null` is refused: an entry needs a term. |
+| `respelling` | string \| null |  | New respelling, with the same rules as when adding. `null` is refused: an entry needs one. |
+| `providers` | map of string → string \| null \| null |  | Replacement per-narrator overrides keyed by `system`, `gemini` or `breeze`; `{}` or `null` removes them all, and an empty or null value drops that override. |
+| `match_case` | boolean \| null |  | True: match exact case. False: match any case. `null` restores the default (true). |
+| `character_id` | string \| null |  | Book-local character the word belongs to; must be in the current cast. `null` removes the link. |
+| `note` | string \| null |  | Free-text note, at most 500 characters. `null` or an empty string removes it. |
 
 <a id="schema-pronunciationsaved"></a>
 ### PronunciationSaved
@@ -5438,7 +5466,7 @@ Recorded resource usage for a book, optionally narrowed to one run. Never contac
 | `total_operations` | integer | yes | Rows in scope. |
 | `unmeasured_runs` | integer | yes | Runs with no recorded rows. |
 | `limit` | integer | yes | Effective page size after clamping to 1–200. |
-| `offset` | integer | yes | Effective offset after clamping to >= 0. |
+| `offset` | integer | yes | Effective offset after clamping to 0–9007199254740991 (2^53 − 1). |
 | `price_sources` | list of string | yes | Distinct price-source URLs referenced by rows in scope. |
 | `notes` | list of string | yes | Interpretation notes. Display only. |
 
@@ -5451,10 +5479,10 @@ A run to queue. Send the same `steps`, `chapter_ids`, `configs` and `fresh` as t
 | --- | --- | --- | --- |
 | `steps` | list of string | yes | Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
 | `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused (400 `chapter_ids_empty`). |
-| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored. |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `fresh` | boolean |  | Request new samples instead of reusing cached validated units (default false). Part of the fingerprint. (default `false`) |
-| `mode` | `"serial"` \| `"parallel"` |  | `serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished, so independent steps overlap. (default `"serial"`) |
-| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. |
+| `scheduling` | `"serial"` \| `"parallel"` |  | `serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished, so independent steps overlap. (default `"serial"`) |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `concurrency` | integer |  | Maximum model requests in flight across the run, 1–4 (default 2). Each step also has its own `parallel` cap. (≥ `1.0`; ≤ `4.0`; default `2`) |
 | `limits` | [Limits](#schema-limits) |  | Optional caps; see Limits. Uncapped when omitted. |
 | `expected_fingerprint` | string \| null |  | The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409 `plan_stale`. Required unless a limit is set. |
@@ -5540,8 +5568,8 @@ A supplied book (one with an ebook in the library) placed in a series.
 
 The per-book analysis preview inside a series plan.
 
-Same fields as the classic per-book plan (`AnalysisPlan`) except that `limits` is absent: a series plan states
-its limits once, in `limits_per_book`.
+Same fields as the classic per-book plan (`AnalysisPlan`) except `limits`: a series plan states its limits
+once, in `limits_per_book`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5558,7 +5586,6 @@ its limits once, in `limits_per_book`.
 | `coverage` | [AnalysisCoverage](#schema-analysiscoverage) | yes | Same body as `GET /api/books/{book_id}/preprocessing`, with profile freshness computed against the plan's working cast. |
 | `future_work_unknown` | boolean | yes | True for `full`: discovery can add profiles and change direction prompts, so the estimate is incomplete. |
 | `note` | string | yes | Interpretation caveat. Display only. |
-| `limits` | [AnalysisPlanLimits](#schema-analysisplanlimits) \| null |  | Never present in a series plan; see `SeriesPlan.limits_per_book`. |
 
 <a id="schema-seriescharacter"></a>
 ### SeriesCharacter

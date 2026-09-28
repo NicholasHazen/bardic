@@ -30,6 +30,15 @@ MODES = ('user', 'auto', 'baseline', 'external')
 ACTIVE = ('queued', 'running')
 
 
+def _run(value):
+    """A stored run in the current shape. Runs stored before contract 0.2.0 name ``scheduling`` ``mode``."""
+    if 'mode' in value:
+        value = dict(value)
+        mode = value.pop('mode')
+        value.setdefault('scheduling', mode)
+    return value
+
+
 def version_key(step_id, scope):
     return f'{step_id}:{scope}'
 
@@ -77,15 +86,15 @@ class PipelineRepository:
         return value
 
     def update_run(self, run_id, **fields):
-        return self._update('pipeline_runs', run_id, fields)
+        return _run(self._update('pipeline_runs', run_id, fields))
 
     def run(self, run_id):
-        return self._get('pipeline_runs', run_id)
+        return _run(self._get('pipeline_runs', run_id))
 
     def runs(self, book_id, limit=20):
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('SELECT body FROM pipeline_runs WHERE book_id=? ORDER BY rowid DESC LIMIT ?', (book_id, limit)).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return [_run(json.loads(row[0])) for row in rows]
 
     # --- step runs ------------------------------------------------------------------
     def create_step_run(self, book_id, step, *, run_id=None, origin='run', provider=None, model=None,

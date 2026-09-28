@@ -23,7 +23,7 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
 ## 0.2.0 — 2026-09-28
-<!-- contract-sha256: 9c90a548531214cefd166a91038d0e9b8ecfc4b1d9a01a75beb7fd2a70f56371 -->
+<!-- contract-sha256: 6bbb9b3cb219de6e8544964ef6b0db9c0c7bd2111fcd7986cdc8d0a884d11197 -->
 
 **BREAKING.** Resolves the known issues recorded with 0.1.0 ([issue #17](https://github.com/NicholasHazen/bardic/issues/17)). (Entry in progress.)
 

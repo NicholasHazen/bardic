@@ -86,7 +86,7 @@ def require_active_book(store, book_id):
     """404 ``book_not_found`` for an unknown book, 409 ``book_archived`` for an archived one."""
     store.book(book_id)
     if store.is_archived(book_id):
-        raise Conflict('book_archived', 'This book is archived. Restore it before processing or editing it.')
+        raise Conflict('book_archived', 'This book is archived.')
 
 
 def present_audio(book_id, audio):

@@ -120,7 +120,7 @@ def _series(conn, series_id):
     return dict(zip(("id", "name", "created_at"), row))
 
 
-SERIES_ARCHIVED = 'The series is removed (archived). Restore it first.'
+SERIES_ARCHIVED = 'This series is archived.'
 
 
 def require_active_series(conn, series_id):
@@ -138,7 +138,7 @@ def require_active_book(store, book_id):
     with store.lock, store.connect() as conn:
         _book(conn, book_id)
         if is_archived(conn, 'book', book_id):
-            raise Conflict('book_archived', 'The book is removed (archived). Restore it first.')
+            raise Conflict('book_archived', 'This book is archived.')
 
 
 def _membership(conn, book_id, include_archived=False):
@@ -200,7 +200,9 @@ class SeriesRepository:
         return item
 
     def create_series(self, name):
-        name = _name(name, "series name")
+        from .library import _label
+        # The same checks as a rename: a name that could not be saved again is refused here too.
+        name = _label(_name(name, "series name"), "series name", required=True, maximum=200)
         item = {"id": "series_" + uuid4().hex, "name": name, "created_at": _now()}
         with self.store.lock, self.store.connect() as conn:
             if any(row[0].casefold() == name.casefold() for row in conn.execute("SELECT name FROM series")):

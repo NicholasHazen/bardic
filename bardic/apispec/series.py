@@ -15,7 +15,7 @@ from pydantic import Field
 
 from .base import Op, View, op
 from .common import Job
-from .inspection import AnalysisPlan, AnalysisPlanLimits
+from .inspection import AnalysisPlanBase, AnalysisPlanLimits
 
 TAG = 'Series'
 
@@ -228,14 +228,12 @@ class BookSeriesContext(View):
                     'use timestamps.')
 
 
-class SeriesBookAnalysisPlan(AnalysisPlan):
+class SeriesBookAnalysisPlan(AnalysisPlanBase):
     """The per-book analysis preview inside a series plan.
 
-    Same fields as the classic per-book plan (`AnalysisPlan`) except that `limits` is absent: a series plan states
-    its limits once, in `limits_per_book`.
+    Same fields as the classic per-book plan (`AnalysisPlan`) except `limits`: a series plan states its limits
+    once, in `limits_per_book`.
     """
-    limits: AnalysisPlanLimits | None = Field(default=None, description='Never present in a series plan; see '
-                                                                        '`SeriesPlan.limits_per_book`.')
 
 
 class SeriesPlanBook(View):
@@ -318,11 +316,13 @@ OPS: list[Op] = [
        response=list[Series]),
 
     op('POST', '/api/series', 'createSeries', TAG, 'Create a series',
-       'Creates an empty series. Whitespace in the name is collapsed. Names are unique ignoring case, including '
+       'Creates an empty series. Whitespace in the name is collapsed. The name is validated as for a rename '
+       '(control characters other than tab and newlines are refused). Names are unique ignoring case, including '
        'against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than '
        '`Series` (no `archived` or `volumes`).',
        response=SeriesCreated,
-       errors={400: {**NAME_INVALID, **NAME_TAKEN}}),
+       errors={400: {**NAME_INVALID, **NAME_TAKEN,
+                     'text_invalid': 'The name contains control characters other than tab and newlines.'}}),
 
     op('PATCH', '/api/series/{series_id}', 'renameSeries', TAG, 'Rename a series',
        'Renames an active series when its work is idle: no active run of this series, no job on any of its books '
@@ -470,8 +470,12 @@ OPS: list[Op] = [
        'The response lists ordered supplied books with nested book plans, models, known requests and cost, volume '
        'slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so '
        'the possible collection-wide spend grows with the number of books. The plan can be empty when the series '
-       'has no active books (starting it is then refused). Building the preview may fill disposable local caches; '
-       'it creates no jobs or records.',
+       'has no active books (starting it is then refused). The preview creates no jobs.\n\n'
+       'Side effects, all local and none of them changing a book, the same as '
+       '`POST /api/books/{book_id}/analysis-plan` for each planned book: it caches and retains the census (a '
+       '`census` artifact, and a `census` resource operation when computed fresh), imports validated discovery '
+       'found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` '
+       'artifacts for linked earlier volumes.',
        response=SeriesPlan,
        params={'series_id': SERIES_ID},
        errors={400: {'provider_not_cloud': 'The provider (or the configured analysis provider) is not `gemini`, '
@@ -499,7 +503,10 @@ OPS: list[Op] = [
        'run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` '
        '(or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book\'s run '
        'request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the '
-       'jobs, not in this response. A run record is retained as a `series_run` artifact on each book.',
+       'jobs, not in this response. A run record is retained as a `series_run` artifact on each book. When the run '
+       "is queued, each supplied book's current projection is recorded in the step pipeline's version history (as "
+       '`baseline` or `external` versions) when the history does not already explain it, so the replaced state '
+       'stays restorable.',
        response=Job,
        response_description='The queued parent series job.',
        params={'series_id': SERIES_ID},

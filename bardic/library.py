@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .store import now
 from .errors import Conflict, Invalid, NotFound
+from .series import SERIES_ARCHIVED
 
 
 def initialize_schema(conn):
@@ -132,7 +133,7 @@ class LibraryRepository:
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
                 raise NotFound('series_not_found', 'Series not found')
             if is_archived(conn, 'series', series_id):
-                raise Conflict('series_archived', 'This series is archived. Restore it first.')
+                raise Conflict('series_archived', SERIES_ARCHIVED)
 
     def summary(self, book_id):
         from .series import _membership

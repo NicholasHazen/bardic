@@ -431,7 +431,7 @@ def test_run_validation_rejects_unsafe_requests(client):
 
 def test_plain_steps_run_without_keys_and_chapter_scope_narrows_work(client):
     book = import_book(client)
-    job, _ = run(client, book['id'], ['structure', 'census'], mode='parallel')
+    job, _ = run(client, book['id'], ['structure', 'census'], scheduling='parallel')
     assert job['status'] == 'completed'
     census = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/census/versions/accepted").json()
     assert census['stats']['eligible_sections'] == 2
@@ -487,7 +487,7 @@ def test_step_failing_before_units_is_settled_and_dependents_skip(client, monkey
 
     monkeypatch.setattr(DiscoveryStep, 'units', broken)
     # Planning fails too, so this API caller runs with explicit limits instead of a preview.
-    job, _ = run(client, book['id'], ['discovery', 'profiles'], mode='parallel', limits={'max_requests': 50})
+    job, _ = run(client, book['id'], ['discovery', 'profiles'], scheduling='parallel', limits={'max_requests': 50})
     assert job['status'] == 'failed' and 'planning failed' in job['error']
     assert latest(client, book['id'], 'discovery')['status'] == 'failed'
     outcomes = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]['outcomes']

@@ -458,7 +458,7 @@ def test_breeze_cast_voices_are_pinned_per_provider_and_enhanced_takes_stay_vali
     assert breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",
                                json={"voices": {"breeze": {"id": "sailor"}}}).status_code == 400
     edited = breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",
-                                 json={"voices": {"breeze": {"id": "narrator", "seed": 11}}, "voice": "Puck"}).json()
+                                 json={"voices": {"breeze": {"id": "narrator", "seed": 11}, "gemini": {"id": "Puck"}}}).json()
     voices = next(c for c in edited["characters"] if c["id"] == "narrator")["voices"]
     assert voices["gemini"] == {"id": "Puck"} and voices["breeze"]["seed"] == 11 and len(voices["breeze"]["revision"]) == 64
     stored = next(c for c in breeze_client.app.state.runtime.store.book(book["id"])["characters"] if c["id"] == "narrator")
