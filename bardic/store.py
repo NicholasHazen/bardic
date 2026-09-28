@@ -19,6 +19,8 @@ class Store:
         from .series import initialize_schema
         from .artifacts import initialize_schema as initialize_artifacts
         from .library import initialize_schema as initialize_library
+        from .pipeline.repository import initialize_schema as initialize_pipeline
+        from .processing import initialize_schema as initialize_processing
 
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -40,6 +42,8 @@ class Store:
             initialize_artifacts(conn)
             initialize_library(conn)
             initialize_schema(conn)
+            initialize_pipeline(conn)
+            initialize_processing(conn)
         for job in self.jobs(limit=None):
             if job["status"] in {"running", "queued"}:
                 message = ("Server restarted. Analyze story again to resume from saved chapter analysis."
