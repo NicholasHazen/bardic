@@ -1,0 +1,1146 @@
+"""Local API, resumable production worker, and audiobook exports."""
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Annotated, Literal
+from urllib.parse import urlparse
+from uuid import uuid4
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from .analysis import analyze_book
+from .processing import BudgetReached
+from .account_checks import check_account
+from .audio import assemble_audio, list_system_voices, render_fingerprint, synthesize, validate_audio
+from .importer import make_demo_book, parse_book
+from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
+from .series import SeriesRepository
+from .structure import repair_structure, transform_checkpoint_structure
+from .store import InstanceLock, Store
+from .take_archive import produce_take
+
+TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview"]
+ANALYSIS_MODELS = ANALYSIS_CATALOG["gemini"]
+ANALYSIS_LABELS = {"local": "Local draft", "gemini": "Gemini", "openai": "OpenAI", "anthropic": "Anthropic"}
+ACCOUNT_LINKS = {
+    "gemini": {"billing_url": "https://aistudio.google.com/billing", "usage_url": "https://aistudio.google.com/usage"},
+    "openai": {"billing_url": "https://platform.openai.com/settings/organization/billing", "usage_url": "https://platform.openai.com/usage"},
+    "anthropic": {"billing_url": "https://platform.claude.com/settings/billing", "usage_url": "https://platform.claude.com/usage"},
+}
+STATIC = Path(__file__).parent / "static"
+ACTIVE = {"queued", "running"}
+
+
+class Cancelled(Exception):
+    pass
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class RenderRequest(StrictModel):
+    provider: str = "system"
+    scene_id: str | None = None
+    segment_id: str | None = None
+    force: bool = False
+
+
+class AnalysisLimits(StrictModel):
+    max_requests: int = Field(default=25, ge=1, le=1000)
+    max_input_tokens: int = Field(default=1000000, ge=1000, le=10000000)
+    max_output_tokens: int = Field(default=100000, ge=1000, le=2000000)
+    budget_usd: float | None = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
+
+
+class AnalysisRequest(StrictModel):
+    provider: str | None = None
+    chapter_id: str | None = None
+    resume: bool = True
+    phase: Literal["scan", "profiles", "direct", "full"] = "scan"
+    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
+
+
+class SeriesProcessingRequest(StrictModel):
+    provider: str | None = None
+    phase: Literal['scan', 'profiles', 'direct', 'full'] = 'scan'
+    concurrency: int = Field(default=2, ge=1, le=2)
+    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
+    expected_plan_fingerprint: str | None = Field(default=None, max_length=64)
+
+
+class BookMetadataRequest(StrictModel):
+    title: str = Field(min_length=1, max_length=500)
+    author: str = Field(default='', max_length=500)
+
+
+class SeriesVolumeRequest(StrictModel):
+    position: float = Field(ge=0, le=1000000, allow_inf_nan=False)
+    title: str = Field(default='', max_length=500)
+    status: Literal['missing', 'planned'] = 'missing'
+
+
+class ListenRequest(StrictModel):
+    provider: Literal['system', 'gemini'] = 'system'
+    voice: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=200)
+    segment_id: str
+
+
+class SettingsRequest(StrictModel):
+    api_key: str | None = Field(default=None, max_length=500)
+    tts_model: str | None = None
+    analysis_model: str | None = None
+    api_keys: dict[str, Annotated[str, Field(max_length=500)]] | None = None
+    analysis_models_by_provider: dict[str, str] | None = None
+    preprocess_models_by_provider: dict[str, str] | None = None
+    analysis_provider: str | None = None
+
+
+def valid_analysis_model(model):
+    return isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", model) is not None
+
+
+class CharacterEdit(StrictModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    aliases: list[str] | None = None
+    description: str | None = Field(default=None, max_length=3000)
+    voice: str | None = Field(default=None, max_length=200)
+    system_voice: str | None = Field(default=None, max_length=200)
+    direction: str | None = Field(default=None, max_length=3000)
+
+
+class SegmentEdit(StrictModel):
+    speaker_id: str | None = None
+    direction: str | None = Field(default=None, max_length=3000)
+    cues: list[str] | None = None
+
+
+class SceneEdit(StrictModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=4000)
+    tone: str | None = Field(default=None, max_length=1000)
+    direction: str | None = Field(default=None, max_length=3000)
+
+
+class SeriesNameRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class SeriesMembershipRequest(StrictModel):
+    series_id: str | None = Field(default=None, max_length=200)
+    position: Annotated[float, Field(strict=True)] | None = None
+
+
+class SeriesCharacterLinkRequest(StrictModel):
+    series_character_id: str | None = Field(default=None, max_length=200)
+
+
+class Runtime:
+    def __init__(self, root: Path):
+        self.instance_lock = InstanceLock(root.resolve())
+        self.store = Store(root)
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spintails")
+        self.series_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='series-coordinator')
+        self.stopping = threading.Event()
+        self.api_keys = {
+            "gemini": os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "",
+            "openai": os.environ.get("OPENAI_API_KEY") or "",
+            "anthropic": os.environ.get("ANTHROPIC_API_KEY") or "",
+        }
+        self.account_checks = {}
+        self.account_check_locks = {provider: threading.Lock() for provider in ANALYSIS_CATALOG}
+        self.account_checks_running = {}
+        self.model_catalog = ModelCatalog()
+        saved = self.store.settings()
+        models = {provider: choices[0] for provider, choices in ANALYSIS_CATALOG.items()}
+        # Keep the existing Gemini selection when upgrading an older library.
+        if valid_analysis_model(saved.get("analysis_model")):
+            models["gemini"] = saved["analysis_model"]
+        for provider, model in saved.get("analysis_models_by_provider", {}).items():
+            if provider in models and valid_analysis_model(model):
+                models[provider] = model
+        preprocess_models = dict(PREPROCESS_DEFAULTS)
+        for provider, model in saved.get("preprocess_models_by_provider", {}).items():
+            if provider in preprocess_models and valid_analysis_model(model):
+                preprocess_models[provider] = model
+        self.preferences = {
+            "tts_model": saved.get("tts_model", TTS_MODELS[0]),
+            "analysis_provider": saved.get("analysis_provider", "local") if saved.get("analysis_provider", "local") in ANALYSIS_LABELS else "local",
+            "analysis_model": models["gemini"],
+            "analysis_models_by_provider": models,
+            "preprocess_models_by_provider": preprocess_models,
+        }
+
+    @property
+    def api_key(self):
+        """Compatibility alias for the Gemini narration key."""
+        return self.api_keys["gemini"]
+
+    @api_key.setter
+    def api_key(self, value):
+        self.api_keys["gemini"] = value
+
+    def close(self):
+        self.stopping.set()
+        self.series_pool.shutdown(wait=True, cancel_futures=True)
+        self.pool.shutdown(wait=True, cancel_futures=True)
+        self.instance_lock.close()
+
+    def account_check_view(self, provider):
+        """Report prior checks without sending any provider requests."""
+        model = self.preferences["analysis_models_by_provider"][provider]
+        key = self.api_keys[provider]
+        configuration = (key, model)
+        base = {"provider": provider, "model": model, "state": "unchecked" if key else "missing_key",
+                "message": "Run a small request to check this analysis model." if key else "Add an API key to check this account.",
+                "checked_at": None, "usage": None, "http_status": None,
+                "balance": None, "balance_note": "Exact balance is not available through this check. Open the billing dashboard.",
+                "cached": False, **ACCOUNT_LINKS[provider]}
+        stored = self.account_checks.get(provider)
+        if stored and stored["configuration"] == configuration:
+            base.update(copy.deepcopy(stored["result"]))
+        if self.account_checks_running.get(provider) == configuration:
+            base.update(state="checking", message="Checking this analysis model…")
+        return base
+
+    def check_account(self, provider):
+        if provider not in ANALYSIS_CATALOG:
+            raise HTTPException(400, "Choose gemini, openai, or anthropic")
+        gate = self.account_check_locks[provider]
+        if not gate.acquire(blocking=False):
+            raise HTTPException(409, "A check for this provider is already running")
+        try:
+            with self.store.lock:
+                key = self.api_keys[provider]
+                model = self.preferences["analysis_models_by_provider"][provider]
+                configuration = (key, model)
+                previous = self.account_checks.get(provider)
+                if previous and previous["configuration"] == configuration and time.monotonic() - previous["time"] < 30:
+                    return {**self.account_check_view(provider), "cached": True}
+                result = self.account_check_view(provider)
+                self.account_checks_running[provider] = configuration
+            try:
+                outcome = check_account(provider, key, model)
+            except Exception:
+                # Do not expose unexpected transport exceptions or credentials.
+                outcome = {"state": "provider_error", "message": "The account check could not finish. Try again shortly.", "usage": None, "http_status": None}
+            result.update(outcome, checked_at=datetime.now(timezone.utc).isoformat(), cached=False)
+            with self.store.lock:
+                if configuration != (self.api_keys[provider], self.preferences["analysis_models_by_provider"][provider]):
+                    # A slow response for a replaced credential must not look current.
+                    raise HTTPException(409, "Provider settings changed during the check. Check the current settings again.")
+                self.account_checks[provider] = {"configuration": configuration, "time": time.monotonic(), "result": copy.deepcopy(result)}
+            return result
+        finally:
+            with self.store.lock:
+                self.account_checks_running.pop(provider, None)
+            gate.release()
+
+    def cancelled(self, job_id):
+        return self.stopping.is_set() or self.store.job(job_id).get("cancel_requested", False)
+
+    def check_cancel(self, job_id):
+        if self.cancelled(job_id):
+            raise Cancelled()
+
+    def assign_local_voices(self, book):
+        installed = list_system_voices()
+        choices = []
+        for preferred in ("Samantha", "Daniel", "Moira", "Karen", "Tessa", "Alex", "Fred"):
+            match = next((v["id"] for v in installed if v["id"].split(" (")[0] == preferred), None)
+            if match:
+                choices.append(match)
+        if not choices:
+            choices = [v["id"] for v in installed if v["locale"].startswith("en-")][:8]
+        if choices:
+            for index, character in enumerate(book["characters"]):
+                if not character.get("system_voice"):
+                    character["system_voice"] = choices[index % len(choices)]
+
+    def require_idle(self, book_id):
+        self.store.require_active(book_id)
+        if any(j["status"] in ACTIVE for j in self.store.jobs(book_id)):
+            raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
+        if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
+               for j in self.store.jobs(limit=None)):
+            raise HTTPException(409, 'This book is reserved by an active series run. Stop the series run before editing.')
+
+    def audio_path(self, book_id, audio_id):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", book_id) or not re.fullmatch(r"[a-f0-9]{32,128}", audio_id):
+            raise ValueError("Invalid audio identifier")
+        return self.store.root / "audio" / book_id / f"{audio_id}.wav"
+
+    def take_path(self, book_id, metadata):
+        return self.audio_path(book_id, metadata.get("asset_id") or metadata["fingerprint"])
+
+    def valid_audio(self, book, segment):
+        metadata = segment.get("audio")
+        if not metadata:
+            return False
+        try:
+            characters = {c["id"]: c for c in book["characters"]}
+            scenes = {s["id"]: s for s in book["scenes"]}
+            expected = render_fingerprint(segment, characters[segment["speaker_id"]], scenes[segment["scene_id"]], metadata["provider"], metadata["model"])
+            return expected == metadata.get("fingerprint") and self.take_path(book["id"], metadata).is_file()
+        except (ValueError, KeyError, TypeError):
+            return False
+
+    def present(self, book):
+        result = copy.deepcopy(book)
+        chapter_map = {c["id"]: c for c in result["chapters"]}
+        previous = {}
+        for s in result["segments"]:
+            chapter = chapter_map[s["chapter_id"]]
+            s["leading_text"] = chapter["text"][previous.get(chapter["id"], 0):s["start"]]
+            previous[chapter["id"]] = s["end"]
+            if s.get("audio") and self.valid_audio(book, s):
+                audio_id = s["audio"].get("asset_id") or s["audio"]["fingerprint"]
+                s["audio"]["url"] = f"/api/audio/{book['id']}/{s['id']}?v={audio_id[:16]}"
+            else:
+                s["audio"] = None
+        for c in result["chapters"]:
+            c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
+        return result
+
+    def run(self, job, operation, secrets=()):
+        job_id = job["id"]
+        try:
+            self.check_cancel(job_id)
+            self.store.update_job(job_id, status="running", message="Starting…")
+            operation()
+            self.check_cancel(job_id)
+            self.store.update_job(job_id, status="completed", message="Ready to listen" if job["kind"] in {"render", "listen"} else "Analysis ready for review")
+        except BudgetReached as exc:
+            self.store.update_job(job_id, status="budget_limited", message=str(exc))
+        except (Cancelled, InterruptedError):
+            message = ("Stopped. Validated chapter work is saved; analyze again to resume." if job["kind"] == "analyze"
+                       else "Stopped. Completed takes are saved; generate again to resume.")
+            self.store.update_job(job_id, status="interrupted" if self.stopping.is_set() else "cancelled", message=message)
+        except Exception as exc:
+            # Provider implementations sanitize their errors. Redact the key again at the boundary.
+            message = str(exc) or type(exc).__name__
+            for key in (*secrets, *self.api_keys.values()):
+                if key:
+                    message = message.replace(key, "[redacted]")
+            message = message[:1200]
+            self.store.update_job(job_id, status="failed", error=message,
+                                  message="Stopped on an error. Validated chapter work is saved." if job["kind"] == "analyze" else "Stopped on an error. Completed takes are saved.")
+
+    def render(self, book_id, request):
+        with self.store.lock:
+            self.require_idle(book_id)
+            book = self.store.book(book_id)
+            if request.provider not in {"system", "gemini"}:
+                raise HTTPException(400, "Choose system or gemini narration")
+            if request.provider == "gemini" and not self.api_key:
+                raise HTTPException(400, "Add a Gemini API key in Settings first")
+            if request.provider == "system" and not (shutil.which("say") and shutil.which("ffmpeg")):
+                raise HTTPException(400, "Local narration requires macOS say and ffmpeg. Choose Gemini on other systems.")
+            selected = [s for s in book["segments"] if (not request.scene_id or s["scene_id"] == request.scene_id) and (not request.segment_id or s["id"] == request.segment_id)]
+            if not selected:
+                raise HTTPException(400, "No passages selected")
+            model = self.preferences["tts_model"] if request.provider == "gemini" else "macos-say"
+            key = self.api_key
+            job = self.store.create_job(book_id, "render", len(selected))
+
+            def work():
+                characters = {c["id"]: c for c in book["characters"]}
+                scenes = {s["id"]: s for s in book["scenes"]}
+                reused = 0
+                for i, s in enumerate(selected):
+                    self.check_cancel(job["id"])
+                    from .resources import ResourceLedger
+                    with ResourceLedger(self.store).operation(book_id, "narration", run_id=job["id"], unit_key=s["id"],
+                        chapter_id=s["chapter_id"], provider=request.provider, model=model, kind="narration") as metrics:
+                        character, scene = characters[s["speaker_id"]], scenes[s["scene_id"]]
+                        fingerprint = render_fingerprint(s, character, scene, request.provider, model)
+                        path = self.audio_path(book_id, fingerprint)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        self.store.update_job(job["id"], message=f"Passage {i+1} of {len(selected)} · {character['name']}")
+                        metadata = None
+                        if not request.force:
+                            current = s.get("audio")
+                            if current and current.get("fingerprint") == fingerprint and self.valid_audio(book, s):
+                                try:
+                                    duration = validate_audio(self.take_path(book_id, current))
+                                    metadata = {**current, "duration": duration}
+                                except (OSError, EOFError, ValueError):
+                                    pass
+                            if metadata is None:
+                                # Editing a voice retires the selected take, but
+                                # restoring its recipe can reuse archived WAV bytes.
+                                with self.store.lock, self.store.connect() as conn:
+                                    rows = conn.execute("""SELECT payload FROM artifact_versions
+                                        WHERE book_id=? AND kind='audio_take' AND logical_key=?
+                                        ORDER BY created_at DESC,rowid DESC""", (book_id, s['id'])).fetchall()
+                                for (payload,) in rows:
+                                    prior = json.loads(payload).get('audio', {})
+                                    if prior.get('fingerprint') != fingerprint:
+                                        continue
+                                    try:
+                                        duration = validate_audio(self.take_path(book_id, prior))
+                                        metadata = {**prior, 'duration': duration}
+                                        break
+                                    except (OSError, EOFError, ValueError):
+                                        continue
+                            if metadata is None and path.is_file():
+                                try:
+                                    duration = validate_audio(path)
+                                    metadata = {"fingerprint": fingerprint, "duration": duration, "provider": request.provider, "model": model,
+                                                "voice": character.get("system_voice") if request.provider == "system" else character.get("voice")}
+                                except (OSError, EOFError, ValueError):
+                                    pass
+                        if metadata is None:
+                            metadata = produce_take(s, character, scene, request.provider, model, key, path.parent, synthesizer=synthesize)
+                        else:
+                            metrics["cached"] = True
+                            reused += 1
+                        s["audio"] = metadata
+                        self.store.save_take(book_id, s["id"], metadata)
+                        metrics.update(audio_seconds=metadata["duration"], output_bytes=self.take_path(book_id, metadata).stat().st_size)
+                    self.store.update_job(job["id"], progress=i+1, message=f"Saved {i+1}/{len(selected)} passages · {reused} reused")
+
+            self.pool.submit(self.run, job, work, (key,))
+            return job
+
+    def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
+        with self.store.lock:
+            self.require_idle(book_id)
+            book = self.store.book(book_id)
+            if chapter_id is not None and chapter_id not in {c["id"] for c in book["chapters"]}:
+                raise HTTPException(400, "Choose a chapter in this book")
+            provider = provider or self.preferences["analysis_provider"]
+            if provider not in ANALYSIS_LABELS:
+                raise HTTPException(400, "Choose local, gemini, openai, or anthropic analysis")
+            key = self.api_keys.get(provider, "")
+            if provider != "local" and not key:
+                raise HTTPException(400, f"Add an {ANALYSIS_LABELS[provider]} API key in Settings first" if provider in {"openai", "anthropic"} else "Add a Gemini API key in Settings first")
+            model = self.preferences["analysis_models_by_provider"].get(provider)
+            scan_model = self.preferences["preprocess_models_by_provider"].get(provider)
+            job = self.store.create_job(book_id, "analyze")
+            job = self.store.update_job(job["id"], provider=provider, model=model, scan_model=scan_model, phase=phase, chapter_id=chapter_id)
+
+            def work():
+                def progress(done, total, message):
+                    self.check_cancel(job["id"])
+                    self.store.update_job(job["id"], progress=done, total=total, message=message)
+                def prepare(snapshot):
+                    self.check_cancel(job["id"])
+                    self.assign_local_voices(snapshot)
+                    for segment in snapshot["segments"]:
+                        if segment.get("audio") and not self.valid_audio(snapshot, segment):
+                            segment["audio"] = None
+                from contextlib import nullcontext
+                from .resources import ResourceLedger
+                timing = ResourceLedger(self.store).operation(book_id, 'local_analysis', run_id=job['id'],
+                    chapter_id=chapter_id, measure_cpu=True) if provider == 'local' else nullcontext()
+                with timing:
+                    updated = analyze_book(book, provider, key, model, progress, lambda: self.cancelled(job["id"]),
+                                           store=self.store, chapter_id=chapter_id, resume=resume, prepare=prepare,
+                                           phase=phase, scan_model=scan_model, limits=limits, run_id=job["id"])
+                self.check_cancel(job["id"])
+                self.assign_local_voices(updated)
+                updated["revision"] = book.get("revision", 0) + 1
+                for s in updated["segments"]:
+                    if s.get("audio") and not self.valid_audio(updated, s):
+                        s["audio"] = None
+                self.store.save_book(updated)
+            self.pool.submit(self.run, job, work, (key,))
+            return job
+
+
+def create_app(data_dir: Path | None = None):
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.runtime = Runtime(data_dir or Path(os.environ.get("SPINTAILS_DATA_DIR", ".spintails")))
+        yield
+        app.state.runtime.close()
+
+    app = FastAPI(title="Spin Tails", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+
+    @app.middleware("http")
+    async def local_only(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            if request.headers.get("sec-fetch-site") == "cross-site" or (origin and urlparse(origin).netloc != request.headers.get("host")):
+                return JSONResponse({"detail": "Cross-origin writes are not allowed"}, status_code=403)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.exception_handler(KeyError)
+    async def missing(request, exc):
+        return JSONResponse({"detail": str(exc).strip("'")}, status_code=404)
+
+    @app.exception_handler(ValueError)
+    async def invalid(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    def rt(request):
+        return request.app.state.runtime
+
+    def status(runtime):
+        voices = list_system_voices()
+        with runtime.store.lock:
+            return {"has_api_key": bool(runtime.api_key), **copy.deepcopy(runtime.preferences),
+                    "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg"))},
+                                  {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)}],
+                    "analysis_providers": [{"id": provider, "label": label,
+                                            "available": provider == "local" or bool(runtime.api_keys.get(provider)),
+                                            "has_api_key": bool(runtime.api_keys.get(provider)),
+                                            "model": runtime.preferences["analysis_models_by_provider"].get(provider),
+                                            "models": ANALYSIS_CATALOG.get(provider, [])}
+                                           for provider, label in ANALYSIS_LABELS.items()],
+                    "account_checks": {provider: runtime.account_check_view(provider) for provider in ANALYSIS_CATALOG},
+                    "model_catalogs": {provider: runtime.model_catalog.view(provider, runtime.api_keys[provider]) for provider in ANALYSIS_CATALOG},
+                    "system_voices": voices, "tts_models": TTS_MODELS, "analysis_models": ANALYSIS_MODELS,
+                    "data_directory": str(runtime.store.root), "timing_kind": "segment"}
+
+    @app.get("/api/status")
+    def get_status(request: Request):
+        return status(rt(request))
+
+    @app.post("/api/account-checks/{provider}")
+    def check_provider_account(provider: str, request: Request):
+        return rt(request).check_account(provider)
+
+    @app.post("/api/models/{provider}/refresh")
+    def refresh_provider_models(provider: str, request: Request):
+        runtime = rt(request)
+        if provider not in ANALYSIS_CATALOG:
+            raise HTTPException(400, "Choose gemini, openai, or anthropic")
+        with runtime.store.lock:
+            key = runtime.api_keys[provider]
+        try:
+            result = runtime.model_catalog.refresh(provider, key)
+        except Exception:
+            # Unexpected transport exceptions can contain credentials. Keep the
+            # documented choices usable without exposing the provider response.
+            result = {**runtime.model_catalog.view(provider, key), "state": "unavailable",
+                      "message": "The model list could not be refreshed. Try again later.", "cached": False}
+        with runtime.store.lock:
+            if key != runtime.api_keys[provider]:
+                raise HTTPException(409, "The key changed during the refresh. Refresh the current key's models again.")
+        return result
+
+    @app.post("/api/settings")
+    def settings(body: SettingsRequest, request: Request):
+        runtime = rt(request)
+        keys = dict(body.api_keys or {})
+        models = dict(body.analysis_models_by_provider or {})
+        preprocess_models = dict(body.preprocess_models_by_provider or {})
+        if body.api_key is not None:
+            if "gemini" in keys and keys["gemini"].strip() != body.api_key.strip():
+                raise HTTPException(400, "Conflicting Gemini API key fields")
+            keys["gemini"] = body.api_key
+        if body.analysis_model is not None:
+            if "gemini" in models and models["gemini"] != body.analysis_model:
+                raise HTTPException(400, "Conflicting Gemini analysis model fields")
+            models["gemini"] = body.analysis_model
+        if (keys.keys() | models.keys() | preprocess_models.keys()) - ANALYSIS_CATALOG.keys():
+            raise HTTPException(400, "Unknown cloud analysis provider")
+        if any(not valid_analysis_model(model) for model in [*models.values(), *preprocess_models.values()]):
+            raise HTTPException(400, "Use an analysis model ID with 1–200 letters, numbers, dots, underscores, colons, or hyphens")
+        if body.analysis_provider is not None and body.analysis_provider not in ANALYSIS_LABELS:
+            raise HTTPException(400, "Unknown analysis provider")
+        if body.tts_model is not None and body.tts_model not in TTS_MODELS:
+            raise HTTPException(400, "Unsupported tts_model")
+        with runtime.store.lock:
+            preferences = copy.deepcopy(runtime.preferences)
+            if body.tts_model is not None:
+                preferences["tts_model"] = body.tts_model
+            if body.analysis_provider is not None:
+                preferences["analysis_provider"] = body.analysis_provider
+            preferences["analysis_models_by_provider"].update(models)
+            preferences["preprocess_models_by_provider"].update(preprocess_models)
+            preferences["analysis_model"] = preferences["analysis_models_by_provider"]["gemini"]
+            runtime.store.save_settings(preferences)
+            runtime.preferences = preferences
+            runtime.api_keys.update({provider: key.strip() for provider, key in keys.items()})
+            for provider, check in list(runtime.account_checks.items()):
+                current = (runtime.api_keys[provider], preferences["analysis_models_by_provider"][provider])
+                if check["configuration"] != current:
+                    del runtime.account_checks[provider]
+        return status(runtime)
+
+    @app.get("/api/books")
+    def list_books(request: Request):
+        from .library import LibraryRepository
+        store = rt(request).store
+        return [LibraryRepository(store).summary(book['id']) for book in store.books()]
+
+    def persist_import(runtime, book, data=None, filename=None):
+        runtime.assign_local_voices(book)
+        if data is not None:
+            path = runtime.store.root / "originals" / book["id"]
+            path.mkdir(parents=True, exist_ok=True)
+            suffix = Path(filename or "book.txt").suffix.lower()
+            (path / f"source{suffix}").write_bytes(data)
+        runtime.store.save_book(book)
+        return runtime.present(book)
+
+    @app.post("/api/books")
+    async def import_book(request: Request, file: UploadFile = File(...)):
+        data = await file.read(30 * 1024 * 1024 + 1)
+        await file.close()
+        if len(data) > 30 * 1024 * 1024:
+            raise HTTPException(413, "Please use an EPUB or TXT smaller than 30 MB")
+        from .resources import ResourceLedger
+        runtime = rt(request)
+        import_id = str(uuid4())
+        with ResourceLedger(runtime.store).operation(import_id, 'import', measure_cpu=True) as metrics:
+            try:
+                book = parse_book(file.filename or "book.txt", data)
+                book['id'] = import_id
+            except (ValueError, zipfile.BadZipFile) as exc:
+                raise HTTPException(400, str(exc)) from exc
+            result = persist_import(runtime, book, data, file.filename)
+            metrics['output_bytes'] = len(data)
+            return result
+
+    @app.post("/api/demo")
+    def demo(request: Request):
+        return persist_import(rt(request), analyze_book(make_demo_book(), "local"))
+
+    @app.get("/api/books/{book_id}")
+    def get_book(book_id: str, request: Request):
+        return rt(request).present(rt(request).store.book(book_id))
+
+    @app.post("/api/books/{book_id}/repair-structure")
+    def repair_book_structure(book_id: str, request: Request):
+        from .staged_analysis import fingerprint
+        from .resources import ResourceLedger
+
+        runtime = rt(request)
+        with runtime.store.lock, ResourceLedger(runtime.store).operation(book_id, 'structure_repair', measure_cpu=True):
+            runtime.require_idle(book_id)
+            book = runtime.store.book(book_id)
+            suffix = Path(book.get("source_name", "")).suffix.lower()
+            if suffix not in {".epub", ".txt"}:
+                raise HTTPException(400, "This book has no saved original EPUB or text file to refresh.")
+            path = runtime.store.root / "originals" / book["id"] / f"source{suffix}"
+            if not path.resolve().is_relative_to((runtime.store.root / "originals").resolve()) or not path.is_file():
+                raise HTTPException(400, "The saved original is unavailable. Existing book work was preserved.")
+            data = path.read_bytes()
+            if len(data) > 30 * 1024 * 1024:
+                raise HTTPException(400, "The saved original is too large to refresh. Existing book work was preserved.")
+            try:
+                updated = repair_structure(book, book["source_name"], data)
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, "The saved original EPUB could not be read. Existing book work was preserved.") from exc
+            updated["revision"] = book.get("revision", 0) + 1
+            summary = runtime.store.analysis_status(book_id)
+            checkpoint = runtime.store.analysis_checkpoint(book_id, summary["fingerprint"]) if summary else None
+            if checkpoint:
+                transformed = transform_checkpoint_structure(checkpoint, updated)
+                new_fingerprint = fingerprint(updated, checkpoint["provider"], checkpoint.get("model"))
+                runtime.store.commit_analysis(updated, new_fingerprint, transformed)
+            else:
+                runtime.store.save_book(updated)
+            return runtime.present(updated)
+
+    @app.get("/api/series")
+    def list_series(request: Request):
+        return SeriesRepository(rt(request).store).list_series()
+
+    @app.post("/api/series")
+    def create_series(body: SeriesNameRequest, request: Request):
+        return SeriesRepository(rt(request).store).create_series(body.name)
+
+    def require_series_not_running(runtime, series_id):
+        if series_id and any(job['status'] in ACTIVE for job in runtime.store.jobs('series:' + series_id)):
+            raise HTTPException(409, 'Wait for this series run to finish or stop it first.')
+
+    def book_series(runtime, book_id):
+        repository = SeriesRepository(runtime.store)
+        with runtime.store.lock:
+            membership = repository.membership(book_id)
+            selected = next((item for item in repository.list_series() if membership and item["id"] == membership["series_id"]), None)
+            return {"membership": membership, "series": selected, "links": repository.links_for_book(book_id),
+                    "characters": repository.list_characters(membership["series_id"]) if membership else []}
+
+    @app.get("/api/books/{book_id}/series")
+    def get_book_series(book_id: str, request: Request):
+        return book_series(rt(request), book_id)
+
+    @app.put("/api/books/{book_id}/series")
+    def set_book_series(book_id: str, body: SeriesMembershipRequest, request: Request):
+        runtime = rt(request)
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            require_series_not_running(runtime, body.series_id)
+            SeriesRepository(runtime.store).set_membership(book_id, body.series_id, body.position)
+            return book_series(runtime, book_id)
+
+    @app.get("/api/series/{series_id}/characters")
+    def get_series_characters(series_id: str, request: Request):
+        return SeriesRepository(rt(request).store).list_characters(series_id)
+
+    @app.post("/api/series/{series_id}/characters")
+    def create_series_character(series_id: str, body: SeriesNameRequest, request: Request):
+        return SeriesRepository(rt(request).store).create_character(series_id, body.name)
+
+    @app.put("/api/books/{book_id}/series/characters/{character_id}")
+    def link_series_character(book_id: str, character_id: str, body: SeriesCharacterLinkRequest, request: Request):
+        runtime = rt(request)
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            repository = SeriesRepository(runtime.store)
+            if body.series_character_id is None:
+                return repository.unlink_character(book_id, character_id)
+            return repository.link_character(book_id, character_id, body.series_character_id)
+
+    @app.get("/api/books/{book_id}/series/context")
+    def get_book_series_context(book_id: str, request: Request):
+        return SeriesRepository(rt(request).store).context_for_book(book_id)
+
+    @app.get("/api/books/{book_id}/analysis")
+    def get_analysis(book_id: str, request: Request):
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        return runtime.store.analysis_status(book_id) or {
+            "status": "not_started", "stage": "discovery", "provider": None, "model": None,
+            "completed_units": 0, "total_units": 0, "current_chapter_id": None,
+            "chapters": [{"id": c["id"], "title": c["title"], "stage": "discovery", "status": "pending",
+                          "completed_units": 0, "total_units": 0, "discovery_complete": False, "directing_complete": False}
+                         for c in book["chapters"]]}
+
+    @app.get("/api/books/{book_id}/characters/{character_id}/references")
+    def get_character_references(book_id: str, character_id: str, request: Request):
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        if character_id not in {c["id"] for c in book["characters"]}:
+            raise HTTPException(404, "Character not found")
+        return runtime.store.character_references(book_id, character_id)
+
+    def edit(runtime, book_id, collection, item_id, fields):
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            book = runtime.store.book(book_id)
+            item = next((x for x in book[collection] if x["id"] == item_id), None)
+            if item is None:
+                raise HTTPException(404, "Item not found")
+            if "speaker_id" in fields and fields["speaker_id"] not in {c["id"] for c in book["characters"]}:
+                raise HTTPException(400, "Choose a character in this book's cast")
+            item.update(fields)
+            item["edited"] = True
+            if collection == "segments" and "speaker_id" in fields:
+                item["confidence"] = 1.0
+            for s in book["segments"]:
+                if s.get("audio") and not runtime.valid_audio(book, s):
+                    s["audio"] = None
+            for scene in book["scenes"]:
+                scene["character_ids"] = sorted({s["speaker_id"] for s in book["segments"] if s["scene_id"] == scene["id"]})
+            book["revision"] = book.get("revision", 0) + 1
+            runtime.store.save_book(book)
+            return runtime.present(book)
+
+    @app.patch("/api/books/{book_id}/characters/{character_id}")
+    def edit_character(book_id: str, character_id: str, body: CharacterEdit, request: Request):
+        return edit(rt(request), book_id, "characters", character_id, body.model_dump(exclude_none=True))
+
+    @app.post("/api/books/{book_id}/characters")
+    def add_character(book_id: str, body: CharacterEdit, request: Request):
+        runtime = rt(request)
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            book = runtime.store.book(book_id)
+            if not body.name:
+                raise HTTPException(400, "A character name is required")
+            character = {"id": f"character-{uuid4().hex[:12]}", "name": body.name, "aliases": [], "description": "", "evidence": [], "voice": "Kore", "system_voice": "", "direction": ""}
+            character.update(body.model_dump(exclude_none=True))
+            character["edited"] = True
+            book["characters"].append(character)
+            runtime.store.save_book(book)
+            return runtime.present(book)
+
+    @app.patch("/api/books/{book_id}/segments/{segment_id}")
+    def edit_segment(book_id: str, segment_id: str, body: SegmentEdit, request: Request):
+        return edit(rt(request), book_id, "segments", segment_id, body.model_dump(exclude_none=True))
+
+    @app.patch("/api/books/{book_id}/scenes/{scene_id}")
+    def edit_scene(book_id: str, scene_id: str, body: SceneEdit, request: Request):
+        return edit(rt(request), book_id, "scenes", scene_id, body.model_dump(exclude_none=True))
+
+    @app.post("/api/books/{book_id}/analyze")
+    def analyze(book_id: str, body: AnalysisRequest, request: Request):
+        return rt(request).analyze(book_id, body.provider, body.chapter_id, body.resume, body.phase, body.limits.model_dump())
+
+    @app.get("/api/books/{book_id}/preprocessing")
+    def preprocessing(book_id: str, request: Request):
+        from .preprocessing import coverage
+        from .progressive import discoveries, profile_status
+        from .processing import ProcessingStore
+        runtime = rt(request)
+        with runtime.store.lock:
+            book = runtime.store.book(book_id)
+            accepted = discoveries(book, runtime.store, ProcessingStore(runtime.store))
+            result = coverage(book, runtime.store)
+            result.update(profile_status(book, runtime.store, accepted, result))
+            return result
+
+    @app.post("/api/books/{book_id}/analysis-plan")
+    def analysis_plan(book_id: str, body: AnalysisRequest, request: Request):
+        from .progressive import plan
+        runtime = rt(request)
+        with runtime.store.lock:
+            book = runtime.store.book(book_id)
+            if body.chapter_id and body.chapter_id not in {c['id'] for c in book['chapters']}:
+                raise HTTPException(400, "Choose a chapter in this book")
+            provider = body.provider or runtime.preferences['analysis_provider']
+            if provider not in ANALYSIS_LABELS:
+                raise HTTPException(400, "Choose a valid analysis provider")
+            result = plan(book, runtime.store, provider, runtime.preferences['analysis_models_by_provider'].get(provider),
+                          runtime.preferences['preprocess_models_by_provider'].get(provider), body.phase, body.chapter_id, body.resume)
+            result['limits'] = body.limits.model_dump()
+            return result
+
+    @app.post("/api/books/{book_id}/render")
+    def render(book_id: str, body: RenderRequest, request: Request):
+        return rt(request).render(book_id, body)
+
+    @app.get("/api/jobs")
+    def jobs(request: Request, book_id: str | None = None):
+        return rt(request).store.jobs(book_id)
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel(job_id: str, request: Request):
+        runtime = rt(request)
+        with runtime.store.lock:
+            job = runtime.store.job(job_id)
+            if job["status"] not in ACTIVE:
+                return job
+            if job['kind'] == 'series':
+                for identifier in job.get('child_job_ids', []):
+                    child = runtime.store.job(identifier)
+                    if child['status'] == 'queued':
+                        runtime.store.update_job(identifier, status='cancelled', cancel_requested=True,
+                                                 message='Series cancelled before this book started.')
+                    elif child['status'] == 'running':
+                        runtime.store.update_job(identifier, cancel_requested=True, message='Stopping after current request.')
+            if job["status"] == "queued":
+                return runtime.store.update_job(job_id, cancel_requested=True, status="cancelled", message="Cancelled before generation started.")
+            return runtime.store.update_job(job_id, cancel_requested=True, message="Stopping after the current request. Finished takes will be kept.")
+
+    @app.get("/api/audio/{book_id}/{segment_id}")
+    def audio(book_id: str, segment_id: str, request: Request):
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        segment = next((s for s in book["segments"] if s["id"] == segment_id), None)
+        if not segment or not runtime.valid_audio(book, segment):
+            raise HTTPException(404, "This passage needs audio generation")
+        return FileResponse(runtime.take_path(book_id, segment["audio"]), media_type="audio/wav")
+
+    @app.get("/api/books/{book_id}/audio-assets/{asset_id}")
+    def archived_audio(book_id: str, asset_id: str, request: Request):
+        runtime = rt(request)
+        runtime.store.book(book_id)
+        try:
+            path = runtime.audio_path(book_id, asset_id)
+        except (ValueError, TypeError):
+            raise HTTPException(404, "Audio asset not found") from None
+        if not path.is_file():
+            raise HTTPException(404, "Audio asset not found")
+        return FileResponse(path, media_type="audio/wav")
+
+    @app.get("/api/books/{book_id}/export")
+    def export(book_id: str, request: Request):
+        from .resources import ResourceLedger
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        available = [s for s in book["segments"] if runtime.valid_audio(book, s)]
+        available_ids = {s["id"] for s in available}
+        if not available:
+            raise HTTPException(400, "Generate some audio before exporting")
+        temp = Path(tempfile.mkdtemp(prefix="spintails-export-"))
+        try:
+            export_path = temp / "audiobook.zip"
+            manifest = {"title": book["title"], "timing_kind": "segment", "complete": len(available) == len(book["segments"]), "chapters": [], "missing_segment_ids": [s["id"] for s in book["segments"] if s["id"] not in available_ids]}
+            with ResourceLedger(runtime.store).operation(book_id, 'audio_export', measure_cpu=True) as metrics:
+                with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("production.json", json.dumps(book, ensure_ascii=False, indent=2))
+                    archive.writestr("README.txt", "Spin Tails audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
+                    for s in available:
+                        archive.write(runtime.take_path(book_id, s["audio"]), f"takes/{s['id']}.wav")
+                    for index, chapter in enumerate(book["chapters"]):
+                        chapter_segments = [s for s in book["segments"] if s["chapter_id"] == chapter["id"]]
+                        prefix = f"chapters/{index+1:03d}"
+                        archive.writestr(f"{prefix}.txt", chapter["text"])
+                        complete = all(s["id"] in available_ids for s in chapter_segments)
+                        entry = {"id": chapter["id"], "title": chapter["title"], "complete": complete, "segments": []}
+                        if chapter_segments and complete:
+                            wav_path = temp / f"chapter-{index}.wav"
+                            clips = [(s, runtime.take_path(book_id, s["audio"])) for s in chapter_segments]
+                            entry["segments"] = assemble_audio(clips, wav_path)
+                            entry["audio"] = f"{prefix}.wav"
+                            archive.write(wav_path, entry["audio"])
+                        manifest["chapters"].append(entry)
+                    archive.writestr("timeline.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                metrics['output_bytes'] = export_path.stat().st_size
+            name = re.sub(r"[^\w .-]", "", book["title"])[:80] or "audiobook"
+            return FileResponse(export_path, media_type="application/zip", filename=f"{name}.zip", background=BackgroundTask(shutil.rmtree, temp))
+        except Exception:
+            shutil.rmtree(temp, ignore_errors=True)
+            raise
+
+    @app.get("/api/books/{book_id}/pipeline")
+    def pipeline_inspector(book_id: str, request: Request):
+        from .pipeline_view import pipeline
+        runtime = rt(request)
+        with runtime.store.lock:
+            return pipeline(runtime.store, runtime.store.book(book_id), runtime.valid_audio)
+
+    @app.get('/api/books/{book_id}/resources')
+    def resource_usage(book_id: str, request: Request, limit: int = 100, offset: int = 0, run_id: str | None = None):
+        from .resources import resource_summary
+        store = rt(request).store
+        store.book(book_id)
+        return resource_summary(store, book_id, limit=limit, offset=offset, run_id=run_id)
+
+    @app.get('/api/library')
+    def library(request: Request, include_archived: bool = False):
+        from .library import LibraryRepository
+        return LibraryRepository(rt(request).store).snapshot(include_archived=include_archived)
+
+    @app.patch('/api/books/{book_id}/metadata')
+    def metadata(book_id: str, body: BookMetadataRequest, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            return LibraryRepository(runtime.store).update_book(book_id, title=body.title, author=body.author)
+
+    @app.post('/api/books/{book_id}/archive')
+    def archive_book(book_id: str, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            return LibraryRepository(runtime.store).archive_book(book_id)
+
+    @app.post('/api/books/{book_id}/restore')
+    def restore_book(book_id: str, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            membership = SeriesRepository(runtime.store).membership(book_id, include_archived=True)
+            require_series_not_running(runtime, membership['series_id'] if membership else None)
+            return LibraryRepository(runtime.store).archive_book(book_id, archived=False)
+
+    @app.post('/api/books/{book_id}/refresh-metadata')
+    def refresh_book_metadata(book_id: str, request: Request):
+        from .library import LibraryRepository
+        from .resources import ResourceLedger
+        runtime = rt(request)
+        with runtime.store.lock, ResourceLedger(runtime.store).operation(book_id, 'metadata_refresh', measure_cpu=True):
+            runtime.require_idle(book_id)
+            return LibraryRepository(runtime.store).refresh_metadata(book_id)
+
+    @app.get('/api/books/{book_id}/cover')
+    def book_cover(book_id: str, request: Request):
+        from .library import LibraryRepository
+        data, media_type, etag = LibraryRepository(rt(request).store).cover(book_id)
+        return Response(data, media_type=media_type, headers={'ETag': etag, 'Cache-Control': 'private, max-age=300'})
+
+    def require_series_idle(runtime, series_id):
+        from .series_processing import series_view
+        series = series_view(runtime.store, series_id)
+        for book in series['books']:
+            runtime.require_idle(book['book_id'])
+        require_series_not_running(runtime, series_id)
+        return series
+
+    @app.patch('/api/series/{series_id}')
+    def rename_series(series_id: str, body: SeriesNameRequest, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            require_series_idle(runtime, series_id)
+            return LibraryRepository(runtime.store).rename_series(series_id, body.name)
+
+    @app.post('/api/series/{series_id}/archive')
+    def archive_series(series_id: str, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            require_series_idle(runtime, series_id)
+            return LibraryRepository(runtime.store).archive_series(series_id)
+
+    @app.post('/api/series/{series_id}/restore')
+    def restore_series(series_id: str, request: Request):
+        from .library import LibraryRepository
+        return LibraryRepository(rt(request).store).archive_series(series_id, archived=False)
+
+    @app.put('/api/series/{series_id}/volumes')
+    def add_series_volume(series_id: str, body: SeriesVolumeRequest, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            require_series_idle(runtime, series_id)
+            return LibraryRepository(runtime.store).add_volume(series_id, body.position, body.title, body.status)
+
+    @app.delete('/api/series/{series_id}/volumes/{position}')
+    def remove_series_volume(series_id: str, position: float, request: Request):
+        from .library import LibraryRepository
+        runtime = rt(request)
+        with runtime.store.lock:
+            require_series_idle(runtime, series_id)
+            return LibraryRepository(runtime.store).remove_volume(series_id, position)
+
+    @app.post('/api/series/{series_id}/plan')
+    def plan_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+        from .series_processing import plan
+        runtime = rt(request)
+        with runtime.store.lock:
+            return plan(runtime, series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
+                        limits=body.limits.model_dump())
+
+    @app.post('/api/series/{series_id}/process')
+    def process_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+        from .series_processing import start
+        return start(rt(request), series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
+                     limits=body.limits.model_dump(), expected_plan_fingerprint=body.expected_plan_fingerprint)
+
+    @app.get('/api/series/{series_id}/runs')
+    def series_runs(series_id: str, request: Request):
+        from .series_processing import series_view
+        store = rt(request).store
+        series_view(store, series_id)
+        parents = store.jobs('series:' + series_id, limit=20)
+        return {'runs': [{**parent, 'children': [store.job(identifier) for identifier in parent.get('child_job_ids', [])]} for parent in parents]}
+
+    @app.get('/api/series/{series_id}/map')
+    def series_map(series_id: str, request: Request):
+        from .series_processing import series_view
+        store = rt(request).store
+        with store.lock:
+            return {'series': series_view(store, series_id), 'characters': SeriesRepository(store).list_characters(series_id),
+                    'note': 'Only confirmed identity links join characters across supplied titles. Absent volumes contribute no inferred evidence.'}
+
+    @app.post('/api/books/{book_id}/listen')
+    def simple_listen(book_id: str, body: ListenRequest, request: Request):
+        from .listening import ListeningRepository
+        from .resources import ResourceLedger
+        runtime = rt(request)
+        store = runtime.store
+        repository = ListeningRepository(store)
+        with store.lock:
+            store.require_active(book_id)
+            model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
+            session = repository.session(book_id, body.provider, body.voice, model)
+            cached = repository.cached(book_id, session['id'], body.segment_id)
+            if cached:
+                with ResourceLedger(store).operation(book_id, 'simple_listen', unit_key=body.segment_id,
+                                                    provider=body.provider, model=session['model'], cached=True, kind='narration') as metrics:
+                    metrics['audio_seconds'] = cached['duration']
+                return {'session': session, 'audio': cached, 'cached': True}
+            runtime.require_idle(book_id)
+            key = runtime.api_key if body.provider == 'gemini' else None
+            if body.provider == 'gemini' and not key:
+                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+            if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
+                raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+            book = store.book(book_id)
+            segment = next(s for s in book['segments'] if s['id'] == body.segment_id)
+            job = store.create_job(book_id, 'listen', 1)
+            job = store.update_job(job['id'], session_id=session['id'], segment_id=body.segment_id,
+                                   provider=body.provider, model=session['model'], phase='simple_listen')
+            def work():
+                with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job['id'], unit_key=body.segment_id,
+                    chapter_id=segment['chapter_id'], provider=body.provider, model=session['model'], kind='narration') as metrics:
+                    audio = repository.render_passage(book_id, session['id'], body.segment_id, key, synthesizer=synthesize,
+                                                       check_cancel=lambda: runtime.check_cancel(job['id']))
+                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
+                store.update_job(job['id'], progress=1, audio=audio)
+            runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+            return {'session': session, 'job': job, 'cached': False}
+
+    @app.get('/api/books/{book_id}/listen/takes')
+    def listen_takes(book_id: str, session_id: str, request: Request):
+        from .listening import ListeningRepository
+        return ListeningRepository(rt(request).store).takes(book_id, session_id)
+
+    @app.get('/api/books/{book_id}/listen/audio/{asset_id}')
+    def listen_audio(book_id: str, asset_id: str, request: Request):
+        from .listening import ListeningRepository
+        return FileResponse(ListeningRepository(rt(request).store).asset_path(book_id, asset_id), media_type='audio/wav')
+
+    @app.get("/api/books/{book_id}/artifacts")
+    def artifacts(book_id: str, request: Request, kind: str | None = None, stage: str | None = None,
+                  current: bool | None = None, limit: int = 30, offset: int = 0):
+        from .pipeline_view import prepare
+        store = rt(request).store
+        store.book(book_id)
+        return prepare(store, book_id).list(book_id, kind=kind, stage=stage, current=current, limit=limit, offset=offset)
+
+    @app.get("/api/books/{book_id}/artifacts/{artifact_id}")
+    def artifact(book_id: str, artifact_id: str, request: Request):
+        from .pipeline_view import prepare
+        store = rt(request).store
+        store.book(book_id)
+        return prepare(store, book_id).get(book_id, artifact_id)
+
+    @app.get("/api/books/{book_id}/story-map")
+    def book_story_map(book_id: str, request: Request):
+        from .pipeline_view import story_map
+        store = rt(request).store
+        with store.lock:
+            return story_map(store, store.book(book_id))
+
+    @app.get("/api/books/{book_id}/search")
+    def passage_search(book_id: str, request: Request, q: str, scope: str = 'book', limit: int = 20):
+        from .search import search
+        from .resources import ResourceLedger
+        store = rt(request).store
+        store.book(book_id)
+        with ResourceLedger(store).operation(book_id, 'source_search', measure_cpu=True):
+            result = search(store, book_id, q, scope=scope, limit=limit)
+        return {**result, 'results': result['items'], 'query': q, 'scope': scope}
+
+    @app.get("/api/books/{book_id}/analysis-export")
+    def analysis_export(book_id: str, request: Request):
+        from .pipeline_view import write_analysis_export
+        from .resources import ResourceLedger
+        store = rt(request).store
+        book = store.book(book_id)
+        temp = Path(tempfile.mkdtemp(prefix='spintails-analysis-'))
+        try:
+            path = temp / 'analysis.zip'
+            with ResourceLedger(store).operation(book_id, 'analysis_export', measure_cpu=True) as metrics:
+                write_analysis_export(store, book_id, path)
+                metrics['output_bytes'] = path.stat().st_size
+            name = re.sub(r'[^\w .-]', '', book['title'])[:80] or 'book'
+            return FileResponse(path, media_type='application/zip', filename=f'{name}-analysis.zip',
+                                background=BackgroundTask(shutil.rmtree, temp))
+        except Exception:
+            shutil.rmtree(temp, ignore_errors=True)
+            raise
+
+    app.mount("/static", StaticFiles(directory=STATIC), name="assets")
+    app.mount("/", StaticFiles(directory=STATIC, html=True), name="studio")
+    return app
+
+
+app = create_app()

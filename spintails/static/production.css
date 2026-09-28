@@ -1,0 +1,44 @@
+.production-pipeline { padding: 22px; margin: 0 0 24px; border: 1px solid var(--line, #ddd6c9); border-radius: 12px; background: var(--surface, #fffdf8); }
+.production-pipeline-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.production-pipeline h3 { margin: 0 0 7px; font-size: 1.05rem; }
+.production-help { font-size: .8rem; line-height: 1.55; color: var(--muted, #736e65); margin: 8px 0 12px; }
+.production-pipeline label { display: block; font-size: .74rem; font-weight: 600; margin-bottom: 6px; color: var(--muted, #736e65); }
+.production-pipeline input:not([type="checkbox"]), .production-pipeline select { box-sizing: border-box; width: 100%; min-width: 0; }
+.production-coverage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.production-coverage-grid > div { padding: 14px 16px; border-radius: 8px; background: var(--canvas, #f5f1e8); }
+.production-coverage-grid strong, .production-coverage-grid .production-help, .production-metric-label { display: block; }
+.production-metric-label { font-size: .7rem; letter-spacing: .03em; margin-bottom: 7px; color: var(--muted, #736e65); }
+.production-coverage-grid strong { font-size: 1rem; }
+.production-coverage-grid .production-help { margin-bottom: 0; }
+.production-usage { padding: 10px 0; border-top: 1px solid var(--line, #ddd6c9); border-bottom: 1px solid var(--line, #ddd6c9); }
+.production-character-stats { margin: 14px 0 22px; }
+.production-pipeline summary { font-size: .81rem; font-weight: 600; cursor: pointer; line-height: 1.5; }
+.production-table-wrap { overflow-x: auto; margin-bottom: 12px; }
+.production-table-wrap table { border-collapse: collapse; width: 100%; font-size: .76rem; }
+.production-table-wrap th, .production-table-wrap td { text-align: left; padding: 10px 9px; border-bottom: 1px solid var(--line, #ddd6c9); vertical-align: top; }
+.production-table-wrap thead { color: var(--muted, #736e65); }
+.production-table-wrap small { display: block; font-weight: 400; font-size: .68rem; margin-top: 4px; color: var(--muted, #736e65); }
+.production-priority { display: inline-block; border-radius: 20px; padding: 3px 8px; text-transform: capitalize; background: #e9ebe2; font-size: .69rem; }
+.production-priority.deep { background: #f2e2ce; }
+.production-stage-field { margin-top: 18px; }
+.production-limit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0 12px; }
+.production-pipeline .production-token-only { display: flex; align-items: flex-start; gap: 8px; max-width: 100%; min-width: 0; font-size: .77rem; font-weight: 400; line-height: 1.5; }
+.production-token-only input[type="checkbox"] { box-sizing: border-box; width: 16px; min-width: 16px; max-width: 16px; height: 16px; padding: 0; margin: 3px 0 0; flex: 0 0 16px; }
+.production-token-limits { margin: 12px 0; }
+.production-token-limits summary { color: var(--muted, #736e65); font-weight: 400; }
+.production-plan-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding-top: 15px; margin-top: 18px; border-top: 1px solid var(--line, #ddd6c9); }
+.production-plan-grid span { display: block; font-size: .7rem; color: var(--muted, #736e65); line-height: 1.4; }
+.production-plan-grid strong { display: block; font-size: 1.13rem; margin-top: 6px; }
+.production-plan-note { padding: 10px 12px; border-left: 3px solid #b68d5b; background: #f5ebda; font-size: .78rem; line-height: 1.5; }
+.production-message { font-size: .8rem; line-height: 1.5; margin: 10px 0; }
+.production-message:empty { display: none; }
+.production-error { color: #a13b27; }
+.production-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding-top: 8px; }
+@media (max-width: 680px) {
+  .production-pipeline { padding: 16px; }
+  .production-pipeline-heading { flex-direction: column; gap: 5px; }
+  .production-coverage-grid, .production-limit-row { grid-template-columns: 1fr; gap: 10px; }
+  .production-plan-grid { grid-template-columns: 1fr 1fr; }
+  .production-actions { justify-content: stretch; }
+  .production-actions button { flex: 1; }
+}

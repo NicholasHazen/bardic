@@ -1,0 +1,190 @@
+# Development guide
+
+This guide describes the code in this checkout. Start with [README](../README.md) for the product workflow and [API](API.md) for route contracts. The [storage guide](ARTIFACTS-AND-STORAGE.md) explains retained data; the research documents describe design decisions and proposals, not necessarily implemented features.
+
+## Reproducible setup
+
+The application uses Python 3.11 or newer, FastAPI, SQLite, and browser JavaScript. Dependencies and version ranges are in [pyproject.toml](../pyproject.toml); resolved dependencies are in [uv.lock](../uv.lock). There is no `requirements.txt`, Node package installation, frontend bundler, or asset build step.
+
+For a new checkout:
+
+```sh
+git clone https://github.com/NicholasHazen/bardic.git
+cd bardic
+```
+
+From the repository root (use your existing checkout if you already have one):
+
+```sh
+uv sync --frozen --group dev
+uv run --frozen python -m spintails
+```
+
+Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
+
+Node.js is required to execute the JavaScript tests. The tests use Node built-ins; no npm dependencies are needed. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
+
+Device narration additionally requires macOS `say`, installed voices, and `ffmpeg`. Other operating systems can run the app and use Gemini narration, but do not gain a local speech backend automatically. Provider adapters and format validation live in [audio.py](../spintails/audio.py).
+
+## Configuration and data isolation
+
+[The entry point](../spintails/__main__.py) loads the `.env` beside `pyproject.toml` through [config.py](../spintails/config.py). It does not search parent directories. Existing process environment variables win, and dotenv interpolation is disabled. Make a new local configuration from [.env.example](../.env.example) only if you do not already have a `.env`.
+
+| Variable | Effect |
+| --- | --- |
+| `SPINTAILS_PORT` | Loopback HTTP port; default `8765`. |
+| `SPINTAILS_DATA_DIR` | Data directory; default `.spintails` relative to the process working directory. |
+| `GEMINI_API_KEY` | Gemini analysis and narration key. |
+| `GOOGLE_API_KEY` | Gemini fallback when `GEMINI_API_KEY` is empty or absent. |
+| `OPENAI_API_KEY` | OpenAI analysis key. |
+| `ANTHROPIC_API_KEY` | Anthropic analysis key. |
+
+Changing `.env` requires a server restart. Settings saves model preferences in SQLite but keeps changed API keys only in the current runtime's memory. Settings does not rewrite `.env`; restarting reloads configured environment/file keys. Never copy `.env`, user ebooks, generated audio, library databases, or provider response dumps into fixtures or documentation.
+
+Use an isolated data directory and port for manual development. The following starts with cloud keys explicitly blank, even if the checkout has a configured `.env`:
+
+```sh
+scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/spintails-dev.XXXXXX")
+SPINTAILS_DATA_DIR="$scratch_dir" SPINTAILS_PORT=8766 GEMINI_API_KEY='' GOOGLE_API_KEY='' OPENAI_API_KEY='' ANTHROPIC_API_KEY='' uv run --frozen python -m spintails
+```
+
+Keep that shell's printed/assigned `scratch_dir` available if you want to inspect the scratch library later. Stop the process before removing or backing up its data. The repository's normal `.spintails` directory is not a disposable test fixture.
+
+The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `spintails.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably.
+
+The ordinary launch command deliberately has no reload flag. For Python edits, stop and restart the isolated server. Browser files are served directly; refresh the browser after edits. Launching `uvicorn spintails.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
+
+Sources: [Runtime and create_app](../spintails/app.py), [Store and InstanceLock](../spintails/store.py).
+
+## Checks and test commands
+
+Run from the repository root after dependency setup:
+
+```sh
+uv run --frozen pytest -q
+node --test tests/model-picker-ui.test.cjs
+rg --files spintails/static -g '*.js' | xargs -n 1 node --check
+```
+
+The CommonJS model-picker suite is separate from pytest and must be run explicitly. Pytest invokes the other `*_ui_test.js` and player harnesses through Python wrappers when Node is installed.
+
+For an already installed environment with no dependency resolution:
+
+```sh
+.venv/bin/python -m pytest -q
+node --test tests/model-picker-ui.test.cjs
+```
+
+Useful targeted suites:
+
+| Change | Focused command after `uv run --frozen` |
+| --- | --- |
+| EPUB/text extraction and structure | `pytest -q tests/test_importer.py tests/test_series_structure_api.py` |
+| Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
+| Progressive analysis, evidence and budgets | `pytest -q tests/test_progressive.py tests/test_progressive_api.py tests/test_evidence.py tests/test_processing.py tests/test_preprocessing.py` |
+| Artifacts, graph, search and export | `pytest -q tests/test_artifacts.py tests/test_progressive_artifacts.py tests/test_pipeline_view_api.py tests/test_search.py` |
+| Series identities and execution | `pytest -q tests/test_series.py tests/test_series_lifecycle.py tests/test_series_processing.py tests/test_series_processing_ui.py` |
+| Simple listening and reader playback | `pytest -q tests/test_listening.py tests/test_listen_api.py tests/test_listen_ui.py tests/test_listen_player.py` |
+| Audio synthesis/cache/assembly | `pytest -q tests/test_audio.py tests/test_app.py` |
+| Library and resource use | `pytest -q tests/test_library_api.py tests/test_library_ui.py tests/test_resources.py tests/test_resources_ui.py` |
+
+The default suites use synthetic prose, temporary stores, fake provider responses, and generated test WAVs. They do not need cloud keys or paid generation. [test_progressive.py](../tests/test_progressive.py) contains a structured fake provider; [test_listen_api.py](../tests/test_listen_api.py) explicitly blocks external HTTP while exercising jobs and reported usage. [listen_player_test.js](../tests/listen_player_test.js) executes the main player's actual functions against fake media, rather than merely asserting strings in a second implementation.
+
+The optional macOS integration test invokes actual local speech and assembly:
+
+```sh
+SPINTAILS_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
+```
+
+Run that only on a machine with the speech services and ffmpeg available. It is a local audio test, not a Gemini test. A default test run should not inherit that opt-in unintentionally.
+
+For manual checks, import the built-in original sample with **Try a sample**, use a short synthetic TXT, or construct a temporary book through `parse_book`. Verify the relevant flow, errors, and keyboard/player behavior. Cloud account checks, cloud analysis, and Gemini narration are explicit provider actions and are not necessary to test the surrounding application.
+
+## Code map and execution boundaries
+
+| Responsibility | Main source |
+| --- | --- |
+| HTTP DTOs, runtime, job scheduling, UI presentation, downloads | [app.py](../spintails/app.py) |
+| Exact source extraction, passage IDs, EPUB safety, cover extraction | [importer.py](../spintails/importer.py), [structure.py](../spintails/structure.py) |
+| Mutable reader projection, selected enhanced takes, restart recovery | [store.py](../spintails/store.py) |
+| Immutable versions, dependency edges, current artifact heads | [artifacts.py](../spintails/artifacts.py) |
+| Local census and semantic coverage | [preprocessing.py](../spintails/preprocessing.py) |
+| Discovery/profile/direction recipes and staged execution | [progressive.py](../spintails/progressive.py) |
+| Structured provider adapters and evidence validation | [analysis.py](../spintails/analysis.py) |
+| Local/legacy checkpoint execution | [staged_analysis.py](../spintails/staged_analysis.py) |
+| Accepted unit cache, request reservations and usage | [processing.py](../spintails/processing.py) |
+| Model inventory, roles, dated prices, explicit access checks | [model_catalog.py](../spintails/model_catalog.py), [account_checks.py](../spintails/account_checks.py) |
+| Confirmed series identities and earlier-volume observations | [series.py](../spintails/series.py) |
+| Series planning and parent/child execution | [series_processing.py](../spintails/series_processing.py) |
+| Reversible library archive, metadata, covers, disk reporting | [library.py](../spintails/library.py) |
+| Narration recipes, provider I/O, normalized audio | [audio.py](../spintails/audio.py), [take_archive.py](../spintails/take_archive.py) |
+| Separate single-voice listening archive | [listening.py](../spintails/listening.py) |
+| Pipeline view, typed story graph, portable analysis bundle | [pipeline_view.py](../spintails/pipeline_view.py) |
+| Local lexical passage index | [search.py](../spintails/search.py) |
+| Per-operation resource measurements | [resources.py](../spintails/resources.py) |
+
+One runtime worker schedules normal analysis, enhanced narration, and simple-listen jobs. Series execution is coordinated separately and allows at most two independent discovery workers; later interpretation follows reading order. Busy-book and active-series guards protect edits and membership changes. Cancellation is cooperative at request/unit boundaries; it is not a guarantee that a remote request or speech subprocess stops immediately.
+
+SQLite uses WAL and foreign keys. Store operations share an `RLock`; connections and transactions are short-lived. Do not hold a database write transaction over a provider call. Accepted units and completed takes are durable before subsequent work proceeds. A server restart marks unfinished work interrupted rather than assuming it completed.
+
+## Frontend namespace contracts
+
+[app.js](../spintails/static/app.js) owns the selected book/chapter/passage, shared `Audio` element, reader highlighting, settings, and main job polling. [index.html](../spintails/static/index.html) loads the independent scripts before the application module. Each component owns only its mount container and scoped CSS.
+
+| Namespace and source | Public interface |
+| --- | --- |
+| `SpinTailsSeries` — [series.js](../spintails/static/series.js) | `render(container, book)` loads membership, explicit identity links, and prior context. |
+| `SpinTailsProduction` — [production.js](../spintails/static/production.js) | `render(container, book, {provider, chapterId, busy, scanModel, model, onStart, onRefresh})`; `onStart(payload)` dispatches a reviewed per-book plan. |
+| `SpinTailsPipeline` — [pipeline.js](../spintails/static/pipeline.js) | `render(container, book, {busy})`; reads stage status, history, graph, search and exports. It does not dispatch model work. |
+| `SpinTailsResources` — [resources.js](../spintails/static/resources.js) | `render(container, book, {busy})`; paged run/stage/operation measurements. |
+| `SpinTailsLibrary` — [library.js](../spintails/static/library.js) | `render(container, {busy, onChange, onSelectBook, onSelectSeries, books?, series?, storage?})`; `refresh(container)` explicitly reloads the snapshot. Selection callbacks receive IDs. |
+| `SpinTailsSeriesProcessing` — [series-processing.js](../spintails/static/series-processing.js) | `render(container, series, {status, onChange})`; `series` needs an ID, while name/books improve display. A new accepted fingerprinted preview is required for every dispatch. |
+| `SpinTailsListen` — [listen.js](../spintails/static/listen.js) | `render(container, book, {status, chapterId, segmentId, busy, onChange, onPlay, onStop, onJob})`, plus playback methods below. |
+
+Listening exposes `isSimple(book)`/`enabled(book)`, `resolve(book, segment)`/`take(book, segment)`, `ensure(book, segment)`, `stop(book)`, and `allowsAdvance(book, current, next)`. The resolver returns the selected mode's valid audio. `ensure` may create one simple passage job and poll it; use it only for an explicit Play or continuation of that playback. `stop` invalidates pending playback and requests cancellation. A stale `ensure` resolves to `null`. The main player must also check its selection/play generation after awaiting it. Enhanced studio previews use the enhanced take and end after that passage; they must not trigger simple continuation.
+
+Preserve component inputs during unrelated parent renders. Use generation/selection tokens to reject late successes **and** errors after book, series, provider, or model changes. Keep pending-control state separate from audio playback state. The fake-DOM tests exercise these contracts, but do not replace a browser layout check. Render imported prose, provider text, errors, and artifact JSON as escaped text or `textContent`.
+
+## Extending the system
+
+### Add or change an analysis provider
+
+1. Implement the structured request adapter in [analysis.py](../spintails/analysis.py), preserving its `(client, model, key, prompt, schema, cancelled)` contract and semantic validators. The existing adapters return parsed objects, not replacement book prose.
+2. Register labels/defaults/roles/inventory in [model_catalog.py](../spintails/model_catalog.py) and the runtime/settings interfaces in [app.py](../spintails/app.py). Review both discovery and detailed-analysis model roles. An inventory listing is not proof of structured-output support or account credit.
+3. Route every analysis HTTP attempt through the request-budget context. Reserve before sending; retain uncertain charges; record usage only when reported. Add an explicit account-check adapter only if that operation is supported.
+4. Update the progressive request dispatch and UI provider choices. Keep provider selection explicit; do not silently send text to another provider after failure.
+5. Add fake success, malformed response, unavailable model, authentication, rate-limit, retry, cancellation, and redaction tests. Document any new environment variable and cost assumptions. Unknown prices must remain unknown.
+
+A custom model ID can already be selected without adding a new provider. A local LLM provider, embeddings, and external batch execution are not implemented simply by entering such an ID.
+
+### Add an analysis stage or change a recipe
+
+Define the stage's source inputs, output schema, validator, and stable unit key in [progressive.py](../spintails/progressive.py). Include inputs that actually affect the result in the recipe identity; avoid invalidating unrelated work. Save the input recipe/dependencies and accepted output through [ProcessingStore](../spintails/processing.py). Keep rejected output distinguishable from accepted knowledge. Emit events tied to the precise attempt, so HTTP success does not imply validation success.
+
+Update preview estimates, current/stale detection, pipeline dependency/status display, and export retention. Test a cold run, a cache hit, a changed dependency, failure after a durable unit, cancellation, resume, and a manually reviewed item. Use [test_progressive_artifacts.py](../tests/test_progressive_artifacts.py) and [test_pipeline_view_api.py](../tests/test_pipeline_view_api.py) for examples. The stage cards describe real saved state; there is no generic DAG executor to register a stage with automatically.
+
+These instructions apply to semantic analysis stages. Local preprocessing and narration have their own execution modules; extend those modules and their resource/artifact hooks instead of routing every operation through `progressive.py`.
+
+### Add a narration backend or change audio behavior
+
+Keep transcript and performance metadata separate. Update the recipe and `render_fingerprint` whenever audible inputs change. A recipe hash identifies instructions; the content hash identifies a particular WAV asset. Use `produce_take` to publish validated immutable bytes and only then select the take. Do not overwrite an old asset on retake. Test model/voice/direction invalidation, restoring an earlier recipe, invalid audio, interrupted generation, and exact assembly timing.
+
+Simple listening must remain independent of character casting, scene direction, selected enhanced takes, and enhanced artifacts. Its own table and audio directory are intentional. A new simple-listening feature needs corresponding repository, API, and player-race tests; changing only the main `playable` helper can accidentally affect studio previews or audiobook export.
+
+### Add measurements or a new UI component
+
+Use one non-nested `ResourceLedger.operation` for a local/narration leaf operation. Analysis HTTP attempts already have a ledger; do not wrap them again and double-count. `publish_metrics` records provider-reported fields, not guessed values. CPU opt-in measures the current Python thread, excluding subprocesses and remote compute. Never put source text, prompts, keys, or exception dumps in metrics.
+
+For UI work, add a standalone namespace, a stable mount, scoped styles, and deterministic fake-fetch/media tests. Keep source-display safety and stale-response guards. Prefer tests of user-visible behavior and request boundaries over assertions that duplicate the implementation.
+
+## Invariants and known hazards
+
+- Source coordinates are chapter-local Python Unicode character offsets with an exclusive end. JavaScript string offsets are UTF-16 and differ around some characters. Preserve stable IDs and exact source text; do not directly apply Python offsets to JS strings. The reader uses presented gaps/text matching, and graph references verify their anchors.
+- A mention, an attributed speaker, and physical presence are different claims. Whole-book discovery completion does not prove every character profile is current or accurate. Local heuristic drafts do not count as semantic discovery.
+- Human-reviewed profiles/passages are authoritative. Series identities join only through explicit links and confirmed order; names alone do not merge characters, and later volumes must not leak into earlier-book context.
+- `ArtifactRepository` versions and dependency edges are immutable. Change current selections through supported APIs; do not update historical rows to make tests pass. Legacy records must disclose absent provenance.
+- Read views can populate free local caches/indexes, retain legacy artifact snapshots, or measure operations. “No model work” does not mean “zero local writes.” Test source/projection preservation rather than assuming every GET leaves all database tables unchanged.
+- Analysis limits cover analysis attempts. They are not global account balances and do not impose a separate Gemini narration spending cap. Simple listening requests one passage at a time; a submitted cloud passage can still finish after Stop.
+- Archive is reversible removal from normal views, not file deletion or storage reclamation. Portable analysis ZIPs contain source/provenance and transitive earlier-book inputs; treat them as user content. They include saved resource operations and simple-listening session/take metadata when those tables exist, but exclude all audio binaries. Audiobook ZIPs contain enhanced production audio; separate simple-listening WAVs are not bundled by either export.
+- The server is a local single-user app, with loopback binding, trusted-host checks, and same-origin write checks. It has no user authentication or hosted/multi-user deployment model. Keep the default local execution boundary.
+- Word alignment, automatic transcript verification, voice cloning, and trained local neural narration are not implemented. Current highlighting follows complete passage audio boundaries.

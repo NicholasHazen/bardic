@@ -1,0 +1,194 @@
+# Roadmap and open decisions
+
+Implementation inventory reviewed **September 27, 2026**. This document separates working features from unfinished capabilities and research options. Priorities describe a proposed order of work, not release dates or fixed commitments. The implementation and [validation record](VALIDATION.md) take precedence over an older planning document.
+
+Start with the [documentation index](README.md), [architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md), and [decision record](DECISIONS.md) for the implemented design. Contributor workflows are in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+The project goal remains a local application that turns supplied fiction ebooks into reusable analysis, directed character performances, and a synchronized reading experience. Immediate single-narrator listening is also supported. Neither workflow requires making a complete enhanced audiobook first.
+
+## Status vocabulary
+
+| Status | Meaning |
+| --- | --- |
+| Implemented | A code path and user/API workflow exist. This does not establish live access to every provider or quality on every book. |
+| Partial | Useful foundations exist, but the broader capability has a specific limitation below. |
+| Planned | Discussed follow-up that has not been implemented. It still needs a scoped design and acceptance tests. |
+| Optional research | An alternative to evaluate when evidence justifies it; no selected dependency or commitment. |
+| Engineering follow-up | A proposed reliability or maintenance improvement derived from current limits, rather than an additional user requirement. |
+
+## What is already available
+
+| Capability | Status and current boundary | Evidence / implementation |
+| --- | --- | --- |
+| Local application | Implemented: Python/FastAPI, browser UI, SQLite and local files. No hosted account or frontend build system. Desktop packaging is not implemented. | [Operations](OPERATIONS.md), [app](../spintails/app.py) |
+| EPUB/TXT library | Implemented: retained originals, canonical prose, source spans, metadata, local cover extraction, reversible removal and restore. No DRM removal, permanent purge, or original EPUB layout renderer. | [Library behavior](LIBRARY-LISTENING-RESOURCES.md), [importer](../spintails/importer.py) |
+| Real chapter labels | Implemented: EPUB navigation/NCX, headings, semantic section kinds, logical anchors and source-preserving structure repair. Complex books can still require review. | [Structure](STRUCTURE.md) |
+| Multiple analysis providers | Implemented: Gemini, OpenAI and Anthropic adapters; separate discovery/detailed model preferences, dropdowns, custom IDs and explicit model inventory refresh. Inventory visibility does not prove inference compatibility or credit. | [Providers](ANALYSIS-PROVIDERS.md), [catalog](../spintails/model_catalog.py) |
+| Account check | Implemented: explicit small text inference check with safe error categories. No universal credit-balance API or automatic account polling. | [Account checks](ACCOUNT-CHECKS.md) |
+| Non-LLM preprocessing | Implemented: structure, speech tags, exact-name indexing, counts, chapter spread, uncertainty and heuristic analysis priority. These are not a learned coreference or physical-presence model. | [Preprocessing](../spintails/preprocessing.py) |
+| Cheap initial discovery | Implemented: separate economical model per provider, bounded chapter excerpts, whole-book coverage and durable accepted units. A local language-model adapter is still planned. | [Progressive analysis](PROGRESSIVE-ANALYSIS-PLAN.md), [pipeline](../spintails/progressive.py) |
+| Character evidence and profiles | Implemented: exact source references, aliases, bounded evidence sampling, effort guided by frequency/dialogue/spread/uncertainty, provisional/current/stale profile states and human edit preservation. Profile accuracy still requires review. | [Chapter analysis](CHAPTER-ANALYSIS.md), [artifacts](ARTIFACTS-AND-STORAGE.md) |
+| Scenes and performance directions | Implemented: scene structure, attributed speakers, tone, subtext/summary, passage directions and cues. Unknown speakers remain explicit. Full world-state and physical scene presence are not inferred. | [Analysis](../spintails/analysis.py), [story graph](../spintails/pipeline_view.py) |
+| Cross-book memory | Partial: explicit series membership, reading order, confirmed identity links, source-validated earlier-volume observations and profile invalidation. There is no automatically authoritative series-wide character biography or contradiction-resolution editor. | [Series memory](ARTIFACTS-AND-STORAGE.md#series-knowledge-is-additive), [series](../spintails/series.py) |
+| Incomplete collections | Implemented: missing/planned placeholders and supplied-volume scheduling. Missing books contribute no invented knowledge. Archived books are excluded from current earlier-book context. | [Series/library behavior](LIBRARY-LISTENING-RESOURCES.md) |
+| Series processing | Implemented: up to two concurrent discovery workers, later phases in reading order, child runs, bounded allowances, stop-on-failure scheduling and reusable results. No unattended retry daemon. | [Coordinator](../spintails/series_processing.py) |
+| Directed narration | Implemented: Gemini and installed macOS voices, one speaker passage per take, editable voice/direction, forced alternate takes and content-addressed WAV retention. Device voices ignore acting directions; cloud timbre and delivery still need auditioning. | [Voice research](RESEARCH-VOICE.md), [audio](../spintails/audio.py), [take archive](../spintails/take_archive.py) |
+| Simple listening | Implemented: one narrator, one requested passage at a time, separate cache, passage highlighting, pause/stop protection and chapter-boundary stopping. No whole-book preparation queue or simple-mode audio ZIP. | [Listening](LIBRARY-LISTENING-RESOURCES.md#independent-simple-listening), [listening module](../spintails/listening.py) |
+| Synchronization and audio QA | Partial: sample-based passage boundaries and checks for corrupt, truncated, empty or all-zero audio. No word alignment, independent speech verification, pronunciation scoring or performance-quality guarantee. | [Synchronization research](RESEARCH-PIPELINE.md#passage-synchronization-now-word-alignment-later) |
+| Durable analysis and replay | Implemented: bounded transport/evidence retries, per-attempt reservations, accepted-unit caches, checkpoint recovery, rejected-response inspection and immutable artifact lineage. Lost pre-history outputs cannot be reconstructed. | [Storage](ARTIFACTS-AND-STORAGE.md), [processing](../spintails/processing.py) |
+| Search and graphs | Partial: literal lexical FTS5 search, earlier-volume filtering before result limits, typed story graph and artifact dependency graph. No vector index, learned semantic retrieval, interactive world timeline or separate graph database. | [Search](../spintails/search.py), [storage decision](ARTIFACTS-AND-STORAGE.md#storage-decision) |
+| Resource visibility | Implemented: per-stage/run attempts, retries, cache reuse, reported tokens, measured elapsed/local-thread CPU, audio/file volume, estimates and explicit unknowns. No account-wide invoice reconciliation or narration spending guard. | [Resource ledger](LIBRARY-LISTENING-RESOURCES.md#resource-ledger), [resources](../spintails/resources.py) |
+| Portable output | Partial: analysis JSON/JSONL ZIP with lineage and source, plus enhanced-audio ZIP with takes, complete chapter WAVs and timeline. No M4B, EPUB Media Overlays, analysis-bundle import or full take-comparison editor. | [Export contents](ARTIFACTS-AND-STORAGE.md#visibility-and-portability), [operations](OPERATIONS.md#exports-are-not-a-complete-backup) |
+
+## Priority 1: trustworthy listening and controlled generation
+
+### R1. Word alignment and independent speech verification — planned
+
+This is the largest gap between highlighting the passage assigned to a clip and verifying the words actually spoken. Treat transcription comparison and forced alignment as separate stages: a forced aligner can assign times to supplied text without proving that every word was spoken correctly.
+
+Acceptance criteria:
+
+- Evaluate candidate aligners on short narration, dialogue, names, numerals, Unicode punctuation and intentionally omitted/repeated/substituted words. Record platform, models, elapsed time and resource use.
+- Align each immutable source passage against a specific audio **asset ID**, retaining engine/model/version and source hash. Replacing a take invalidates its alignment without deleting the old result.
+- Keep timestamps ordered and bounded by measured audio duration. Unaligned words remain explicitly unaligned; do not interpolate convincing-looking timestamps and call them measured.
+- Preserve canonical reading text and offsets. A verification transcript is another artifact, never replacement book prose.
+- Show reviewable speech discrepancies; require a bounded, explicit rerender decision. Failed verification must not trigger an unlimited paid retry loop.
+- Reader and exports use word timing only when valid; otherwise retain passage highlighting.
+
+[stable-ts](https://github.com/jianfch/stable-ts), [WhisperX](https://github.com/m-bain/whisperX), [Montreal Forced Aligner](https://montreal-forced-aligner.readthedocs.io/en/latest/installation.html), and a cloud alignment option are **research candidates**, not installed dependencies. See the dated [pipeline](RESEARCH-PIPELINE.md) and [voice](RESEARCH-VOICE.md) research before selecting one.
+
+### R2. Performance quality, auditions and voice consistency — partial / planned
+
+Character voices and performance notes work now. The remaining goal is a production workflow that helps the user judge consistency and acting quality across long fiction.
+
+Acceptance criteria:
+
+- Audition the same short scene with selected models/voices under an explicit small allowance; retain exact recipes, costs and alternate takes for comparison.
+- Offer a take-comparison/selection UI without replacing original files or losing earlier performance notes.
+- Evaluate longer contextual takes against current short passages for seams, pacing, fidelity and retry cost. Keep passage-to-audio mapping explicit if chunk size changes.
+- If voice design is added, retain the provider ID, creation recipe, audition, creation/expiry metadata and user selection. Handle an expired/unavailable voice without silently substituting one.
+- If pronunciation overrides or non-speech events are added, preserve the original book text and record a separate performance representation with a reversible source mapping. Do not silently add inline tags or spoken words to the source.
+
+Additional TTS adapters, including the previously researched ElevenLabs option, remain optional. OpenAI/Anthropic support for analysis does not imply an implemented narration adapter. Automatic voice cloning is not part of the current commitment.
+
+### R3. Narration allowances and simple-mode preparation — engineering follow-up / planned
+
+Current analysis guards do **not** cap enhanced narration, simple listening or account checks. Simple listening prevents uncontrolled continuation by requesting one passage at a time and stopping at chapter boundaries; it is not a monetary ceiling.
+
+Acceptance criteria:
+
+- Add an explicit narration estimate/allowance covering every attempted take, including force regeneration, failed or uncertain requests, and future preparation queues.
+- Decide whether allowances are per action, book, series or account before presenting a “total budget.” Explain which historical spend is included and how unknown prices stop guarded work.
+- Retain successful takes when a limit is reached. Cache reuse must add no new provider charge, and request uncertainty must not become zero cost.
+- For optional chapter/book preparation, show the exact scope and provider, obtain an explicit start action, use bounded concurrency, persist progress, and make cancellation stop future scheduling.
+- Define whether simple-mode audio has a separate export or joins a generalized export selector. It must remain independent of enhanced cast assignments and takes.
+
+### R4. Representative long-book validation — engineering follow-up
+
+Past short auditions and one-chapter analysis are useful evidence, not a whole-book quality claim. Build a repeatable evaluation set from original/public-domain or otherwise permitted test material; do not commit private ebooks or excerpts.
+
+Acceptance criteria: measure source coverage, alias errors, speaker ambiguity, evidence repairs, profile staleness, narration fidelity, voice consistency, latency and cost; test interruption and restart at realistic scale; distinguish automated checks from human listening judgments. Live paid tests remain explicitly selected, small and bounded until the user chooses a larger run.
+
+## Priority 2: stronger interpretation without brute-force processing
+
+### R5. Local model adapter — planned; runtime decision open
+
+The requested local language model has not been identified. The existing **Local draft** option is deterministic heuristic processing, not an LLM.
+
+Acceptance criteria:
+
+- Select the user's actual runtime, endpoint, model and hardware constraints; do not assume or install a runtime just because another adapter supports a similar API.
+- Implement the same structured-result, evidence-validation, cancellation, recipe-versioning and cache contracts as cloud providers.
+- Expose local model discovery/configuration separately from cloud credentials, with an explicit structured-output capability check.
+- Benchmark cheap discovery first against the same source/evidence fixtures. Record inference time and supported local resource metrics; zero provider charge does not mean zero compute.
+- Preserve unknown attribution rather than accepting malformed or unsupported evidence to make a smaller model pass.
+
+### R6. More effective low-cost preprocessing — partial / optional research
+
+Separate cheap discovery models, deterministic structure, names/speech tags, priority metrics and accepted-unit reuse are already implemented. The next question is whether additional NLP materially improves recall or reduces expensive work.
+
+Acceptance criteria: compare an optional NER/coreference or richer quotation parser with the current baseline; include rare speakers, ambiguous aliases, pronouns and misleading capitalized phrases; preserve exact source anchors; measure total model requests and repair rates, not only speed of the first pass. A new dependency should show a useful gain before becoming required. Heuristic “importance” remains an allocation signal, not a claim about literary importance.
+
+### R7. Retrieval and provider execution optimizations — optional research
+
+Keep SQLite authoritative. FTS5 and bounded evidence sampling are available today. A vector index, neural retriever or separate database is not a prerequisite for processing this library.
+
+Acceptance criteria for semantic retrieval:
+
+- Establish a lexical baseline and a measured failure it cannot handle. Evaluate relevance, source fidelity, cost and latency on that workload.
+- Filter by allowed books, confirmed identities, reading order and current source versions **before** top-k selection. Preserve exact spans and distinguish similarity from confidence.
+- Treat embeddings as rebuildable derived data. Record model/version/dimensions/text hash; model changes require an explicit compatible migration or re-embedding.
+- If choosing `sqlite-vec`, assess its pre-v1 compatibility risk and pin/test the selected version. Use an additional embedded store only when its benefits justify lifecycle and backup complexity.
+
+Acceptance criteria for provider caching/batch execution:
+
+- Benchmark provider prompt caching without confusing it with local reuse of already validated output; retain cache read/write usage and pricing assumptions.
+- Add batch submission IDs, durable reconciliation, result validation and bounded failed-unit retries. Reopening the app must not submit the same batch again.
+- Account for accepted/submitted work and cancellation races before presenting a budget guarantee. Batch jobs may finish or incur charges after a cancellation request.
+- Keep synchronous execution as a selectable path and avoid automatic cross-provider fallback.
+
+See [storage research](ARTIFACTS-AND-STORAGE.md#primary-references) and the dated [caching/batch research](PROGRESSIVE-ANALYSIS-PLAN.md). None of these options is currently installed as a new execution engine.
+
+### R8. Series profiles, contradictions and richer story maps — partial / planned
+
+Earlier linked observations already improve book-local profiles, with missing/later volumes excluded. A complete series biography, temporal character evolution and a full scene-presence map remain broader work.
+
+Acceptance criteria:
+
+- Provide an explicit review flow for identity-link suggestions; namesakes never merge automatically. Preserve the evidence and the user's link decision as versioned inputs.
+- Show how much of the supplied collection has been scanned and which volumes are missing. “All supplied books processed” must not mean “complete series knowledge.”
+- Represent enduring traits, temporary scene emotions and traits that change over time separately. Retain contradictory evidence and its reading-order scope rather than overwriting it with one confident sentence.
+- Let readers inspect which observations informed a profile and why it became stale after a source/link/earlier-book change.
+- Extend the current chapter/scene/passage and dependency graphs only with evidence-backed types. Mention, attributed speech and physical presence remain distinct; locations, relationships and timeline events need their own uncertainty and provenance.
+- Export these additional artifacts without requiring narration or a separate graph service.
+
+## Priority 3: portability, library lifecycle and maintainability
+
+### R9. Exports, importable bundles and backup tooling — partial / planned
+
+Acceptance criteria:
+
+- Add M4B chapters/metadata and EPUB Media Overlays against measured passage or validated word timing. Round-trip source IDs, chapter order and audio duration; label partial output explicitly.
+- Design an analysis-bundle import with schema/version checks, content hashes, dependency closure, identity-collision handling and previewable changes. Imported history must not invent missing provenance or execute instructions from payloads.
+- Provide a consistent full-library backup/restore workflow that includes SQLite, originals and both audio stores. An analysis ZIP alone is not a complete media backup.
+- Preserve the independent simple-listening mode in exports and restores; its audio must never masquerade as an enhanced character performance.
+
+[EPUB 3.3](https://www.w3.org/TR/epub-33/) and [SQLite's backup API](https://sqlite.org/backup.html) are the existing reference points. Exact portable-reader/device support remains to be tested.
+
+### R10. Permanent purge and storage management — planned
+
+Removal is currently reversible and reclaims no storage. Automatic cache pruning and permanent deletion are not implemented.
+
+Acceptance criteria: preview exact affected books/artifacts/assets and estimated reclaimed bytes; require explicit destructive intent; preserve assets/dependencies still used elsewhere; account for earlier-book evidence retained by later profiles; maintain transaction/recovery behavior; protect current and alternate takes according to a documented retention rule. The append-only artifact model needs a designed retention/migration mechanism, not ad hoc SQL deletion. Keep archival restoration separate from destructive purge.
+
+### R11. Packaging, platform support and operational hardening — engineering follow-up
+
+The development application runs locally from source. macOS device narration has a host-specific implementation; cloud-only paths and mobile layouts do not establish a tested release matrix.
+
+Acceptance criteria: choose supported operating systems and installation/update/uninstall behavior; verify packaged startup, data-directory selection, `.env`/credential behavior, audio dependencies, shutdown and migrations on each target; retain a recoverable backup before data changes; test long libraries and concurrent series runs with bounded UI payloads. A desktop shell, bundled Python runtime and browser-only distribution remain choices, not selected dependencies.
+
+### R12. Accounting and quality-of-service improvements — engineering follow-up
+
+Current resource tracking is useful local evidence, not provider billing. Future work may include narration guards from R3, versioned price maintenance, invoice reconciliation where a provider exposes it, and more complete local resource measurements.
+
+Acceptance criteria: preserve known/unknown distinctions; avoid counting requests in both analysis attempts and generic operations; document whether new CPU/memory measurements cover a thread, process, subprocess or GPU; never infer a credit balance from a quota error. Optional organization administration APIs require their own selected scope and credentials. Do not expand a normal API key check into an unrequested account-wide integration.
+
+### R13. Reproducible maintenance and CI — engineering follow-up
+
+Acceptance criteria: keep locked dependencies and offline regression tests reproducible; ensure CI fixtures use original/synthetic material and no credentials; test migrations/recovery on temporary libraries; link changes to the current architecture, operations and validation records. Separate opt-in live/model/device checks from the default suite, with explicit resource limits. Git tracks source and documentation; it is not a backup of the excluded library and credentials.
+
+## Decisions deliberately left open
+
+| Decision | Current position | Evidence needed before selecting |
+| --- | --- | --- |
+| Repository visibility and application hosting | Source remote selected: [NicholasHazen/bardic on GitHub](https://github.com/NicholasHazen/bardic). The owner requested the initial `main` push. No application hosting target is selected. | Owner preference for visibility and deployment, handling of project assets and intended collaboration. |
+| License | No project license selected. Do not infer a license from dependency licenses or source availability. | Owner's distribution goals and dependency compatibility review. |
+| CI platform | Not selected. Local tests exist. | Repository host, required OS/device checks, secret-free default workflow and optional paid-test policy. |
+| Packaging and support matrix | Source-based local app; no committed desktop installer/platform matrix. | Target devices, update strategy and actual platform validation. |
+| Local model/runtime | User intends to add one; endpoint/model/hardware not specified here. | Concrete runtime information and structured-output benchmark. |
+| Alignment engine | Several researched candidates; none integrated. | R1 fidelity/resource/platform evaluation. |
+| Semantic index | FTS5 now; vectors optional. | R7 retrieval benchmark and maintenance cost. |
+| Additional narration providers | Gemini and macOS now; alternatives optional. | Provider access, fidelity, timing, cost and adapter tests. |
+| Unified spending ceiling | Analysis allowances implemented; total narration/account ceiling absent. | R3 allowance scope and unknown-cost policy. |
+
+Keep these decisions explicit when turning roadmap items into work. Recheck dated external APIs, model IDs, prices and package compatibility at implementation time. Historical live checks in [VALIDATION.md](VALIDATION.md) describe their recorded run only; they do not establish current key access, credits, whole-book quality or a release support guarantee.

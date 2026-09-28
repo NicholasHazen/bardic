@@ -1,0 +1,123 @@
+# Spin Tails
+
+A local audiobook studio for your fiction library. Import an EPUB or text file, build a cast, direct the performances, and listen while the exact passage is highlighted.
+
+**For contributors:** start with [the documentation map](docs/README.md), [architecture](docs/ARCHITECTURE.md), [development guide](docs/DEVELOPMENT.md), and [roadmap](docs/ROADMAP.md). Humans and agents use the same contracts; [CONTRIBUTING.md](CONTRIBUTING.md) explains the workflow and [AGENTS.md](AGENTS.md) is the agent entry point.
+
+## Run
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). For local Mac narration, install ffmpeg (`brew install ffmpeg`). Gemini works on other platforms without macOS voices.
+
+For a new checkout:
+
+```sh
+git clone https://github.com/NicholasHazen/bardic.git
+cd bardic
+```
+
+From the checkout root (including an existing `spin-tails` folder):
+
+```sh
+uv sync --frozen --group dev
+uv run --frozen python -m spintails
+```
+
+Open **http://127.0.0.1:8765**. The server binds only to your computer. Stop it with Ctrl+C. Set `SPINTAILS_PORT` to choose another port. The Python virtual environment and lockfile keep dependencies reproducible.
+
+## Try it
+
+1. Choose **Try a sample** to load an original short story, or import a DRM-free `.epub` / UTF-8 `.txt`.
+2. In **Studio**, the free census scans the whole book locally. Choose a cloud provider and **Scan whole book** for cheap character discovery, then **Build profiles**, then **Direct selected chapter**. Preview the work and set request, token, and book spending allowances before starting. Resume reuses accepted steps. In **Cast**, review evidence, profiles, identities, and voices; optionally assign a series and explicitly link returning characters.
+3. In **Studio**, review scene tone, subtext and passage directions. Generate a scene first to audition it; generate the full book when satisfied.
+4. In **Read**, press play. Click any generated passage to jump to it, change speed, and resume your saved position later.
+5. Download the export for completed chapter WAV files, individual takes, the source text, production notes, and a JSON timeline.
+
+For immediate listening, open **Read & listen → Listen your way**, choose a narrator and press **Start simple listening**. This prepares one passage at a time without requiring story analysis. It has its own saved audio and never changes cast voices, performance notes or enhanced recordings. Playback highlights the current passage and stops at the chapter boundary. Device voices are free; Gemini sends each requested passage to Google and can incur charges. Pause or Stop prevents further requests after any in-flight passage finishes.
+
+Open **Manage books & series** in the sidebar to edit titles and authors, extract covers from saved EPUBs, inspect content size and disk usage, create series, and assign reading order. Removed books and series are recoverable under **Removed items**; their files and analysis remain saved, so removal does not reclaim disk space. Removing a series leaves its books independently available. Add missing or planned volume placeholders when your collection is incomplete.
+
+Choose **Open series** to preview and run discovery with up to two books in parallel, followed by profiles and direction in reading order. Only supplied volumes are processed. Character continuity uses explicitly confirmed identity links; missing volumes never supply guessed evidence. Request/token limits are per book and shared across phases; each book's dollar allowance includes its earlier tracked analysis spend. A failed or budget-limited book stops new work while completed outputs remain reusable.
+
+In **Production studio → Resource usage**, inspect requests, retries, cache reuse, reported tokens, step durations, local Python CPU time, output bytes, audio duration, and estimated cost by stage and run. Unknown historical measurements and unreported provider usage stay marked unknown. Cost estimates are not account balances or invoices; local CPU measurements exclude subprocesses, GPUs and provider hardware. See [library, listening and resource tracking](docs/LIBRARY-LISTENING-RESOURCES.md).
+
+In **Production studio → Pipeline explorer**, inspect every stage, saved output versions, dependency links, runs, request usage and validation. Search source passages locally, or choose **Export analysis files** to download source, cast, scene graph, observations and provenance before generating audio.
+
+Analysis and narration are independent: for example, use Anthropic to direct the book and Gemini to perform it. The selected analysis provider receives the source excerpts and production notes needed for cast discovery, reconciliation, and scene direction. Only the chosen provider is used; there is no automatic fallback to another company.
+
+The Mac narration provider speaks using installed voices and ignores expressive performance notes. It is useful for free local listening and testing the pipeline. Gemini narration interprets those directions and sends the selected text and notes to Google. Library files and generated audio remain local in both modes.
+
+## Provider setup
+
+Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey). Put provider keys in the project's `.env` file beside `pyproject.toml`; [`.env.example`](.env.example) is the template for a fresh setup:
+
+```dotenv
+GEMINI_API_KEY=your-gemini-key
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+```
+
+`python -m spintails` automatically loads this project's `.env` at startup, including when launched with `uv run --frozen`. Restart the server after editing it. Existing shell environment variables override matching `.env` entries; values are read literally without variable interpolation. The loader does not search parent folders. `.env` is excluded from Git.
+
+You can also enter keys in **Settings** for the current server session. Those changes are kept in memory, never written to `.env`, SQLite, or browser storage. Clearing a key affects only that session; a restart reloads any configured file or environment key. Gemini keys are also accepted as `GOOGLE_API_KEY`.
+
+Settings has separate fast discovery and detailed analysis models for each provider, full dropdowns, and custom IDs. Explicit **Refresh models** uses the provider’s read-only inventory; it does not generate text or prove remaining credit. Preferences are saved locally. Cheap discovery defaults are Gemini `gemini-3.5-flash-lite`, OpenAI `gpt-6-luna`, and Anthropic `claude-haiku-4-5-20251001`. Suggested defaults are Gemini `gemini-3.8-flash`, OpenAI `gpt-6-sol`, and Anthropic `claude-sonnet-5`; you can enter another model ID that supports structured JSON outputs. Account access and quotas are checked by the provider when a request runs.
+
+Default narration: `gemini-3.8-flash-tts`. Settings also offers Flash-Lite and the legacy `gemini-3.1-flash-tts-preview`. The newer API keeps delivery directions separate from the verbatim transcript; the legacy adapter uses a director prompt. Custom `voice_…` IDs already created in Google can be pasted into a character's Gemini voice field. Voice creation/cloning is not part of this version.
+
+Cloud generation and analysis run only when you choose those actions. They can incur API charges. Test a short scene to check model access, voice quality, and quota before a full book. See the dated [voice research](docs/RESEARCH-VOICE.md) for pricing and official sources.
+
+OpenAI and Anthropic currently cover the text analysis phases in this app. Narration choices remain Gemini and installed Mac voices. See [analysis providers](docs/ANALYSIS-PROVIDERS.md) for API contracts and sources.
+
+In **Settings**, use **Check API** beside a provider or **Check all accounts**. Each check makes one tiny text request using that provider's selected analysis model, then reports access, billing/credit errors, quota/rate limits, and any token usage returned for that check. It may incur a small API charge; it never sends book text or starts narration. Checks are explicit, with no background polling or automatic retries, and identical checks reuse their result for 30 seconds.
+
+These are access checks, not a remaining-dollar estimate: a successful request does not establish the budget for a whole book or access to a separate TTS model. Exact balances and account-wide usage are available through the linked provider dashboards. Results stay in server memory, show their model and time, and are invalidated when the corresponding key or model changes. See [account check details](docs/ACCOUNT-CHECKS.md).
+
+## How the pipeline works
+
+`EPUB / TXT → structure + free census → cheap discovery → evidence profiles → chapter direction → cached audio → read-along / export`
+
+- EPUB uses the package spine's reading order and navigation/NCX labels, then headings and semantic fallbacks. Recaps, front matter, and back matter are identified separately; logical anchors retain exact source ranges. The original upload is retained; the reader displays extracted canonical prose, without the original ebook layout. Encrypted reading content is rejected; no DRM removal is performed.
+- The model annotates source IDs; it never supplies replacement prose. Character descriptions cite source evidence. Human edits survive re-analysis.
+- Local analysis is deliberately conservative: explicit speech tags identify speakers, while pronouns and ambiguous dialogue stay unassigned. Cloud analysis discovers characters chapter by chapter, builds profiles from the saved observations, then directs each selected chapter and proposes scene boundaries. Character references distinguish named mentions, attributed dialogue, and profile evidence; each links to an exact source location.
+- One short passage per voice request permits arbitrary cast size despite provider speaker limits. This also makes failures and edits inexpensive to retry. Separate clips may have audible seams; there is no promise of identical timbre across cloud generations.
+- Per-book processing checkpoints validated analysis requests and completed audio takes in SQLite. A series coordinator permits at most two independent discovery workers and orders its later phases. Cancelling stops after the current request. Restarting marks unfinished jobs as interrupted; analyzing again reuses matching saved steps, and generating again reuses matching audio. Chapter stages publish atomically, so a failed later chapter preserves earlier work. Evidence gets one repair attempt; unlocatable quotations remain errors. See [chapter analysis](docs/CHAPTER-ANALYSIS.md) for stages, reference records, and invalidation rules.
+- Changing a voice or performance note invalidates affected takes. Prior audio remains in the content-addressed cache and can be reused if you restore the same settings.
+- Highlighting is **passage-level**, measured from real clip boundaries. This version does not claim word timing or independently verify that a generative voice spoke every word. Forced alignment and speech-verification are planned follow-ups.
+- Exports only assemble complete chapters. Partial exports clearly identify missing passages and include completed individual takes.
+
+## Reusable artifacts
+
+SQLite stores immutable versions of source, structure, scene maps, profiles, voice assignments, observations and accepted analysis outputs. Current selections are separate from history. Request recipes and rejected structured responses are retained for inspection; rejected results never become accepted knowledge. Forced narration retains distinct WAV assets even when the generation instructions are identical. Restoring an earlier performance recipe can reuse its archived take.
+
+The analysis ZIP contains portable JSON/JSONL, exact chapter-local source coordinates, typed graph edges, all retained versions and their transitive input dependencies, including earlier-book evidence. Audio binaries use the separate audiobook export. Legacy records disclose missing provenance; versions lost before this retention system cannot be recreated.
+
+SQLite FTS5 provides lexical passage search over this book or this book plus earlier series volumes. No vector database or separate server is required. See [artifacts and storage](docs/ARTIFACTS-AND-STORAGE.md) for schemas, reuse, limitations and the researched path to optional semantic retrieval.
+
+## Progressive processing and series memory
+
+The [research and implementation plan](docs/PROGRESSIVE-ANALYSIS-PLAN.md) records the design and primary sources. [Structure details](docs/STRUCTURE.md) explain safe title repair.
+
+- The free census counts known-name mentions, explicit speech tags, dialogue, chapter spread, and uncertainty. These allocate profile effort; they do not establish identity, physical presence, or literary importance.
+- Whole-book discovery coverage and profile currency are separate. Scan results are provisional. Refinement uses bounded, varied evidence across the story; later evidence or linked series context can make a previously refined profile stale. Rare characters still receive basic analysis.
+- Only explicit series membership, reading order, and character links enable cross-book context. Earlier volumes contribute source-validated observations. Namesakes are separate unless linked; later volumes are excluded. Contradictions and provenance are retained.
+- Durable accepted units are independent of the active checkpoint. Discovery survives profile/model/voice changes. Direction and profiles use their actual prompt dependencies to determine reuse. Human-reviewed choices remain authoritative.
+- Every paid analysis HTTP attempt reserves allowance before sending, including retries and evidence repairs. The default is 25 requests, 1 million input tokens, 100,000 output tokens per run, and a $1 cumulative tracked allowance per book. The dollar guard uses dated prices and conservative reservations, not an exact invoice; usage before tracking and other account spending are excluded. Resume does not reset tracked book spend. Unknown/custom prices require explicitly selecting request/token-only limits.
+- Authentication and billing failures are not retried automatically. Uncertain network errors are retained as potentially charged and stop the run. Transient responses have at most one short retry; invalid evidence has at most one repair. Budget stops preserve accepted work. Preview estimates exclude future discoveries and retry costs, and full-mode work can change after discovery.
+- Local heuristic drafts are free but do not count as semantic discovery. A future local model can implement the same structured request/result contract as the cloud adapters. No local runtime is assumed or installed. Provider batch executors and advanced NLP remain optional follow-ups.
+
+## Data and development
+
+Data defaults to `.spintails/` in the working directory: SQLite library/job history, original uploads, and audio. Override with `SPINTAILS_DATA_DIR`. Back up that directory with the app stopped. The UI remembers reading position in this browser's local storage.
+
+```sh
+uv run --frozen pytest -q
+node --test tests/*_test.js tests/*.test.cjs
+# Optional real macOS narration and assembly smoke test:
+SPINTAILS_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
+```
+
+Tests cover EPUB safety/spine order, Unicode source integrity, conservative attribution, model-result validation, audio contracts, cache reuse/invalidation, exports, and restart recovery. Cloud API behavior is tested with recorded-shape mocks; live paid inference needs your key. The local voice smoke test must run in a normal terminal with access to macOS speech services.
+
+See the current [architecture](docs/ARCHITECTURE.md), [data model](docs/DATA-MODEL.md), [API guide](docs/API.md), [operations guide](docs/OPERATIONS.md), and [roadmap](docs/ROADMAP.md). [Design decisions](docs/DECISIONS.md) explain the tradeoffs; [pipeline research](docs/RESEARCH-PIPELINE.md) and [voice research](docs/RESEARCH-VOICE.md) preserve dated external findings. The application uses FastAPI, SQLite, plain JavaScript, and standard WAV files: no frontend build step, hosted database, or account system.
+
+The [GitHub repository](https://github.com/NicholasHazen/bardic) contains source, tests, documentation and the dependency lockfile. The repository is named `bardic`; the current application/package is still named Spin Tails / `spintails`. Personal ebooks, database/media state, credentials, exports and local validation captures are excluded. No project license has been selected. Use synthetic/original excerpts for shared tests; see [contributing](CONTRIBUTING.md).

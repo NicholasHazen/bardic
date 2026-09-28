@@ -1,0 +1,47 @@
+# Local configuration and credentials. Commit only the empty template.
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+
+# Runtime state, personal ebooks, recordings, exports and backups.
+.spintails/
+.spintails-*/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.epub
+*.mobi
+*.azw
+*.azw3
+*.wav
+*.aiff
+*.aif
+*.mp3
+*.m4a
+*.m4b
+*.zip
+
+# Local validation captures may show personal books or account information.
+/docs/*-preview.png
+/docs/local-validation/
+
+# Environments, caches and build/test output.
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+node_modules/
+*.log
+.DS_Store
