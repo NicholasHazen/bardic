@@ -61,6 +61,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 | `former_names` (on characters) | Names replaced by a manual rename. Discovery resolves them to the same character; they are not aliases. |
 | `edited_fields` (on characters, scenes, passages) | Field names changed through the review endpoints. The [analysis pipeline](ANALYSIS-PIPELINE.md#acceptance-rollback-and-manual-edits) never overwrites a listed field. `"*"` marks an item edited before per-field tracking, which stays wholly locked. The older phase pipeline still reads only the boolean `edited`. |
 | `cover` | Thumbnail metadata/hash. Image bytes live in `book_covers`, not book JSON. |
+| `pronunciations[]` | Optional pronunciation lexicon (absent when empty): `id` (`pr_<12 hex>`), `term`, `respelling`, `match_case`, optional `providers` (per-narrator respellings), `character_id` and `note`. Edited only through the pronunciation endpoints; analysis carries it through unchanged. It is a narration input, never a text change: the respelled text exists only in render recipes. |
 
 `logical_sections` records navigation/headings within a retained EPUB container. Its existence does not mean each logical section is independently scheduled. Scene boundaries may be local drafts. A scene's attributed speakers and a character mention are not proof that the character is physically present.
 
@@ -212,7 +213,7 @@ Pipeline runs never write `books.body`; acceptance does, in one transaction with
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
-| `voice_preview_requests` | PK `id`; `book_id`, JSON `body` | Retained version-1 effective request: preview metadata, exact bounded passage/demo text, performer, scene inputs and underlying audio fingerprint. |
+| `voice_preview_requests` | PK `id`; `book_id`, JSON `body` | Retained version-1 effective request: preview metadata, exact bounded passage/demo text, performer, scene inputs and underlying audio fingerprint. When pronunciations apply, the passage adds `pronunciations` with only the matching entries' `term`, `respelling`, `providers` and `match_case`, and the preview adds `spoken_text` (and `pronunciation` for an unsaved draft). |
 | `voice_preview_takes` | PK `id`; `preview_id` FK to requests, `book_id`, `asset_id`, JSON `body`; index by book/preview | Immutable independent take metadata and the actual WAV asset identity. |
 
 Both tables reject UPDATE and DELETE with SQLite triggers. A Breeze request's performer snapshot includes the pinned `voices.breeze` selection. Request IDs hash the canonical versioned recipe before the ID is added; the recipe includes book/source identity, exact text, provider/model/voice, effective character/scene/passage directions and audio recipe version through its fingerprint. Repeated equivalent requests retain the original row. Credentials and reader state are excluded; cast inputs are immutable snapshots rather than pointers to the mutable projection. The archive is separate from selected enhanced takes and simple-listening sessions; it does not support cross-book synthesis reuse or force-rerender selection.
@@ -244,7 +245,7 @@ The browser's warmup/lookahead/chapter-preparation intent is transient. Each req
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
-| `performances` | PK `(book_id, id)`; `body` | Schema-1 label: `id` (`pf_<hex>`), `name`, `mode` (`simple`/`cast`), `chapter_ids` (book order), `provider`, `model`, `voice` (simple: the requested value), `session_id` (simple) or `cast_snapshot` (cast), `archived`, `job_id`, timestamps. Renaming, archiving and starting a job update only this row. |
+| `performances` | PK `(book_id, id)`; `body` | Schema-1 label: `id` (`pf_<hex>`), `name`, `mode` (`simple`/`cast`), `chapter_ids` (book order), `provider`, `model`, `voice` (simple: the requested value), `session_id` (simple) or `cast_snapshot` and `pronunciation_snapshot` (cast; the book's pronunciations at creation, absent on records made before pronunciations existed, which then render without them), `archived`, `job_id`, timestamps. Renaming, archiving and starting a job update only this row. |
 | `performance_takes` | PK `(performance_id, segment_id, source_key, asset_id)`; `book_id`, `body` | One retained cast take: render metadata (fingerprint, content `asset_id`, duration, provider/model/voice, any provider usage), `speaker_id`, `character_id` actually used, `fallback`, source anchor and `created_at`; reused takes add a `reuse` pointer (`performance_take` or `studio_take`). Update/delete triggers and a skip-on-duplicate insert trigger keep rows immutable. |
 
 A **simple** performance owns no audio rows. Its `session_id` names a deterministic `listening_sessions` row, so its audio is that session's `listening_takes` and chunk clips for the selected chapters, including takes made earlier by live listening with the same narrator. A **cast** performance stores the resolved cast at creation (`Runtime.resolved_cast`, without evidence quotes) and renders from that snapshot. Later Cast edits, library voice versions or Breeze default changes do not alter it; passage speaker assignments and scene/passage directions are read from the current book when a passage is generated. Unknown or `unassigned` speakers, and characters without their own renderable voice for the provider, use the snapshot `narrator` (`fallback: true`). A narrator without a renderable voice blocks creation.
@@ -268,6 +269,7 @@ Lineage IDs and effective-input equality answer different questions: two equival
 | Enhanced cast/direction edit | Does not alter a simple single-narrator session recipe. |
 | Cast/voice edit after a cast performance was created | Does not alter the performance's snapshot or its retained takes. |
 | Passage source change | Hides that passage's simple and cast performance audio until it is prepared again; rows are retained. |
+| Pronunciation add/edit/remove | Changes the audio recipe (sent `text` plus a `pronunciation: {version:1, applied:[[term, spoken]…]}` field) only of passages, chunks and previews containing that word, for Studio takes (retired, archived WAVs kept) and simple listening. Passages without the word keep identical fingerprints. Cast performances keep their `pronunciation_snapshot`. |
 | Membership/identity link/earlier evidence change | Changes bounded series context and downstream requests that consume it. |
 | Invalid saved unit | Rejects reuse and removes its fast-cache row; immutable output history remains. |
 | Archive/remove | Changes active visibility/context and processing eligibility; retains data and files. |

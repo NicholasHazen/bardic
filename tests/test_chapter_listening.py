@@ -633,6 +633,33 @@ def test_recipe_change_invalidates_chunks_like_single_takes(client, monkeypatch)
     assert repository.chunk_clips(book['id'], session['id']) == {}
 
 
+def test_pronunciations_respell_chunks_and_invalidate_only_chunks_that_use_them(client):
+    from bardic import audio, pronunciation
+    book, store, repository, session, chapter_id, ids = repo_setup(client)
+    calls = []
+    repository.render_chunk(book['id'], session['id'], chapter_id, ids, 'key', synthesizer=fake_chunk_synthesizer(calls))
+    assert repository.chunk_clips(book['id'], session['id'])
+    saved = store.book(book['id'])
+    saved['pronunciations'] = [pronunciation.normalize_entry({'term': 'Zyrrhan', 'respelling': 'Zeer-an'})]
+    store.save_book(saved)
+    assert repository.chunk_clips(book['id'], session['id']), 'a word the chunk does not contain changes nothing'
+    saved['pronunciations'] = [pronunciation.normalize_entry({'term': 'keeper', 'respelling': 'keepah'})]
+    store.save_book(saved)
+    assert repository.chunk_clips(book['id'], session['id']) == {}
+    sent, inner = [], fake_chunk_synthesizer(calls)
+
+    def recording(segment, character, scene, provider, model, key, path, **kwargs):
+        sent.append(audio._recipe(segment, character, scene, provider, model)['text'])
+        return inner(segment, character, scene, provider, model, key, path, **kwargs)
+    chunk = repository.render_chunk(book['id'], session['id'], chapter_id, ids, 'key', synthesizer=recording)
+    assert 'keepah' in sent[-1] and 'keeper' not in sent[-1]
+    chapter = next(c for c in store.book(book['id'])['chapters'] if c['id'] == chapter_id)
+    source = chapter['text'][chunk['start']:chunk['end']]
+    assert calls[-1]['text'] == source, 'the book slice itself is unchanged'
+    assert source.count('keeper') == sent[-1].count('keepah') > 0
+    assert repository.chunk_clips(book['id'], session['id'])
+
+
 def test_replace_cannot_overwrite_a_retained_chunk(client):
     book, store, repository, session, chapter_id, ids = repo_setup(client)
     chunk = repository.render_chunk(book['id'], session['id'], chapter_id, ids, 'key', synthesizer=fake_chunk_synthesizer([]))

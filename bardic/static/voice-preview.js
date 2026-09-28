@@ -141,6 +141,14 @@
     for (const name of ['provider', 'voice', 'model', 'segment_id', 'character_id', 'direction', 'segment_direction']) {
       if (typeof config[name] === 'string') body[name] = config[name];
     }
+    // An unsaved pronunciation to hear in place of the saved one; only its own fields are sent.
+    const draft = config.pronunciation;
+    if (draft && typeof draft === 'object') {
+      body.pronunciation = {};
+      for (const name of ['id', 'term', 'respelling', 'match_case', 'providers']) {
+        if (draft[name] !== undefined && draft[name] !== null && draft[name] !== '') body.pronunciation[name] = draft[name];
+      }
+    }
     const bookId = book?.id;
     const signature = JSON.stringify([bookId, book?.revision, body]);
     if (active?.signature === signature && state.status === 'loading') return active.promise;

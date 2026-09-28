@@ -1,0 +1,15 @@
+{
+  "name": "bardic-dev-tools",
+  "private": true,
+  "description": "Development-only tooling. The app has no frontend build; nothing here is served or required at runtime.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "contract:codegen": "node tools/contract-codegen-check.mjs"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}
