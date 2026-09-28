@@ -156,7 +156,7 @@ and implements:
 
 ## HTTP API
 
-See [the API guide](API.md#analysis-pipeline) and [the router](../bardic/pipeline/api.py). Routes live under `/api/analysis-pipeline` (definitions and saved per-step settings) and `/api/books/{id}/analysis-pipeline` (state, plan, runs, versions, preview, accept, reject). `versions/accepted` addresses the currently accepted versions. The version detail diff reports `same/changed/added/removed` and an agreement ratio, which is a cheap signal when comparing models.
+See [the API reference](../contract/API-REFERENCE.md#analysis-pipeline) and [the router](../bardic/pipeline/api.py). Routes live under `/api/analysis-pipeline` (definitions and saved per-step settings) and `/api/books/{id}/analysis-pipeline` (state, plan, runs, versions, preview, accept, reject). `versions/accepted` addresses the currently accepted versions. The version detail diff reports `same/changed/added/removed` and an agreement ratio, which is a cheap signal when comparing models.
 
 ## Planned steps
 

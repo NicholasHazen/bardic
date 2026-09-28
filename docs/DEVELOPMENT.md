@@ -101,10 +101,13 @@ For an already installed environment with no dependency resolution:
 node --test tests/*_test.js tests/*.test.cjs
 ```
 
+Every `/api` response a pytest test receives is validated against the published contract by [conftest.py](../tests/conftest.py). An undeclared response field or an undocumented error status fails the test. After changing a route, follow [the API workflow](API-WORKFLOW.md): describe the change in `bardic/apispec/`, then run `uv run --frozen python -m bardic.apispec`. `--check` only reports whether `contract/` is stale. To list every contract problem in a run without failing tests, set `BARDIC_CONTRACT_REPORT=<file>`; each checked call is appended to that file as a JSON line.
+
 Useful targeted suites:
 
 | Change | Focused command after `uv run --frozen` |
 | --- | --- |
+| HTTP contract (`bardic/apispec/`, `contract/`) | `pytest -q tests/test_contract.py tests/test_contract_*.py`, then the suites for the routes you changed |
 | EPUB/text extraction and structure | `pytest -q tests/test_importer.py tests/test_series_structure_api.py` |
 | Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
 | Progressive analysis, evidence and budgets | `pytest -q tests/test_progressive.py tests/test_progressive_api.py tests/test_evidence.py tests/test_processing.py tests/test_preprocessing.py` |

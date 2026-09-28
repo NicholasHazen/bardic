@@ -44,6 +44,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`__main__.py`](../bardic/__main__.py), [`config.py`](../bardic/config.py), [`lan.py`](../bardic/lan.py) | Load the project `.env`, choose the bind address and port, start Uvicorn. Optionally trust and advertise a `.local` name while the server runs. |
 | [`service.py`](../bardic/service.py), [`bardicctl`](../bardicctl) | Operations tooling, not imported by the app: run the owner's server as a macOS LaunchAgent and start/list/stop isolated development servers. |
 | [`app.py`](../bardic/app.py) | Request validation, routes, local HTTP protections, `Runtime`, worker submission, cancellation, presentation, editing, playback, and export endpoints. |
+| [`apispec/`](../bardic/apispec/) | The published HTTP contract: one module per route family with operation descriptions, response views, errors and cost. It builds `/openapi.json` and `contract/`, and validates responses in tests. Views are not applied at runtime. |
 | [`store.py`](../bardic/store.py) | SQLite connections and lock, current book/take/job/settings state, atomic analysis publication, startup interruption recovery, process lock. |
 | [`importer.py`](../bardic/importer.py) | Safe EPUB/TXT ingestion, canonical text extraction, initial scenes/passages, bounded cover thumbnails. |
 | [`structure.py`](../bardic/structure.py) | EPUB navigation/NCX/headings/section classification, metadata-only structure repair and checkpoint transformation. |
@@ -91,7 +92,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Pipeline inspection | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
 | Resource usage | `resources.js`, `resources.css` | Book `/resources` |
 
-The table summarizes endpoint families; inspect [route definitions](../bardic/app.py) for request models and exact paths. These are internal application APIs without a separate compatibility/versioning policy. The generated schema is available at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.
+The table summarizes endpoint families. The complete, versioned contract is checked in as [`contract/openapi.json`](../contract/openapi.json), with a readable [reference](../contract/API-REFERENCE.md). It is generated from the route DTOs and the descriptions in [`bardic/apispec/`](../bardic/apispec/), which the test suite checks against every response. The contract is normative for future clients and for any replacement server; see [the API workflow](API-WORKFLOW.md). The running server also serves the contract at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.
 
 An import posts an EPUB/TXT, saves its original bytes, creates canonical chapters and anchored passages, and makes the book readable immediately. Cast and scene data start as a local draft. The reader highlights a whole passage while that passage's audio plays. Position and playback speed are browser-local preferences; the browser does not save API keys in local storage.
 

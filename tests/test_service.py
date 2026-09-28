@@ -342,7 +342,7 @@ def test_probe_asks_for_every_active_job_as_a_loopback_host():
 def test_active_jobs_are_listed_beyond_the_hundred_most_recent(tmp_path):
     with TestClient(create_app(tmp_path)) as client:
         store = client.app.state.runtime.store
-        running = store.create_job("book", "analysis")
+        running = store.create_job("book", "analyze")
         store.update_job(running["id"], status="running")
         for _ in range(120):
             store.update_job(store.create_job("book", "listen")["id"], status="completed")

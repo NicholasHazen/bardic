@@ -28,6 +28,7 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analysis import analyze_book
+from .apispec import install as install_contract
 from .processing import BudgetReached
 from .account_checks import check_account
 from . import breeze, local_services
@@ -1965,6 +1966,7 @@ def create_app(data_dir: Path | None = None):
             raise
 
     app.include_router(pipeline_router(default_registry()))
+    install_contract(app)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="assets")
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="studio")
