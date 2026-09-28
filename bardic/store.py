@@ -42,7 +42,7 @@ class Store:
         for job in self.jobs(limit=None):
             if job["status"] in {"running", "queued"}:
                 message = ("Server restarted. Analyze story again to resume from saved chapter analysis."
-                           if job["kind"] == "analyze" else
+                           if job["kind"] in {"analyze", "pipeline"} else
                            "Server restarted. Generate again to resume from saved takes.")
                 self.update_job(job["id"], status="interrupted", message=message)
         # Runtime acquires InstanceLock before constructing Store, so a second

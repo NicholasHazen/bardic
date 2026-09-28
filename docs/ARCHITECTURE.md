@@ -56,6 +56,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`series_processing.py`](../bardic/series_processing.py) | Collection plan/fingerprint, parent and child jobs, bounded parallel discovery, ordered later phases, cancellation and failure settlement. |
 | [`library.py`](../bardic/library.py) | Editable metadata, covers, measured storage, reversible removal/restoration, explicit missing/planned volume slots. |
 | [`artifacts.py`](../bardic/artifacts.py) | Immutable content-addressed versions, mutable current heads, verified dependency edges, projection capture and honest legacy backfill. |
+| [`pipeline/`](../bardic/pipeline/) | Step-based analysis: step contract and registry, built-in steps, runner (planning, bounded parallel units, metered requests, unit cache), candidate versions, accept/reject/rollback with a revision-guarded projection, outside-change capture, HTTP router. Runs never write the book projection. See [the analysis pipeline](ANALYSIS-PIPELINE.md). |
 | [`pipeline_view.py`](../bardic/pipeline_view.py) | Pipeline progress, source-anchored story map, portable analysis export. These views expose implemented state rather than run a second pipeline. |
 | [`search.py`](../bardic/search.py) | Local literal-word search with source coordinates, limited to the selected book or it plus earlier active series volumes. |
 | [`audio.py`](../bardic/audio.py) | Narration provider table (`PROVIDERS`), per-provider voice accessor, recipe and generation dispatch, Gemini/macOS adapters, audio validation/normalization, and sample-accurate WAV assembly. |
@@ -78,6 +79,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Progressive production | `production.js`, `production.css` | Book `/preprocessing`, `/analysis-plan`, `/analyze`, `/analysis` |
 | Series identity review | `series.js`, `series.css` | Book `/series`, character links, series characters/context |
 | Collection processing | `series-processing.js`, `series-processing.css` | Series `/plan`, `/process`, `/runs`, `/map` |
+| Analysis pipeline (Analysis tab) | `analysis-pipeline.js`, `analysis-pipeline.css` | `/api/analysis-pipeline`, book `/analysis-pipeline` (plan, runs, versions, preview, accept, reject) |
 | Pipeline inspection | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
 | Resource usage | `resources.js`, `resources.css` | Book `/resources` |
 
@@ -118,6 +120,10 @@ The progressive phases are:
 Front/back matter are excluded from default semantic coverage; a specifically selected section can still be processed. The pipeline's `scan` model is independently configurable from the deeper analysis model. The word “preprocessing” in model settings refers to this cheap cloud discovery role; the local census remains a separate free step.
 
 Evidence validation accepts only a short contiguous source quotation, with constrained typography/whitespace normalization mapped back to exact source coordinates. It does not accept paraphrases, invented spelling, or separated snippets joined with ellipses. One evidence-specific repair generation is allowed after a rejected response. Invalid results never become accepted annotations.
+
+### Step pipeline
+
+The Analysis tab drives the same analysis work as named steps: chapters & titles, census, discovery, profiles, and speakers & delivery. Each step has its own provider and model and produces candidate versions per scope. The reader sees a result only after it is accepted, either automatically by the step's gate or by the owner. Accepting an older version rolls back. Manual edits are per-field locks. Changes made by the phase controls are recorded as `external` versions before the next pipeline decision. Details and the extension contract: [analysis pipeline](ANALYSIS-PIPELINE.md).
 
 ## Reuse, invalidation, and failure
 

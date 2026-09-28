@@ -56,6 +56,8 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 | `scenes[]` | Chapter-scoped scene IDs, title, summary, tone, direction, passage IDs, attributed character IDs, and optional edit flag. |
 | `segments[]` | Passage ID, chapter/scene IDs, exact source offsets and text, kind, speaker, confidence, direction/cues/evidence, optional `seed` for seeded narration providers, optional edit/provenance data, and presented audio selection. |
 | `analysis` | Current overall analysis summary; detailed resumable state lives in checkpoint/cache tables. |
+| `former_names` (on characters) | Names replaced by a manual rename. Discovery resolves them to the same character; they are not aliases. |
+| `edited_fields` (on characters, scenes, passages) | Field names changed through the review endpoints. The [analysis pipeline](ANALYSIS-PIPELINE.md#acceptance-rollback-and-manual-edits) never overwrites a listed field. `"*"` marks an item edited before per-field tracking, which stays wholly locked. The older phase pipeline still reads only the boolean `edited`. |
 | `cover` | Thumbnail metadata/hash. Image bytes live in `book_covers`, not book JSON. |
 
 `logical_sections` records navigation/headings within a retained EPUB container. Its existence does not mean each logical section is independently scheduled. Scene boundaries may be local drafts. A scene's attributed speakers and a character mention are not proof that the character is physically present.
@@ -160,10 +162,23 @@ Principal artifact kinds are:
 | `series_context` / `book` | Snapshot of explicit membership and confirmed links, including their removal. |
 | `series_run` / parent job ID | Retained collection run state for each participating book. |
 | `library_state` / book or series scope | Archive/restore visibility state, captured for affected books. |
+| `step_output` / `<step>:<scope>` | One analysis pipeline step's result for a book, chapter or character scope, with the accepted input versions it read. Candidates are recorded **without** selecting them (`record(select=False)`); the head is the accepted version and moves only on an accept decision. `origin` distinguishes model/local runs from `baseline`/`external` captures of existing work (legacy provenance). |
 
 Current snapshots and model results are different kinds on purpose. A scene-map snapshot can exist immediately after import without successful semantic directing. Artifact count therefore does not mean a stage is complete. Audio bytes and simple-listening take records also have their own storage; not every application datum is an artifact.
 
 When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, accepted units/checkpoint units, observations, census, and membership. It marks unknown provenance and never reconstructs prompts or outputs that were already lost.
+
+### Analysis pipeline
+
+| Table | Key and columns | Contract |
+| --- | --- | --- |
+| `pipeline_runs` | PK `id`; `book_id`, JSON body | One orchestrated request: steps, mode, per-step provider/model/gate snapshot, chapter scope, limits, job ID, outcomes. |
+| `pipeline_step_runs` | PK `id`; `book_id`, `run_id`, `step_id`, JSON body | One execution of one step (the UI's "version"): configuration, accepted inputs read, unit counts, status, scope → `step_output` artifact IDs. Baseline/external captures are step runs with that origin. |
+| `pipeline_decisions` | PK `id`; `book_id`, `step_id`, JSON body | Append-only accept/reject log (`user`, `auto`, `baseline`, `external`). Triggers reject update/delete. |
+| `pipeline_units` | PK `(book_id, unit_key)`; `step_id`, JSON body | Replaceable validated-unit cache keyed by exact request identity; each entry is also retained as an `analysis_output` artifact. |
+| `pipeline_state` | PK `book_id`; JSON body | The book revision and step signature last reconciled, used to detect outside changes cheaply. |
+
+Pipeline runs never write `books.body`; acceptance does, in one transaction with the decision. See [the analysis pipeline](ANALYSIS-PIPELINE.md).
 
 ### Voice examples
 

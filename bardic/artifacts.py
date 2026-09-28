@@ -75,8 +75,12 @@ def output_head(conn, book_id, kind, logical_key):
 
 
 def record(conn, book_id, kind, logical_key, payload, *, label='', stage='', provider=None,
-           model=None, dependencies=(), legacy_provenance=False):
-    """Append a content version and select it, within the caller's transaction."""
+           model=None, dependencies=(), legacy_provenance=False, select=True):
+    """Append a content version and select it, within the caller's transaction.
+
+    ``select=False`` retains a candidate without making it current; the caller
+    selects it later with :func:`select_head` (e.g. after user acceptance).
+    """
     if any(not isinstance(value, str) or not value for value in (book_id, kind, logical_key)):
         raise ValueError('Artifact book, kind and logical key must be nonempty strings.')
     if not isinstance(label, str) or not isinstance(stage, str):
@@ -104,10 +108,19 @@ def record(conn, book_id, kind, logical_key, payload, *, label='', stage='', pro
              int(bool(legacy_provenance)), serialized, len(serialized.encode('utf-8')), _json(dependencies), timestamp))
     conn.executemany('INSERT OR IGNORE INTO artifact_dependencies(artifact_id,dependency_id) VALUES (?,?)',
                      [(identifier, dependency) for dependency in dependencies])
+    if select:
+        select_head(conn, book_id, kind, logical_key, identifier, timestamp)
+    return identifier
+
+
+def select_head(conn, book_id, kind, logical_key, identifier, timestamp=None):
+    """Make an existing version of this book/kind/scope the current selection."""
+    row = conn.execute('SELECT book_id,kind,logical_key FROM artifact_versions WHERE id=?', (identifier,)).fetchone()
+    if row != (book_id, kind, logical_key):
+        raise ValueError('Only a retained version of the same artifact scope can be selected.')
     conn.execute('''INSERT INTO artifact_heads(book_id,kind,logical_key,artifact_id,updated_at) VALUES (?,?,?,?,?)
         ON CONFLICT(book_id,kind,logical_key) DO UPDATE SET artifact_id=excluded.artifact_id,updated_at=excluded.updated_at''',
-        (book_id, kind, logical_key, identifier, timestamp))
-    return identifier
+        (book_id, kind, logical_key, identifier, timestamp or _now()))
 
 
 def _pick(item, fields):

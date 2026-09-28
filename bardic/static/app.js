@@ -801,6 +801,9 @@ function renderAnalysisProgress() {
 function renderProduction() {
   window.BardicResources?.render($('#resource-usage'), state.book, {busy:Boolean(busyJob())});
   window.BardicPipeline?.render($('#pipeline-inspector'), state.book, {busy: Boolean(busyJob())});
+  window.BardicAnalysisPipeline?.render($('#analysis-view'), state.book, {busy: Boolean(busyJob()), status: state.status,
+    onJobStarted: async job => { if (!job || job.book_id !== state.book?.id) return; if (!state.jobs.some(j => j.id === job.id)) state.jobs.unshift(job); renderJob(); await pollJobs(true); },
+    onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); state.referenceCache.clear(); state.referenceVersion++; applyBook(book); } });
   window.BardicProduction?.render($('#progressive-production'), state.book, {
     provider: $('#analysis-provider').value, chapterId: state.chapterId, busy: Boolean(busyJob()),
     scanModel: state.status?.preprocess_models_by_provider?.[$('#analysis-provider').value],
@@ -826,7 +829,7 @@ function renderStudio() {
   renderProduction();
 }
 function setTab(tab, {reveal = true, focus = false} = {}) {
-  state.tab = ['read','cast','studio'].includes(tab) ? tab : 'read';
+  state.tab = ['read','cast','studio','analysis'].includes(tab) ? tab : 'read';
   if (reveal && state.book && state.libraryView) { state.libraryView = false; syncWorkspaceNavigation(); }
   $$('.tab').forEach(button => {
     const active = button.dataset.tab === state.tab;
@@ -836,7 +839,7 @@ function setTab(tab, {reveal = true, focus = false} = {}) {
     button.tabIndex = active ? 0 : -1;
     if (active && focus) button.focus();
   });
-  ['read','cast','studio'].forEach(name => { $(`#${name}-view`).hidden = name !== state.tab; });
+  ['read','cast','studio','analysis'].forEach(name => { $(`#${name}-view`).hidden = name !== state.tab; });
 }
 function syncWorkspaceNavigation() {
   const home = state.libraryView || !state.book;
@@ -1090,7 +1093,7 @@ function renderJob() {
   const active = ['running','queued'].includes(job.status);
   banner.hidden = false;
   banner.classList.toggle('failed', ['failed','interrupted','budget_limited','quota_limited'].includes(job.status));
-  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
+  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
   banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job aria-label="Dismiss job status">${icon('close')}</button>`}`;
   updateBusyControls();
   renderProduction();

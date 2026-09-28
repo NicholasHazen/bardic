@@ -40,6 +40,7 @@ The project goal remains a local application that turns supplied fiction ebooks 
 | Synchronization and audio QA | Partial: sample-based passage boundaries and checks for corrupt, truncated, empty or all-zero audio. No word alignment, independent speech verification, pronunciation scoring or performance-quality guarantee. | [Synchronization research](RESEARCH-PIPELINE.md#passage-synchronization-now-word-alignment-later) |
 | Durable analysis and replay | Implemented: bounded transport/evidence retries, per-attempt reservations, accepted-unit caches, checkpoint recovery, rejected-response inspection and immutable artifact lineage. Lost pre-history outputs cannot be reconstructed. | [Storage](ARTIFACTS-AND-STORAGE.md), [processing](../bardic/processing.py) |
 | Search and graphs | Partial: literal lexical FTS5 search, earlier-volume filtering before result limits, typed story graph and artifact dependency graph. No vector index, learned semantic retrieval, interactive world timeline or separate graph database. | [Search](../bardic/search.py), [storage decision](ARTIFACTS-AND-STORAGE.md#storage-decision) |
+| Step pipeline with review | Implemented foundation (2026-09-27): **Analysis** tab with steps for chapters & titles, census, discovery, profiles and speakers & delivery; per-step provider/model (the thoroughness choice) and review gate; plan preview with fingerprint; serial or side-by-side runs with bounded parallel units; candidate versions per scope, diff/agreement between versions, accept, reject and rollback; per-field manual edit locks; outside changes captured as versions. Planned steps are listed in R14. | [Analysis pipeline](ANALYSIS-PIPELINE.md), [pipeline package](../bardic/pipeline/) |
 | Resource visibility | Implemented: per-stage/run attempts, retries, cache reuse, reported tokens, measured elapsed/local-thread CPU, audio/file volume, estimates and explicit unknowns. No account-wide invoice reconciliation or narration spending guard. | [Resource ledger](LIBRARY-LISTENING-RESOURCES.md#resource-ledger), [resources](../bardic/resources.py) |
 | Playback troubleshooting | Implemented: allowlisted browser/server events, job/passage correlation, bounded local retention and a Settings JSON download. Best-effort diagnostics are a rotating log, not a complete immutable audit. Older unrecorded errors remain unknown. | [Playback diagnostics](LIBRARY-LISTENING-RESOURCES.md#playback-diagnostics), [diagnostics](../bardic/diagnostics.py) |
 | Portable output | Partial: analysis JSON/JSONL ZIP with lineage and source, plus enhanced-audio ZIP with takes, complete chapter WAVs and timeline. No M4B, EPUB Media Overlays, analysis-bundle import or full take-comparison editor. | [Export contents](ARTIFACTS-AND-STORAGE.md#visibility-and-portability), [operations](OPERATIONS.md#exports-are-not-a-complete-backup) |
@@ -114,6 +115,17 @@ Acceptance criteria:
 - Expose local model discovery/configuration separately from cloud credentials, with an explicit structured-output capability check.
 - Benchmark cheap discovery first against the same source/evidence fixtures. Record inference time and supported local resource metrics; zero provider charge does not mean zero compute.
 - Preserve unknown attribution rather than accepting malformed or unsupported evidence to make a smaller model pass.
+
+### R14. Analysis pipeline steps beyond the foundation — planned
+
+The step contract makes each of these an independent, versioned step. The recommended order, method and model tier for each are in [planned steps](ANALYSIS-PIPELINE.md#planned-steps): cast identity, split speaker attribution with a targeted low-confidence re-fix, fused line delivery with a fixed emotion vocabulary, pronunciation lexicon, utterance type from retained italics, narrator/POV, and local consistency checks.
+
+Acceptance criteria:
+
+- Each step declares disjoint owned fields, versions its recipe, satisfies `apply(capture) == identity`, and is tested with a fake provider for a cold run, cache hit, failure after a durable unit, cancellation and a manual edit lock.
+- Cast identity redirects character IDs rather than deleting them, and never merges confirmed series links or reviewed characters.
+- Model tier choices per step are justified by version comparisons on the R4 evaluation set, not assumed.
+- Rollback reattaches retained audio takes whose recipe matches again. Staleness narrows from whole input steps to the scopes a version actually read.
 
 ### R6. More effective low-cost preprocessing — partial / optional research
 

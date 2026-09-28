@@ -30,6 +30,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [LIBRARY-LISTENING-RESOURCES.md](LIBRARY-LISTENING-RESOURCES.md): library/archive, series execution, narrator mode and usage ledger details.
 - [ARTIFACTS-AND-STORAGE.md](ARTIFACTS-AND-STORAGE.md): retained outputs, dependency graphs, exports and retrieval choices.
 - [STRUCTURE.md](STRUCTURE.md): EPUB labels/anchors, section kinds and non-destructive structure repair.
+- [ANALYSIS-PIPELINE.md](ANALYSIS-PIPELINE.md): the step contract, versions, acceptance/rollback, edit locks, API, how to add/remove steps, and the planned steps.
 - [CHAPTER-ANALYSIS.md](CHAPTER-ANALYSIS.md): staged evidence validation, checkpoints and reference persistence.
 - [ANALYSIS-PROVIDERS.md](ANALYSIS-PROVIDERS.md): the text analysis adapter contracts.
 - [ACCOUNT-CHECKS.md](ACCOUNT-CHECKS.md): explicit provider access checks and why balances remain unknown.

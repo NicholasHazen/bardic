@@ -271,6 +271,25 @@ A cache hit returns `{preview, audio, cached:true}` before checking provider ava
 
 The worker snapshots configuration/key before queueing and checks cancellation before synthesis. A successfully completed in-flight take can be saved after Stop while stale playback stays cancelled. There is no generation POST retry or narration dollar cap. Gemini examples can incur charges; resource operations use stage `voice_preview`, preserving reported usage and unknown costs. Saved request/take rows and WAVs remain in the full library backup; these preview archives are not currently included in the analysis or audiobook ZIP. Source: [preview repository](../bardic/voice_previews.py), [API tests](../tests/test_voice_preview_api.py).
 
+## Analysis pipeline
+
+Step-based analysis with versioned, reviewable outputs. The contract and semantics are in [the analysis pipeline guide](ANALYSIS-PIPELINE.md); the router is [bardic/pipeline/api.py](../bardic/pipeline/api.py).
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/analysis-pipeline` | Step definitions in pipeline order, provider key availability, saved per-step `{provider, model, gate}`. |
+| `PUT /api/analysis-pipeline/steps/{step}/settings` | Save a step's provider/model and gate (`auto` or `review`). Local steps accept only `provider: "local"`. Never starts work. |
+| `GET /api/books/{id}/analysis-pipeline` | Per-step accepted/total scopes, origins, stale scopes, pending candidates, latest version, active and recent runs. Records outside changes first. |
+| `POST /api/books/{id}/analysis-pipeline/plan` | `{steps, chapter_ids?, configs?}` → units, cached units, requests, token/cost estimates, `inputs_pending`, `fingerprint`. No model calls. |
+| `POST /api/books/{id}/analysis-pipeline/runs` | `{steps, mode: serial|parallel, chapter_ids?, configs?, gates?, concurrency: 1–4, fresh, limits, expected_fingerprint?}` → `{job, run}`. Job kind `pipeline`; cancel through the jobs API. 409 when the plan fingerprint changed or a job is active. |
+| `GET …/steps/{step}/versions` | Version history with state (`candidate`, `accepted`, `partly_accepted`, `superseded`, `rejected`, `running`, `empty`) and recent decisions. |
+| `GET …/steps/{step}/versions/{id}` | Generic result table (`stats`, `columns`, paged `rows`) diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{id}` may be `accepted`. |
+| `POST …/versions/{id}/preview` | `{scopes?}` → changed scopes, conflicts with manual edits, audio takes invalidated, downstream steps affected, `revision`. |
+| `POST …/versions/{id}/accept` | `{scopes?, expected_revision?}`. Accepting an older version is rollback. 409 while another non-pipeline job changes the book. |
+| `POST …/versions/{id}/reject` | Reject a candidate. An accepted version cannot be rejected. |
+
+Run limits use the same fields and defaults as `AnalysisLimits`, including the cumulative book dollar guard.
+
 ## Pipeline inspection, artifacts, graph, search, and portable export
 
 | Route | Response family |

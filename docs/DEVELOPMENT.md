@@ -91,6 +91,7 @@ Useful targeted suites:
 | EPUB/text extraction and structure | `pytest -q tests/test_importer.py tests/test_series_structure_api.py` |
 | Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
 | Progressive analysis, evidence and budgets | `pytest -q tests/test_progressive.py tests/test_progressive_api.py tests/test_evidence.py tests/test_processing.py tests/test_preprocessing.py` |
+| Analysis pipeline steps, versions and acceptance | `pytest -q tests/test_analysis_pipeline.py tests/test_analysis_pipeline_ui.py`; also run `node tests/analysis_pipeline_ui_test.js` |
 | Artifacts, graph, search and export | `pytest -q tests/test_artifacts.py tests/test_progressive_artifacts.py tests/test_pipeline_view_api.py tests/test_search.py` |
 | Series identities and execution | `pytest -q tests/test_series.py tests/test_series_lifecycle.py tests/test_series_processing.py tests/test_series_processing_ui.py` |
 | Simple listening and reader playback | `pytest -q tests/test_listening.py tests/test_listen_api.py tests/test_listen_ui.py tests/test_listen_player.py` |
@@ -196,6 +197,8 @@ Diagnostics deliberately accept event/operation enums and bounded operational id
 A custom model ID can already be selected without adding a new provider. A local LLM provider, embeddings, and external batch execution are not implemented simply by entering such an ID.
 
 ### Add an analysis stage or change a recipe
+
+New analysis work should normally be a pipeline step: follow [adding, changing or removing a step](ANALYSIS-PIPELINE.md#adding-changing-or-removing-a-step). The registry, runner, caching, versioning, acceptance, API and UI are generic. The rest of this section applies to the older phase pipeline.
 
 Define the stage's source inputs, output schema, validator, and stable unit key in [progressive.py](../bardic/progressive.py). Include inputs that actually affect the result in the recipe identity; avoid invalidating unrelated work. Save the input recipe/dependencies and accepted output through [ProcessingStore](../bardic/processing.py). Keep rejected output distinguishable from accepted knowledge. Emit events tied to the precise attempt, so HTTP success does not imply validation success.
 

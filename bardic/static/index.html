@@ -14,6 +14,8 @@
   <script defer src="/static/series.js"></script>
   <script defer src="/static/production.js"></script>
   <script defer src="/static/pipeline.js"></script>
+  <link rel="stylesheet" href="/static/analysis-pipeline.css">
+  <script defer src="/static/analysis-pipeline.js"></script>
   <link rel="stylesheet" href="/static/library.css">
   <script defer src="/static/library.js"></script>
   <link rel="stylesheet" href="/static/listen.css">
@@ -70,7 +72,7 @@
       </section>
       <section id="book-workspace" hidden>
         <div class="book-header"><div><div class="eyebrow" id="book-eyebrow">YOUR PERSONAL EDITION</div><h1 id="book-title"></h1><div class="book-byline" id="book-byline"></div></div><button class="button subtle" id="header-import" aria-label="Import book"><svg><use href="#i-plus"/></svg><span>Import book</span></button></div>
-        <div class="workspace-nav"><nav class="tabs" role="tablist" aria-label="Book views"><button id="read-tab" class="tab active" data-tab="read" role="tab" aria-selected="true" aria-controls="read-view"><svg><use href="#i-book"/></svg>Read &amp; listen</button><button id="cast-tab" class="tab" data-tab="cast" role="tab" aria-selected="false" aria-controls="cast-view" tabindex="-1"><svg><use href="#i-cast"/></svg>Cast &amp; voices <span id="cast-count" class="count"></span></button><button id="studio-tab" class="tab" data-tab="studio" role="tab" aria-selected="false" aria-controls="studio-view" tabindex="-1"><svg><use href="#i-spark"/></svg>Studio</button></nav><span id="book-status" class="book-status"></span></div>
+        <div class="workspace-nav"><nav class="tabs" role="tablist" aria-label="Book views"><button id="read-tab" class="tab active" data-tab="read" role="tab" aria-selected="true" aria-controls="read-view"><svg><use href="#i-book"/></svg>Read &amp; listen</button><button id="cast-tab" class="tab" data-tab="cast" role="tab" aria-selected="false" aria-controls="cast-view" tabindex="-1"><svg><use href="#i-cast"/></svg>Cast &amp; voices <span id="cast-count" class="count"></span></button><button id="studio-tab" class="tab" data-tab="studio" role="tab" aria-selected="false" aria-controls="studio-view" tabindex="-1"><svg><use href="#i-spark"/></svg>Studio</button><button id="analysis-tab" class="tab" data-tab="analysis" role="tab" aria-selected="false" aria-controls="analysis-view" tabindex="-1"><svg><use href="#i-settings"/></svg>Analysis</button></nav><span id="book-status" class="book-status"></span></div>
         <div id="job-banner" class="job-banner" role="status" hidden></div>
         <section id="read-view" class="view-panel" role="tabpanel" aria-labelledby="read-tab"><details id="listening-drawer" class="listening-drawer"><summary><svg aria-hidden="true"><use href="#i-headphones"/></svg><span><strong>Listen your way</strong><small id="listening-summary" role="status">One narrator or a full cast. You choose.</small></span><span class="listening-drawer-action">Voice &amp; playback <span aria-hidden="true">＋</span></span></summary><div id="simple-listen"></div></details>
           <div class="reader-toolbar"><label for="reader-chapter">Chapter</label><select id="reader-chapter"></select><span>Original text · Passage sync</span></div>
@@ -85,6 +87,7 @@
           <div id="script-heading" class="script-heading" tabindex="-1"><h3>The performance script</h3><span id="script-meta"></span><label class="sr-only" for="studio-chapter">Script chapter</label><select id="studio-chapter"></select></div><div id="scene-list" class="scene-list"></div>
           <details class="workspace-details"><summary><span>Production details</span><small>Pipeline, source search, saved outputs &amp; resource usage</small></summary><div id="pipeline-inspector"></div><div id="resource-usage"></div></details>
         </section>
+        <section id="analysis-view" class="view-panel" role="tabpanel" aria-labelledby="analysis-tab" hidden></section>
       </section>
       <div id="fatal-error" class="fatal-error" hidden></div>
     </main>
