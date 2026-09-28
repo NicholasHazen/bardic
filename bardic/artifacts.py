@@ -51,6 +51,8 @@ def initialize_schema(conn):
         payload_bytes INTEGER NOT NULL, dependencies TEXT NOT NULL,
         created_at TEXT NOT NULL)''')
     conn.execute('CREATE INDEX IF NOT EXISTS artifact_versions_book ON artifact_versions(book_id,kind,stage,created_at)')
+    # Versions of one scope (the Classic data drop checks content per unit key).
+    conn.execute('CREATE INDEX IF NOT EXISTS artifact_versions_scope ON artifact_versions(book_id,kind,logical_key)')
     conn.execute('''CREATE TABLE IF NOT EXISTS artifact_heads (
         book_id TEXT NOT NULL, kind TEXT NOT NULL, logical_key TEXT NOT NULL,
         artifact_id TEXT NOT NULL REFERENCES artifact_versions(id), updated_at TEXT NOT NULL,

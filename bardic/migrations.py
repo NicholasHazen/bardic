@@ -23,12 +23,15 @@ Order, per the stage 4 data rules:
    legacy reader, which copies each ``analysis_units`` row, each checkpoint unit,
    the whole checkpoint and each observation into immutable artifacts
    (``analysis_input``/``analysis_output``, ``analysis_checkpoint``,
-   ``character_observation``). Every legacy row must then have its artifact. One
-   short transaction per book. If any book fails, nothing is deleted or dropped.
-2. Delete each book's observation rows, one short transaction per book, after
-   checking again that each has its ``character_observation`` artifact.
-3. In one transaction: check every remaining unit and checkpoint once more, drop
-   the two tables and record the migration as completed.
+   ``character_observation``). Every legacy row must then have its artifact. Two
+   short transactions per book (the backfill, then the legacy reader and its
+   check). If any book fails, or any row has no book ID, nothing is deleted or
+   dropped.
+2. In one transaction: check every legacy row once more (and that no row is
+   outside the checked books), delete the observation rows, drop the two tables
+   and record the migration as completed. Anything that fails rolls all of it back.
+3. After the commit, count the Classic-written reference rows for the record
+   (a statistic; it never blocks the drop).
 
 Retaining is idempotent (artifacts are content-addressed; a row whose content an
 artifact already holds is skipped), so an interrupted run redoes only what it
@@ -77,11 +80,12 @@ def _logger():
     """This module's logger. The server's uvicorn logging configures only its own loggers,
     so a one-time handler makes these lines reach the service log."""
     logger = logging.getLogger(__name__)
-    if not logger.hasHandlers():
+    logger.setLevel(logging.INFO)
+    if not logger.handlers and not logging.getLogger().handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter('%(levelname)s:     %(message)s'))
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.propagate = False  # a root handler added later must not print these lines twice
     return logger
 
 
@@ -103,6 +107,16 @@ def _tables(conn):
 
 
 def _record(conn, status, body):
+    """Record this run. A completed run recorded earlier is kept inside the new body, never overwritten."""
+    if isinstance(body.get('books'), dict):  # JSON object keys; a row without a usable book ID is listed as such
+        body = {**body, 'books': {str(key): value for key, value in body['books'].items()}}
+    row = conn.execute('SELECT status,updated_at,body FROM schema_migrations WHERE id=?', (CLASSIC_REMOVAL,)).fetchone()
+    if row:
+        previous = json.loads(row[2])
+        earlier = previous.pop('earlier_runs', [])
+        if row[0] == 'completed' or any(run.get('status') == 'completed' for run in earlier):
+            kept = earlier + ([{'status': row[0], 'updated_at': row[1], **previous}] if row[0] == 'completed' else [])
+            body = {**body, 'earlier_runs': kept}
     conn.execute('''INSERT INTO schema_migrations(id,status,updated_at,body) VALUES (?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,body=excluded.body''',
                  (CLASSIC_REMOVAL, status, _now(), json.dumps(body, ensure_ascii=False, sort_keys=True)))
@@ -172,7 +186,7 @@ def _retained_version(conn, book_id, kind, key, payload):
 
     wanted = _content(payload)
     for identifier, stored in conn.execute('SELECT id,payload FROM artifact_versions WHERE book_id=? AND kind=? AND logical_key=?',
-                                           (book_id, kind, key)):
+                                           (book_id, kind, key)).fetchall():
         if _content(json.loads(stored)) == wanted:
             return identifier
     return None
@@ -338,6 +352,9 @@ def remove_classic_data(store):
     # 1. Retain every book's Classic data as artifacts, and verify it, before deleting anything.
     repository = ArtifactRepository(store)
     failures = {}
+    for book_id in [b for b in pending if not isinstance(b, str) or not b]:
+        pending.remove(book_id)
+        failures[str(book_id)] = 'Classic rows without a usable book ID cannot be retained under a book'
     for book_id in pending:
         try:
             with store.lock:
@@ -366,54 +383,78 @@ def remove_classic_data(store):
         return {'status': 'failed', 'books': census, 'failures': failures}
 
     try:
-        body = _delete_and_drop(store, census, pending, present, totals)
-    except Exception as exc:  # Each delete and the drop are checked first: nothing unretained is lost.
+        body = _delete_and_drop(store, census, present, totals)
+    except Exception as exc:  # Checked inside the one transaction that deletes and drops: nothing changed.
         log.exception('Classic removal: stopped before completing')
         failures = {'': f'{type(exc).__name__}: {exc}'}
         with store.lock, store.connect() as conn:
             _record(conn, 'failed', {'books': census, 'failures': failures})
-        log.error('Classic removal postponed: the legacy tables were not dropped; the migration runs again at the next start.')
+        log.error('Classic removal postponed: nothing was deleted or dropped; the migration runs again at the next start.')
         return {'status': 'failed', 'books': census, 'failures': failures}
+    body = _count_references(store, census, body, log)
+    references = ('unknown' if body['classic_references'] is None else
+                  f"{body['classic_references']} Classic-written character_references row(s), "
+                  f"{body['classic_references_in_series_context']} of them in series context")
     log.info('Classic removal: done. Dropped tables: %s. Deleted %d character_observations row(s) (the table is kept; '
-             'their history is in character_observation artifacts). Kept %d Classic-written character_references '
-             'row(s), %d of them in series context. Recorded as %s in schema_migrations.',
-             ', '.join(present) or 'none (already absent)', body['deleted_observations'], body['classic_references'],
-             body['classic_references_in_series_context'], CLASSIC_REMOVAL)
+             'their history is in character_observation artifacts). Kept %s. Recorded as %s in schema_migrations.',
+             ', '.join(present) or 'none (already absent)', body['deleted_observations'], references, CLASSIC_REMOVAL)
     return {'status': 'completed', **body}
 
 
-def _delete_and_drop(store, census, pending, present, totals):
-    """Steps 2 and 3 of :func:`remove_classic_data`, once every book's data is retained."""
-    # 2. Delete the observation rows, book by book, each after its artifacts are checked again.
-    deleted = 0
-    for book_id in pending:
-        if not census[book_id][OBSERVATIONS]:
-            continue
-        with store.lock, store.connect() as conn:
-            missing = unretained(conn, book_id, {OBSERVATIONS})
-            if missing:  # Retained in step 1 of this run; reaching this means something changed underneath.
-                raise MigrationError(f'book {book_id} has observations without artifacts: {missing}')
-            deleted += conn.execute(f'DELETE FROM {OBSERVATIONS} WHERE book_id=?', (book_id,)).rowcount
+def _checked_book_ids(conn, tables):
+    """Every book ID with a row in a Classic table, each verified as retained; raises otherwise.
 
-    # 3. Check the units and checkpoints once more, drop the tables and record, in one transaction.
+    Walks the tables themselves, not the census, so no row escapes the check (a row
+    without a usable book ID cannot be retained under a book, and stops the drop).
+    """
+    ids = set()
+    for table in [name for name in LEGACY_TABLES if name in tables] + ([OBSERVATIONS] if OBSERVATIONS in tables else []):
+        ids.update(book_id for (book_id,) in conn.execute(f'SELECT DISTINCT book_id FROM {table}'))
+    for book_id in ids:
+        if not isinstance(book_id, str) or not book_id:
+            raise MigrationError(f'a Classic row has no usable book ID ({book_id!r}); it cannot be retained')
+        missing = unretained(conn, book_id, tables)
+        if missing:
+            raise MigrationError(f'book {book_id} has rows without artifacts: {missing}')
+    return sorted(ids)
+
+
+def _delete_and_drop(store, census, present, totals):
+    """Step 2 of :func:`remove_classic_data`, once every book's data is retained: one transaction."""
     with store.lock, store.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         tables = _tables(conn)
-        for book_id in census:
-            missing = unretained(conn, book_id, set(LEGACY_TABLES) & tables)
-            if missing:
-                raise MigrationError(f'book {book_id} has rows without artifacts: {missing}')
+        deleted = 0
+        for book_id in _checked_book_ids(conn, tables):
+            if OBSERVATIONS in tables:
+                deleted += conn.execute(f'DELETE FROM {OBSERVATIONS} WHERE book_id=?', (book_id,)).rowcount
         for name in LEGACY_TABLES:
             conn.execute(f'DROP TABLE IF EXISTS {name}')
-        references = _classic_references(conn)
-        for book_id, (rows, in_context) in references.items():
-            counts = census.setdefault(book_id, _empty_counts(conn, book_id))
-            counts.update(classic_references=rows, classic_references_in_series_context=in_context)
-        body = {'books': {book_id: counts for book_id, counts in census.items()
-                          if _has_classic_data(counts) or counts.get('classic_references')},
+        body = {'books': {book_id: counts for book_id, counts in census.items() if _has_classic_data(counts)},
                 'book_count': sum(1 for c in census.values() if c['book']), 'totals': totals,
                 'dropped_tables': present, 'deleted_observations': deleted,
-                'classic_references': sum(r[0] for r in references.values()),
-                'classic_references_in_series_context': sum(r[1] for r in references.values())}
+                'classic_references': None, 'classic_references_in_series_context': None}
         _record(conn, 'completed', body)
+    return body
+
+
+def _count_references(store, census, body, log):
+    """Step 3: add the Classic-written reference counts to the completed record. Never blocks the drop."""
+    try:
+        with store.lock, store.connect() as conn:
+            references = _classic_references(conn)
+            for book_id, (rows, in_context) in references.items():
+                counts = census.setdefault(book_id, _empty_counts(conn, book_id))
+                counts.update(classic_references=rows, classic_references_in_series_context=in_context)
+            body = {**body, 'books': {book_id: counts for book_id, counts in census.items()
+                                      if _has_classic_data(counts) or counts.get('classic_references')},
+                    'classic_references': sum(r[0] for r in references.values()),
+                    'classic_references_in_series_context': sum(r[1] for r in references.values())}
+            row = conn.execute('SELECT body FROM schema_migrations WHERE id=?', (CLASSIC_REMOVAL,)).fetchone()
+            earlier = json.loads(row[0]).get('earlier_runs') if row else None
+            recorded = {**body, **({'earlier_runs': earlier} if earlier else {})}
+            conn.execute('UPDATE schema_migrations SET body=? WHERE id=?',
+                         (json.dumps(recorded, ensure_ascii=False, sort_keys=True), CLASSIC_REMOVAL))
+    except Exception:  # A statistic: the drop is already recorded as completed.
+        log.exception('Classic removal: could not count the Classic-written references (the drop is complete)')
     return body

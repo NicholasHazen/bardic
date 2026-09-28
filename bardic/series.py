@@ -360,7 +360,12 @@ class SeriesRepository:
         return {"character_id": character_id, "linked": False}
 
     def observations(self, book_id, character_id=None):
-        """Return durable historical observations for inspection, including old source versions."""
+        """Rows of the observation history table for inspection, including old source versions.
+
+        Empty for most books: the removed Classic engine's rows are ``character_observation``
+        artifacts since the Classic data drop, and new rows are written only when
+        ``RETAIN_OBSERVATIONS`` is on.
+        """
         with self.store.lock, self.store.connect() as conn:
             _book(conn, book_id)
             query, args = "SELECT body FROM character_observations WHERE book_id=?", (book_id,)

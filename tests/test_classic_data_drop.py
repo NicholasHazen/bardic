@@ -271,29 +271,71 @@ def test_an_unreadable_legacy_row_postpones_the_drop_without_stopping_the_server
 
 def test_an_interrupted_drop_resumes_without_losing_or_double_archiving(tmp_path, monkeypatch):
     classic_library(tmp_path)
-    real = migrations._classic_references
+    real = migrations._record
 
-    def interrupted(conn):
-        raise KeyboardInterrupt('synthetic power loss inside the drop transaction')
+    def interrupted(conn, status, body):
+        if status == 'completed':  # after the deletes and DROP statements, inside their transaction
+            raise KeyboardInterrupt('synthetic power loss inside the drop transaction')
+        return real(conn, status, body)
 
-    # The observation rows were deleted (step 2) when step 3 is interrupted after its DROP statements.
-    monkeypatch.setattr(migrations, '_classic_references', interrupted)
+    monkeypatch.setattr(migrations, '_record', interrupted)
     with pytest.raises(KeyboardInterrupt):
         remove_classic_data(Store(tmp_path))
-    assert {'analysis_units', 'analysis_checkpoints'} <= table_names(tmp_path)  # rolled back
-    assert counts(tmp_path, ('character_observations',)) == {'character_observations': 0}
+    # Everything destructive rolled back together; the retained artifacts stay.
+    assert {'analysis_units', 'analysis_checkpoints'} <= table_names(tmp_path)
+    assert counts(tmp_path, ('character_observations',)) == {'character_observations': 4}
     assert migration(Store(tmp_path), CLASSIC_REMOVAL) is None
     versions = counts(tmp_path, ('artifact_versions',))
 
-    monkeypatch.setattr(migrations, '_classic_references', real)
+    monkeypatch.setattr(migrations, '_record', real)
     with TestClient(create_app(tmp_path)) as client:
         store = client.app.state.runtime.store
         record = migration(store, CLASSIC_REMOVAL)
-        assert record['status'] == 'completed' and record['deleted_observations'] == 0
-        # Nothing was archived twice, and the proof of the Classic rows survived the earlier delete.
+        assert record['status'] == 'completed' and record['deleted_observations'] == 4
+        # Nothing was archived twice; the proof of the Classic rows is the retained artifacts.
         assert counts(tmp_path, ('artifact_versions',)) == versions
         read = client.get('/api/books/two/series/context').json()
         assert sum(len(c['observations']) for c in read['characters']) == 2
+
+
+def test_a_row_without_a_book_id_stops_the_drop(tmp_path):
+    classic_library(tmp_path)
+    with sqlite3.connect(tmp_path / 'library.sqlite3') as conn:
+        conn.execute('INSERT INTO analysis_units VALUES (NULL,?,?,?,?)', ('discovery:nobody', 'discovery', 'x', '{"result":{}}'))
+    started(tmp_path)
+    record = migration(Store(tmp_path), CLASSIC_REMOVAL)
+    assert record['status'] == 'failed' and 'None' in record['failures']
+    assert {'analysis_units', 'analysis_checkpoints'} <= table_names(tmp_path)
+    assert counts(tmp_path, ('character_observations', 'analysis_units')) == {'character_observations': 4, 'analysis_units': 3}
+
+
+def test_a_failing_reference_count_does_not_block_the_drop(tmp_path, monkeypatch):
+    classic_library(tmp_path)
+
+    def broken(conn):
+        raise KeyError('text')
+
+    monkeypatch.setattr(migrations, '_classic_references', broken)
+    result = remove_classic_data(Store(tmp_path))
+    assert result['status'] == 'completed' and result['classic_references'] is None
+    assert not {'analysis_units', 'analysis_checkpoints'} & table_names(tmp_path)
+    assert migration(Store(tmp_path), CLASSIC_REMOVAL)['classic_references'] is None
+
+
+def test_a_rerun_keeps_the_earlier_completed_record(tmp_path):
+    classic_library(tmp_path)
+    started(tmp_path)
+    first = migration(Store(tmp_path), CLASSIC_REMOVAL)
+    # A Classic table reappears (for example after running an older build): it is migrated again.
+    with sqlite3.connect(tmp_path / 'library.sqlite3') as conn:
+        add_classic_tables(conn)
+    started(tmp_path)
+    second = migration(Store(tmp_path), CLASSIC_REMOVAL)
+    assert second['status'] == 'completed' and second['deleted_observations'] == 0
+    assert not {'analysis_units', 'analysis_checkpoints'} & table_names(tmp_path)
+    earlier = second['earlier_runs']
+    assert len(earlier) == 1 and earlier[0]['deleted_observations'] == 4
+    assert earlier[0]['books'] == first['books']
 
 
 def test_a_library_like_the_owners_migrates_cleanly(tmp_path, caplog):

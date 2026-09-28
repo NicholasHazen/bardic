@@ -73,8 +73,7 @@ Use the regular full-library backup procedure before any separate data move or r
 The owner approved stage 4 of the [Classic removal](CLASSIC-REMOVAL.md#stage-4-what-was-dropped) as a one-time migration, `classic_removal_v1`, that runs the first time the new version starts. It needs no command. It:
 
 1. Retains every book's data from the removed Classic engine as immutable artifacts, archived books included: unit-cache rows, checkpoint units, each whole checkpoint (`analysis_checkpoint`) and each `character_observations` row. It checks that every row has its artifact.
-2. Deletes the `character_observations` rows. The table stays.
-3. Drops the `analysis_units` and `analysis_checkpoints` tables and records the result in the `schema_migrations` table.
+2. In one transaction, checks every row again, deletes the `character_observations` rows (the table stays), drops the `analysis_units` and `analysis_checkpoints` tables and records the result in the `schema_migrations` table.
 
 It keeps `analysis_attempts` (the spending guard sums them), `pipeline_events`, every `pipeline_*` table, all artifacts, `book_preprocessing`, `character_references`, historical `analyze` jobs and book JSON. Cast references and series context work as before.
 
@@ -95,6 +94,8 @@ sqlite3 -readonly "$BARDIC_DATA_DIR/library.sqlite3" \
 ```
 
 `body` holds the per-book counts, `dropped_tables` and `deleted_observations`. If a book's data cannot be retained, the log shows the error with an `ERROR:` line starting `Classic removal postponed:`, the record says `failed` with the reason, nothing is deleted or dropped, and the server starts normally. The migration runs again at the next start. Keep the backup until you have checked the record and opened a few books.
+
+If it keeps failing, the cause is a legacy row it cannot retain faithfully: unreadable JSON, a value JSON cannot hold (such as NaN), or a row without a book ID. The `failures` in the record name the book. The Classic data is intact, and the app works meanwhile; the cost is a repeated retention pass and traceback at each start. Do not delete the row by hand to get past it. Keep the backup, copy the library to a scratch directory, and inspect the named book's rows there (read-only) to decide with the owner whether to repair or discard that row, then change the real library only with a fresh backup.
 
 ## Configuration and credentials
 
