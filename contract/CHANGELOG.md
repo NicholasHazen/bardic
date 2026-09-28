@@ -22,6 +22,14 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.2.2 — 2026-09-28
+<!-- contract-sha256: 060b4323a8fda3dfa6232f5789ceac37771cb19a3115473485656930e727e17c -->
+
+Saved step settings for the Analyze tab (UI redesign phase 3a). Additive.
+
+- `updateSettings` accepts `analysis_step_presets` (`StepPreset` / `StepPresetConfig`): a whole-list replacement of at most 50 owner-authored step settings. New 400 cases: unknown step, provider or model the step does not take, duplicate `id`, duplicate name for one step.
+- `Status` (from `getStatus` and `updateSettings`) gains `analysis_step_presets`: `StepPresetView[]`, empty when none.
+
 ## 0.2.1 — 2026-09-28
 <!-- contract-sha256: 170713696e79319554b6440547a4ec864703d4ecdef0bb454427df4a90281e1c -->
 

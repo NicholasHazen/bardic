@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.2.1
+# Bardic 0.2.2
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -6126,6 +6126,7 @@ A partial settings update. Every field is optional; omitted fields stay unchange
 | `breeze_url` | string \| null |  | Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. An empty string clears it. Saved. The saved Breeze check stays valid only for the URL it was made with. |
 | `breeze_api_key` | string \| null |  | Breeze API key. Runtime only, never saved; whitespace trimmed; an empty string clears it. |
 | `local_service_urls` | map of string → string \| null |  | Self-hosted analysis server roots by service ID (`local_llm`, `booknlp`, `novel_analyzer`), each an http(s) root without path or credentials, up to 500 characters. An empty string clears it and also overrides its environment variable. Services not included keep their value; a service never set in Settings uses its environment variable, which is never saved. Saved. |
+| `analysis_step_presets` | list of [StepPreset](#schema-steppreset) \| null |  | Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` clears it. Validated as a whole: an unknown step, a provider or model the step does not take, a duplicate `id`, or a duplicate name for one step is refused (400) and nothing is saved. Saved. |
 
 <a id="schema-status"></a>
 ### Status
@@ -6158,6 +6159,7 @@ derived at request time.
 | `tts_models` | list of string | yes | Supported Gemini speech models. |
 | `analysis_models` | list of string | yes | Curated Gemini analysis model IDs (compatibility; see `model_catalogs`). |
 | `tts_rate` | map of string → [TtsRateState](#schema-ttsratestate) | yes | Live rate-limiter state per Gemini speech model. |
+| `analysis_step_presets` | list of [StepPresetView](#schema-steppresetview) | yes | Saved step settings for the Analyze tab, in saved order; empty when none. Applying one never starts work. |
 | `tts_quota` | map of string → [ChapterListenQuota](#schema-chapterlistenquota) | yes | This library's daily Gemini speech request count for the selected speech model: one entry keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before any usage is recorded. |
 | `data_directory` | string | yes | Internal; do not rely on it. Absolute path of the server library directory. |
 | `timing_kind` | `"segment"` | yes | Granularity of read-along timing: per passage (segment). |
@@ -6183,6 +6185,62 @@ A provider and model for one step, overriding its saved settings for this reques
 | --- | --- | --- | --- |
 | `provider` | string | yes | Provider ID: `local` for plain steps, otherwise one of the step's `providers` (1–40 characters). (min length `1`; max length `40`) |
 | `model` | string \| null |  | Model ID for a model provider (up to 200 characters); omit or null for local steps and service providers. |
+
+<a id="schema-steppreset"></a>
+### StepPreset
+
+One saved step setting (format version 1).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Client-chosen ID, `[A-Za-z0-9_-]{1,40}`; unique within the list. (pattern `^[A-Za-z0-9_-]{1,40}$`) |
+| `name` | string | yes | Display name, 1–60 characters; whitespace is collapsed on save. Unique per step, ignoring case. (min length `1`; max length `60`) |
+| `step` | string | yes | A registered analysis pipeline step ID. (pattern `^[a-z][a-z0-9_]{0,39}$`) |
+| `config` | [StepPresetConfig](#schema-steppresetconfig) | yes | The step settings to capture. |
+| `version` | `1` |  | Format version; must be 1. (default `1`) |
+
+<a id="schema-steppresetconfig"></a>
+### StepPresetConfig
+
+Step settings a saved set captures. Unknown fields are refused (422).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provider` | string | yes | Provider the step accepts (1–40 characters); validated like the step settings route. (min length `1`; max length `40`) |
+| `model` | string \| null |  | Model ID up to 200 characters, or null. Must be null for local and service providers. |
+| `custom_model` | boolean |  | True when the model ID was typed by hand; forced false when `model` is null. (default `false`) |
+| `gate` | `"auto"` \| `"review"` |  | `auto` (default) or `review`. (default `"auto"`) |
+| `concurrency` | integer |  | Requests at once, a strict integer 1–4 (default 2). (≥ `1.0`; ≤ `4.0`; default `2`) |
+| `fresh` | boolean |  | Request fresh samples instead of reusing validated results (default false). (default `false`) |
+| `chapter_id` | string \| null |  | One story section (1–200 characters), or null for all; forced null for steps that are not section-scoped. |
+
+<a id="schema-steppresetconfigview"></a>
+### StepPresetConfigView
+
+The step settings a saved set captures (version 1).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provider` | string | yes | Provider ID the step runs with (`local` for local steps). |
+| `model` | string \| null | yes | Model ID, or null for local and service providers. |
+| `custom_model` | boolean | yes | True when the model ID was typed by hand rather than chosen from the catalog. |
+| `gate` | `"auto"` \| `"review"` | yes | `auto` accepts a run's results; `review` holds them for review. |
+| `concurrency` | integer | yes | Requests at once, 1–4. |
+| `fresh` | boolean | yes | True to request fresh samples instead of reusing validated cached results. |
+| `chapter_id` | string \| null | yes | One story section to process, or null for all. Always null for steps that are not section-scoped. |
+
+<a id="schema-steppresetview"></a>
+### StepPresetView
+
+An owner-authored saved step setting.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Client-chosen ID, `[A-Za-z0-9_-]{1,40}`. |
+| `name` | string | yes | Display name, 1–60 characters, whitespace collapsed. Unique per step, ignoring case. |
+| `step` | string | yes | Analysis pipeline step ID the setting applies to. |
+| `config` | [StepPresetConfigView](#schema-steppresetconfigview) | yes | The captured step settings. |
+| `version` | `1` | yes | Saved-setting format version. |
 
 <a id="schema-stepsettings"></a>
 ### StepSettings

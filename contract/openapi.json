@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ...}`. `detail` is an English sentence, or a\n  list of issues for 422 request validation. Display it; do not parse it.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
@@ -23831,6 +23831,21 @@
               }
             ],
             "description": "Self-hosted analysis server roots by service ID (`local_llm`, `booknlp`, `novel_analyzer`), each an http(s) root without path or credentials, up to 500 characters. An empty string clears it and also overrides its environment variable. Services not included keep their value; a service never set in Settings uses its environment variable, which is never saved. Saved."
+          },
+          "analysis_step_presets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/StepPreset"
+                },
+                "type": "array",
+                "maxItems": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` clears it. Validated as a whole: an unknown step, a provider or model the step does not take, a duplicate `id`, or a duplicate name for one step is refused (400) and nothing is saved. Saved."
           }
         },
         "additionalProperties": false,
@@ -24002,6 +24017,13 @@
             "description": "Live rate-limiter state per Gemini speech model.",
             "type": "object"
           },
+          "analysis_step_presets": {
+            "description": "Saved step settings for the Analyze tab, in saved order; empty when none. Applying one never starts work.",
+            "items": {
+              "$ref": "#/components/schemas/StepPresetView"
+            },
+            "type": "array"
+          },
           "tts_quota": {
             "additionalProperties": {
               "$ref": "#/components/schemas/ChapterListenQuota"
@@ -24042,6 +24064,7 @@
           "tts_models",
           "analysis_models",
           "tts_rate",
+          "analysis_step_presets",
           "tts_quota",
           "data_directory",
           "timing_kind"
@@ -24117,6 +24140,211 @@
         ],
         "title": "StepConfig",
         "description": "A provider and model for one step, overriding its saved settings for this request. For a local (plain) step only `provider: \"local\"` with no model is accepted. A service provider (`booknlp`, `novel_analyzer`) takes no model. A model provider needs a model ID matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`."
+      },
+      "StepPreset": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,40}$",
+            "description": "Client-chosen ID, `[A-Za-z0-9_-]{1,40}`; unique within the list."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "description": "Display name, 1–60 characters; whitespace is collapsed on save. Unique per step, ignoring case."
+          },
+          "step": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,39}$",
+            "description": "A registered analysis pipeline step ID."
+          },
+          "config": {
+            "$ref": "#/components/schemas/StepPresetConfig",
+            "description": "The step settings to capture."
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "default": 1,
+            "description": "Format version; must be 1."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "step",
+          "config"
+        ],
+        "title": "StepPreset",
+        "description": "One saved step setting (format version 1)."
+      },
+      "StepPresetConfig": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "description": "Provider the step accepts (1–40 characters); validated like the step settings route."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model ID up to 200 characters, or null. Must be null for local and service providers."
+          },
+          "custom_model": {
+            "type": "boolean",
+            "default": false,
+            "description": "True when the model ID was typed by hand; forced false when `model` is null."
+          },
+          "gate": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "review"
+            ],
+            "default": "auto",
+            "description": "`auto` (default) or `review`."
+          },
+          "concurrency": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "default": 2,
+            "description": "Requests at once, a strict integer 1–4 (default 2)."
+          },
+          "fresh": {
+            "type": "boolean",
+            "default": false,
+            "description": "Request fresh samples instead of reusing validated results (default false)."
+          },
+          "chapter_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One story section (1–200 characters), or null for all; forced null for steps that are not section-scoped."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "StepPresetConfig",
+        "description": "Step settings a saved set captures. Unknown fields are refused (422)."
+      },
+      "StepPresetConfigView": {
+        "description": "The step settings a saved set captures (version 1).",
+        "properties": {
+          "provider": {
+            "description": "Provider ID the step runs with (`local` for local steps).",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model ID, or null for local and service providers."
+          },
+          "custom_model": {
+            "description": "True when the model ID was typed by hand rather than chosen from the catalog.",
+            "type": "boolean"
+          },
+          "gate": {
+            "description": "`auto` accepts a run's results; `review` holds them for review.",
+            "enum": [
+              "auto",
+              "review"
+            ],
+            "type": "string"
+          },
+          "concurrency": {
+            "description": "Requests at once, 1–4.",
+            "type": "integer"
+          },
+          "fresh": {
+            "description": "True to request fresh samples instead of reusing validated cached results.",
+            "type": "boolean"
+          },
+          "chapter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One story section to process, or null for all. Always null for steps that are not section-scoped."
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "custom_model",
+          "gate",
+          "concurrency",
+          "fresh",
+          "chapter_id"
+        ],
+        "title": "StepPresetConfigView",
+        "type": "object"
+      },
+      "StepPresetView": {
+        "description": "An owner-authored saved step setting.",
+        "properties": {
+          "id": {
+            "description": "Client-chosen ID, `[A-Za-z0-9_-]{1,40}`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name, 1–60 characters, whitespace collapsed. Unique per step, ignoring case.",
+            "type": "string"
+          },
+          "step": {
+            "description": "Analysis pipeline step ID the setting applies to.",
+            "type": "string"
+          },
+          "config": {
+            "$ref": "#/components/schemas/StepPresetConfigView",
+            "description": "The captured step settings."
+          },
+          "version": {
+            "const": 1,
+            "description": "Saved-setting format version.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "step",
+          "config",
+          "version"
+        ],
+        "title": "StepPresetView",
+        "type": "object"
       },
       "StepSettings": {
         "properties": {

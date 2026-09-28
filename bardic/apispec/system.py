@@ -180,6 +180,27 @@ class LocalServiceUrls(View):
     novel_analyzer: str = Field(description='Novel Analyzer chapter-script server.')
 
 
+class StepPresetConfigView(View):
+    """The step settings a saved set captures (version 1)."""
+    provider: str = Field(description='Provider ID the step runs with (`local` for local steps).')
+    model: str | None = Field(description='Model ID, or null for local and service providers.')
+    custom_model: bool = Field(description='True when the model ID was typed by hand rather than chosen from the catalog.')
+    gate: Literal['auto', 'review'] = Field(description="`auto` accepts a run's results; `review` holds them for review.")
+    concurrency: int = Field(description='Requests at once, 1–4.')
+    fresh: bool = Field(description='True to request fresh samples instead of reusing validated cached results.')
+    chapter_id: str | None = Field(description='One story section to process, or null for all. Always null for steps '
+                                               'that are not section-scoped.')
+
+
+class StepPresetView(View):
+    """An owner-authored saved step setting."""
+    id: str = Field(description='Client-chosen ID, `[A-Za-z0-9_-]{1,40}`.')
+    name: str = Field(description='Display name, 1–60 characters, whitespace collapsed. Unique per step, ignoring case.')
+    step: str = Field(description='Analysis pipeline step ID the setting applies to.')
+    config: StepPresetConfigView = Field(description='The captured step settings.')
+    version: Literal[1] = Field(description='Saved-setting format version.')
+
+
 class Status(View):
     """Runtime status and preferences. Never contains key values and never contacts a provider.
 
@@ -219,6 +240,9 @@ class Status(View):
     tts_models: list[str] = Field(description='Supported Gemini speech models.')
     analysis_models: list[str] = Field(description='Curated Gemini analysis model IDs (compatibility; see `model_catalogs`).')
     tts_rate: dict[str, TtsRateState] = Field(description='Live rate-limiter state per Gemini speech model.')
+    analysis_step_presets: list[StepPresetView] = Field(
+        description='Saved step settings for the Analyze tab, in saved order; empty when none. Applying one never '
+                    'starts work.')
     tts_quota: dict[str, ChapterListenQuota] = Field(
         description='This library\'s daily Gemini speech request count for the selected speech model: one entry '
                     'keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before '
@@ -418,6 +442,10 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'api_key': 'Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is '
                    'removed and an empty string clears the key. Up to 500 characters.',
         'tts_model': 'Gemini speech model; must be one of `tts_models` from status. Saved.',
+        'analysis_step_presets': 'Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` '
+                                 'clears it. Validated as a whole: an unknown step, a provider or model the step does '
+                                 'not take, a duplicate `id`, or a duplicate name for one step is refused (400) and '
+                                 'nothing is saved. Saved.',
         'analysis_model': 'Compatibility alias for `analysis_models_by_provider.gemini`. Saved.',
         'api_keys': 'Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. '
                     'Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; '
@@ -442,6 +470,25 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                               'characters. An empty string clears it and also overrides its environment variable. '
                               'Services not included keep their value; a service never set in Settings uses its '
                               'environment variable, which is never saved. Saved.',
+    },
+    'StepPreset': {
+        '__doc__': 'One saved step setting (format version 1).',
+        'id': 'Client-chosen ID, `[A-Za-z0-9_-]{1,40}`; unique within the list.',
+        'name': 'Display name, 1–60 characters; whitespace is collapsed on save. Unique per step, ignoring case.',
+        'step': 'A registered analysis pipeline step ID.',
+        'config': 'The step settings to capture.',
+        'version': 'Format version; must be 1.',
+    },
+    'StepPresetConfig': {
+        '__doc__': 'Step settings a saved set captures. Unknown fields are refused (422).',
+        'provider': 'Provider the step accepts (1–40 characters); validated like the step settings route.',
+        'model': 'Model ID up to 200 characters, or null. Must be null for local and service providers.',
+        'custom_model': 'True when the model ID was typed by hand; forced false when `model` is null.',
+        'gate': '`auto` (default) or `review`.',
+        'concurrency': 'Requests at once, a strict integer 1–4 (default 2).',
+        'fresh': 'Request fresh samples instead of reusing validated results (default false).',
+        'chapter_id': 'One story section (1–200 characters), or null for all; forced null for steps that are not '
+                      'section-scoped.',
     },
     'DiagnosticRequest': {
         '__doc__': 'One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422).',
