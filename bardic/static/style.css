@@ -1,22 +1,4 @@
-/* Bardic's shared palette also styles the independent feature panels. */
-:root {
-  --paper:#faf9f6;
-  --canvas:#f0eeeb;
-  --white:#ffffff;
-  --surface:var(--white);
-  --ink:#292730;
-  --muted:#67636d;
-  --green:#63516d;
-  --green-dark:#4b3b55;
-  --green-light:#efebf1;
-  --line:#dfdce1;
-  --border:var(--line);
-  --border-strong:#8a8591;
-  --gold:#8b6843;
-  --serif:Iowan Old Style,Baskerville,Georgia,'Times New Roman',serif;
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  --sidebar:244px;
-}
+/* App shell, workspace and shared element styles. Tokens live in tokens.css (loaded first). */
 * {
   box-sizing:border-box;
 }

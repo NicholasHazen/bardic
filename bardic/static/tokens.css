@@ -1,0 +1,93 @@
+/* Bardic design tokens: the only file that holds raw colour values.
+   Loaded first. Values come from the app's current palette and from the two
+   screens the redesign copies: the "Choose your narrator" listen sheet and the
+   reader appearance panel. docs/UI-GUIDE.md says when to use each token;
+   bardic/static/kitchen-sink.html shows them in use. */
+:root {
+  /* Colour: surfaces and text. */
+  --color-bg:#faf9f6;             /* page */
+  --color-bg-sunken:#f0eeeb;      /* sidebar, notices, sunken wells */
+  --color-surface:#ffffff;        /* cards, controls, dialogs */
+  --color-hover:#e7e3e8;          /* hover on sunken surfaces */
+  --color-text:#292730;
+  --color-text-muted:#67636d;     /* passes 4.5:1 on bg, sunken, hover and accent-soft */
+  --color-border:#dfdce1;         /* decorative dividers and card edges */
+  --color-border-strong:#8a8591;  /* form-control edges: 3:1 on sunken, 3.59:1 on surface */
+  --color-accent:#63516d;         /* plum; the legacy name is --green */
+  --color-accent-hover:#4b3b55;
+  --color-accent-soft:#efebf1;    /* selected cards and rows */
+  --color-accent-border:#c7becd;
+  --color-on-accent:#ffffff;
+  --color-inverse-bg:var(--color-text);   /* toasts */
+  --color-inverse-text:var(--color-bg);
+  --color-gold:#8b6843;
+  --color-focus:var(--color-accent);
+
+  /* Status tones: text on its own background, 4.8:1 or better (tests/test_ui_contrast.py). */
+  --tone-neutral-text:#646256; --tone-neutral-bg:#ecebe5;
+  --tone-good-text:#45613b;    --tone-good-bg:#e5eddd;
+  --tone-info-text:#395d7d;    --tone-info-bg:#e2eaf2;
+  --tone-warn-text:#835d26;    --tone-warn-bg:#f3e7d1;
+  --tone-bad-text:#8e4333;     --tone-bad-bg:#f4dfd9;
+  --tone-accent-text:var(--color-accent); --tone-accent-bg:var(--color-accent-soft);
+
+  /* Type. Serif for story and reading surfaces, sans for operational ones. */
+  --font-serif:Iowan Old Style,Baskerville,Georgia,'Times New Roman',serif;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --text-2xs:11px;   /* floor: badges, card hints */
+  --text-xs:12px;    /* help text, labels, small buttons */
+  --text-sm:13px;    /* chips, segmented controls, inputs */
+  --text-md:14px;    /* body and card titles */
+  --text-lg:15px;    /* large controls */
+  --text-xl:18px;    /* panel titles (sans) */
+  --text-2xl:22px;   /* serif sub-heads */
+  --text-3xl:28px;   /* serif section heads (H2) */
+  --text-4xl:38px;   /* book title */
+  --text-display:clamp(44px, 4.6vw, 68px);
+  --leading-tight:1.2;
+  --leading-snug:1.3;
+  --leading-ui:1.5;
+  --leading-help:1.6;
+  --weight-regular:400;
+  --weight-medium:500;
+  --weight-semibold:600;
+  --tracking-eyebrow:.14em;
+
+  /* Space: a 4px scale with 2px and 6px half steps. */
+  --space-0-5:2px; --space-1:4px; --space-1-5:6px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px;
+
+  /* Shape. The listen sheet uses md for buttons, xl for option cards, pill for chips. */
+  --radius-sm:4px; --radius-md:6px; --radius-lg:8px; --radius-xl:10px; --radius-2xl:14px; --radius-pill:999px;
+  --shadow-1:0 1px 3px rgb(41 39 48 / .08);
+  --shadow-2:0 7px 25px rgb(41 39 48 / .14);
+  --shadow-3:0 18px 60px rgb(0 0 0 / .28);
+
+  /* Controls and focus. */
+  --control-sm:32px; --control-md:40px; --control-touch:44px; --control-lg:48px;
+  --focus-width:3px; --focus-offset:4px;
+
+  /* Layers and motion. */
+  --z-sticky:20; --z-overlay:25; --z-chrome:30; --z-toast:100; --z-skip:110;
+  --duration-fast:160ms; --duration-base:250ms;
+
+  /* Layout. */
+  --sidebar:244px;
+
+  /* Legacy names, kept so existing CSS is unchanged. New code uses the names above. */
+  --paper:var(--color-bg);
+  --canvas:var(--color-bg-sunken);
+  --white:var(--color-surface);
+  --surface:var(--color-surface);
+  --ink:var(--color-text);
+  --muted:var(--color-text-muted);
+  --green:var(--color-accent);
+  --green-dark:var(--color-accent-hover);
+  --green-light:var(--color-accent-soft);
+  --line:var(--color-border);
+  --border:var(--color-border);
+  --border-strong:var(--color-border-strong);
+  --gold:var(--color-gold);
+  --serif:var(--font-serif);
+  --sans:var(--font-sans);
+}
