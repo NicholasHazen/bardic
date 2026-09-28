@@ -62,10 +62,13 @@ test('partial analysis counts required steps; results waiting for review come fi
   const partial = life.compute({book:book(), overview:overview({discovery:accepted, profiles:{has_accepted:true, accepted_scopes:1, total_scopes:3}})});
   assert.equal(byId(partial).analyze.stateLabel, '1 of 3 steps', 'a step accepted for only some characters is not done');
   assert.match(byId(partial).analyze.detail, /Still needed: Character profiles and Speakers & delivery/);
+  // Next opens Analyze on the first missing step (BardicAnalysisPipeline.selectStep through shell.js).
+  assert.deepEqual(plain(partial.next), {label:'Run Character profiles', tab:'analysis', step:'profiles'});
+  assert.match(life.strip(partial), /data-lifecycle-go="analysis" data-lifecycle-step="profiles"/);
   const review = life.compute({book:book(), overview:overview({discovery:{...accepted, pending_versions:2}})});
   assert.equal(byId(review).analyze.state, 'needs_review');
   assert.equal(byId(review).analyze.stateLabel, '2 results to review');
-  assert.deepEqual(plain(review.next), {label:'Review analysis results', tab:'analysis'});
+  assert.deepEqual(plain(review.next), {label:'Review analysis results', tab:'analysis', step:'discovery'}, 'the first step with a version waiting');
   const running = life.compute({book:book(), overview:overview({}, {active_run:{id:'r1', status:'running'}})});
   assert.equal(byId(running).analyze.state, 'running');
   assert.equal(ui.statusTone(byId(running).analyze.state), 'info');

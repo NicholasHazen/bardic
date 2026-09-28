@@ -2,9 +2,10 @@
    optional hooks (renderLifecycle, navigated, initialRoute, start) and exposes its own state
    and navigation as window.BardicApp. This file owns:
      - the lifecycle strip under the book tabs (lifecycle.js computes it),
-     - hash routes: #/library, #/voices and #/book/<id>/<tab>, with back and forward,
-     - the breadcrumb, the Voices page in the sidebar, and
-     - the one-line narrator summary on Read & listen, which mirrors the sheet's More options.
+     - hash routes: #/library, #/voices and #/book/<id>/<tab> (also #/book/<id>/analysis/<step>), with back and forward,
+     - the breadcrumb, the Voices page in the sidebar,
+     - the one-line narrator summary on Read & listen, which mirrors the sheet's More options, and
+     - the fallback for the bardic:show-passage event (Analyze results' Show in text): Read & listen at that passage.
    Nothing here sends a paid request. The only fetch is the read-only analysis overview. */
 (() => {
   'use strict';
@@ -80,10 +81,15 @@
     paintLifecycle();
   }
 
-  function go(tab, target) {
+  // Open a step on Analyze. The analysis tab moves focus to the step itself, so the tab heading is left alone.
+  const openStep = step => Boolean(step) && window.BardicAnalysisPipeline?.selectStep?.(step) === true;
+
+  function go(tab, target, step) {
     const shell = app();
     if (!shell || !BOOK_TABS.includes(tab)) return;
+    const stepped = tab === 'analysis' && openStep(step);
     shell.setTab(tab);
+    if (stepped) return;
     const element = target === 'script' ? $('#script-heading') : target === 'record' ? $('#render-button') : target === 'export' ? $('#export-link') : null;
     const panel = element || $(`#${tab}-view`);
     if (element) {
@@ -101,7 +107,10 @@
     const parts = String(hash || '').replace(/^#\/?/, '').split('/').filter(Boolean).map(part => { try { return decodeURIComponent(part); } catch { return part; } });
     if (parts[0] === 'library') return {page:'library'};
     if (parts[0] === 'voices') return {page:'voices'};
-    if (parts[0] === 'book' && parts[1]) return {book:parts[1], tab:BOOK_TABS.includes(parts[2]) ? parts[2] : 'read'};
+    if (parts[0] === 'book' && parts[1]) {
+      const tab = BOOK_TABS.includes(parts[2]) ? parts[2] : 'read';
+      return tab === 'analysis' && parts[3] ? {book:parts[1], tab, step:parts[3]} : {book:parts[1], tab};
+    }
     return null;
   }
   function currentRoute(state) {
@@ -132,6 +141,7 @@
           await shell.selectBook(route.book);
         }
         // Revealing from Library or Voices repaints the page; within a book only the tab changes.
+        if (route.step) openStep(route.step);
         shell.setTab(route.tab);
       }
     } finally {
@@ -213,7 +223,7 @@
         return;
       }
       const target = event.target.closest('[data-lifecycle-go]');
-      if (target) go(target.dataset.lifecycleGo, target.dataset.lifecycleTarget);
+      if (target) go(target.dataset.lifecycleGo, target.dataset.lifecycleTarget, target.dataset.lifecycleStep);
     });
     $('#render-provider')?.addEventListener('change', paintLifecycle);
     $('#sidebar-voices')?.addEventListener('click', showVoices);
@@ -221,7 +231,40 @@
     $('#narrator-change')?.addEventListener('click', () => app()?.openListenSheet('live'));
     window.addEventListener('popstate', onRouteChange);
     window.addEventListener('hashchange', onRouteChange);
+    document.addEventListener('bardic:show-passage', onShowPassage);
     mirrorNarrator();
+  }
+
+  // ---- Show in text --------------------------------------------------------------------------
+  // Analyze dispatches bardic:show-passage {bookId, segmentId, chapterId} (cancelable). A view that opens the
+  // passage itself (Script & record, later) calls preventDefault(); otherwise, after every listener has run, this
+  // opens Read & listen at the passage. app.js has no select-passage API, so it goes through the reader's own
+  // controls: in the chapter on screen it only scrolls to and focuses the passage (your place does not move);
+  // in another chapter it picks that chapter in the reader's chapter menu, exactly as choosing it by hand would
+  // (that moves your place to the chapter and stops narration in progress).
+  function onShowPassage(event) {
+    const detail = event?.detail || {};
+    setTimeout(() => { if (!event.defaultPrevented) showInReader(detail); }, 0);
+  }
+
+  function showInReader({bookId, segmentId} = {}) {
+    const shell = app(), book = shell?.state?.book;
+    if (!book || book.id !== bookId) return false;
+    const segment = (book.segments || []).find(item => item.id === segmentId);
+    if (!segment) return false;
+    shell.setTab('read');
+    if (segment.chapter_id !== shell.state.chapterId) {
+      const picker = $('#reader-chapter');
+      if (!picker) return false;
+      picker.value = segment.chapter_id;
+      picker.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+    const passage = Array.from(document.querySelectorAll('#reader-text [data-segment]')).find(node => node.dataset.segment === segment.id);
+    if (!passage) return false;
+    passage.scrollIntoView?.({behavior:shell.scrollMotion?.() || 'auto', block:'center'});
+    // A focus ring marks the passage even though a pointer click brought us here (focusVisible, where supported).
+    passage.focus?.({preventScroll:true, focusVisible:true});
+    return true;
   }
 
   let initial;
@@ -242,5 +285,5 @@
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
   }
-  window.BardicShell = {renderLifecycle, navigated, initialRoute, start, parse, currentRoute, showVoices};
+  window.BardicShell = {renderLifecycle, navigated, initialRoute, start, parse, currentRoute, showVoices, go, showInReader};
 })();
