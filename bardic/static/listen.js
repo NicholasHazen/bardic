@@ -44,7 +44,9 @@
     ...(voiceIdentity(state) !== undefined ? [voiceIdentity(state)] : [])]);
   const storageKey = id => `bardic:listen:${id}`;
   const stateFor = book => book && books.get(book.id);
-  const enabled = book => stateFor(book)?.mode === 'simple';
+  // A saved performance plays through the same one-voice path, but never generates.
+  const enabled = book => ['simple','performance'].includes(stateFor(book)?.mode);
+  const performing = state => state?.mode === 'performance';
   const playbackRates = [.75,1,1.25,1.5,1.75,2,2.25,2.5];
   const selectedSegment = panel => panel.state.book.segments.find(segment => segment.id === panel.options.segmentId) ||
     panel.state.book.segments.find(segment => segment.chapter_id === panel.options.chapterId);
@@ -52,6 +54,13 @@
   function getSelection(book) {
     const state = stateFor(book);
     return state ? {mode:state.mode,provider:state.provider,voice:state.voices[state.provider],model:modelFor(state)} : null;
+  }
+  function getPerformance(book) {
+    const state = stateFor(book);
+    if (!performing(state)) return null;
+    const performance = state.performance;
+    return {id:state.performanceId,name:performance?.record.name || 'Saved performance',label:performance?.record.narrator_label || '',
+      loaded:Boolean(performance),job:performance?.record.job || null,record:performance?.record || null};
   }
 
   function saved(id) {
@@ -62,7 +71,7 @@
   }
   function save(state) {
     const value = {mode:state.mode,provider:state.provider,voices:state.voices,model:state.model,
-      sessionId:state.sessionId,sessionKey:state.sessionKey,continuous:state.continuous};
+      sessionId:state.sessionId,sessionKey:state.sessionKey,continuous:state.continuous,performanceId:state.performanceId || null};
     try { localStorage.setItem(storageKey(state.book.id),JSON.stringify(value)); } catch { /* Storage is optional. */ }
   }
   async function request(url, body) {
@@ -151,6 +160,10 @@
   function resolve(book, segment) {
     if (!segment) return null;
     const state = stateFor(book);
+    if (performing(state)) {
+      const audio = state.performance?.audio.get(segment.id);
+      return valid(audio) ? audio : null;
+    }
     if (!state || state.mode !== 'simple') return valid(segment.audio) ? segment.audio : null;
     const item = state.takes.get(segment.id);
     return item?.source === sourceKey(segment) && valid(item.audio) ? item.audio : null;
@@ -204,7 +217,23 @@
     const order = readingOrder(state), start = order.index.get(segmentId);
     if (start === undefined) return undefined;
     const chapter = order.list[start].chapter_id;
-    return order.list.slice(start + 1).find(segment => segment.chapter_id !== chapter)?.chapter_id;
+    return order.list.slice(start + 1).find(segment => segment.chapter_id !== chapter && inPerformance(state,segment))?.chapter_id;
+  }
+  // A performance plays only its chosen chapters; everything else is eligible.
+  const inPerformance = (state, segment) => !performing(state) || Boolean(state.performance?.chapterIds.has(segment.chapter_id));
+  // The passage playback moves to after this one, or null where it stops.
+  function nextSegment(book, segment) {
+    const state = stateFor(book);
+    if (!state || !segment) return null;
+    const order = readingOrder(state), start = order.index.get(segment.id);
+    if (start === undefined) return null;
+    for (let i = start + 1; i < order.list.length; i++) {
+      const next = order.list[i];
+      // Continuous performance playback skips chapters it does not include.
+      if (!inPerformance(state,next)) { if (state.continuous) continue; return null; }
+      return allowsAdvance(book,segment,next) ? next : null;
+    }
+    return null;
   }
   // A play intent continues into the next chapter only by automatic
   // continuation with continuous listening on; anything else starts afresh.
@@ -362,6 +391,8 @@
   }
   function drain(state) {
     if (state.active || !state.queue.length) return;
+    // Defence in depth: nothing queued may be sent while a performance plays.
+    if (performing(state)) { for (const task of state.queue.splice(0)) task.resolve(null); return; }
     const task = state.queue.shift();
     if (!current(state,task.version)) { task.resolve(null); drain(state); return; }
     state.active = task;
@@ -405,12 +436,15 @@
   }
   async function ensure(book, segment) {
     const state = stateFor(book);
+    if (performing(state)) return resolve(book,segment);
     if (!state || state.mode !== 'simple') return resolve(book,segment);
     state.error = '';
     return enqueue(state,segment,true);
   }
   function schedule(state) {
     const intent = state.intent;
+    // A saved performance never generates; its job is the only producer.
+    if (performing(state)) return;
     if (chunked(state)) { queueAhead(state); return; }
     if (!intent || intent.blocked || intent.phase !== 'playing' || state.active || state.queue.length) return;
     const list = upcoming(state,intent.segmentId).slice(0,AHEAD_PASSAGES+1);
@@ -424,6 +458,7 @@
   }
   async function prepare(book,segment,{playbackRate=1,offset=0,continuation=false}={}) {
     const state = stateFor(book);
+    if (performing(state)) return preparePerformance(state,segment,{playbackRate,offset,continuation});
     if (!state || state.mode !== 'simple') return resolve(book,segment);
     if (chunked(state)) return prepareFromChapter(state,segment,{playbackRate,offset,continuation});
     let intent = state.intent;
@@ -462,6 +497,9 @@
   function updatePlayback(book,segment,{playbackRate=1,currentTime=0}={}) {
     const state = stateFor(book), intent = state?.intent;
     if (!intent || intent.type !== 'play') return;
+    // While a performance is still processing, pick up newly finished audio.
+    if (performing(state) && state.performance && PERFORMANCE_ACTIVE.has(state.performance.record.job?.status) &&
+        Date.now() - state.performance.loadedAt > 5000) void loadPerformance(state,state.performanceId).catch(() => {});
     if (intent.chapterId !== segment?.chapter_id) {
       if (!state.continuous || !segment) { stop(book); return; }
       intent.chapterId = segment.chapter_id;
@@ -518,6 +556,95 @@
       state.message = 'The rest of this chapter is saved and ready. Press play whenever you like.';
       paint(state.panel);
     }
+  }
+
+  // Saved performances -------------------------------------------------------
+  // A performance is prepared ahead by a server job. Playing it only reads its
+  // audio; a passage it lacks waits while that job runs, otherwise stops.
+  const PERFORMANCE_ACTIVE = new Set(['queued','running']);
+  const performanceBase = state => `/api/books/${encode(state.book.id)}/performances`;
+  async function loadPerformance(state, id) {
+    const [{performance}, {audio}] = await Promise.all([request(`${performanceBase(state)}/${encode(id)}`),
+      request(`${performanceBase(state)}/${encode(id)}/audio`)]);
+    if (state.performanceId !== id) return null;
+    state.performance = {record:performance,chapterIds:new Set(performance.chapter_ids || []),
+      audio:new Map(Object.entries(audio || {})),loadedAt:Date.now()};
+    paint(state.panel); notify(state);
+    return state.performance;
+  }
+  async function usePerformance(book, record) {
+    const state = stateFor(book);
+    if (!state?.panel || !record?.id) return null;
+    invalidate(state);
+    state.panel.options.onStop?.();
+    state.mode = 'performance';
+    state.performanceId = record.id;
+    state.performance = null;
+    state.error = ''; state.message = '';
+    save(state);
+    await loadPerformance(state,record.id);
+    return state.performance;
+  }
+  function leavePerformance(book) {
+    const state = stateFor(book);
+    if (performing(state) && state.panel) change(state.panel,'mode','simple');
+  }
+  function refreshPerformance(book) {
+    const state = stateFor(book);
+    return performing(state) && state.performanceId ? loadPerformance(state,state.performanceId) : Promise.resolve(null);
+  }
+  async function preparePerformance(state, segment, {playbackRate=1,offset=0,continuation=false}) {
+    let intent = state.intent;
+    if (!keepsIntent(state,intent,segment,continuation)) {
+      if (intent) invalidate(state);
+      intent = state.intent = {type:'play',phase:'warmup',chapterId:segment.chapter_id,segmentId:segment.id,
+        offset:Math.max(0,Number(offset)||0),rate:rateOf(playbackRate),blocked:false};
+    } else Object.assign(intent,{chapterId:segment.chapter_id,segmentId:segment.id,offset:Math.max(0,Number(offset)||0),rate:rateOf(playbackRate)});
+    state.error = '';
+    const version = state.version;
+    const fail = message => {
+      if (state.intent === intent) state.intent = null;
+      paint(state.panel);
+      return new Error(message);
+    };
+    if (!state.performance) {
+      try { await (state.performanceLoading || loadPerformance(state,state.performanceId)); }
+      catch (error) { throw fail(`The saved performance could not be loaded: ${error.message}`); }
+      if (!current(state,version) || state.intent !== intent) return null;
+    }
+    let failures = 0;
+    for (;;) {
+      const audio = resolve(state.book,segment);
+      if (audio) { intent.phase = 'ready'; paint(state.panel); return audio; }
+      const {record} = state.performance;
+      const name = record.name || 'this performance';
+      if (!state.performance.chapterIds.has(segment.chapter_id)) {
+        const chapter = state.book.chapters?.find(item => item.id === segment.chapter_id)?.title || 'This chapter';
+        throw fail(`${chapter} is not part of “${name}”. Choose one of its chapters, or listen with a narrator instead.`);
+      }
+      const job = record.job;
+      if (!PERFORMANCE_ACTIVE.has(job?.status)) {
+        throw fail(job?.status === 'quota_limited' ? `“${name}” paused at the daily request limit. Resume it after the reset; finished audio plays now.`
+          : job?.status === 'failed' ? `“${name}” stopped on an error before this passage. Resume it to finish.`
+          : `This passage of “${name}” has not been processed. Resume the performance to finish it.`);
+      }
+      state.message = `Waiting for “${name}” to reach this passage…`;
+      paint(state.panel);
+      await wait(2500);
+      if (!current(state,version) || state.intent !== intent) return null;
+      try { await loadPerformance(state,state.performanceId); failures = 0; }
+      catch (error) { if (++failures > 3) throw fail(`The performance status could not be read: ${error.message}`); }
+      if (!current(state,version) || state.intent !== intent) return null;
+    }
+  }
+  // Voice menu and availability for any provider, for the performance form.
+  function narratorOptions(book, provider) {
+    const state = stateFor(book);
+    if (!state || !PROVIDERS.includes(provider)) return null;
+    const probe = {...state,provider};
+    const {voices,selectedVoice,available,breezeVoiceReady} = narratorChoices(probe);
+    return {provider,available,breezeVoiceReady,voice:selectedVoice,model:provider === 'gemini' ? state.model : null,
+      voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false}))};
   }
 
   // Chapter jobs ------------------------------------------------------------
@@ -983,7 +1110,10 @@
     panel.options.onStop?.();
     state.error = '';
     state.message = '';
-    if (field === 'mode') state.mode = value === 'simple' ? 'simple' : 'enhanced';
+    if (field === 'mode') {
+      state.mode = value === 'simple' ? 'simple' : value === 'performance' && state.performanceId ? 'performance' : 'enhanced';
+      if (state.mode !== 'performance') { state.performanceId = null; state.performance = null; }
+    }
     else if (field === 'provider') {
       state.provider = PROVIDERS.includes(value) ? value : 'system';
       // Selecting an unchecked Breeze server asks the app to fetch its voices once.
@@ -1040,8 +1170,34 @@
     if (!state?.panel || !['mode','provider','voice'].includes(field)) return;
     change(state.panel,field,value);
   }
+  function paintPerformance(panel) {
+    const state = panel.state, performance = state.performance, record = performance?.record;
+    const playing = panel.options.playing, preparing = panel.options.preparing || state.intent?.phase === 'warmup';
+    const progress = record?.progress;
+    const job = record?.job;
+    const status = !record ? 'Loading…' : PERFORMANCE_ACTIVE.has(job?.status) ? `Processing · ${job.message || ''}`
+      : `${progress?.passages_ready ?? 0} of ${progress?.passages_total ?? 0} passages ready`;
+    const html = `<section class="simple-listen" aria-label="Listening settings">
+      <div class="simple-listen-heading">
+        <div><h3>Saved performance</h3><p>${escape(record?.name || 'Saved performance')}${record?.narrator_label ? ` · ${escape(record.narrator_label)}` : ''}</p></div>
+        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="performance" selected>Saved performance</option><option value="simple">One narrator</option><option value="enhanced">Studio voices</option></select></label>
+      </div>
+      <p class="simple-listen-note">${escape(status)}. Plays only audio this performance already has; nothing new is generated while you listen.</p>
+      <div class="simple-listen-actions">
+        <button type="button" class="button primary" data-listen-action="start" aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : 'Play simple listening'}">${preparing ? 'Preparing…' : playing ? 'Pause' : 'Play'}</button>
+        <button type="button" class="button subtle" data-listen-action="stop">Stop</button>
+        <span>${state.continuous ? 'Continues through its chapters' : 'Stops at chapter end'}</span>
+      </div>
+      <p class="simple-listen-message ${state.error ? 'simple-listen-error' : ''}" role="${state.error ? 'alert' : 'status'}">${escape(state.error || state.message || '')}</p>
+    </section>`;
+    const summary = panel.container.closest?.('details')?.querySelector?.('#listening-summary');
+    const summaryText = `Saved performance: ${record?.name || '…'}`;
+    if (summary && summary.textContent !== summaryText) summary.textContent = summaryText;
+    if (panel.container.innerHTML !== html) panel.container.innerHTML = html;
+  }
   function paint(panel) {
     if (!panel?.state) return;
+    if (performing(panel.state)) { paintPerformance(panel); return; }
     const state = panel.state;
     const status = panel.options.status || {};
     const breeze = status.providers?.find(provider => provider.id === 'breeze');
@@ -1252,7 +1408,9 @@
           else { stop(state.book); state.error = ''; panel.options.onPlay?.(segment.id); }
         }
         if (action === 'start') {
-          if (panel.state.mode === 'simple' && panel.options.onToggle) { panel.options.onToggle(); return; }
+          // A performance plays through the same toggle; it must never switch to live narration here.
+          if (enabled(panel.state.book) && panel.options.onToggle) { panel.options.onToggle(); return; }
+          if (performing(panel.state)) return;
           if (['warmup','chapter'].includes(panel.state.intent?.phase)) return;
           if (panel.state.mode !== 'simple') change(panel,'mode','simple');
           const segment = selectedSegment(panel);
@@ -1275,7 +1433,8 @@
       state = {book,version:0,takes:new Map(),queue:[],active:null,intent:null,job:null,knownJob:null,loading:false,error:'',message:'',loadedKey:null,
         chapter:{job:null,preview:null,previewKey:null,watching:false,waiters:[],takesMark:null,error:'',discovered:null,missing:0,
           autoJobId:null,autoStarting:null,pauseCancelled:null,retryAt:0,hold:false},
-        mode:prior.mode === 'simple' ? 'simple' : 'enhanced',provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
+        mode:prior.mode === 'simple' || (prior.mode === 'performance' && prior.performanceId) ? prior.mode : 'enhanced',
+        performanceId:prior.mode === 'performance' ? prior.performanceId : null,performance:null,provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
         voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore',
           breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,library:options.voiceLibrary || null,
         model:prior.model || status.tts_model || 'gemini-3.8-flash-tts',sessionId:prior.sessionId || null,sessionKey:prior.sessionKey || null,
@@ -1309,6 +1468,14 @@
     }
     paint(panel);
     if (chunked(state) && state.chapter.job && !CHAPTER_TERMINAL.has(state.chapter.job.status)) watchChapter(state);
+    if (performing(state) && !state.performance && !state.performanceLoading) {
+      state.performanceLoading = loadPerformance(state,state.performanceId).catch(error => {
+        // A performance that is gone or archived falls back to one-narrator listening.
+        if (error.status === 404) { state.mode = 'simple'; state.performanceId = null; save(state); }
+        state.error = error.status === 404 ? '' : `The saved performance could not be loaded: ${error.message}`;
+        paint(state.panel); notify(state);
+      }).finally(() => { state.performanceLoading = null; });
+    }
     return loadSaved(state).then(() => {
       if (!chunked(state)) return;
       void discoverChapter(state);
@@ -1317,8 +1484,10 @@
   }
   function allowsAdvance(book, currentSegment, nextSegment) {
     const state = stateFor(book);
-    return !enabled(book) || Boolean(currentSegment && nextSegment && (currentSegment.chapter_id === nextSegment.chapter_id ||
-      (state.continuous && continuesInto(state,currentSegment,nextSegment))));
+    if (!enabled(book)) return true;
+    if (!currentSegment || !nextSegment || !inPerformance(state,nextSegment)) return false;
+    return currentSegment.chapter_id === nextSegment.chapter_id ||
+      Boolean(state.continuous && (performing(state) || continuesInto(state,currentSegment,nextSegment)));
   }
   const isContinuous = book => Boolean(stateFor(book)?.continuous);
   function setContinuous(book, value) {
@@ -1330,5 +1499,6 @@
     paint(state.panel);
   }
   window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance,
-    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,isContinuous,setContinuous};
+    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,isContinuous,setContinuous,
+    nextSegment,usePerformance,leavePerformance,getPerformance,refreshPerformance,narratorOptions};
 })();

@@ -1,6 +1,6 @@
 # Data model and persistence contracts
 
-This document describes current storage as of 2026-09-27. Read [architecture](ARCHITECTURE.md) for execution flow. The database is SQLite, with selected normalized relations and JSON bodies for evolving domain objects. It is not an ORM model, a vector store, or an event-sourced reconstruction of every application mutation.
+This document describes current storage as of 2026-09-28. Read [architecture](ARCHITECTURE.md) for execution flow. The database is SQLite, with selected normalized relations and JSON bodies for evolving domain objects. It is not an ORM model, a vector store, or an event-sourced reconstruction of every application mutation.
 
 ## Authority and lifetimes
 
@@ -14,6 +14,8 @@ This document describes current storage as of 2026-09-27. Read [architecture](AR
 | Voice example history | `voice_preview_requests`, `voice_preview_takes` and WAV files | Immutable book-scoped effective requests and independent audition takes. |
 | Equivalent simple speech lookup | `listening_synthesis_cache` | Rebuildable content-key index pointing to actual retained takes; source identity remains in take history. |
 | Simple listening multi-passage chunks | `listening_chunks` and WAV files | Immutable version-1 records of one request covering an exact chapter slice, with estimated passage clips. Passage audio is projected from chunks whose source still matches. |
+| Saved performances | `performances` | Mutable label records (name, chapters, archive flag, latest job) that point at retained audio; never the audio itself. |
+| Cast performance take history | `performance_takes` and WAV files | Immutable passage takes keyed by performance, passage and source key. Independent of the Studio `takes` selection. |
 | Accepted model results for fast reuse | `analysis_units` | Replaceable/rejectable cache; original accepted outputs retained in artifacts. |
 | Analysis progress | `analysis_checkpoints`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
 | Current character references | `character_references` | Replaced with a published checkpoint. |
@@ -102,7 +104,7 @@ Breeze versions are separate server voices with generated IDs `bardic-<8 hex>` a
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 34 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [performances.py](../bardic/performances.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 36 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -238,6 +240,17 @@ New take bodies may include `synthesis_key`. A reused take additionally stores `
 
 The browser's warmup/lookahead/chapter-preparation intent is transient. Each requested passage has its own persisted job and take, but there is no durable chapter queue that starts itself after restart. Source/voice changes invalidate the relevant browser intent; completed reusable takes survive. See [listening behavior](LIBRARY-LISTENING-RESOURCES.md#independent-simple-listening) for scheduling bounds.
 
+### Saved performances
+
+| Table | Key and columns | Contract |
+| --- | --- | --- |
+| `performances` | PK `(book_id, id)`; `body` | Schema-1 label: `id` (`pf_<hex>`), `name`, `mode` (`simple`/`cast`), `chapter_ids` (book order), `provider`, `model`, `voice` (simple: the requested value), `session_id` (simple) or `cast_snapshot` (cast), `archived`, `job_id`, timestamps. Renaming, archiving and starting a job update only this row. |
+| `performance_takes` | PK `(performance_id, segment_id, source_key, asset_id)`; `book_id`, `body` | One retained cast take: render metadata (fingerprint, content `asset_id`, duration, provider/model/voice, any provider usage), `speaker_id`, `character_id` actually used, `fallback`, source anchor and `created_at`; reused takes add a `reuse` pointer (`performance_take` or `studio_take`). Update/delete triggers and a skip-on-duplicate insert trigger keep rows immutable. |
+
+A **simple** performance owns no audio rows. Its `session_id` names a deterministic `listening_sessions` row, so its audio is that session's `listening_takes` and chunk clips for the selected chapters, including takes made earlier by live listening with the same narrator. A **cast** performance stores the resolved cast at creation (`Runtime.resolved_cast`, without evidence quotes) and renders from that snapshot. Later Cast edits, library voice versions or Breeze default changes do not alter it; passage speaker assignments and scene/passage directions are read from the current book when a passage is generated. Unknown or `unassigned` speakers, and characters without their own renderable voice for the provider, use the snapshot `narrator` (`fallback: true`). A narrator without a renderable voice blocks creation.
+
+`source_key` is a SHA-256 of `{schema_version:1, chapter_id, start, end, text}`. A take counts only while its key equals the passage's current key and its file exists; a changed passage shows as not ready, and resume regenerates only it. Old rows stay. Before generating, a cast job reuses a validated WAV from any performance of the book with the same render fingerprint, then the current or archived Studio take with that fingerprint (read only), and only then synthesizes. Cast WAVs are content-addressed under `audio/<book-id>/` beside Studio takes and are served by the book's audio-asset route; they never enter the `takes` table or `audio_take` artifacts. The asset is part of the key so a damaged file can be replaced by a new asset for the same source.
+
 Search only indexes valid anchored passages. Queries become quoted literal words joined with AND; result rank is lexical relevance, not identity confidence. The index is rebuilt when its source/passage fingerprint changes. If SQLite lacks FTS5, search reports unavailable while the rest of the library remains usable.
 
 ## Dependency and freshness contracts
@@ -253,6 +266,8 @@ Lineage IDs and effective-input equality answer different questions: two equival
 | Cast/profile/performance change | Can make direction/audio recipes stale; reviewed edits remain authoritative. |
 | Voice/provider/model change | Changes enhanced audio recipe; existing byte-addressed assets remain on disk. |
 | Enhanced cast/direction edit | Does not alter a simple single-narrator session recipe. |
+| Cast/voice edit after a cast performance was created | Does not alter the performance's snapshot or its retained takes. |
+| Passage source change | Hides that passage's simple and cast performance audio until it is prepared again; rows are retained. |
 | Membership/identity link/earlier evidence change | Changes bounded series context and downstream requests that consume it. |
 | Invalid saved unit | Rejects reuse and removes its fast-cache row; immutable output history remains. |
 | Archive/remove | Changes active visibility/context and processing eligibility; retains data and files. |
@@ -287,7 +302,7 @@ New libraries default to `.bardic/`, configurable with `BARDIC_DATA_DIR` (legacy
   library.sqlite3-shm       # May exist while SQLite is using WAL
   server.lock              # Process lock
   originals/<book-id>/source.epub  # Or source.txt
-  audio/<book-id>/<asset-id>.wav
+  audio/<book-id>/<asset-id>.wav      # Studio takes and cast performance takes
   listen-audio/<book-id>/<asset-id>.wav
   voice-previews/<book-id>/<asset-id>.wav
   voice-library/<asset-id>.wav     # Library-wide voice auditions and design candidates
@@ -312,13 +327,13 @@ The manifest's format identifier remains `spintails-analysis` with schema versio
 - `artifacts.jsonl`: every retained version for the selected book plus transitive dependency artifacts from other books.
 - `observations.json`, `references.json`, `series.json`: evidence and explicit identity context.
 - `analysis-attempts.json`, `pipeline-events.jsonl`: processing provenance and validation events.
-- Resource operations and listening session/take metadata when their tables exist, plus a format README.
+- Resource operations and listening session/take metadata when their tables exist, plus a format README. Saved performance records and `performance_takes` are not currently included.
 
 The bundle contains source text and may contain earlier-book input evidence through dependencies. It excludes credentials, settings, original EPUB/TXT binaries, cover BLOBs, and all WAV files. Its audio asset IDs refer to separately stored media. There is no implemented bundle-import/restore workflow, so this is an interoperable analysis export, not a complete restorable backup.
 
 ### Audiobook bundle
 
-The separate audiobook export contains current selected enhanced takes, `production.json`, source chapter text, and `timeline.json`. It assembles a chapter WAV only when every required passage has valid audio and includes individually completed takes for partial chapters. Timings identify passage boundaries; missing passage IDs are explicit. It does not export the independent simple-listening library, perform word alignment, or package M4B.
+The separate audiobook export contains current selected enhanced takes, `production.json`, source chapter text, and `timeline.json`. It assembles a chapter WAV only when every required passage has valid audio and includes individually completed takes for partial chapters. Timings identify passage boundaries; missing passage IDs are explicit. It does not export the independent simple-listening library or saved performances, perform word alignment, or package M4B.
 
 ### Full backup boundary
 

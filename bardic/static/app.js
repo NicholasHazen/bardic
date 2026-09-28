@@ -480,8 +480,12 @@ async function finishClip() {
   if (previewEnhanced) { stopAudio({clear:true}); renderReader(); saveProgress(); return; }
   const segments = orderedSegments();
   const index = segments.findIndex(segment => segment.id === state.segmentId);
-  if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.BardicListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
-    await moveSegment(1,true,true);
+  const listen = window.BardicListen;
+  // The listening module decides where playback goes next (a performance skips chapters it leaves out).
+  const next = index < 0 ? null : simpleActive() && listen?.nextSegment ? listen.nextSegment(state.book, segments[index])
+    : index < segments.length - 1 && (!simpleActive() || listen.allowsAdvance(state.book, segments[index], segments[index+1])) ? segments[index+1] : null;
+  if (next) {
+    await startSegment(next.id, {autoplay:true, scroll:true, continuation:true});
   } else {
     window.BardicListen?.stop(state.book); clearListeningPreloads();
     updatePlayer(); saveProgress();
@@ -661,13 +665,54 @@ function updateFollowButton() {
 const SHEET_SPEEDS = [.75,1,1.25,1.5,1.75,2,2.25,2.5];
 const SHEET_PROVIDER_NOTES = {system:'Free · voices on the Bardic computer', gemini:'Cloud · may incur charges', breeze:'Your Breeze server'};
 let listenSheetTimer = null, listenSheetHtml = '';
-function openListenSheet() {
+function openListenSheet(tab = state.sheetTab || 'live') {
   if (!state.book) return;
   state.listenError = '';
   renderReader();
+  setSheetTab(tab);
   renderListenSheet();
   const sheet = $('#listen-sheet');
   if (!sheet.open) sheet.showModal();
+}
+function setSheetTab(tab) {
+  state.sheetTab = tab === 'performances' ? 'performances' : 'live';
+  $$('[data-sheet-tab]').forEach(button => {
+    const active = button.dataset.sheetTab === state.sheetTab;
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  $('#listen-sheet-body').hidden = state.sheetTab !== 'live';
+  $('#listen-sheet-performances').hidden = state.sheetTab !== 'performances';
+  $('#listen-sheet-title').textContent = state.sheetTab === 'live' ? 'Choose your narrator' : 'Performances';
+  if (state.sheetTab === 'performances') renderPerformances();
+}
+function renderPerformances() {
+  const listen = window.BardicListen;
+  window.BardicPerformances?.render($('#listen-sheet-performances'), state.book, {
+    listen, castProvider:state.castProvider,
+    visible:() => $('#listen-sheet').open && state.sheetTab === 'performances',
+    onJob:trackJob,
+    onLeave:() => listen?.leavePerformance(state.book),
+    onPlay:playPerformance,
+  });
+}
+// Play a saved performance from where you are, if that is inside it, or
+// from the start of its first chapter.
+async function playPerformance(record) {
+  const listen = window.BardicListen;
+  if (!state.book || !listen) return;
+  stopAudio();
+  try { if (!await listen.usePerformance(state.book, record)) throw new Error('The performance could not be opened. Try again.'); }
+  catch (error) { state.listenError = error.message; setSheetTab('live'); renderListenSheet(); return; }
+  const chapters = record.chapter_ids || [];
+  if (!chapters.includes(segmentById(state.segmentId)?.chapter_id)) {
+    state.chapterId = chapters[0];
+    state.segmentId = chapterSegments()[0]?.id;
+    state.pendingOffset = 0;
+    renderReader(); renderStudio(); saveProgress();
+  }
+  setSheetTab('live');
+  await startListening();
 }
 function renderListenSheet() {
   const body = $('#listen-sheet-body'), listen = window.BardicListen;
@@ -695,7 +740,8 @@ function renderListenSheet() {
       : 'Device narration runs on the computer serving Bardic, with no charges.';
     const unavailable = choice.provider === 'gemini' ? 'Add a Gemini API key in Providers & settings to generate narration. Saved audio still plays.'
       : choice.provider === 'breeze' ? 'Connect Breeze and choose a voice to generate narration. Saved audio still plays.' : 'Device voices are unavailable on this server.';
-    html = `<p class="listen-sheet-where">${listening ? 'Listening to' : 'Starts at'} <strong>${escapeHTML(chapter?.title || state.book.title || '')}</strong>${!listening && state.pendingOffset ? ', where you left off' : ''}.</p>
+    const performance = listen.getPerformance?.(state.book);
+    html = `${performance ? `<div class="listen-sheet-performance"><p>Playing the saved performance <strong>${escapeHTML(performance.name)}</strong>. Start listening below switches to live narration.</p><button type="button" class="button subtle" data-sheet-action="resume-performance">${listening ? 'Back to the performance' : 'Play the performance'}</button></div>` : ''}<p class="listen-sheet-where">${listening ? 'Listening to' : 'Starts at'} <strong>${escapeHTML(chapter?.title || state.book.title || '')}</strong>${!listening && state.pendingOffset ? ', where you left off' : ''}.</p>
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-provider-label">Narration</span><div class="listen-sheet-providers" role="radiogroup" aria-labelledby="listen-sheet-provider-label">${choice.providers.map(item => `<button type="button" role="radio" data-sheet-provider="${item.id}" aria-checked="${item.id === choice.provider}"><strong>${escapeHTML(item.label)}</strong><small>${escapeHTML(item.available ? SHEET_PROVIDER_NOTES[item.id] : 'Not set up')}</small></button>`).join('')}</div></div>
       <div class="listen-sheet-field"><label class="field-label" for="listen-sheet-voice">Voice</label><div class="listen-sheet-voice"><select id="listen-sheet-voice">${choice.voices.map(voice => `<option value="${escapeHTML(voice.id)}" ${voice.id === choice.voice ? 'selected' : ''} ${voice.usable || voice.id === choice.voice ? '' : 'disabled'}>${escapeHTML(voice.name)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`).join('')}</select><button type="button" class="button subtle" data-sheet-action="example" ${choice.provider === 'breeze' && !choice.breezeVoiceReady ? 'disabled' : ''}>${previewing ? 'Stop example' : 'Hear example'}</button></div></div>
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-speed-label">Speed</span><div class="listen-sheet-speeds" role="radiogroup" aria-labelledby="listen-sheet-speed-label">${SHEET_SPEEDS.map(rate => `<button type="button" role="radio" data-sheet-speed="${rate}" aria-checked="${rate === audio.playbackRate}">${rate}×</button>`).join('')}</div></div>
@@ -937,18 +983,7 @@ function renderReader() {
     beforeChapterPrepare:() => window.BardicVoicePreview?.waitForStopped?.(),
     onPreview:previewNarrator,
     onRefreshBreeze:() => refreshBreeze(),
-    onJob:job => {
-      if (!job || job.book_id !== state.book?.id) return;
-      const index = state.jobs.findIndex(j => j.id === job.id);
-      if (index < 0) state.jobs.unshift(job); else state.jobs[index] = job;
-      renderJob();
-      // The component stops polling when playback intent is cancelled. Keep a
-      // single lightweight status poll alive until all known jobs settle,
-      // including an older cancelled request left in the banner.
-      if (busyJob() && !state.poll && !state.jobPollToken) {
-        state.poll = setTimeout(() => pollJobs(false, {jobsOnly:true}), 1600);
-      }
-    },
+    onJob:trackJob,
   });
   const chapter = currentChapter();
   if (!chapter) return;
@@ -988,6 +1023,18 @@ function renderReader() {
   renderReaderBar();
   $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? `Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
   renderPassageDetail();
+}
+function trackJob(job) {
+  if (!job || job.book_id !== state.book?.id) return;
+  const index = state.jobs.findIndex(j => j.id === job.id);
+  if (index < 0) state.jobs.unshift(job); else state.jobs[index] = job;
+  renderJob();
+  // The component stops polling when playback intent is cancelled. Keep a
+  // single lightweight status poll alive until all known jobs settle,
+  // including an older cancelled request left in the banner.
+  if (busyJob() && !state.poll && !state.jobPollToken) {
+    state.poll = setTimeout(() => pollJobs(false, {jobsOnly:true}), 1600);
+  }
 }
 function previewNarrator(config) {
   const voice = config.voice || '';
@@ -1510,7 +1557,8 @@ function updatePlayer() {
   const buffer = simpleActive() ? window.BardicListen?.getBuffer?.(state.book) : null;
   const bufferLabel = preparingListen || mediaBuffering ? ' · Buffering…' : buffer && !audio.paused ? ` · ${Math.floor(buffer.seconds || 0)}s buffered` : '';
   const narrator = window.BardicListen?.getSelection?.(state.book);
-  const voiceLabel = simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
+  const performance = window.BardicListen?.getPerformance?.(state.book);
+  const voiceLabel = performance ? `Performance · ${performance.name}` : simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
   $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
   const timeline = chapterTimeline();
   const position = chapterPosition(timeline);
@@ -1555,7 +1603,7 @@ function renderJob() {
   const active = ['running','queued'].includes(job.status);
   banner.hidden = false;
   banner.classList.toggle('failed', ['failed','interrupted','budget_limited','quota_limited'].includes(job.status));
-  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
+  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : job.kind === 'performance' ? 'Processing a performance' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
   banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job aria-label="Dismiss job status">${icon('close')}</button>`}`;
   updateBusyControls();
   renderProduction();
@@ -1572,7 +1620,7 @@ async function pollJobs(refreshBookOnComplete = true, {jobsOnly = false} = {}) {
   const wasBusy = Boolean(busyJob());
   const schedule = delay => {
     if (!current() || !busyJob()) return;
-    const onlyListening = state.jobs.filter(job => ['queued','running'].includes(job.status)).every(job => ['listen','voice_preview','listen_chapter'].includes(job.kind));
+    const onlyListening = state.jobs.filter(job => ['queued','running'].includes(job.status)).every(job => ['listen','voice_preview','listen_chapter','performance'].includes(job.kind));
     state.poll = setTimeout(() => pollJobs(!onlyListening, {jobsOnly:onlyListening}), delay);
   };
   try {
@@ -1948,7 +1996,11 @@ $('#listen-sheet-body').addEventListener('click', event => {
   if (target.dataset.sheetProvider) { listen?.choose(state.book, 'provider', target.dataset.sheetProvider); renderListenSheet(); return; }
   if (target.dataset.sheetSpeed) { setPlaybackRate(Number(target.dataset.sheetSpeed)); renderListenSheet(); return; }
   const action = target.dataset.sheetAction;
-  if (action === 'start') void startListening();
+  if (action === 'start') {
+    if (listen?.getPerformance?.(state.book)) listen.leavePerformance(state.book);
+    void startListening();
+  }
+  else if (action === 'resume-performance') void startListening();
   else if (action === 'cancel') cancelListenStart();
   else if (action === 'example') previewNarratorFromSheet();
   else if (action === 'read') { $('#listen-sheet').close(); enterReader(); }
@@ -1959,6 +2011,7 @@ $('#listen-sheet-body').addEventListener('change', event => {
   else if (event.target.dataset.sheetContinuous !== undefined) window.BardicListen?.setContinuous(state.book, event.target.checked);
   renderListenSheet();
 });
+$$('[data-sheet-tab]').forEach(button => button.addEventListener('click', () => setSheetTab(button.dataset.sheetTab)));
 $('#listen-sheet').addEventListener('close', () => { cancelListenStart(); if (state.voicePreview) window.BardicVoicePreview?.stop(); });
 
 // Clip-boundary synchronization: no fabricated word timing.

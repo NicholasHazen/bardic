@@ -38,6 +38,14 @@ Cached takes replay without requiring a provider key. Pause, Stop, switching boo
 
 The device-voice buffer reduces avoidable gaps but cannot guarantee uninterrupted 2–2.5× listening if synthesis remains slower than consumption. Prepare the chapter first when needed. Word timing, background whole-book pre-generation, and a separate simple-mode audiobook ZIP remain unimplemented. See the [word-highlighting proposal](WORD-HIGHLIGHTING.md) for the alignment work.
 
+### Saved performances
+
+Open **Start listening → Performances → New performance** to narrate chosen chapters ahead of time and listen later without waiting or new requests. Choose **One narrator** (provider and voice) or **Full cast** (each character's voice for the chosen provider, taken from Cast when the performance is created), then tick the chapters; narrative chapters are selected by default and front and back matter are opt-in. Before starting, a local preview shows passages already saved, passages to narrate, estimated requests and listening time, and for Gemini this library's daily request count. It sends nothing to a provider.
+
+A server job then prepares the performance: device and Breeze narration one passage at a time, Gemini in chapter jobs of large chunks, and cast performances one passage per request. Audio you already made with the same narrator, or matching cast takes, is reused. The job can be stopped (finished audio is kept), pauses at Gemini's daily request limit, and continues with **Resume processing**.
+
+Playing a performance reads only its audio. It starts where you are if that is inside the performance, otherwise at its first chapter, continues through its chapters (skipping chapters it leaves out) and stops after the last. A passage it does not have yet waits while the job is running; otherwise playback stops and says how to finish it. Later changes to the cast, voices or Studio takes do not affect a finished performance, and cast performances never replace the Studio's current takes. Chapters without analysis, unassigned speakers and characters without a voice for the chosen provider use the narrator. If source text changes, only those passages drop out until resumed. **Rename** and **Archive** change the label only; archiving keeps the audio. The decision record is [D14](DECISIONS.md#d14--saved-performances-are-labels-over-retained-audio).
+
 ### Chunked Gemini chapter listening
 
 Implemented September 28, 2026. Gemini narration is limited by the Google project's quota, not by text size: the observed tier allowed 10 requests per minute, 10,000 input tokens per minute and 100 requests per day per model, and daily counts reset at midnight Pacific time ([rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)). One request per passage (median 54 characters, about 177 per chapter in a real library) could not finish a chapter in a day. Simple listening with Gemini therefore prepares chapters in large chunks through a server job.

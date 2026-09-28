@@ -7,8 +7,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname,'../bardic/static/app.js'),'utf8');
 const start = source.indexOf('async function pollJobs(');
 const end = source.indexOf('async function startJob(',start);
-const callbackStart = source.indexOf('    onJob:job => {');
-const callbackEnd = source.indexOf('\n    },',callbackStart) + '\n    }'.length;
+const callbackStart = source.indexOf('function trackJob(');
+const callbackEnd = source.indexOf('function previewNarrator(',callbackStart);
 assert.ok(start >= 0 && end > start && callbackStart >= 0 && callbackEnd > callbackStart);
 const pollSource = source.slice(start,end);
 const callbackSource = source.slice(callbackStart,callbackEnd);
@@ -29,7 +29,7 @@ function environment(handler) {
     refreshLibrary:async() => rendered.library++, $$:() => [],loadCharacterReferences:() => {},
     toast:message => rendered.toasts.push(message),
   };
-  vm.runInNewContext(pollSource + `\nglobalThis.api={pollJobs,...({${callbackSource}})};`,context);
+  vm.runInNewContext(pollSource + `\n${callbackSource}\nglobalThis.api={pollJobs,onJob:trackJob};`,context);
   async function runNext() {
     const entry = timers.entries().next().value;
     assert.ok(entry,'Expected one scheduled poll');
