@@ -8,7 +8,7 @@ Bardic is a local web application for importing an ebook, developing an evidence
 
 The server is Python with FastAPI and SQLite. The browser uses HTML, CSS, and plain JavaScript; no frontend build system or JavaScript framework is required. Original ebooks and WAV assets are files on the local machine. Text analysis can call Gemini, OpenAI, or Anthropic. Narration uses Gemini, installed macOS voices, or a self-hosted Breeze TTS server that the owner runs on the local network. Provider calls are explicit processing actions; browsing saved work does not generate narration or run cloud story analysis.
 
-The application has a single local owner. It is not a multiuser service, hosted library, DRM-removal tool, or general workflow scheduler. The default server binds to loopback. Changing that deployment boundary would require additional authentication, authorization, and operational design.
+The application has a single local owner. It is not a multiuser service, hosted library, DRM-removal tool, or general workflow scheduler. The default server binds to loopback. An opt-in local-network mode (`BARDIC_LAN_NAME`) binds the network and advertises a `.local` name for the same single owner's other devices; it adds no authentication and treats everyone on that network as the owner. Public or multiuser deployment would require authentication, authorization, and operational design.
 
 ## System map
 
@@ -40,7 +40,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 
 | Module | Responsibility and important boundary |
 | --- | --- |
-| [`__main__.py`](../bardic/__main__.py), [`config.py`](../bardic/config.py) | Load the project `.env`, choose the local port, start Uvicorn. |
+| [`__main__.py`](../bardic/__main__.py), [`config.py`](../bardic/config.py), [`lan.py`](../bardic/lan.py) | Load the project `.env`, choose the bind address and port, start Uvicorn. Optionally trust and advertise a `.local` name while the server runs. |
 | [`app.py`](../bardic/app.py) | Request validation, routes, local HTTP protections, `Runtime`, worker submission, cancellation, presentation, editing, playback, and export endpoints. |
 | [`store.py`](../bardic/store.py) | SQLite connections and lock, current book/take/job/settings state, atomic analysis publication, startup interruption recovery, process lock. |
 | [`importer.py`](../bardic/importer.py) | Safe EPUB/TXT ingestion, canonical text extraction, initial scenes/passages, bounded cover thumbnails. |

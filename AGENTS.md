@@ -29,7 +29,7 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 - Unknown cost or missing usage is not zero. Do not infer credit balances from a successful API call. The analysis dollar guard is not a global narration/account spending cap.
 - Snapshot provider/model/key configuration for queued work. Respect book reservations, series parent jobs, preview fingerprints and cancellation. A queued child that was cancelled must never start later.
 - Keep database mutations short and serialized through existing Store locks/transactions. Do not hold a SQLite transaction open during cloud requests. Preserve single-instance protection for a data directory.
-- Do not expose the service publicly as part of routine development. The current app is loopback-only and has no user authentication. Its browser write-origin guard is not a public-service security model.
+- Do not expose the service publicly as part of routine development. The app binds to loopback by default and has no user authentication. The owner's `.env` may set `BARDIC_LAN_NAME` for trusted-network access, so development launches blank it as shown in [development](docs/DEVELOPMENT.md). Its browser write-origin guard is not a public-service security model.
 
 ## Implementation workflow
 

@@ -32,7 +32,10 @@ Device narration additionally requires macOS `say`, installed voices, and `ffmpe
 
 | Variable | Effect |
 | --- | --- |
-| `BARDIC_PORT` | Loopback HTTP port; default `8765`. |
+| `BARDIC_PORT` | HTTP port; default `8765`. |
+| `BARDIC_HOST` | Bind address; default `127.0.0.1`, or `0.0.0.0` when `BARDIC_LAN_NAME` is set. |
+| `BARDIC_LAN_NAME` | Opt-in network name such as `bardic`: binds the network, trusts `bardic.local` and advertises it through macOS `dns-sd`. No authentication; see [local-network access](OPERATIONS.md#local-network-access). |
+| `BARDIC_ALLOWED_HOSTS` | Extra comma-separated Host names or addresses to trust, without ports or wildcards. |
 | `BARDIC_DATA_DIR` | Data directory; default `.bardic` relative to the process working directory, or existing `.spintails` when `.bardic` is absent. |
 | `GEMINI_API_KEY` | Gemini analysis and narration key. |
 | `GOOGLE_API_KEY` | Gemini fallback when `GEMINI_API_KEY` is empty or absent. |
@@ -47,12 +50,14 @@ Use an isolated data directory and port for manual development. The following st
 
 ```sh
 scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/bardic-dev.XXXXXX")
-BARDIC_DATA_DIR="$scratch_dir" BARDIC_PORT=8766 GEMINI_API_KEY='' GOOGLE_API_KEY='' OPENAI_API_KEY='' ANTHROPIC_API_KEY='' uv run --frozen python -m bardic
+BARDIC_DATA_DIR="$scratch_dir" BARDIC_PORT=8766 BARDIC_LAN_NAME='' BARDIC_HOST='' BARDIC_ALLOWED_HOSTS='' GEMINI_API_KEY='' GOOGLE_API_KEY='' OPENAI_API_KEY='' ANTHROPIC_API_KEY='' uv run --frozen python -m bardic
 ```
+
+The empty network settings keep a development server on loopback even when the owner's `.env` enables [local-network access](OPERATIONS.md#local-network-access); empty shell values win over the file. If the chosen port already answers on `127.0.0.1`, the launcher refuses to start rather than sharing the port with a network-bound server. Choose another port.
 
 Keep that shell's printed/assigned `scratch_dir` available if you want to inspect the scratch library later. Stop the process before removing or backing up its data. Neither the normal `.bardic` nor legacy `.spintails` library is a disposable test fixture.
 
-The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `bardic.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably.
+The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `bardic.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably. Network settings are read when `create_app()` runs; [test_lan.py](../tests/test_lan.py) covers them with a fake `dns-sd`, plus real-process checks that the helper cannot outlive a killed server.
 
 The ordinary launch command deliberately has no reload flag. For Python edits, stop and restart the isolated server. Browser files are served directly; refresh the browser after edits. Launching `uvicorn bardic.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
 

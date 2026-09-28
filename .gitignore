@@ -32,6 +32,9 @@
 /docs/*-preview.png
 /docs/local-validation/
 
+# Claude Code worktrees are separate checkouts, not project files.
+.claude/worktrees/
+
 # Environments, caches and build/test output.
 .venv/
 __pycache__/
