@@ -37,10 +37,12 @@ untouched. Rows the legacy phase engine wrote as ``profile_evidence`` (no
 accepted: discovery cannot be captured as a baseline, so they are its only
 record in the current projection. They stay in ``character_observations``.
 
-New rows are also appended to ``character_observations`` through
-:func:`bardic.series.retain_observations` (content-addressed, ``INSERT OR
-IGNORE``). That table remains append-only history; series context reading is
-unchanged here.
+The projection writes nothing to ``character_observations`` (owner decision,
+2026-09-28). Series context still reads that table, so appending accepted
+evidence would change later volumes' profile prompts mid-series and stop a
+confirmed series run. :func:`retain_history` does the append and is disabled by
+:data:`RETAIN_OBSERVATIONS`. The series-memory follow-up decides whether to
+enable it, together with changing what context reads and staged consent.
 """
 from __future__ import annotations
 
@@ -61,6 +63,9 @@ from .repository import KIND
 PROJECTION_VERSION = 1
 STEPS = ('discovery', 'profiles', 'directing')
 STATE_KEY = 'evidence'
+# Off until series context reads accepted evidence and series runs have staged consent
+# (SERIES-MEMORY-PLAN.md sections 2 and 4). See the module notes.
+RETAIN_OBSERVATIONS = False
 
 
 def _producers(conn, identifiers):
@@ -326,6 +331,15 @@ def _inputs(repository, conn, book):
                     for s in book['segments']]])
 
 
+def retain_history(conn, book_id, rows):
+    """Append projected rows to ``character_observations`` (content-addressed, ``INSERT OR IGNORE``).
+
+    Called by :func:`refresh` only when :data:`RETAIN_OBSERVATIONS` is on; pass new
+    rows only (earlier ones were retained when first written).
+    """
+    retain_observations(conn, book_id, rows)
+
+
 def refresh(repository, conn, book, *, force=False):
     """Rebuild ``book``'s references inside the caller's transaction when inputs changed.
 
@@ -347,8 +361,8 @@ def refresh(repository, conn, book, *, force=False):
     conn.executemany('''INSERT INTO character_references (book_id,id,character_id,chapter_id,segment_id,body)
         VALUES (?,?,?,?,?,?)''', [(book_id, r['id'], r['character_id'], r['chapter_id'], r.get('segment_id'),
                                    json.dumps(r, ensure_ascii=False)) for r in rows])
-    # Retained history: new rows only (older ones were retained when first written).
-    retain_observations(conn, book_id, [r for r in rows if r['id'] not in known])
+    if RETAIN_OBSERVATIONS:
+        retain_history(conn, book_id, [r for r in rows if r['id'] not in known])
     entry = {'version': PROJECTION_VERSION, 'inputs': inputs, 'rows': digest(sorted(r['id'] for r in rows)),
              'counts': dict(sorted(counts.items())), 'rebuilt_at': now()}
     repository.set_state(conn, book_id, **{STATE_KEY: entry})

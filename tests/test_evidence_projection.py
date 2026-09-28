@@ -174,15 +174,15 @@ def test_directing_rollback_moves_dialogue_and_manual_speakers_win(api):
     assert (row['character_id'], row['provider'], row['origin'], row['step']) == (names['Elio'], 'reviewed', 'manual', None)
 
 
-def test_rebuild_is_idempotent_and_observations_are_appended_once(api):
+def test_rebuild_is_idempotent_and_writes_no_observations(api):
     book = import_book(api)
     run(api, book['id'], ['discovery', 'profiles', 'directing'])
     rows = references(api, book['id'])
     recorded = state(api, book['id'])
-    retained = observations(api, book['id'])
-    assert {o['kind'] for o in retained} == {'profile_evidence', 'dialogue', 'mention'}
-    assert {(o['chapter_id'], o['start'], o['end'], o['quote']) for o in retained} >= \
-        {(r['chapter_id'], r['start'], r['end'], r['quote']) for r in rows}
+    # Series context reads observations; the projection must not change it (RETAIN_OBSERVATIONS is off).
+    assert evidence.RETAIN_OBSERVATIONS is False
+    assert observations(api, book['id']) == []
+    retained = []
     for _ in range(2):
         api.get(f"/api/books/{book['id']}/analysis-pipeline")
     assert state(api, book['id'])['rebuilt_at'] == recorded['rebuilt_at']  # skipped: nothing changed
@@ -309,17 +309,24 @@ def repository_state(store, repository):
         return repository.state(conn, 'book')[evidence.STATE_KEY]
 
 
-def test_observations_keep_the_source_hash_of_the_projected_rows(library):
+def test_retaining_history_when_enabled_appends_new_rows_once(library, monkeypatch):
+    # Disabled today; kept working for the series-memory follow-up that may enable it.
+    monkeypatch.setattr(evidence, 'RETAIN_OBSERVATIONS', True)
     store, repository, registry = library
     first = store.book('book')['chapters'][0]
     payload = {'ranges': [{'start': 0, 'end': len(first['text']), 'unit': 'u1'}], 'candidates': [
         {'name': 'Mara', 'aliases': [], 'description': 'D.', 'direction': 'R.', 'range_start': 0, 'evidence': ['Mara said']}]}
     accept_payload(store, repository, registry, 'discovery', first['id'], payload)
     rebuild(store, repository)
-    with sqlite3.connect(store.db) as conn:
-        bodies = [json.loads(b) for (b,) in conn.execute("SELECT body FROM character_observations WHERE book_id='book'")]
-    retained = [o for o in bodies if o['kind'] == 'profile_evidence']
-    assert [(o['quote'], o['source_hash']) for o in retained] == [('Mara said', source_hash(first['text']))]
+
+    def retained():
+        with sqlite3.connect(store.db) as conn:
+            return [json.loads(b) for (b,) in conn.execute("SELECT body FROM character_observations WHERE book_id='book'")]
+    before = retained()
+    assert [(o['quote'], o['source_hash']) for o in before if o['kind'] == 'profile_evidence'] == \
+        [('Mara said', source_hash(first['text']))]
+    rebuild(store, repository, force=True)
+    assert len(retained()) == len(before)
 
 
 def test_set_aside_repairs_references_another_writer_replaced(api):

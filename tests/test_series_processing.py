@@ -400,11 +400,11 @@ def test_invalid_series_requests_never_create_jobs(client, body):
     assert client.get('/api/jobs').json() == []
 
 
-def test_new_accepted_evidence_in_an_earlier_book_stops_a_linked_profiles_run_safely(client):
-    """Accepted evidence is retained as observations, which later books' profile prompts read.
+def test_new_accepted_evidence_in_an_earlier_book_does_not_stop_a_linked_profiles_run(client):
+    """The evidence projection writes no observations, so later books' profile prompts are unchanged.
 
-    A book whose prompt changed during the run no longer matches the confirmed plan, so the
-    series stops there with nothing sent; a new preview covers the new context and completes.
+    Book 1 accepts new profile evidence during the run (its Cast references change); book 2's
+    series context, and so its plan fingerprint, stays as confirmed and the series completes.
     """
     from bardic.series import SeriesRepository
     from test_analysis_pipeline import run
@@ -431,13 +431,12 @@ def test_new_accepted_evidence_in_an_earlier_book_stops_a_linked_profiles_run_sa
     try:
         plan = preview(client, series, steps=['profiles'], fresh=True)
         parent = wait_job(client, process(client, series, plan, steps=['profiles'], fresh=True).json()['id'])
-        assert parent['status'] == 'failed'
-        first, second = children(client, series)
-        assert first['status'] == 'completed' and second['status'] == 'failed'
-        assert 'not run' in second['message'] and second['run_id'] is None
-        calls = provider.calls.count('profiles')
-        plan = preview(client, series, steps=['profiles'], fresh=True)
-        parent = wait_job(client, process(client, series, plan, steps=['profiles'], fresh=True).json()['id'])
-        assert parent['status'] == 'completed' and provider.calls.count('profiles') > calls
+        assert parent['status'] == 'completed', parent
+        assert [child['status'] for child in children(client, series)] == ['completed', 'completed']
     finally:
         provider.__class__.__call__ = original
+    # Book 1 did accept new evidence: its Cast references carry the new profile reading.
+    first_mara = next(c for c in store.book(books[0]['id'])['characters'] if c['name'] == 'Mara')
+    profiled = [r for r in store.character_references(books[0]['id'], first_mara['id']) if r['step'] == 'profiles']
+    assert profiled and {r['profile_description'] for r in profiled} == {'A second reading.'}
+    assert repository.observations(books[0]['id']) == []
