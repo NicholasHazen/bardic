@@ -97,14 +97,26 @@ reference is `contract/API-REFERENCE.md`.
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
   job, while polling itself still returns 200. A terminal status is final.
-- Statuses mean the same thing on every operation: 400 for a request that
-  is well-formed but not acceptable, including an unknown ID inside a
-  request body; 404 for an unknown resource named in the path; 409 for a
-  conflict with current state (an active job or series run, a stale
-  previewed plan, an archived book or series); 413 for a body that is too
-  large; 429 for a request or quota limit; 502 when a provider or
-  self-hosted server fails; 503 when the server is shutting down. Archiving
-  or restoring something already in that state succeeds without change.
+- Statuses mean the same thing on every operation:
+  - 400: the request is well-formed but cannot be carried out as asked,
+    because of its content or the library's data. Examples are an unknown
+    ID inside a request body, an empty selection, a missing original file,
+    or a name or position already taken. An operation that deliberately
+    ignores an unknown body ID says so.
+  - 404: a resource named in the path, or a session named in the query,
+    does not exist.
+  - 409: a conflict with current state that waiting, restoring or
+    previewing again resolves: an active job or series run, a stale
+    previewed plan, or an archived book or series.
+  - 413: the body is too large.
+  - 429: a request or quota limit applies.
+  - 502: a provider or self-hosted server failed or refused the work.
+    Operations whose purpose is to report a provider's state (account
+    checks, model refresh, Breeze refresh) return 200 with the classified
+    state instead.
+  - 503: the server is shutting down; nothing was queued.
+  - Archiving or restoring something already in that state succeeds
+    without change.
 - Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
   sentence, or a list of issues for 422 request validation. Display it; do
   not parse it. `code` is a stable snake_case identifier: branch on it.
@@ -181,6 +193,17 @@ def _rename_refs(node: Any, renames: dict[str, str]) -> Any:
     return node
 
 
+def _any_of_without_discriminator(node: Any) -> None:
+    if isinstance(node, dict):
+        if 'oneOf' in node and 'discriminator' not in node:
+            node['anyOf'] = node.pop('oneOf')
+        for value in node.values():
+            _any_of_without_discriminator(value)
+    elif isinstance(node, list):
+        for item in node:
+            _any_of_without_discriminator(item)
+
+
 def finalize(generated: dict) -> dict:
     """Merge the operation registry into FastAPI's generated document."""
     ops, request_docs = registry()
@@ -246,9 +269,11 @@ def finalize(generated: dict) -> dict:
             if entry.ranges:
                 errors.setdefault(416, 'The requested `Range` cannot be satisfied (empty body; see `Content-Range`).')
             if method.upper() != 'GET':
-                errors.setdefault(403, 'A browser write from another origin was rejected by the write guard (see Transport and security).')
+                errors.setdefault(403, {'cross_origin_write': 'A browser write from another origin was rejected by the write guard (see Transport and security).'})
             if 'requestBody' in operation or operation.get('parameters'):
-                errors.setdefault(422, 'The request failed validation: a missing, extra or out-of-range field or parameter.')
+                errors.setdefault(422, {'validation_error': 'The request failed validation: a missing, extra or out-of-range field or parameter.'})
+            # Published so that generated clients model it; the test suite still fails on any 500 it sees.
+            errors.setdefault(500, {'internal_error': 'An unexpected server defect, such as damaged stored data.'})
             if entry.conditional:
                 responses['304'] = {'description': 'Not modified: `If-None-Match` matched the current `ETag` (empty body).'}
             for status in sorted(errors):
@@ -289,6 +314,10 @@ def finalize(generated: dict) -> dict:
             del component['additionalProperties']
         for prop in component.get('properties', {}).values():
             prop.pop('title', None)
+
+    # A union told apart by a callable (not a discriminator property) is emitted as oneOf, but its
+    # variants can overlap (open objects), so strict validators would match more than one. anyOf is exact.
+    _any_of_without_discriminator(schema)
 
     schema['info'] = {'title': 'Bardic', 'version': VERSION, 'description': INFO}
     schema['tags'] = [{'name': tag.name, 'description': tag.description} for tag in TAGS]

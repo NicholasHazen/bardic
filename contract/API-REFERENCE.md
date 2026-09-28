@@ -54,14 +54,26 @@ reference is `contract/API-REFERENCE.md`.
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
   job, while polling itself still returns 200. A terminal status is final.
-- Statuses mean the same thing on every operation: 400 for a request that
-  is well-formed but not acceptable, including an unknown ID inside a
-  request body; 404 for an unknown resource named in the path; 409 for a
-  conflict with current state (an active job or series run, a stale
-  previewed plan, an archived book or series); 413 for a body that is too
-  large; 429 for a request or quota limit; 502 when a provider or
-  self-hosted server fails; 503 when the server is shutting down. Archiving
-  or restoring something already in that state succeeds without change.
+- Statuses mean the same thing on every operation:
+  - 400: the request is well-formed but cannot be carried out as asked,
+    because of its content or the library's data. Examples are an unknown
+    ID inside a request body, an empty selection, a missing original file,
+    or a name or position already taken. An operation that deliberately
+    ignores an unknown body ID says so.
+  - 404: a resource named in the path, or a session named in the query,
+    does not exist.
+  - 409: a conflict with current state that waiting, restoring or
+    previewing again resolves: an active job or series run, a stale
+    previewed plan, or an archived book or series.
+  - 413: the body is too large.
+  - 429: a request or quota limit applies.
+  - 502: a provider or self-hosted server failed or refused the work.
+    Operations whose purpose is to report a provider's state (account
+    checks, model refresh, Breeze refresh) return 200 with the classified
+    state instead.
+  - 503: the server is shutting down; nothing was queued.
+  - Archiving or restoring something already in that state succeeds
+    without change.
 - Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
   sentence, or a list of issues for 422 request validation. Display it; do
   not parse it. `code` is a stable snake_case identifier: branch on it.
@@ -127,9 +139,10 @@ The provider's answer, including a refusal (`invalid_key`, `billing_blocked`, `r
 | --- | --- | --- |
 | 200 | [AccountCheck](#schema-accountcheck) | Success. |
 | 400 | [Error](#schema-error) | - `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | - `account_check_running`: A check for this provider is already running. - `settings_changed`: The key or analysis model changed while the check was running; its result was discarded. Check again. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshprovidermodels"></a>
 ### `POST /api/models/{provider}/refresh`
@@ -148,9 +161,10 @@ Results are cached in memory per key: a successful listing is reused for an hour
 | --- | --- | --- |
 | 200 | [AnalysisModelCatalog](#schema-analysismodelcatalog) | Success. |
 | 400 | [Error](#schema-error) | - `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | - `settings_changed`: The key changed during the refresh; its result was discarded. Refresh again. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshbreeze"></a>
 ### `POST /api/narration/breeze/refresh`
@@ -167,8 +181,9 @@ After a `ready` check, every usable server voice that no library voice version u
 | --- | --- | --- |
 | 200 | [VoiceLibraryBreezeStatus](#schema-voicelibrarybreezestatus) | Success. |
 | 400 | [Error](#schema-error) | - `breeze_url_missing`: No Breeze server URL is configured (neither saved nor from the server's environment). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | - `breeze_check_running`: Another Breeze check is running. - `settings_changed`: The Breeze URL or key changed during the check; its result was discarded. Check again. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatesettings"></a>
 ### `POST /api/settings`
@@ -189,8 +204,9 @@ Request body (`application/json`): [SettingsRequest](#schema-settingsrequest)
 | --- | --- | --- |
 | 200 | [Status](#schema-status) | Success. |
 | 400 | [Error](#schema-error) | - `gemini_key_conflict`: `api_key` and `api_keys.gemini` are both sent with different values. - `gemini_model_conflict`: `analysis_model` and `analysis_models_by_provider.gemini` are both sent with different values. - `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`. - `model_id_invalid`: An analysis or preprocessing model ID is malformed. - `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`. - `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`. - `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials. - `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`. - `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getstatus"></a>
 ### `GET /api/status`
@@ -204,6 +220,7 @@ Read-only and local: it never contacts a provider or the Breeze server, and neve
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Status](#schema-status) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Jobs
 
@@ -228,7 +245,8 @@ Poll this route to follow queued work until the job reaches a terminal status, w
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [Job](#schema-job) | Success. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="canceljob"></a>
 ### `POST /api/jobs/{job_id}/cancel`
@@ -252,9 +270,10 @@ Cancelled work is resumed through the original start route, which creates a new 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `job_not_found`: No job has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Diagnostics
 
@@ -278,8 +297,9 @@ Request body (`application/json`): [DiagnosticRequest](#schema-diagnosticrequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [DiagnosticRecordResult](#schema-diagnosticrecordresult) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 422 | [Error](#schema-error) | - `validation_error`: The body failed validation: an unknown or free-form field, a malformed identifier, a number out of range or of the wrong JSON type, or `segment_id`, `session_id` or `job_id` without `book_id`. For this operation the body is always `{"detail": "Invalid diagnostic event fields.", "code": "validation_error"}` (a string, not a list): rejected input is never echoed. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listdiagnostics"></a>
 ### `GET /api/diagnostics`
@@ -299,7 +319,8 @@ Events contain only allowlisted fields. An empty result does not establish that 
 | --- | --- | --- |
 | 200 | [DiagnosticEvents](#schema-diagnosticevents) | Success. |
 | 400 | [Error](#schema-error) | - `book_id_invalid`: `book_id` is not a book UUID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Library
 
@@ -317,6 +338,7 @@ Read-only. Each call measures the book's media folders on disk and its database 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [LibraryBookSummary](#schema-librarybooksummary) | Book summaries, most recently imported first. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="importbook"></a>
 ### `POST /api/books`
@@ -341,9 +363,10 @@ Request body (`multipart/form-data`): [ImportBookForm](#schema-importbookform)
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | The newly imported book, presented like `GET /api/books/{book_id}`. |
 | 400 | [Error](#schema-error) | - `book_file_invalid`: The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary data, unreadable, unsafe or encrypted EPUB, or no readable text. `detail` says which. - `cover_unreadable`: The EPUB's cover image could not be read safely. - `invalid_request`: The multipart body could not be parsed. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 413 | [Error](#schema-error) | - `upload_too_large`: The upload is larger than 30 MiB. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="archivebook"></a>
 ### `POST /api/books/{book_id}/archive`
@@ -363,10 +386,11 @@ Idempotent: removing an already removed book succeeds with the same response and
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookcover"></a>
 ### `GET /api/books/{book_id}/cover`
@@ -386,7 +410,8 @@ Caching: the response has a strong `ETag`, the quoted SHA-256 hex of the bytes (
 | 200 | `image/jpeg` | JPEG image bytes. |
 | 304 |  | Not modified: `If-None-Match` matched the current `ETag` (empty body). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `cover_not_found`: The book has no saved cover. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="exportaudiobook"></a>
 ### `GET /api/books/{book_id}/export`
@@ -417,7 +442,8 @@ Archive layout:
 | 400 | [Error](#schema-error) | - `export_audio_missing`: No passage has a current enhanced take. - `take_unreadable`: A take file is not a readable mono 24 kHz 16-bit PCM WAV. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatebookmetadata"></a>
 ### `PATCH /api/books/{book_id}/metadata`
@@ -440,10 +466,11 @@ Request body (`application/json`): [BookMetadataRequest](#schema-bookmetadatareq
 | --- | --- | --- |
 | 200 | [LibraryBookSummary](#schema-librarybooksummary) | Success. |
 | 400 | [Error](#schema-error) | - `metadata_invalid`: The normalized title is empty, or a value contains control characters. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. - `book_archived`: The book is removed (archived); restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshbookmetadata"></a>
 ### `POST /api/books/{book_id}/refresh-metadata`
@@ -468,10 +495,11 @@ Refused while any job is queued or running for the book, while an active series 
 | --- | --- | --- |
 | 200 | [LibraryBookSummary](#schema-librarybooksummary) | Success. |
 | 400 | [Error](#schema-error) | - `original_unavailable`: The book has no readable saved original (for example the demo book). - `original_too_large`: The saved original is larger than the import limit. - `original_unreadable`: The saved original can no longer be parsed. `detail` says why. - `cover_unreadable`: The original's cover image could not be read safely. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. - `book_archived`: The book is removed (archived); restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="restorebook"></a>
 ### `POST /api/books/{book_id}/restore`
@@ -489,10 +517,11 @@ Idempotent: restoring a book that is not removed succeeds with the same response
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: A run of the book's series is queued or running. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createdemobook"></a>
 ### `POST /api/demo`
@@ -506,7 +535,8 @@ Not idempotent: every call creates another copy with a new ID. The demo has no s
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | The new demo book, presented like `GET /api/books/{book_id}`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getlibrary"></a>
 ### `GET /api/library`
@@ -526,7 +556,8 @@ Read-only. Storage caveats: per-book `database_payload_bytes` does not apportion
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibrarySnapshot](#schema-librarysnapshot) | Success. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Series
 
@@ -547,7 +578,8 @@ Returns `{membership, series, links, characters}`. `membership` and `series` are
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="setbookseries"></a>
 ### `PUT /api/books/{book_id}/series`
@@ -575,10 +607,11 @@ Request body (`application/json`): [SeriesMembershipRequest](#schema-seriesmembe
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_series`: No series has the `series_id` in the body. - `position_invalid`: `series_id` is given without a finite `position` from 0 through 1,000,000. - `position_without_series`: `position` is given without `series_id`. - `position_taken`: Another supplied book of the series already has that position. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The target series is removed (archived). Restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="linkseriescharacter"></a>
 ### `PUT /api/books/{book_id}/series/characters/{character_id}`
@@ -600,10 +633,11 @@ Request body (`application/json`): [SeriesCharacterLinkRequest](#schema-seriesch
 | --- | --- | --- |
 | 200 | [SeriesCharacterLinkState](#schema-seriescharacterlinkstate) \| [SeriesCharacterUnlinked](#schema-seriescharacterunlinked) | Success. |
 | 400 | [Error](#schema-error) | - `character_not_linkable`: The character is `narrator` or `unassigned`. - `book_not_in_series`: Linking: the book is in no series. - `unknown_series_character`: No series character has the `series_character_id` in the body. - `series_character_mismatch`: The identity belongs to another series than the book's. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: Linking: the book has no character with `character_id`. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The book's series is removed (archived). Restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookseriescontext"></a>
 ### `GET /api/books/{book_id}/series/context`
@@ -622,7 +656,8 @@ The bound (at most 12,000 serialized characters and 8 observations per character
 | --- | --- | --- |
 | 200 | [BookSeriesContext](#schema-bookseriescontext) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseries"></a>
 ### `GET /api/series`
@@ -634,6 +669,7 @@ Returns every active (non-removed) series ordered by name (case-insensitive), th
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [Series](#schema-series) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createseries"></a>
 ### `POST /api/series`
@@ -648,8 +684,9 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | --- | --- | --- |
 | 200 | [SeriesCreated](#schema-seriescreated) | Success. |
 | 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="renameseries"></a>
 ### `PATCH /api/series/{series_id}`
@@ -668,10 +705,11 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | --- | --- | --- |
 | 200 | [SeriesRenamed](#schema-seriesrenamed) | Success. |
 | 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. - `text_invalid`: The name contains control characters other than tab and newlines. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="archiveseries"></a>
 ### `POST /api/series/{series_id}/archive`
@@ -687,10 +725,11 @@ Removes (archives) the series from normal views. Nothing is deleted: memberships
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseriescharacters"></a>
 ### `GET /api/series/{series_id}/characters`
@@ -707,7 +746,8 @@ Returns the explicit cross-book identities of a series, ordered by name (case-in
 | --- | --- | --- |
 | 200 | list of [SeriesCharacter](#schema-seriescharacter) | Success. |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createseriescharacter"></a>
 ### `POST /api/series/{series_id}/characters`
@@ -726,10 +766,11 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | --- | --- | --- |
 | 200 | [SeriesCharacter](#schema-seriescharacter) | Success. |
 | 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getseriesmap"></a>
 ### `GET /api/series/{series_id}/map`
@@ -746,7 +787,8 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 | --- | --- | --- |
 | 200 | [SeriesMap](#schema-seriesmap) | Success. |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="planseriesprocessing"></a>
 ### `POST /api/series/{series_id}/plan`
@@ -767,10 +809,11 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 | --- | --- | --- |
 | 200 | [SeriesPlan](#schema-seriesplan) | Success. |
 | 400 | [Error](#schema-error) | - `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startseriesprocessing"></a>
 ### `POST /api/series/{series_id}/process`
@@ -795,10 +838,11 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued parent series job. |
 | 400 | [Error](#schema-error) | - `provider_not_cloud`: The provider (or the configured analysis provider) is not `gemini`, `openai` or `anthropic`. - `series_empty`: The series has no supplied, active book. - `api_key_missing`: No API key is configured for the provider. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `plan_stale`: `expected_plan_fingerprint` does not match the recomputed plan. Nothing was queued. - `series_run_active`: This series already has an active run, or another series run holds one of its books. - `job_active`: A job is working on one of its supplied books. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The series worker is not accepting work because the server is shutting down. The jobs just created are marked failed or interrupted and nothing runs. |
 
 <a id="restoreseries"></a>
@@ -815,10 +859,11 @@ Restores a removed series. Restoring requires the series to be idle (as for `ren
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseriesruns"></a>
 ### `GET /api/series/{series_id}/runs`
@@ -835,7 +880,8 @@ Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newes
 | --- | --- | --- |
 | 200 | [SeriesRuns](#schema-seriesruns) | Success. |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="putseriesvolume"></a>
 ### `PUT /api/series/{series_id}/volumes`
@@ -854,10 +900,11 @@ Request body (`application/json`): [SeriesVolumeRequest](#schema-seriesvolumereq
 | --- | --- | --- |
 | 200 | [SeriesVolumeSlot](#schema-seriesvolumeslot) | Success. |
 | 400 | [Error](#schema-error) | - `position_taken`: A supplied book (including a removed one) already has this position. - `text_invalid`: The title contains control characters other than tab and newlines. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deleteseriesvolume"></a>
 ### `DELETE /api/series/{series_id}/volumes/{position}`
@@ -875,10 +922,11 @@ Removes the placeholder at `position`. It never removes or detaches a supplied b
 | --- | --- | --- |
 | 200 | [SeriesVolumeRemoval](#schema-seriesvolumeremoval) | Success. |
 | 400 | [Error](#schema-error) | - `position_invalid`: The position is negative, above 1,000,000 or not finite. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
 | 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Books
 
@@ -899,7 +947,8 @@ Returns the full reader projection: chapters with canonical text, scenes, passag
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="addcharacter"></a>
 ### `POST /api/books/{book_id}/characters`
@@ -918,10 +967,11 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
 | 400 | [Error](#schema-error) | - `character_name_required`: `name` is missing. - `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`. - `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider. - `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice. - `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editcharacter"></a>
 ### `PATCH /api/books/{book_id}/characters/{character_id}`
@@ -951,10 +1001,11 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
 | 400 | [Error](#schema-error) | - `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`. - `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider. - `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice. - `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: No character in this book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listcharacterreferences"></a>
 ### `GET /api/books/{book_id}/characters/{character_id}/references`
@@ -972,7 +1023,8 @@ Returns every source reference to this current cast member, unpaginated, in read
 | --- | --- | --- |
 | 200 | list of [CharacterReference](#schema-characterreference) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: No character in the book's current cast has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="repairbookstructure"></a>
 ### `POST /api/books/{book_id}/repair-structure`
@@ -991,10 +1043,11 @@ Refused, with existing work preserved, unless the re-parsed original has the sam
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
 | 400 | [Error](#schema-error) | - `original_missing`: The book has no saved original EPUB or TXT, or the saved file is missing. - `original_too_large`: The saved original is larger than 30 MiB (the import limit). - `original_unreadable`: The saved original could not be parsed (for example an unreadable EPUB). - `structure_mismatch`: The re-parsed source does not match the saved chapters or the saved analysis checkpoint. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editscene"></a>
 ### `PATCH /api/books/{book_id}/scenes/{scene_id}`
@@ -1023,10 +1076,11 @@ Request body (`application/json`): [SceneEdit](#schema-sceneedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `scene_not_found`: No scene in this book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editpassage"></a>
 ### `PATCH /api/books/{book_id}/segments/{segment_id}`
@@ -1056,10 +1110,11 @@ Request body (`application/json`): [SegmentEdit](#schema-segmentedit)
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
 | 400 | [Error](#schema-error) | - `character_not_in_cast`: `speaker_id` is not a character in this book's cast. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `passage_not_found`: No passage in this book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Pronunciations
 
@@ -1080,7 +1135,8 @@ Every entry with its use in the book: whole-word matches in chapter text, the pa
 | --- | --- | --- |
 | 200 | [PronunciationList](#schema-pronunciationlist) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="addpronunciation"></a>
 ### `POST /api/books/{book_id}/pronunciations`
@@ -1103,10 +1159,11 @@ Request body (`application/json`): [PronunciationEntry](#schema-pronunciationent
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
 | 400 | [Error](#schema-error) | - `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`). - `pronunciation_duplicate`: Another entry already has this term (under the case rules). - `pronunciation_limit_reached`: The book already has 500 entries. - `character_not_in_cast`: `character_id` is not a character in the book's current cast. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatepronunciation"></a>
 ### `PATCH /api/books/{book_id}/pronunciations/{entry_id}`
@@ -1130,10 +1187,11 @@ Request body (`application/json`): [PronunciationEntry](#schema-pronunciationent
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
 | 400 | [Error](#schema-error) | - `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`). - `pronunciation_duplicate`: Another entry already has this term (under the case rules). - `pronunciation_limit_reached`: The book already has 500 entries. - `character_not_in_cast`: `character_id` is not a character in the book's current cast. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `pronunciation_not_found`: No entry in this book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deletepronunciation"></a>
 ### `DELETE /api/books/{book_id}/pronunciations/{entry_id}`
@@ -1154,10 +1212,11 @@ Removes the entry. Removing the last one removes the book's `pronunciations` fie
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `pronunciation_not_found`: No entry in this book has this ID. |
 | 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Classic analysis
 
@@ -1182,7 +1241,8 @@ The classic engine may be retired in favor of the step pipeline.
 | --- | --- | --- |
 | 200 | [AnalysisStatus](#schema-analysisstatus) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="previewclassicanalysis"></a>
 ### `POST /api/books/{book_id}/analysis-plan`
@@ -1228,9 +1288,10 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 | --- | --- | --- |
 | 200 | [AnalysisPlan](#schema-analysisplan) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_chapter`: The body's `chapter_id` is not a chapter of this book. - `unknown_provider`: The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startclassicanalysis"></a>
 ### `POST /api/books/{book_id}/analyze`
@@ -1280,10 +1341,11 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued `analyze` job. |
 | 400 | [Error](#schema-error) | - `unknown_chapter`: The body's `chapter_id` is not a chapter of this book. - `unknown_provider`: The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`. - `gemini_key_missing`: The provider is `gemini` and no Gemini API key is configured. - `api_key_missing`: The provider is `openai` or `anthropic` and no API key is configured for it. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived. Restore it first. - `job_active`: A job is already queued or running for this book. - `series_run_active`: An active series run has reserved this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down and accepts no new work. No job was started. |
 
 <a id="getanalysispreprocessing"></a>
@@ -1303,7 +1365,8 @@ This GET creates and changes no domain records: no artifacts, decisions, resourc
 | --- | --- | --- |
 | 200 | [AnalysisCoverage](#schema-analysiscoverage) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Analysis pipeline
 
@@ -1321,6 +1384,7 @@ Read-only; contacts no server.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineDefinitions](#schema-pipelinedefinitions) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="saveanalysispipelinestepsettings"></a>
 ### `PUT /api/analysis-pipeline/steps/{step_id}/settings`
@@ -1339,9 +1403,10 @@ Request body (`application/json`): [StepSettings](#schema-stepsettings)
 | --- | --- | --- |
 | 200 | [PipelineStepSettingsView](#schema-pipelinestepsettingsview) | Success. |
 | 400 | [Error](#schema-error) | - `step_config_invalid`: The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `step_not_found`: The step ID in the path is unknown. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookanalysispipeline"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline`
@@ -1360,7 +1425,8 @@ Read-only: it records nothing and contacts no server. When the book changed outs
 | --- | --- | --- |
 | 200 | [PipelineBookOverview](#schema-pipelinebookoverview) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="planbookanalysispipelinerun"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/plan`
@@ -1385,9 +1451,10 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 | --- | --- | --- |
 | 200 | [PipelinePlan](#schema-pipelineplan) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startbookanalysispipelinerun"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/runs`
@@ -1410,10 +1477,11 @@ Request body (`application/json`): [RunRequest](#schema-runrequest)
 | --- | --- | --- |
 | 200 | [PipelineRunStarted](#schema-pipelinerunstarted) | The queued job and run. Not a result: poll the job until it is terminal. |
 | 400 | [Error](#schema-error) | - `unknown_step`: `steps` names a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. - `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL). - `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured. - `step_inputs_missing`: A step's required input has no accepted result and is not in this run. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: A job is already working on this book. - `plan_stale`: The plan changed since the preview (`expected_fingerprint` does not match). Preview again; nothing was queued. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The local worker is stopping and accepts no new runs. |
 
 <a id="listanalysispipelinestepversions"></a>
@@ -1433,7 +1501,8 @@ Version history, newest first, with each version's review `state` (`candidate`, 
 | --- | --- | --- |
 | 200 | [PipelineVersionHistory](#schema-pipelineversionhistory) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getanalysispipelinestepversion"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}`
@@ -1460,7 +1529,8 @@ Rows are summarized against the book's current state (current names and passage 
 | 200 | [PipelineVersionDetail](#schema-pipelineversiondetail) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_version`: `compare` names a version that does not exist, or belongs to another book or another step. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="acceptanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/accept`
@@ -1483,10 +1553,11 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | --- | --- | --- |
 | 200 | [PipelineAcceptResult](#schema-pipelineacceptresult) | Success. |
 | 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. - `version_incompatible`: A selected result does not fit the book. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
 | 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: Another job (not a pipeline run) is changing this book. - `plan_stale`: The book revision differs from `expected_revision`: the book changed after the preview. Preview again. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="previewanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/preview`
@@ -1509,9 +1580,10 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | --- | --- | --- |
 | 200 | [PipelineAcceptImpact](#schema-pipelineacceptimpact) | Success. |
 | 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_incompatible`: A selected result does not fit the book (for example a structure version for different chapters). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="rejectanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject`
@@ -1534,10 +1606,11 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | --- | --- | --- |
 | 200 | [PipelineDecision](#schema-pipelinedecision) | Success. |
 | 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
 | 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `version_accepted`: `{version_id}` is `accepted`, or this version was accepted and is still the accepted version of a selected scope. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Inspection
 
@@ -1580,7 +1653,8 @@ No provider is contacted. This GET creates and changes no domain records: no art
 | 206 | `application/zip` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listbookartifacts"></a>
 ### `GET /api/books/{book_id}/artifacts`
@@ -1604,7 +1678,8 @@ No provider is contacted. This GET creates and changes no domain records: no art
 | --- | --- | --- |
 | 200 | [ArtifactPage](#schema-artifactpage) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookartifact"></a>
 ### `GET /api/books/{book_id}/artifacts/{artifact_id}`
@@ -1622,7 +1697,8 @@ Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id
 | --- | --- | --- |
 | 200 | [ArtifactDetail](#schema-artifactdetail) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `artifact_not_found`: This book owns no artifact with this ID (including an artifact owned by another book). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getpipelineinspector"></a>
 ### `GET /api/books/{book_id}/pipeline`
@@ -1643,7 +1719,8 @@ No provider is contacted. This GET creates and changes no domain records: no art
 | --- | --- | --- |
 | 200 | [PipelineInspector](#schema-pipelineinspector) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookresourceusage"></a>
 ### `GET /api/books/{book_id}/resources`
@@ -1667,7 +1744,8 @@ Operations distinguish request count, reported tokens and cache tokens, retained
 | --- | --- | --- |
 | 200 | [ResourceSummary](#schema-resourcesummary) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="searchbookpassages"></a>
 ### `GET /api/books/{book_id}/search`
@@ -1692,7 +1770,8 @@ No provider is contacted. This GET creates and changes no domain records: no art
 | 200 | [PassageSearchResult](#schema-passagesearchresult) | Success. |
 | 400 | [Error](#schema-error) | - `search_query_invalid`: `q` is empty, whitespace-only or longer than 300 characters. - `search_scope_invalid`: `scope` is not `book` or `earlier`. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getstorymap"></a>
 ### `GET /api/books/{book_id}/story-map`
@@ -1711,7 +1790,8 @@ The response is unpaginated and grows with the book (every passage is a node). N
 | --- | --- | --- |
 | 200 | [StoryMap](#schema-storymap) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Narration
 
@@ -1738,7 +1818,8 @@ server ignores. Local read.
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `passage_not_found`: The book has no passage with this ID. - `audio_not_found`: The passage has no take, or its take is stale or its file is missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getretainedaudioasset"></a>
 ### `GET /api/books/{book_id}/audio-assets/{asset_id}`
@@ -1760,7 +1841,8 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (32-128 lower-case hex) or no such file. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startenhancedrender"></a>
 ### `POST /api/books/{book_id}/render`
@@ -1794,10 +1876,11 @@ Request body (`application/json`): [RenderRequest](#schema-renderrequest)
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued `render` job. |
 | 400 | [Error](#schema-error) | - `provider_unsupported`: `provider` is not `system`, `gemini` or `breeze`. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_scene`: The body names a scene (`scene_id`) that is not in this book. - `no_passages_selected`: The named passage is not in the named scene. - `cast_voice_unusable`: A selected speaker has no usable Breeze or Gemini voice; the detail names up to five speakers. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Listening
@@ -1858,10 +1941,11 @@ Request body (`application/json`): [ListenRequest](#schema-listenrequest)
 | --- | --- | --- |
 | 200 | [ListenCached](#schema-listencached) \| [ListenQueued](#schema-listenqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `listen` job. |
 | 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getlisteningaudio"></a>
@@ -1884,7 +1968,8 @@ For a chunk clip, play from `clip_start` to `clip_end`. Local read.
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (64 lower-case hex), not retained for this book, or file missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startchapterlistening"></a>
 ### `POST /api/books/{book_id}/listen/chapter`
@@ -1947,11 +2032,12 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | --- | --- | --- |
 | 200 | [ChapterListenStarted](#schema-chapterlistenstarted) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when starting: no Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `performance_active`: A saved performance's chapter job is preparing this book. - `chapter_listen_active`: A chapter job for another chapter or narrator is active. - `chapter_job_closing`: The matching chapter job is finishing; retry shortly. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 429 | [Error](#schema-error) | - `daily_quota_reached`: Only when starting: a daily-quota block holds for the model, or this library's requests today have reached the configured requests per day. Nothing was queued or sent; `Retry-After` gives the seconds to wait. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewchapterlistening"></a>
@@ -1977,10 +2063,11 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | --- | --- | --- |
 | 200 | [ChapterListenPlan](#schema-chapterlistenplan) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listlisteningtakes"></a>
 ### `GET /api/books/{book_id}/listen/takes`
@@ -2002,7 +2089,8 @@ No generation and no stored change. Works for archived books.
 | --- | --- | --- |
 | 200 | [ListeningTakes](#schema-listeningtakes) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `listening_session_not_found`: The book has no listening session with this `session_id`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Performances
 
@@ -2024,7 +2112,8 @@ Performances of the book, newest first, each with its latest job summary and rea
 | --- | --- | --- |
 | 200 | [PerformanceList](#schema-performancelist) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createperformance"></a>
 ### `POST /api/books/{book_id}/performances`
@@ -2067,10 +2156,11 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_invalid`: The simple narrator voice cannot be used (see `previewPerformance` problems). - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewperformance"></a>
@@ -2094,10 +2184,11 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | --- | --- | --- |
 | 200 | [PerformancePlan](#schema-performanceplan) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getperformance"></a>
 ### `GET /api/books/{book_id}/performances/{performance_id}`
@@ -2115,7 +2206,8 @@ The performance with its latest job summary and readiness. Local read with no st
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updateperformance"></a>
 ### `PATCH /api/books/{book_id}/performances/{performance_id}`
@@ -2135,9 +2227,10 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
 | 400 | [Error](#schema-error) | - `performance_name_required`: `name` is only whitespace. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getperformanceaudio"></a>
 ### `GET /api/books/{book_id}/performances/{performance_id}/audio`
@@ -2159,7 +2252,8 @@ change; file existence is checked but WAVs are not re-validated.
 | --- | --- | --- |
 | 200 | [PerformanceAudioMap](#schema-performanceaudiomap) | Success. |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="prepareperformance"></a>
 ### `POST /api/books/{book_id}/performances/{performance_id}/prepare`
@@ -2203,10 +2297,11 @@ job for the book (including child jobs beyond the 100-job list bound).
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
 | 400 | [Error](#schema-error) | - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Voice previews
@@ -2270,10 +2365,11 @@ Request body (`application/json`): [VoicePreviewRequest](#schema-voicepreviewreq
 | --- | --- | --- |
 | 200 | [VoicePreviewCached](#schema-voicepreviewcached) \| [VoicePreviewQueued](#schema-voicepreviewqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `voice_preview` job. |
 | 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_character`: The body names a character (`character_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `direction_requires_character`: `direction` without `character_id`. - `segment_direction_requires_passage`: `segment_direction` without both a passage and a character. - `pronunciation_invalid`: The `pronunciation` entry is not valid. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getvoicepreviewaudio"></a>
@@ -2294,7 +2390,8 @@ A retained audition WAV, scoped to its owning book. Every request verifies the c
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID, not retained for this book, or the file is missing or damaged. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Voices
 
@@ -2312,6 +2409,7 @@ Local only and read-only: reads SQLite and the saved Breeze and Gemini checks; n
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryOverview](#schema-voicelibraryoverview) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="clonebreezevoice"></a>
 ### `POST /api/voices/breeze/clone`
@@ -2328,9 +2426,10 @@ Request body (`multipart/form-data`): [CloneBreezeVoiceForm](#schema-clonebreeze
 | --- | --- | --- |
 | 200 | [BreezeVoiceCloned](#schema-breezevoicecloned) | Success. |
 | 400 | [Error](#schema-error) | - `consent_required`: `consent` is not exactly `true`. - `voice_name_invalid`: `name` is blank. - `reference_text_missing`: `reference_text` is blank. - `recording_empty`: The recording is empty. - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `breeze_url_missing`: No Breeze server URL is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 413 | [Error](#schema-error) | - `recording_too_large`: The recording is larger than 20 MB. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length audio, or a bad API key), or was unreachable. |
 
 <a id="setdefaultlibraryvoice"></a>
@@ -2348,9 +2447,10 @@ Request body (`application/json`): [DefaultVoice](#schema-defaultvoice)
 | --- | --- | --- |
 | 200 | [VoiceLibraryDefaultsResult](#schema-voicelibrarydefaultsresult) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_voice`: No library voice has the given `voice_id`. - `default_voice_invalid`: The voice is deleted or is not a Breeze voice. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createvoicedraft"></a>
 ### `POST /api/voices/drafts`
@@ -2370,8 +2470,9 @@ Request body (`application/json`): [DraftCreate](#schema-draftcreate)
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `unknown_voice`: No library voice has the given `base_voice_id`. - `base_voice_unusable`: The base voice is deleted or belongs to the other provider. - `voice_name_invalid`: A filled-in name is longer than 100 characters. - `description_too_long`: A filled-in description is longer than 1,000 characters. - `sample_text_too_long`: A filled-in sample text is longer than 1,000 characters. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatevoicedraft"></a>
 ### `PATCH /api/voices/drafts/{draft_id}`
@@ -2389,10 +2490,11 @@ Request body (`application/json`): [DraftEdit](#schema-draftedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
 | 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="abandonvoicedraft"></a>
 ### `POST /api/voices/drafts/{draft_id}/abandon`
@@ -2409,10 +2511,11 @@ Deletes every undiscarded Gemini candidate's stored voice from the Google projec
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
 | 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
 | 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: Some stored Gemini candidates could not be deleted (the detail names the first failure); the draft stays open. |
 
 <a id="getvoicedraftcandidateaudio"></a>
@@ -2433,7 +2536,8 @@ Bardic's retained copy of a candidate's audio (24 kHz mono WAV). Available for d
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. - `audio_not_found`: The candidate has no retained audio. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="discardvoicedraftcandidate"></a>
 ### `POST /api/voices/drafts/{draft_id}/candidates/{candidate_id}/discard`
@@ -2451,10 +2555,11 @@ Marks the candidate discarded so it cannot be saved. A Gemini candidate's stored
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
 | 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. |
 | 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The Gemini delete failed; the candidate stays undiscarded. |
 
 <a id="generatevoicedraftcandidates"></a>
@@ -2480,10 +2585,11 @@ Request body (`application/json`): [GenerateRequest](#schema-generaterequest)
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
 | 400 | [Error](#schema-error) | - `description_too_short`: The draft description has fewer than 3 characters. - `cost_not_confirmed`: Gemini: `confirm_cost` is not true. - `book_id_required`: Gemini: no `book_id` was given. - `unknown_book`: No book has the given `book_id`. - `voice_design_invalid`: Gemini: the draft name, language tag or gender is not accepted. - `sample_text_missing`: Breeze: the draft has no sample text. - `gemini_key_missing`: No Gemini API key is configured. - `breeze_url_missing`: No Breeze server URL is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
 | 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. Also when a concurrent request finished it during generation. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. Breeze also returns it when the preview audio cannot be converted locally. - `provider_outcome_unknown`: Gemini: a billed create timed out or returned an unusable response, so the voice may exist and be billed (see description). |
 
 <a id="savevoicedraft"></a>
@@ -2509,10 +2615,11 @@ Request body (`application/json`): [SaveRequest](#schema-saverequest)
 | --- | --- | --- |
 | 200 | [VoiceDraftSaved](#schema-voicedraftsaved) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_candidate`: The draft has no candidate with the given `candidate_id`. - `candidate_discarded`: The candidate was discarded. - `voice_name_invalid`: `name` is only whitespace. - `draft_has_no_base_voice`: `mode: "version"` for a draft not started from a base voice. - `default_breeze_only`: `make_default` for a Gemini draft. - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
 | 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. - `base_voice_deleted`: `mode: "version"` and the draft's base voice is deleted, including when it was deleted during the save. - `candidate_audio_missing`: Breeze: the candidate's retained audio file is missing, so it cannot be uploaded. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The Breeze upload or its read-back failed. |
 
 <a id="refreshgeminivoices"></a>
@@ -2528,8 +2635,9 @@ When the listing fails (an HTTP error, no connection, or an unreadable response)
 | --- | --- | --- |
 | 200 | [VoiceLibraryGeminiStatus](#schema-voicelibrarygeministatus) | Success. |
 | 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 409 | [Error](#schema-error) | - `gemini_key_changed`: The Gemini API key changed during the check; nothing is saved. Refresh again. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 <a id="updatelibraryvoice"></a>
@@ -2551,9 +2659,10 @@ Request body (`application/json`): [VoiceEdit](#schema-voiceedit)
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
 | 400 | [Error](#schema-error) | - `voice_name_invalid`: The name is only whitespace. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deletelibraryvoice"></a>
 ### `DELETE /api/voices/{voice_id}`
@@ -2577,10 +2686,11 @@ Deleting an already-deleted voice returns 200 with an empty `server_deleted` and
 | --- | --- | --- |
 | 200 | [LibraryVoiceDeleted](#schema-libraryvoicedeleted) | Success. |
 | 400 | [Error](#schema-error) | - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). |
 | 409 | [Error](#schema-error) | - `voice_is_default`: The voice is the Breeze default; choose another default first. - `voice_other_project`: Provider deletion was requested for a Gemini voice with a version made with a different Google API key. Retry with `server=false` to remove it from Bardic only. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: Deleting a provider voice failed. Earlier ones in this request are recorded as deleted; deleting again resumes. |
 
 <a id="setlibraryvoicecurrentversion"></a>
@@ -2604,10 +2714,11 @@ Request body (`application/json`): [CurrentVersion](#schema-currentversion)
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
 | 400 | [Error](#schema-error) | - `unknown_version`: The voice has no version with the given number. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
 | 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getlibraryvoiceaudition"></a>
 ### `GET /api/voices/{voice_id}/versions/{version}/audition`
@@ -2628,7 +2739,8 @@ Returns the version's retained audition WAV (Bardic's 24 kHz mono copy of the au
 | 400 | [Error](#schema-error) | - `breeze_url_missing`: A provider fetch is needed and no Breeze server URL is configured. - `gemini_key_missing`: A provider fetch is needed and no Gemini API key is configured. |
 | 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). - `voice_version_not_found`: The voice has no version with this number. - `audio_not_found`: Nothing is retained and the provider has no sample for this version. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 ## Schemas
