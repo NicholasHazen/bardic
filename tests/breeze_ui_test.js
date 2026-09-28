@@ -217,6 +217,7 @@ test('chunked chapter listening follows the provider capability, not its name', 
 // App-level cast helpers, executed from the real sources.
 const appSource = fs.readFileSync(path.join(__dirname,'../bardic/static/app.js'),'utf8');
 const voicesSource = fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8');
 function between(start, end) {
   const a = appSource.indexOf(start), b = appSource.indexOf(end, a + start.length);
   assert.ok(a >= 0 && b > a, `${start} boundaries`);
@@ -225,7 +226,9 @@ function between(start, end) {
 function castHelpers(appStatus = status(), voiceLibrary = library()) {
   const toasts = [];
   const context = {state:{status:appStatus,voiceLibrary},window:{},toast:message => toasts.push(message)};
-  vm.runInNewContext(voicesSource, context);
+  vm.createContext(context);
+  vm.runInContext(uiSource, context);
+  vm.runInContext(voicesSource, context);
   vm.runInNewContext([
     appSource.split('\n').find(line => line.startsWith('const escapeHTML =')),
     between('// One cast voice per narration provider.', 'function auditionCharacter('),
@@ -261,8 +264,8 @@ test('cast voice options: Default names the default voice, library and direct vo
   assert.match(cast.castOptions('gemini','',old,status()),/value="library:vl_gem"  disabled>Astronomer · needs Gemini 3.8 TTS/);
 
   const device = cast.castOptions('system','',library(),status());
-  assert.match(device,/<option value="" selected >Default device voice<\/option><optgroup label="Device voices"><option value="id:Samantha"  >Samantha · en-US<\/option>/);
-  assert.doesNotMatch(device,/Create new voice/,'Device voices cannot be created');
+  assert.match(device,/<option value="" selected >Default Mac voice<\/option><optgroup label="Mac voices"><option value="id:Samantha"  >Samantha · en-US<\/option>/);
+  assert.doesNotMatch(device,/Create new voice/,'Mac voices cannot be created');
 });
 
 test('cast choices encode the per-provider map, read legacy fields, and decode to assignments', () => {
@@ -312,7 +315,7 @@ test('cast warnings explain deleted, changed and unsupported voices and a missin
   assert.deepEqual([...cast.castWarnings('breeze','',library({defaults:{breeze:null}}),status())],
     ['No default Breeze voice yet. Check the Breeze connection in Settings, or choose a default in Voices.']);
   assert.deepEqual([...cast.castWarnings('breeze','library:vl_removed',library(),status())],['This voice was deleted. Choose another voice.']);
-  assert.deepEqual([...cast.castWarnings('breeze','library:vl_gone',library(),status())],['Missing from the server; it cannot be re-rendered.']);
+  assert.deepEqual([...cast.castWarnings('breeze','library:vl_gone',library(),status())],['Missing from the server, so it cannot record new audio.']);
   const changed = library();
   changed.voices[1].versions[0].server_state = 'changed';
   assert.deepEqual([...cast.castWarnings('breeze','',changed,status())],['Default voice: Changed on the Breeze server since this version was saved.']);

@@ -50,6 +50,7 @@ function environment(ensure,previewRequest){
     escapeHTML:value=>String(value??''),toast:(message,error)=>{calls.toasts.push(message);calls.toastErrors.push(Boolean(error));},
     updateHighlight:()=>{},renderStudio:()=>{},renderJob:()=>{},pollJobs:()=>{}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voice-preview.js'),'utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8'),context);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8'),context);
   vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false,mediaBuffering=false; const listeningPreloads=new Map();\n${between('audio.preload =', 'let toastTimer;')}\n${helpers}\n${functions}\n`+
     'setupVoicePreviews(); globalThis.player={startSegment,togglePlayback,stopAudio,renderReader,updatePlayer,moveSegment,simpleActive,setPlaybackRate,beginVoicePreview,playVoicePreview,finishVoicePreview,auditionCharacter,auditionPassage,startVoicePreview,get preparing(){return preparingListen;},get preview(){return previewEnhanced;},get buffering(){return mediaBuffering;}};',context);

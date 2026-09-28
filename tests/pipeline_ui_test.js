@@ -101,7 +101,9 @@ function environment(handler = ordinary) {
     const result = await handler(call);
     return {ok:result.ok !== false,status:result.status || 200,json:async () => result.data};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/pipeline.js'),'utf8'), scope);
+  vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/ui.js'),'utf8'), scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/pipeline.js'),'utf8'), scope);
   return {calls,render:scope.window.BardicPipeline.render,advance:ms => { clock += ms; }};
 }
 
@@ -117,7 +119,7 @@ function environment(handler = ordinary) {
   assert.ok(container.nodes.stages.innerHTML.includes('data-pipeline-stage="import"'));
   assert.ok(container.nodes.stages.innerHTML.includes('Voice assignments'));
   assert.ok(container.nodes.stages.innerHTML.includes('Provisional draft'));
-  assert.ok(container.nodes.filters.innerHTML.includes('aria-label="Artifact type"'));
+  assert.ok(container.nodes.filters.innerHTML.includes('aria-label="Result type"'));
   assert.ok(container.innerHTML.includes('aria-label="Search scope"'));
   assert.ok(container.nodes.artifacts.innerHTML.includes('Saved &lt;output&gt; 0'));
   assert.ok(container.nodes.artifacts.innerHTML.includes('1–30 of 35 saved versions'));
@@ -125,7 +127,7 @@ function environment(handler = ordinary) {
   assert.ok(container.nodes.activity.innerHTML.includes('HTTP 200'));
   assert.ok(container.nodes.activity.innerHTML.includes('<td>Not recorded</td>'));
   assert.ok(container.nodes.activity.innerHTML.includes('4,000 reserved / 1,000 reserved'));
-  assert.ok(container.nodes.activity.innerHTML.includes('Saved output reused'));
+  assert.ok(container.nodes.activity.innerHTML.includes('Saved result reused'));
   assert.ok(container.nodes.activity.innerHTML.includes('Bad &lt;evidence&gt;'));
   assert.ok(container.nodes.activity.innerHTML.includes('Interrupted · outcome unknown'));
 

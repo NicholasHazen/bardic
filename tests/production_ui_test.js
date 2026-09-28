@@ -58,7 +58,9 @@ function environment(handler) {
     const result = await handler(call);
     return {ok:result.ok !== false, status:result.status || 200, json:async () => result.data};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/production.js'), 'utf8'), scope);
+  vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/ui.js'), 'utf8'), scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/production.js'), 'utf8'), scope);
   return {calls, render:scope.window.BardicProduction.render};
 }
 
@@ -99,6 +101,7 @@ const cloud = {provider:'anthropic', chapterId:'chapter-1', scanModel:'fast-mode
   assert.equal(firstPlan.body.resume, true);
   assert.equal(container.nodes.start.disabled, false);
   assert.ok(container.nodes.plan.innerHTML.includes('$0.30'));
+  assert.equal(container.nodes.start.textContent, 'Run · about $0.30', 'the run button carries the estimated cost');
   assert.ok(container.nodes.plan.innerHTML.includes('Approximate estimate &lt;safe&gt;'));
   click(container, 'start');
   await settle();
@@ -116,8 +119,8 @@ const cloud = {provider:'anthropic', chapterId:'chapter-1', scanModel:'fast-mode
   assert.equal(env.calls.at(-1).body.phase, 'direct');
   assert.equal(env.calls.at(-1).body.limits.budget_usd, null);
   assert.equal(env.calls.at(-1).body.limits.max_requests, 4);
-  assert.ok(container.nodes.plan.innerHTML.includes('Dollar guard is off'));
-  assert.ok(container.nodes.plan.innerHTML.includes('stop at its request cap'));
+  assert.ok(container.nodes.plan.innerHTML.includes('No dollar limit; request and token limits still apply'));
+  assert.ok(container.nodes.plan.innerHTML.includes('stop at its request limit'));
 
   // Every edit invalidates a preview; invalid input never reaches the plan endpoint.
   edit(container, 'max_requests', '0');
@@ -126,7 +129,7 @@ const cloud = {provider:'anthropic', chapterId:'chapter-1', scanModel:'fast-mode
   preview(container);
   await settle();
   assert.equal(env.calls.length, requestsBefore);
-  assert.match(container.nodes.message.textContent, /Request cap must be/);
+  assert.match(container.nodes.message.textContent, /Request limit must be/);
   edit(container, 'max_requests', '25');
   edit(container, 'phase', 'profiles');
   preview(container);
@@ -153,14 +156,15 @@ const cloud = {provider:'anthropic', chapterId:'chapter-1', scanModel:'fast-mode
   const localEnv = environment(call => ({data:call.method === 'GET' ? coverage : {...plan, requests:0, estimated_cost_usd:0}}));
   const localContainer = new Container();
   await localEnv.render(localContainer, book, {...cloud, provider:'local', onStart:body => localStarts.push(body)});
-  assert.ok(localContainer.innerHTML.includes('Local heuristic draft'));
-  assert.ok(localContainer.innerHTML.includes('does not provide semantic whole-book discovery'));
-  assert.ok(!localContainer.innerHTML.includes('Total tracked book allowance'));
+  assert.ok(localContainer.innerHTML.includes('Local draft (rules only)'));
+  assert.ok(localContainer.innerHTML.includes('does not search the whole book for characters'));
+  assert.ok(!localContainer.innerHTML.includes('Book spending limit (USD)'));
   preview(localContainer);
   await settle();
   assert.equal(localEnv.calls.at(-1).body.phase, 'full');
   assert.ok(!Object.hasOwn(localEnv.calls.at(-1).body, 'chapter_id'));
   assert.ok(localContainer.nodes.plan.innerHTML.includes('no paid provider requests'));
+  assert.equal(localContainer.nodes.start.textContent, 'Run · no charge');
 
   // Unknown prices, current spend and full-pipeline unknown work are explicit.
   const unknownEnv = environment(call => ({data:call.method === 'GET' ? coverage : {...plan,
@@ -171,6 +175,7 @@ const cloud = {provider:'anthropic', chapterId:'chapter-1', scanModel:'fast-mode
   preview(unknownContainer);
   await settle();
   assert.ok(unknownContainer.nodes.plan.innerHTML.includes('Price or earlier cost is unknown'));
+  assert.equal(unknownContainer.nodes.start.textContent, 'Run · cost unknown', 'an unknown price is never shown as free');
   assert.ok(unknownContainer.nodes.plan.innerHTML.includes('New discoveries can add profiles'));
   assert.ok(!Object.hasOwn(unknownEnv.calls.at(-1).body, 'chapter_id'));
 

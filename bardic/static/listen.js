@@ -10,7 +10,30 @@
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
   const PROVIDERS = ['system','gemini','breeze'];
-  const PROVIDER_LABELS = {system:'Device',gemini:'Gemini',breeze:'Breeze'};
+  const PROVIDER_LABELS = {system:'Mac voices',gemini:'Gemini',breeze:'Breeze'};
+  // Mac voices run on the computer serving Bardic. Apple's novelty and legacy
+  // voices are fun but are not narrators, and a book's narrator should speak its
+  // language, so both are hidden until the listener asks for all voices.
+  const NOVELTY_MAC_VOICES = new Set(['Albert','Bad News','Bahh','Bells','Boing','Bubbles','Cellos','Deranged','Good News',
+    'Hysterical','Jester','Organ','Pipe Organ','Superstar','Trinoids','Whisper','Wobble','Zarvox','Fred','Junior','Kathy','Ralph']);
+  const baseVoiceName = voice => String(voice?.name ?? voice?.id ?? '').replace(/\s*\(.*$/,'').trim();
+  const isNoveltyVoice = voice => NOVELTY_MAC_VOICES.has(baseVoiceName(voice));
+  const languageOf = tag => String(tag || '').toLowerCase().split(/[-_]/)[0];
+  // Books do not record a language yet; the browser's language stands in for it.
+  const bookLanguage = book => languageOf(book?.language || book?.metadata?.language ||
+    (typeof navigator !== 'undefined' && navigator.language) || 'en') || 'en';
+  // Split Mac voices into those shown by default and the rest. `keep` (the
+  // current choice) always stays visible. If the language has no voices at all,
+  // every non-novelty voice is shown rather than an empty menu.
+  function macVoices(voices, {language = 'en', showAll = false, keep = ''} = {}) {
+    const list = voices || [];
+    if (showAll) return {shown:list,hidden:0};
+    const kept = voice => keep && (voice.id ?? voice.name) === keep;
+    const matches = voice => !isNoveltyVoice(voice) && (!voice.locale || languageOf(voice.locale) === languageOf(language));
+    let shown = list.filter(voice => matches(voice) || kept(voice));
+    if (!shown.some(voice => !kept(voice))) shown = list.filter(voice => !isNoveltyVoice(voice) || kept(voice));
+    return {shown,hidden:list.length - shown.length};
+  }
   // Providers whose requests are billed. Breeze is free per request (your GPU).
   const PAID = new Set(['gemini']);
   // Only Gemini chooses among speech models; device voices use the macOS model
@@ -143,10 +166,10 @@
     invalidate(state);
     const cancelledAhead = !keepAhead && cancelAutomatic(state);
     const verb = pause ? 'Paused' : 'Stopped';
-    state.message = cancelledAhead ? `${verb}. Generation ahead of you was cancelled, so nothing more is requested; finished audio is saved.`
+    state.message = cancelledAhead ? `${verb}. Preparing ahead was cancelled, so nothing more is requested; finished audio is saved.`
       : chunked(state) && state.chapter.job && !CHAPTER_TERMINAL.has(state.chapter.job.status)
-      ? `${pause ? 'Paused' : 'Playback stopped'}. Chapter generation continues; use Stop generating to cancel it.`
-      : `${verb}. Finished simple takes are saved for the next listen.`;
+      ? `${pause ? 'Paused' : 'Playback stopped'}. Chapter preparation continues; use Stop preparing to cancel it.`
+      : `${verb}. Finished audio is saved for the next listen.`;
     paint(state.panel);
   }
   // A chapter job that continuous listening started on its own serves only the
@@ -175,7 +198,7 @@
   }
   function forgetAudio(book, segment) { stateFor(book)?.takes.delete(segment?.id); }
   function remember(state, segment, audio) {
-    if (!valid(audio)) throw new Error('The narration finished without a playable audio take. Try this passage again.');
+    if (!valid(audio)) throw new Error('The narration finished without playable audio. Try this passage again.');
     state.takes.set(segment.id,{source:sourceKey(segment),audio});
   }
   function remaining(state, segmentId) {
@@ -270,7 +293,7 @@
   function halt(state, error, task) {
     report(state,'buffer_failed',error,task?.operation || 'prepare',task?.segment?.id);
     state.error = error.message;
-    state.message = 'Preparation paused. Saved audio remains playable. Retry is an explicit new request.';
+    state.message = 'Preparation paused. Saved audio still plays. Try again sends a new request.';
     if (state.intent) state.intent.blocked = true;
     for (const task of state.queue.splice(0)) task.resolve(null);
   }
@@ -302,7 +325,7 @@
       if (!current(state,task.version)) return false;
       const job = jobs.find(item => item.id === known.id);
       if (!job) {
-        if (++missing >= 3) throw new Error('The previous listening job could not be found. Retry to check its status before requesting more audio.');
+        if (++missing >= 3) throw new Error('The previous narration request could not be found. Try again to check its status before requesting more audio.');
       } else {
         missing = 0;
         if (!['queued','running'].includes(job.status)) {
@@ -368,7 +391,7 @@
         if (!current(state,version)) { cancelJob(job.id); return null; }
         const next = jobs.find(item => item.id === job.id);
         if (!next) {
-          if (++missing >= 3) throw new Error('The listening job could not be found. Retry preparation to check again.');
+          if (++missing >= 3) throw new Error('The narration request could not be found. Choose Try again to check again.');
           continue;
         }
         missing = 0;
@@ -390,7 +413,7 @@
     const latest = state.book.segments.find(item => item.id === segment.id);
     if (!latest || sourceKey(latest) !== signature) return null;
     remember(state,segment,audio);
-    state.message = result.cached ? 'Using saved audio from the local cache.' : 'Passage saved in the local audio cache.';
+    state.message = result.cached ? 'Using saved audio.' : 'Passage audio saved.';
     notify(state);
     return current(state,version) ? audio : null;
   }
@@ -480,7 +503,7 @@
       if (resolve(book,segment) && intent.phase === 'playing') return resolve(book,segment);
       if (intent.blocked) {
         if (resolve(book,segment)) return resolve(book,segment);
-        throw new Error(state.error || 'Preparation paused. Choose Retry preparation.');
+        throw new Error(state.error || 'Preparation paused. Choose Try again.');
       }
       intent.phase = 'warmup';
     }
@@ -647,8 +670,9 @@
     const state = stateFor(book);
     if (!state || !PROVIDERS.includes(provider)) return null;
     const probe = {...state,provider};
-    const {voices,selectedVoice,available,breezeVoiceReady} = narratorChoices(probe);
+    const {voices,selectedVoice,available,breezeVoiceReady,hiddenVoices} = narratorChoices(probe);
     return {provider,available,breezeVoiceReady,voice:selectedVoice,model:provider === 'gemini' ? state.model : null,
+      hiddenVoices,showAllVoices:Boolean(state.showAllVoices),
       voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false}))};
   }
 
@@ -684,7 +708,7 @@
     if (state.chapter.job?.id !== job.id) return;
     const latest = jobs.find(item => item.id === job.id);
     if (!latest) {
-      if (++state.chapter.missing >= 3) throw new Error('The chapter job could not be found.');
+      if (++state.chapter.missing >= 3) throw new Error('The chapter being prepared could not be found.');
       return;
     }
     state.chapter.missing = 0;
@@ -725,7 +749,7 @@
     if (sentKey !== configKey(state) || stateFor(state.book) !== state) {
       // The narrator changed while this was in flight: that audio is no longer wanted.
       if (result.job?.id && !result.joined) cancelJob(result.job.id);
-      throw new Error('The narrator changed before generation started. Press Play again.');
+      throw new Error('The narrator changed before preparation started. Press Play again.');
     }
     adoptSession(state,result.session,sentKey);
     // Only a job this request created is automatic; joining keeps its owner.
@@ -784,7 +808,7 @@
     failed:'Chapter preparation failed · finished audio is saved',
     cancelled:'Chapter preparation cancelled · finished audio is saved',
     interrupted:'Chapter preparation interrupted when Bardic stopped · finished audio is saved',
-    budget_limited:'Spending allowance reached · finished audio is saved',
+    budget_limited:'Spending limit reached · finished audio is saved',
   };
   const LIMITED = new Set(['quota_limited','budget_limited']);
   // A stopped job needs an explicit Resume, except one that Pause cancelled
@@ -817,13 +841,13 @@
       .then(() => {
         // Paused while the request was in flight: the new job is not wanted.
         if (state.intent !== intent) cancelAutomatic(state);
-        else state.message = 'Generating the next chapter ahead of you.';
+        else state.message = 'Preparing the next chapter ahead of you.';
       })
       .catch(error => {
         report(state,'listen_request_failed',error,'request',target.id);
         // A busy book (409) sent nothing; try again shortly instead of giving up.
         if (error.status === 409) { intent.queued.delete(target.chapter_id); state.chapter.retryAt = Date.now() + 20000; }
-        if (state.intent === intent) state.message = `The next chapter could not be queued: ${error.message}`;
+        if (state.intent === intent) state.message = `The next chapter could not be prepared: ${error.message}`;
       })
       .finally(() => { state.chapter.autoStarting = null; paint(state.panel); });
   }
@@ -874,17 +898,17 @@
     // Continuous listening: playback reaching a chapter with no job starts its
     // job, unless generation was stopped, limited or failed there.
     const carryOn = crossed && !state.chapter.hold && !stopped && !LIMITED.has(job?.status) && !active && !elsewhere;
-    if (!ready && elsewhere) throw fail('Another chapter is being generated. Stop it there, or wait, before generating this one.');
+    if (!ready && elsewhere) throw fail('Another chapter is being prepared. Stop it there, or wait, before preparing this one.');
     if (!ready && (continuation || stopped) && !active && !carryOn) {
-      throw fail(stopped ? `${job.error || job.message || 'Chapter preparation stopped.'} Choose Resume chapter to continue generating.`
+      throw fail(stopped ? `${job.error || job.message || 'Chapter preparation stopped.'} Choose Resume chapter to continue preparing.`
         : crossed && LIMITED.has(job?.status) ? `${job.error || job.message || 'The request limit was reached.'} Finished audio is saved; choose Resume chapter after the reset.`
-        : crossed && state.chapter.hold ? 'Generation was stopped, so the next chapter was not started. Press Play to continue.'
-        : 'The rest of this chapter has not been generated. Press Play or Queue chapter to continue.');
+        : crossed && state.chapter.hold ? 'Preparation was stopped, so the next chapter was not started. Press Play to continue.'
+        : 'The rest of this chapter is not prepared yet. Press Play or Prepare rest of chapter to continue.');
     }
     // A job queued ahead a moment ago may not have planned its chunks yet.
     const ownAhead = crossed && Boolean(job?.id) && job.id === state.chapter.autoJobId;
     if (!ready && continuation && active && !ownAhead && !jobCovers(state,job,segment)) {
-      throw fail('This passage is outside the chapter job. Press Play here to include it.');
+      throw fail('This passage is outside the chapter being prepared. Press Play here to include it.');
     }
     if (missing && (!continuation || (carryOn && !ready)) && !stopped && !elsewhere && (!active || !ready)) {
       // With enough audio ready ahead, skip the quick-start steps: full-size
@@ -907,12 +931,12 @@
       const latest = state.chapter.job;
       if (state.chapter.error) throw fail(state.chapter.error);
       if (!latest || CHAPTER_TERMINAL.has(latest.status) || !state.chapter.watching) {
-        throw fail(latest?.status === 'completed' ? 'The chapter job finished without this passage. Press Play here to generate it.'
+        throw fail(latest?.status === 'completed' ? 'Chapter preparation finished without this passage. Press Play here to prepare it.'
           : latest?.error || latest?.message || 'Chapter preparation stopped before this passage was ready.');
       }
       // After an explicit join the first poll may predate the new focus, so only
       // automatic continuation treats an uncovered passage as final.
-      if (continuation && !carryOn && !ownAhead && !jobCovers(state,latest,segment)) throw fail('This passage is outside the chapter job. Press Play here to include it.');
+      if (continuation && !carryOn && !ownAhead && !jobCovers(state,latest,segment)) throw fail('This passage is outside the chapter being prepared. Press Play here to include it.');
     }
   }
 
@@ -1054,25 +1078,25 @@
     if (active) {
       const running = (job.chunks || []).filter(entry => entry.status === 'requesting').length;
       headline = job.waiting_seconds ? `Waiting ${Math.ceil(job.waiting_seconds)} s for the per-minute limit` :
-        running ? `Generating ${running} chunk${running === 1 ? '' : 's'}` : 'Planning the next chunk';
+        running ? `Preparing · ${running} request${running === 1 ? '' : 's'} in progress` : 'Planning the next request';
       headline += !estimate.remainingSeconds ? '' : estimate.quotaBlocked ? ' · the rest needs requests after the daily reset'
-        : Number.isFinite(estimate.etaSeconds) ? ` · done in ~${span(estimate.etaSeconds)}` : ' · some passages here are outside this job';
-    } else if (job?.status === 'quota_limited') headline = 'Daily request quota reached · finished audio is saved';
+        : Number.isFinite(estimate.etaSeconds) ? ` · done in ~${span(estimate.etaSeconds)}` : ' · some passages here are outside this preparation';
+    } else if (job?.status === 'quota_limited') headline = 'Daily request limit reached · finished audio is saved';
     // Each way a job can end keeps its own name: a failure, your cancel and an
     // interrupted server are different events with different next steps.
     else if (job && STOPPED_HEADLINES[job.status] && estimate.remainingSeconds) headline = STOPPED_HEADLINES[job.status];
-    else headline = estimate.remainingSeconds ? 'Not queued yet' : 'Chapter ready';
+    else headline = estimate.remainingSeconds ? 'Not prepared yet' : 'Chapter ready';
     lines.push(`<div><span>${escape(headline)}</span><span>${estimate.readyPassages} of ${estimate.totalPassages} passages from here ready</span></div>`);
-    lines.push(`<progress max="${estimate.readySeconds + estimate.remainingSeconds || 1}" value="${estimate.readySeconds}" aria-label="Chapter audio generated"></progress>`);
-    lines.push(`<div class="chapter-queue-times"><span>Ready: ${escape(span(estimate.readySeconds/rate))} of listening at ${rate}×</span><span>Still to generate: ~${escape(span(estimate.remainingSeconds/rate))} of listening</span></div>`);
+    lines.push(`<progress max="${estimate.readySeconds + estimate.remainingSeconds || 1}" value="${estimate.readySeconds}" aria-label="Chapter audio prepared"></progress>`);
+    lines.push(`<div class="chapter-queue-times"><span>Ready: ${escape(span(estimate.readySeconds/rate))} of listening at ${rate}×</span><span>Still to prepare: ~${escape(span(estimate.remainingSeconds/rate))} of listening</span></div>`);
     if (estimate.remainingSeconds) {
       let safety;
-      if (!active && job?.status === 'quota_limited') safety = {tone:'idle',text:'Generation is paused until the daily request quota resets. Choose Resume chapter after the reset; finished audio plays now.'};
-      else if (!active && job?.status === 'budget_limited') safety = {tone:'idle',text:'Generation stopped at the spending allowance. Finished audio plays now; Resume chapter asks for more.'};
-      else if (!active) safety = {tone:'idle',text:'Queue the chapter to keep generating ahead of you.'};
-      else if (estimate.quotaBlocked) safety = {tone:'warn',text:'The remaining chunks need more requests than are left today. Playback will stop where generation stops.'};
-      else if (estimate.safe) safety = {tone:'safe',text:`Safe to listen at ${rate}× — generation should stay ahead of you.`};
-      else if (!Number.isFinite(estimate.waitSeconds)) safety = {tone:'warn',text:'Some passages from here are not in this chapter job. Press Play at the first one to include them.'};
+      if (!active && job?.status === 'quota_limited') safety = {tone:'idle',text:'Preparation is paused until the daily request limit resets. Choose Resume chapter after the reset; finished audio plays now.'};
+      else if (!active && job?.status === 'budget_limited') safety = {tone:'idle',text:'Preparation stopped at the spending limit. Finished audio plays now; Resume chapter asks for more.'};
+      else if (!active) safety = {tone:'idle',text:'Prepare the rest of the chapter to stay ahead of you.'};
+      else if (estimate.quotaBlocked) safety = {tone:'warn',text:'The rest of this chapter needs more requests than are left today. Playback will stop where preparation stops.'};
+      else if (estimate.safe) safety = {tone:'safe',text:`Safe to listen at ${rate}× — preparation should stay ahead of you.`};
+      else if (!Number.isFinite(estimate.waitSeconds)) safety = {tone:'warn',text:'Some passages from here are not in this chapter\'s preparation. Press Play at the first one to include them.'};
       else if (estimate.firstAudioSeconds > 0) {
         safety = {tone:'warn',text:`First audio here in ~${span(estimate.firstAudioSeconds)}. For gap-free listening at ${rate}×, start in ~${span(estimate.waitSeconds)}.`};
       } else {
@@ -1089,8 +1113,8 @@
       lines.push(`<p>${needed !== undefined ? `${needed} more request${needed === 1 ? '' : 's'} for this chapter. ` : ''}${quota.requests_today} of ${quota.rpd} daily Gemini requests used by this library.${escape(resetText)}</p>`);
     }
     const uncertain = (job?.chunks || []).filter(entry => entry.status === 'done' && (entry.flags || []).includes('weak_alignment')).length;
-    if (uncertain) lines.push(`<p>Passage highlighting in ${uncertain} chunk${uncertain === 1 ? '' : 's'} is less certain (few clear pauses); the audio itself plays normally.</p>`);
-    lines.push('<p class="chapter-queue-legend"><span class="legend-ready">ready</span><span class="legend-alt">next chunk</span><span class="legend-generating">generating</span><span class="legend-queued">queued</span> Passage timing inside a chunk is estimated from pauses.</p>');
+    if (uncertain) lines.push(`<p>Passage highlighting in ${uncertain} part${uncertain === 1 ? '' : 's'} of this chapter is less certain (few clear pauses); the audio itself plays normally.</p>`);
+    lines.push('<p class="chapter-queue-legend"><span class="legend-ready">ready</span><span class="legend-alt">next request</span><span class="legend-generating">preparing</span><span class="legend-queued">queued</span> Passage timing within each request is estimated from pauses.</p>');
     return `<div class="simple-listen-buffer chapter-queue" aria-live="polite">${lines.join('')}</div>`;
   }
 
@@ -1155,8 +1179,9 @@
     const availability = {system:system?.available !== false,breeze:breeze?.available === true,gemini:Boolean(status.has_api_key || gemini?.available)};
     const available = state.provider === 'breeze' ? availability.breeze && breezeVoiceReady : availability[state.provider];
     const defaultName = breezeDefaultName(state);
+    const mac = macVoices(status.system_voices,{language:bookLanguage(state.book),showAll:Boolean(state.showAllVoices),keep:state.voices.system});
     const voices = state.provider === 'system'
-      ? [{id:'',name:'Default device voice'},...(status.system_voices || [])]
+      ? [{id:'',name:'Default Mac voice'},...mac.shown]
       : state.provider === 'breeze'
         ? [{id:'',name:defaultName ? `Default (${defaultName})` : 'Default (none set yet)'},...libraryOptions(state,'breeze')]
         : [...builtInVoices.map(name => ({id:name,name})),...libraryOptions(state,'gemini')];
@@ -1165,7 +1190,7 @@
       voices.push({id:selectedVoice,name:selectedVoice.startsWith(LIBRARY) ? 'Deleted voice'
         : state.provider === 'breeze' ? `${selectedVoice} (not in library)` : selectedVoice});
     }
-    return {breezeVoiceReady,available,availability,voices,selectedVoice};
+    return {breezeVoiceReady,available,availability,voices,selectedVoice,hiddenVoices:state.provider === 'system' ? mac.hidden : 0};
   }
   // The narrator as people should see it: a voice name (never a raw library
   // id), the provider and whether its requests are billed.
@@ -1174,17 +1199,17 @@
     if (!state) return null;
     const {voices,selectedVoice} = narratorChoices(state);
     const voiceName = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name ||
-      (state.provider === 'system' ? 'Default device voice' : state.provider === 'breeze' ? 'Default Breeze voice' : selectedVoice || 'Kore');
+      (state.provider === 'system' ? 'Default Mac voice' : state.provider === 'breeze' ? 'Default Breeze voice' : selectedVoice || 'Kore');
     return {mode:state.mode,provider:state.provider,providerLabel:PROVIDER_LABELS[state.provider] || state.provider,voiceName,paid:PAID.has(state.provider)};
   }
   // A compact view of the narrator choice for the app's listen sheet.
   function choices(book) {
     const state = stateFor(book);
     if (!state) return null;
-    const {available,availability,voices,selectedVoice,breezeVoiceReady} = narratorChoices(state);
+    const {available,availability,voices,selectedVoice,breezeVoiceReady,hiddenVoices} = narratorChoices(state);
     return {mode:state.mode,provider:state.provider,providers:PROVIDERS.map(id => ({id,label:PROVIDER_LABELS[id],available:availability[id]})),
       voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false})),
-      voice:selectedVoice,available,breezeVoiceReady,continuous:state.continuous,chunked:chunkCapable(state),
+      voice:selectedVoice,available,breezeVoiceReady,hiddenVoices,showAllVoices:Boolean(state.showAllVoices),continuous:state.continuous,chunked:chunkCapable(state),
       saved:state.takes.size,error:state.error || state.chapter.error || '',message:state.message || ''};
   }
   // Changing narrator from the sheet uses the same path as the panel, so it
@@ -1199,23 +1224,23 @@
     const playing = panel.options.playing, preparing = panel.options.preparing || state.intent?.phase === 'warmup';
     const progress = record?.progress;
     const job = record?.job;
-    const status = !record ? 'Loading…' : PERFORMANCE_ACTIVE.has(job?.status) ? `Processing · ${job.message || ''}`
+    const status = !record ? 'Loading…' : PERFORMANCE_ACTIVE.has(job?.status) ? `Recording · ${job.message || ''}`
       : `${progress?.passages_ready ?? 0} of ${progress?.passages_total ?? 0} passages ready`;
-    const html = `<section class="simple-listen" aria-label="Listening settings">
+    const html = `<section class="simple-listen" aria-label="Narrator">
       <div class="simple-listen-heading">
-        <div><h3>Saved performance</h3><p>${escape(record?.name || 'Saved performance')}${record?.narrator_label ? ` · ${escape(record.narrator_label)}` : ''}</p></div>
-        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="performance" selected>Saved performance</option><option value="simple">One narrator</option><option value="enhanced">Full cast (Studio takes)</option></select></label>
+        <div><h3>Performance</h3><p>${escape(record?.name || 'Performance')}${record?.narrator_label ? ` · ${escape(record.narrator_label)}` : ''}</p></div>
+        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="performance" selected>Performance</option><option value="simple">One narrator</option><option value="enhanced">Full cast</option></select></label>
       </div>
-      <p class="simple-listen-note">${escape(status)}. Plays only audio this performance already has; nothing new is generated while you listen.</p>
+      <p class="simple-listen-note">${escape(status)}. Plays only audio this performance already has; nothing new is requested while you listen.</p>
       <div class="simple-listen-actions">
-        <button type="button" class="button primary" data-listen-action="start" aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : 'Play simple listening'}">${preparing ? 'Preparing…' : playing ? 'Pause' : 'Play'}</button>
+        <button type="button" class="button primary" data-listen-action="start" aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause performance' : 'Play performance'}">${preparing ? 'Preparing…' : playing ? 'Pause' : 'Play'}</button>
         <button type="button" class="button subtle" data-listen-action="stop">Stop</button>
         <span>${state.continuous ? 'Continues through its chapters' : 'Stops at chapter end'}</span>
       </div>
       <p class="simple-listen-message ${state.error ? 'simple-listen-error' : ''}" role="${state.error ? 'alert' : 'status'}">${escape(state.error || state.message || '')}</p>
     </section>`;
     const summary = panel.container.closest?.('details')?.querySelector?.('#listening-summary');
-    const summaryText = `Saved performance: ${record?.name || '…'}`;
+    const summaryText = `Performance: ${record?.name || '…'}`;
     if (summary && summary.textContent !== summaryText) summary.textContent = summaryText;
     if (panel.container.innerHTML !== html) panel.container.innerHTML = html;
   }
@@ -1225,7 +1250,7 @@
     const state = panel.state;
     const status = panel.options.status || {};
     const breeze = status.providers?.find(provider => provider.id === 'breeze');
-    const {breezeVoiceReady,available,voices,selectedVoice} = narratorChoices(state,status);
+    const {breezeVoiceReady,available,voices,selectedVoice,hiddenVoices} = narratorChoices(state,status);
     const selected = selectedSegment(panel);
     const canUseCache = selected && state.takes.get(selected.id)?.source === sourceKey(selected);
     const models = (status.tts_models || []).map(item => typeof item === 'string' ? item : item.id);
@@ -1240,14 +1265,14 @@
     const preparing = state.mode === 'simple' && (warming || panel.options.preparing);
     const playing = state.mode === 'simple' && panel.options.playing;
     const startDisabled = chapter || (!preparing && !playing && (busy || !available && !canUseCache));
-    const startLabel = preparing ? 'Preparing…' : state.mode === 'simple' ? playing ? 'Pause' : 'Play' : 'Start simple listening';
+    const startLabel = preparing ? 'Preparing…' : state.mode === 'simple' ? playing ? 'Pause' : 'Play' : 'Start listening';
     const previewDescription = selected ? 'Hear a short example from the selected passage.' : 'Hear a short example using demo text.';
     const remainingCount = selected ? remaining(state,selected.id).length : 0;
     const progress = chapter ? state.intent.completed : Math.min(buffered.seconds,buffered.targetSeconds);
     const maximum = chapter ? state.intent.total || 1 : buffered.targetSeconds;
     const progressText = chapter
       ? `Preparing chapter · ${state.intent.completed} of ${state.intent.total} passages saved`
-      : `${warming ? 'Warming up' : 'Audio buffer'} · ${Math.floor(buffered.seconds)} seconds ready at ${buffered.rate}×`;
+      : `${warming ? 'Getting ready' : 'Ready ahead'} · ${Math.floor(buffered.seconds)} seconds at ${buffered.rate}×`;
     const chapterJob = state.chapter.job;
     const jobRunning = chapterJob && !CHAPTER_TERMINAL.has(chapterJob.status);
     const generating = jobRunning && chapterJob.chapter_id === selected?.chapter_id;
@@ -1256,34 +1281,34 @@
       selected && remaining(state,selected.id).some(item => !resolve(state.book,item));
     const chunking = status.listen_chunking || {};
     const preset = presetFor(chunking.ramp_seconds);
-    const chunkSettings = chunkCapable(state) ? `<label>First audio<select data-listen-field="chunk-preset" aria-label="How quickly the first chunk arrives">${CHUNK_PRESETS.map(item => `<option value="${item.id}" ${preset?.id === item.id ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${preset ? '' : `<option value="" selected>Custom · ${escape((chunking.ramp_seconds || []).join(', '))} s</option>`}</select></label><label>Full chunk length<select data-listen-field="chunk-length" aria-label="Audio per full-size request">${CHUNK_LENGTHS.map(([value,label]) => `<option value="${value}" ${Number(chunking.target_seconds) === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}${CHUNK_LENGTHS.some(([value]) => value === Number(chunking.target_seconds)) || !chunking.target_seconds ? '' : `<option value="" selected>Custom · ${escape(span(chunking.target_seconds))}</option>`}</select></label>` : '';
+    const chunkSettings = chunkCapable(state) ? `<label>First audio<select data-listen-field="chunk-preset" aria-label="How quickly the first audio arrives">${CHUNK_PRESETS.map(item => `<option value="${item.id}" ${preset?.id === item.id ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${preset ? '' : `<option value="" selected>Custom · ${escape((chunking.ramp_seconds || []).join(', '))} s</option>`}</select></label><label>Full request length<select data-listen-field="chunk-length" aria-label="Audio per full-size request">${CHUNK_LENGTHS.map(([value,label]) => `<option value="${value}" ${Number(chunking.target_seconds) === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}${CHUNK_LENGTHS.some(([value]) => value === Number(chunking.target_seconds)) || !chunking.target_seconds ? '' : `<option value="" selected>Custom · ${escape(span(chunking.target_seconds))}</option>`}</select></label>` : '';
     const chapterForSelection = chapterJob && chapterJob.chapter_id === selected?.chapter_id;
     const showProgress = state.mode === 'simple' && (state.intent || state.loading || playing || preparing || (chunked(state) && chapterForSelection));
     const chapterStatus = state.mode === 'simple' && chunked(state) ? chapterMarkup(state,panel) : '';
-    const progressMarkup = chunked(state) ? (showProgress ? chapterStatus : '') : showProgress ? `<div class="simple-listen-buffer"><div><span role="status">${escape(progressText)}</span>${chapter ? '' : `<span>${buffered.readyPassages} passage${buffered.readyPassages === 1 ? '' : 's'}</span>`}</div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Saved audio buffer'}"></progress></div>` : '';
+    const progressMarkup = chunked(state) ? (showProgress ? chapterStatus : '') : showProgress ? `<div class="simple-listen-buffer"><div><span role="status">${escape(progressText)}</span>${chapter ? '' : `<span>${buffered.readyPassages} passage${buffered.readyPassages === 1 ? '' : 's'}</span>`}</div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Audio ready ahead'}"></progress></div>` : '';
     const drawer = panel.container.closest?.('details');
     const summary = drawer?.querySelector?.('#listening-summary');
-    const narratorLabel = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name || selectedVoice || 'Default device voice';
+    const narratorLabel = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name || selectedVoice || 'Default Mac voice';
     const providerLabel = PROVIDER_LABELS[state.provider] || state.provider;
-    const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Full cast selected · Narrator setup';
-    const costLabel = PAID.has(state.provider) ? 'paid' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free on this device';
+    const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Full cast · recorded passages only';
+    const costLabel = PAID.has(state.provider) ? 'paid' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free, on the Bardic computer';
     const selectionSummary = `${sourceLabel}: ${narratorLabel} / ${providerLabel} · ${costLabel}`;
     const providerNote = state.provider === 'gemini'
-      ? 'Gemini is paid: it receives the chapter text in large chunks paced to your request limits, and Google bills each request, including examples. Bardic has no price for Gemini speech, so it cannot show a cost. No narration spending cap is enforced. The first Play in each browser session asks before sending anything.'
+      ? 'Gemini is paid. It receives the chapter text in large requests paced to your limits, and Google bills each request, including examples. The cost is unknown: Bardic has no price for Gemini speech. There is no spending cap. The first Play in each browser session asks before sending anything.'
       : state.provider === 'breeze'
-        ? 'Breeze narrates on your server over the local network, so passage text is sent there. There are no per-request charges. It generates at about real-time speed; prepare the chapter ahead for faster playback.'
-        : 'Device narration stays on this computer and has no model charges.';
-    const unavailableNote = state.provider === 'system' ? 'Device narration is unavailable here. Choose another provider to generate new audio.'
-      : state.provider === 'breeze' ? (breeze?.available === true ? 'Choose a Breeze voice, or set a default voice in Voices, to generate new takes.'
-        : breeze?.reason || status.breeze?.message || 'Connect your Breeze server in Settings to generate new takes.')
-      : 'Add a Gemini API key in Settings to generate new takes.';
+        ? 'Breeze narrates on your server over the local network, so passage text is sent there. There are no per-request charges. It works at about real-time speed; prepare the chapter ahead for smoother playback.'
+        : 'Mac voices run on the Bardic computer. They are free, and the text stays on that computer.';
+    const unavailableNote = state.provider === 'system' ? 'Mac voices are not available on the Bardic computer. Choose another narrator service for new audio.'
+      : state.provider === 'breeze' ? (breeze?.available === true ? 'Choose a Breeze voice, or set a default voice in Voices, to make new audio.'
+        : breeze?.reason || status.breeze?.message || 'Connect your Breeze server in Settings to make new audio.')
+      : 'Add a Gemini API key in Settings to make new audio.';
     const voiceOption = voice => {
       const id = voice.id ?? voice.name;
       const disabled = voice.usable === false && id !== selectedVoice;
       return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}${disabled && voice.reason ? ` · ${escape(voice.reason)}` : ''}</option>`;
     };
     if (summary) {
-      const summaryText = `${state.error ? 'Preparation paused · ' : chapter ? `Preparing chapter: ${state.intent.completed} of ${state.intent.total} passages · ` : generating ? `Generating chapter: ${chapterJob.progress || 0} of ${chapterJob.total || '…'} passages · ` : ''}${selectionSummary}`;
+      const summaryText = `${state.error ? 'Preparation paused · ' : chapter ? `Preparing chapter: ${state.intent.completed} of ${state.intent.total} passages · ` : generating ? `Preparing chapter: ${chapterJob.progress || 0} of ${chapterJob.total || '…'} passages · ` : ''}${selectionSummary}`;
       if (summary.textContent !== summaryText) summary.textContent = summaryText;
       summary.classList?.toggle('has-error', Boolean(state.error));
     }
@@ -1296,48 +1321,49 @@
     // choice and keyboard focus while refreshing preparation status.
     const disclosure = panel.container.querySelector?.('[data-listen-options]');
     if (disclosure) panel.optionsOpen = disclosure.open;
-    const html = `<section class="simple-listen" aria-label="Listening settings">
+    const html = `<section class="simple-listen" aria-label="Narrator">
       <div class="simple-listen-heading">
-        <div><h3>Listen your way</h3><p>${state.mode === 'simple' ? 'One narrator, ready when you are.' : 'Choose one narrator, or play the full cast from your Studio takes.'}</p></div>
-        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>One narrator</option><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Full cast (Studio takes)</option></select></label>
+        <div><h3>Narrator</h3><p>${state.mode === 'simple' ? 'One voice reads the whole book.' : 'Choose one narrator, or play the full cast recorded in Script & record.'}</p></div>
+        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>One narrator</option><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Full cast</option></select></label>
       </div>
       <div class="simple-listen-settings">
-        <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · paid cloud</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · local network</option></select></label>
-        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !breezeVoiceReady) ? 'disabled' : ''}>${PAID.has(state.provider) ? 'Hear example · paid' : 'Hear example'}</button></div>
+        <label>Service<select data-listen-field="provider" aria-label="Narrator service"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Mac voices · free</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · paid</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · your server</option></select></label>
+        <div class="simple-listen-voice"><label>Voice<select data-listen-field="voice" aria-label="Narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !breezeVoiceReady) ? 'disabled' : ''}>${PAID.has(state.provider) ? 'Hear example · paid' : 'Hear example'}</button></div>
       </div>
+      ${state.provider === 'system' && (hiddenVoices || state.showAllVoices) ? `<label class="simple-listen-continuous"><input type="checkbox" data-listen-field="all-voices" ${state.showAllVoices ? 'checked' : ''}> Show all voices${state.showAllVoices ? '' : ` (${hiddenVoices} in other languages or novelty voices hidden)`}</label>` : ''}
       <p class="simple-listen-note simple-listen-disclosure">${escape(providerNote)}</p>
       ${!available && !canUseCache ? `<p class="simple-listen-unavailable">${escape(unavailableNote)}</p>` : ''}
       <div class="simple-listen-actions">
-        <button type="button" class="button primary" data-listen-action="start" ${startDisabled ? 'disabled' : ''} aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : state.mode === 'simple' ? 'Play simple listening' : 'Start simple listening'}">${startLabel}</button>
+        <button type="button" class="button primary" data-listen-action="start" ${startDisabled ? 'disabled' : ''} aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause listening' : state.mode === 'simple' ? 'Play with one narrator' : 'Start listening with one narrator'}">${startLabel}</button>
         ${state.mode === 'simple' || state.loading ? '<button type="button" class="button subtle" data-listen-action="stop">Stop</button>' : ''}
-        ${chunked(state) && generating ? '<button type="button" class="button subtle" data-listen-action="stop-generating">Stop generating</button>' : chunked(state) && resumable ? `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${busy || elsewhere || !available ? 'disabled' : ''}>Resume chapter</button>` : ''}
+        ${chunked(state) && generating ? '<button type="button" class="button subtle" data-listen-action="stop-generating">Stop preparing</button>' : chunked(state) && resumable ? `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${busy || elsewhere || !available ? 'disabled' : ''}>Resume chapter</button>` : ''}
         <span>${state.mode === 'simple' ? state.continuous ? 'Continues into the next chapter' : 'Stops at chapter end' : 'No story analysis needed'}</span>
       </div>
       ${progressMarkup}
       <p class="simple-listen-message ${state.error || state.chapter.error ? 'simple-listen-error' : ''}" role="${state.error || state.chapter.error ? 'alert' : 'status'}">${escape(state.error || state.chapter.error || (chunked(state) && chapterForSelection && ['failed','quota_limited'].includes(chapterJob.status) ? chapterJob.error || chapterJob.message : '') || state.message || '')}</p>
-      ${state.error ? '<button type="button" class="button subtle simple-listen-retry" data-listen-action="retry">Retry preparation</button>' : ''}
+      ${state.error ? '<button type="button" class="button subtle simple-listen-retry" data-listen-action="retry">Try again</button>' : ''}
       <details class="simple-listen-options" data-listen-options ${panel.optionsOpen ? 'open' : ''}>
         <summary data-listen-summary>More listening options</summary>
         <div class="simple-listen-advanced">
           <div class="simple-listen-settings">
-            <label>Playback speed<select data-listen-speed aria-label="Simple listening playback speed">${playbackRates.map(rate => `<option value="${rate}" ${rate === rateOf(panel.options.playbackRate) ? 'selected' : ''}>${rate}×</option>`).join('')}</select></label>
-            ${state.provider === 'gemini' ? `<label>Speech model<select data-listen-field="model" aria-label="Simple speech model">${models.map(model => `<option value="${escape(model)}" ${model === state.model ? 'selected' : ''}>${escape(model)}</option>`).join('')}</select></label>` : ''}
+            <label>Playback speed<select data-listen-speed aria-label="Playback speed">${playbackRates.map(rate => `<option value="${rate}" ${rate === rateOf(panel.options.playbackRate) ? 'selected' : ''}>${rate}×</option>`).join('')}</select></label>
+            ${state.provider === 'gemini' ? `<label>Speech model<select data-listen-field="model" aria-label="Gemini speech model">${models.map(model => `<option value="${escape(model)}" ${model === state.model ? 'selected' : ''}>${escape(model)}</option>`).join('')}</select></label>` : ''}
             ${chunkSettings}
           </div>
           <label class="simple-listen-continuous"><input type="checkbox" data-listen-field="continuous" ${state.continuous ? 'checked' : ''}> Continue into the next chapter</label>
-          <p class="simple-listen-note">${state.continuous ? `Simple playback keeps going through the book until you pause or stop, a request limit is reached, or the book ends.${chunked(state) ? ' While you listen, the next chapter is queued about 10 minutes ahead of you.' : ''}` : 'Simple playback stops at the end of this chapter.'} Highlighting follows each passage. Playback and speed are shared with the player below.</p>
+          <p class="simple-listen-note">${state.continuous ? `Listening keeps going through the book until you pause or stop, a request limit is reached, or the book ends.${chunked(state) ? ' While you listen, the next chapter is prepared about 10 minutes ahead of you.' : ''}` : 'Listening stops at the end of this chapter.'} Highlighting follows each passage. Playback and speed are shared with the player below.</p>
           ${chunked(state) ? `<div class="simple-listen-preparation">
-            <div><h4>Prepare before listening</h4><p>${generating ? 'This chapter is generating. Stop generating lets requests already sent finish; their audio stays saved.' : elsewhere ? 'Another chapter is being generated for this book. Stop it there, or wait, before queueing this one.' : `Queue ${remainingCount} passages from here to the chapter end in large chunks, without starting playback. Each chunk is one request.`}</p></div>
-            ${generating ? '' : `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${busy || elsewhere || !remainingCount || !available ? 'disabled' : ''}>${resumable ? 'Resume chapter' : 'Queue chapter'}</button>`}
+            <div><h4>Prepare ahead</h4><p>${generating ? 'This chapter is being prepared. Stop preparing lets requests already sent finish; their audio stays saved.' : elsewhere ? 'Another chapter of this book is being prepared. Stop it there, or wait, before preparing this one.' : `Prepare ${remainingCount} passage${remainingCount === 1 ? '' : 's'} from here to the end of the chapter without playing them. Each request covers up to several minutes of audio.`}</p></div>
+            ${generating ? '' : `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${busy || elsewhere || !remainingCount || !available ? 'disabled' : ''}>${resumable ? 'Resume chapter' : PAID.has(state.provider) ? 'Prepare rest of chapter · paid' : 'Prepare rest of chapter'}</button>`}
           </div>
           ${showProgress ? '' : chapterStatus}
-          <p class="simple-listen-note">Play starts or joins the chapter queue: quick-start chunks first, then full chunks of up to about 7 minutes, paced to your request limits. Only Play, Queue chapter and Resume chapter send requests; Stop pauses playback while generation continues.</p>` : `<div class="simple-listen-preparation">
-            <div><h4>Prepare before listening</h4><p>Save up to ${remainingCount} passages from here to the end of the chapter, without starting playback. Saved matching audio is reused.</p></div>
+          <p class="simple-listen-note">Play starts or joins this chapter's preparation: short requests first so audio starts quickly, then requests of up to about 7 minutes each, paced to your limits. Only Play, Prepare rest of chapter and Resume chapter send requests; Stop pauses playback while preparation continues.</p>` : `<div class="simple-listen-preparation">
+            <div><h4>Prepare ahead</h4><p>Prepare up to ${remainingCount} passage${remainingCount === 1 ? '' : 's'} from here to the end of the chapter without playing them. Audio already saved is reused.</p></div>
             <button type="button" class="button subtle" data-listen-action="prepare-chapter" ${warming || chapter || busy || !remainingCount || !available && !canUseCache ? 'disabled' : ''}>Prepare rest of chapter</button>
           </div>
-          <p class="simple-listen-note">Playback starts after a short warmup of up to 3 passages, then prepares about 45 listening seconds ahead, with at most 12 future passages. Pause or Stop prevents new requests after the current one finishes.</p>`}
+          <p class="simple-listen-note">Playback starts once up to 3 passages are ready, then prepares about 45 listening seconds ahead, with at most 12 future passages. Pause or Stop prevents new requests after the current one finishes.</p>`}
           ${state.mode === 'simple' && !showProgress && !chunked(state) ? `<p class="simple-listen-note">${escape(progressText)}</p>` : ''}
-          <p class="simple-listen-saved">${state.takes.size} saved simple passage${state.takes.size === 1 ? '' : 's'}</p>
+          <p class="simple-listen-saved">${state.takes.size} passage${state.takes.size === 1 ? '' : 's'} saved for this narrator</p>
         </div>
       </details>
     </section>`;
@@ -1352,7 +1378,7 @@
     if (focusSelector) panel.container.querySelector(focusSelector)?.focus({preventScroll:true});
   }
 
-  // Queue chapter, Resume chapter, Prepare rest of chapter and Retry preparation.
+  // Prepare rest of chapter, Resume chapter and Try again.
   function prepareAction(panel, action) {
     const state = panel.state;
     if (!state) return;
@@ -1393,7 +1419,7 @@
       if (current(state,version)) {
         report(state,'cache_read_failed',error,'cache_read');
         if (error.status === 404) { state.sessionId = null; state.sessionKey = null; save(state); }
-        else { state.error = `Saved simple takes could not be loaded: ${error.message}`; paint(state.panel); }
+        else { state.error = `Saved narrator audio could not be loaded: ${error.message}`; paint(state.panel); }
       }
     }
   }
@@ -1421,6 +1447,7 @@
           return;
         }
         if (field === 'continuous') { setContinuous(panel.state.book,event.target.checked); return; }
+        if (field === 'all-voices') { setShowAllVoices(panel.state.book,event.target.checked); return; }
         if (['mode','provider','voice','model'].includes(field)) change(panel,field,event.target.value);
       });
       container.addEventListener('click',event => {
@@ -1532,7 +1559,16 @@
     save(state);
     paint(state.panel);
   }
+  // Show every Mac voice (other languages, novelty voices) in narrator menus.
+  // Only the menu changes; the narrator and its saved audio stay as they are.
+  function setShowAllVoices(book, value) {
+    const state = stateFor(book);
+    if (!state) return;
+    state.showAllVoices = Boolean(value);
+    paint(state.panel);
+    notify(state);
+  }
   window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance,
-    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,describe,isContinuous,setContinuous,
+    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,describe,isContinuous,setContinuous,setShowAllVoices,macVoices,
     nextSegment,usePerformance,leavePerformance,getPerformance,refreshPerformance,narratorOptions};
 })();

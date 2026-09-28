@@ -50,7 +50,7 @@ test('a performance plays its own audio and never requests narration', async () 
   assert.equal(env.api.resolve(env.book,env.book.segments[2]),null,'no audio outside the performance');
   await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{}),/not part of “Evening reading”/);
   assert.equal(env.posts().length,0);
-  assert.match(env.container.innerHTML,/Saved performance/);
+  assert.match(env.container.innerHTML,/<h3>Performance<\/h3><p>Evening reading/);
 });
 
 test('continuous playback skips chapters the performance leaves out and ends after its last chapter', async () => {
