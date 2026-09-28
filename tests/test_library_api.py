@@ -25,6 +25,20 @@ def imported(client, *, filename='story.txt', content=b'Chapter 1\n\nMara spoke 
     return response.json()
 
 
+def test_imported_epub_language_is_presented_and_txt_has_none(client):
+    from test_importer import epub_file
+    book = imported(client, filename='lang.epub', content=epub_file(metadata='<dc:language>es-MX</dc:language>'))
+    assert book['language'] == 'es-MX'
+    assert client.get(f"/api/books/{book['id']}").json()['language'] == 'es-MX'
+    assert client.get(f"/api/books/{imported(client)['id']}").json()['language'] is None
+    # A book stored before the field existed presents it as unknown.
+    store = client.app.state.runtime.store
+    older = store.book(book['id'])
+    older.pop('language')
+    store.save_book(older)
+    assert client.get(f"/api/books/{book['id']}").json()['language'] is None
+
+
 def test_metadata_api_preserves_source_ids_takes_and_checkpoint(client):
     book = imported(client)
     store = client.app.state.runtime.store

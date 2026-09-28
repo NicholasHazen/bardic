@@ -630,6 +630,8 @@ class Runtime:
 
     def present(self, book):
         result = copy.deepcopy(book)
+        # Books imported before the language field present it as unknown (null).
+        result.setdefault("language", None)
         chapter_map = {c["id"]: c for c in result["chapters"]}
         previous = {}
         cast = self.resolved_cast(book)

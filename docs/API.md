@@ -89,7 +89,7 @@ Identical persisted events are coalesced within two seconds; no more than 120 cl
 | `GET /api/books` | Active book summaries, including counts, cover metadata, membership, and measured storage fields. This is not the complete prose projection. |
 | `POST /api/books` | Import a DRM-free EPUB or UTF-8 TXT through multipart `file`; returns the presented full book. Upload maximum is 30 MiB. |
 | `POST /api/demo` | Creates the built-in original sample with a free local heuristic draft; returns its full book. |
-| `GET /api/books/{book_id}` | Full reader projection: chapters, scenes, characters, segments, revision, and analysis metadata. Valid enhanced audio has a playback URL; unavailable/stale selected audio is presented as `null`. |
+| `GET /api/books/{book_id}` | Full reader projection: chapters, scenes, characters, segments, revision, `language` (BCP 47 string from EPUB `dc:language`, or `null`), and analysis metadata. Valid enhanced audio has a playback URL; unavailable/stale selected audio is presented as `null`. |
 | `GET /api/library?include_archived=false` | `{books, series, storage, ...}` library-management snapshot. Include removed entries with `include_archived=true`. |
 | `PATCH /api/books/{book_id}/metadata` | `{title, author}`; edits display metadata. Title is required (1–500 characters); author defaults to an empty string (maximum 500). Returns a summary. |
 | `POST /api/books/{book_id}/refresh-metadata` | Refreshes metadata/cover from the saved original where supported, preserving reviewed display metadata. Returns a summary; does not download metadata from the web. |
