@@ -14,14 +14,18 @@
     if (value < 3600) return `${Math.max(1, Math.round(value / 60))} min`;
     return `${Math.floor(value / 3600)} h ${Math.round(value % 3600 / 60)} min`;
   }
+  // Server details state the condition; the hint says where to fix it.
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
   async function request(url, {method = 'GET', body} = {}) {
     const response = await fetch(url, {method, headers:{Accept:'application/json', ...(body === undefined ? {} : {'Content-Type':'application/json'})},
       ...(body === undefined ? {} : {body:JSON.stringify(body)})});
     let result = null;
     try { result = await response.json(); } catch { /* No body. */ }
     if (!response.ok) {
-      const error = new Error(typeof result?.detail === 'string' ? result.detail : `Performance request failed (${response.status}).`);
+      const detail = typeof result?.detail === 'string' ? result.detail : `Performance request failed (${response.status}).`;
+      const error = new Error(HINTS[result?.code] ? `${detail} ${HINTS[result.code]}` : detail);
       error.status = response.status;
+      error.code = result?.code;
       throw error;
     }
     return result;

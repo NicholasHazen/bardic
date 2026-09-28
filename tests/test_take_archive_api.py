@@ -30,15 +30,17 @@ def render(client, book_id, **options):
 def test_forced_takes_remain_accessible_and_latest_take_is_exported(client, monkeypatch):
     book = import_text(client, "The lamp flickered.")
     base = f"/api/books/{book['id']}"
-    takes = []
+    takes, recipes = [], []
     for sample in (16, 32):
         data = wav_bytes(sample)
         monkeypatch.setattr("bardic.app.synthesize", fake_renderer(data))
         assert render(client, book["id"], force=True)["status"] == "completed"
         take = client.get(base).json()["segments"][0]["audio"]
         takes.append(take)
+        recipes.append(client.app.state.runtime.store.book(book["id"])["segments"][0]["audio"]["fingerprint"])
         assert client.get(take["url"]).content == data
-    assert takes[0]["fingerprint"] == takes[1]["fingerprint"]
+        assert "fingerprint" not in take, "the recipe fingerprint stays in storage"
+    assert recipes[0] == recipes[1]
     assert takes[0]["asset_id"] != takes[1]["asset_id"]
     assert takes[0]["url"] != takes[1]["url"]
     for take, sample in zip(takes, (16, 32)):
@@ -66,7 +68,7 @@ def test_no_force_reuses_selected_asset_before_legacy_recipe_cache(client, monke
     assert calls == []  # Pre-archive libraries retain their recipe cache.
     base = f"/api/books/{book['id']}"
     original = client.get(base).json()["segments"][0]["audio"]
-    assert "asset_id" not in original
+    assert original["asset_id"] is None, "a recipe-named legacy file is not content-addressed"
     assert client.get(original["url"]).content == wav_bytes(16)
     assert render(client, book["id"], force=True)["status"] == "completed"
     selected = client.get(base).json()["segments"][0]["audio"]

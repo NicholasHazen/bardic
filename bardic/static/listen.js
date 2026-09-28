@@ -6,7 +6,9 @@
   const books = new Map();
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const encode = value => encodeURIComponent(value);
-  const valid = audio => Boolean(audio?.url && audio.available !== false && !audio.stale && !audio.is_stale);
+  const valid = audio => Boolean(audio?.url && !audio.stale && !audio.is_stale);
+  // Server details state the condition; the hint says where to fix it.
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.'};
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
   const PROVIDERS = ['system','gemini','breeze'];
@@ -80,8 +82,10 @@
     let result;
     try { result = await response.json(); } catch { result = null; }
     if (!response.ok) {
-      const error = new Error(typeof result?.detail === 'string' ? result.detail : `Listening request failed (${response.status}).`);
+      const detail = typeof result?.detail === 'string' ? result.detail : `Listening request failed (${response.status}).`;
+      const error = new Error(HINTS[result?.code] ? `${detail} ${HINTS[result.code]}` : detail);
       error.status = response.status;
+      error.code = result?.code;
       throw error;
     }
     return result;

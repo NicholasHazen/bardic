@@ -67,7 +67,7 @@ def test_lazy_single_passage_preserves_enhanced_work_and_cached_audio_needs_no_p
     assert result['cached'] is False and result['job']['kind'] == 'listen' and result['job']['total'] == 1
     finished = wait_job(client,result['job']['id'])
     assert finished['status'] == 'completed' and finished['progress'] == 1
-    assert finished['audio']['mode'] == 'simple'
+    assert finished['audio']['session_id'] == result['session']['id'] and 'chunk_id' not in finished['audio']
     assert len(calls) == 2, 'Only one requested simple passage should synthesize'
     assert calls[-1]['segment'] == {'id':book['segments'][0]['id'],'text':book['segments'][0]['text']}
     assert calls[-1]['scene'] == {}
@@ -166,7 +166,7 @@ def test_book_and_session_scopes_invalid_inputs_archive_and_busy_guards(client, 
     assert client.get(base+'/audio/'+'g'*64).status_code == 404
     assert client.post(base,json={'provider':'openai','segment_id':book['segments'][0]['id']}).status_code in {400,422}
     assert client.post(base,json={'provider':'gemini','model':'unlisted','segment_id':book['segments'][0]['id']}).status_code == 400
-    assert client.post(base,json={'provider':'gemini','segment_id':'missing'}).status_code == 404
+    assert client.post(base,json={'provider':'gemini','segment_id':'missing'}).status_code == 400
     busy = runtime.store.create_job(book['id'],'analyze')
     assert begin(client,book)['cached'] is True, 'Read-only cache reuse remains available during other work'
     blocked = client.post(base,json={'provider':'gemini','segment_id':book['segments'][1]['id']})
@@ -174,7 +174,7 @@ def test_book_and_session_scopes_invalid_inputs_archive_and_busy_guards(client, 
     runtime.store.update_job(busy['id'],status='cancelled')
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
     archived = client.post(base,json={'provider':'gemini','segment_id':book['segments'][0]['id']})
-    assert archived.status_code == 400
+    assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
     assert client.get(audio['url']).status_code == 200, 'Archiving retains readable saved assets'
 
 
@@ -220,7 +220,7 @@ def test_queued_equivalent_books_recheck_cache_before_spending(client, renderer)
     two = wait_job(client, second['job']['id'])
     assert one['status'] == two['status'] == 'completed'
     assert one['audio']['asset_id'] == two['audio']['asset_id']
-    assert two['audio']['cache_hit'] is True and len(calls) == 1
+    assert 'cache_hit' not in two['audio'] and len(calls) == 1, 'the worker reused the take without recording a flag'
     usage = client.get(f"/api/books/{other['id']}/resources", params={'run_id': second['job']['id']}).json()['operations']
     assert len(usage) == 1 and usage[0]['cached'] is True
     assert usage[0]['request_count'] == 0 and usage[0]['estimated_cost_usd'] == 0

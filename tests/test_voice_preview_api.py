@@ -38,7 +38,7 @@ def test_bounded_preview_preserves_other_audio_and_cached_replay_needs_no_provid
     assert result['job']['kind'] == 'voice_preview' and result['job']['total'] == 1
     job = wait_job(client, result['job']['id'])
     assert job['status'] == 'completed' and job['progress'] == 1
-    assert job['audio']['mode'] == 'preview' and job['preview'] == result['preview']
+    assert job['audio']['preview_id'] == result['preview']['id'] and job['preview'] == result['preview']
     assert client.get(job['audio']['url']).status_code == 200
     assert production_snapshot(runtime.store) == before and len(calls) == 1
     runtime.api_key = ''
@@ -205,9 +205,10 @@ def test_preview_input_constraints_and_availability_errors(client, renderer, mon
     assert begin(client, book, voice='x' * 257).status_code == 422
     assert begin(client, book, direction='No character').status_code == 400
     assert begin(client, book, segment_direction='No character').status_code == 400
-    assert begin(client, book, character_id='missing').status_code == 404
+    assert begin(client, book, character_id='missing').json()['code'] == 'unknown_character'
     other = import_text(client, 'A wholly different source.')
-    assert begin(client, book, segment_id=other['segments'][0]['id']).status_code == 404
+    unknown = begin(client, book, segment_id=other['segments'][0]['id'])
+    assert unknown.status_code == 400 and unknown.json()['code'] == 'unknown_passage'
     runtime.api_key = 'offline-key'
     runtime.stopping.set()
     assert begin(client, book).status_code == 503
@@ -227,7 +228,8 @@ def test_series_reservation_and_archived_book_prevent_generation(client, rendere
     runtime.store.update_job(parent['id'], status='completed')
     from bardic.library import LibraryRepository
     LibraryRepository(runtime.store).archive_book(book['id'])
-    assert begin(client, book).status_code == 400
+    archived = begin(client, book)
+    assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
 
 
 def test_executor_failure_and_cancelled_future_settle_job(client, renderer, monkeypatch):
