@@ -4,8 +4,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 class Container {
-  constructor(){ this.innerHTML = ''; this.listeners = {}; }
+  constructor(){
+    this.innerHTML = ''; this.listeners = {};
+    this.drawer={open:false,summary:{textContent:''},querySelector(selector){return selector === '#listening-summary' ? this.summary : null;}};
+  }
+  closest(selector){ return selector === 'details' ? this.drawer : null; }
   addEventListener(name, handler){ this.listeners[name] = handler; }
+  querySelector(selector){ return selector === '[data-listen-options]' ? this.disclosure : null; }
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function settle(){ for(let i=0;i<8;i++) await tick(); }
@@ -52,11 +57,29 @@ function ordinary(call){
   const hooks=options({onPlay:id=>{playId=id;},onStop:()=>{stops++;},onChange:()=>{updates++;},onJob:job=>jobs.push(job)});
   await env.api.render(container,book,hooks);
   assert.equal(env.calls.length,0,'Rendering controls never queues a narration');
+  assert.equal(container.drawer.open,false,'Rendering leaves the reader foremost');
+  assert.match(container.drawer.summary.textContent,/Studio voices selected.*Default device voice.*Device.*free on this device/);
   assert.equal(env.api.enabled(book),false);
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
   assert.ok(container.innerHTML.includes('Start simple listening'));
   assert.ok(container.innerHTML.includes('stops at the end of this chapter'));
   assert.ok(container.innerHTML.includes('aria-label="Simple narrator voice"'));
+  assert.match(container.innerHTML, /data-listen-options >(?:\s*)<summary data-listen-summary>More listening options/,
+    'Advanced controls start collapsed');
+  const advancedStart=container.innerHTML.indexOf('<details');
+  assert.ok(container.innerHTML.indexOf('data-listen-action="start"') < advancedStart,
+    'The explicit start action is visible without opening advanced settings');
+  assert.ok(container.innerHTML.indexOf('Device narration stays') < advancedStart,
+    'Provider and privacy disclosures stay beside the start action');
+  assert.ok(container.innerHTML.indexOf('data-listen-action="prepare-chapter"') > advancedStart,
+    'Chapter preparation remains available in the advanced disclosure');
+  container.disclosure={open:true};
+  await env.api.render(container,book,hooks);
+  assert.match(container.innerHTML, /data-listen-options open>/, 'Redraws preserve an opened disclosure');
+  container.disclosure.open=false;
+  await env.api.render(container,book,hooks);
+  assert.match(container.innerHTML, /data-listen-options >/,'Redraws preserve a closed disclosure');
+  assert.equal(env.calls.length,0,'Opening or closing advanced options never requests audio');
   click(container,'start');
   assert.equal(env.api.enabled(book),true);
   assert.equal(playId,'segment-1');
@@ -84,6 +107,8 @@ function ordinary(call){
   change(container,'model','gemini-3.8-flash-lite-tts');
   assert.ok(container.innerHTML.includes('may incur charges'));
   assert.ok(container.innerHTML.includes('value="Leda" selected'));
+  assert.match(container.drawer.summary.textContent,/Studio voices selected.*Leda.*Gemini.*usage may incur charges/);
+  assert.equal(container.drawer.open,false,'Changing narrator settings does not force open the drawer');
   const persisted=JSON.parse(env.storage.get('bardic:listen:book-9'));
   assert.equal(persisted.provider,'gemini');
   assert.equal(persisted.voices.gemini,'Leda');
@@ -221,6 +246,50 @@ function ordinary(call){
   assert.ok(failedContainer.innerHTML.includes('Quota exhausted.'));
   assert.equal(failed.calls.filter(call=>call.method==='POST').length,1);
   assert.equal(failed.api.resolve(book,book.segments[1]),null);
+  assert.equal(failedContainer.drawer.open,true,'New failures reveal their error and explicit retry');
+  assert.match(failedContainer.drawer.summary.textContent,/Preparation paused.*One narrator/);
+  failedContainer.drawer.open=false;
+  await failed.api.render(failedContainer,book,options());
+  assert.equal(failedContainer.drawer.open,false,'Repeated renders respect closing the same error');
+  change(failedContainer,'voice','Samantha');
+  await assert.rejects(()=>failed.api.ensure(book,book.segments[0]),/Quota exhausted/);
+  assert.equal(failedContainer.drawer.open,true,'A new explicit attempt reveals a repeated failure again');
+
+  // Lookahead has no parent toast or job callback when its POST fails. The
+  // outer disclosure must still expose its error without requesting a retry.
+  let backgroundJobs=0;
+  const background=environment(call=>{
+    if(call.body?.segment_id === 'segment-2') throw new Error('Synthetic connection failure.');
+    return {data:{session,audio:{...simpleAudio,duration:20}}};
+  });
+  const backgroundContainer=new Container();
+  await background.api.render(backgroundContainer,book,options({onJob:()=>backgroundJobs++}));
+  change(backgroundContainer,'mode','simple');
+  await background.api.prepare(book,book.segments[0]);
+  assert.equal(backgroundContainer.drawer.open,false,'Ordinary warmup does not open setup');
+  background.api.updatePlayback(book,book.segments[0]);
+  await settle();
+  assert.equal(backgroundJobs,0);
+  assert.equal(backgroundContainer.drawer.open,true);
+  assert.match(backgroundContainer.drawer.summary.textContent,/Preparation paused/);
+  assert.match(backgroundContainer.innerHTML,/Synthetic connection failure/);
+  assert.equal(background.calls.filter(call=>call.method==='POST').length,2,'Revealing the error never retries generation');
+
+  // A closed drawer still tells the user which explicit chapter job is running.
+  let releaseChapter,chapterPlays=0;
+  const preparingChapter=environment(call=>{
+    if(call.method==='POST' && call.body?.segment_id==='segment-1') return new Promise(resolve=>{releaseChapter=()=>resolve(ordinary(call));});
+    return ordinary(call);
+  });
+  const chapterContainer=new Container();
+  await preparingChapter.api.render(chapterContainer,book,options({onPlay:()=>chapterPlays++}));
+  click(chapterContainer,'prepare-chapter');
+  while(!releaseChapter) await tick();
+  assert.match(chapterContainer.drawer.summary.textContent,/Preparing chapter: 0 of 2 passages.*One narrator/);
+  assert.equal(chapterContainer.drawer.open,false,'Chapter status is exposed in the summary without forcing the drawer open');
+  releaseChapter();
+  await settle();
+  assert.equal(chapterPlays,0,'Preparing a chapter does not autoplay');
 
   // New source text invalidates a cached take, while an enhanced profile change does not.
   const refreshed={...book,revision:2,characters:[{id:'mara',voice:'Orus'}]};

@@ -11,7 +11,7 @@ const safeRead = (key, fallback = null) => {
   } catch { return fallback; }
 };
 const safeWrite = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Reading remains usable without browser storage. */ } };
-const state = {status:null, books:[], book:null, chapterId:null, segmentId:null, tab:'read', jobs:[], poll:null, selectionVersion:0, audioSegmentId:null, pendingOffset:0, lastSave:0, loading:false, settingsBusy:false, accountChecksPending:new Set(), analysisSummary:null, analysisError:null, referenceCache:new Map(), referenceVersion:0};
+const state = {status:null, books:[], book:null, chapterId:null, segmentId:null, tab:'read', libraryView:false, jobs:[], poll:null, selectionVersion:0, audioSegmentId:null, pendingOffset:0, lastSave:0, loading:false, settingsBusy:false, accountChecksPending:new Set(), analysisSummary:null, analysisError:null, referenceCache:new Map(), referenceVersion:0};
 const audio = new Audio();
 audio.preload = 'auto';
 // Loading or clearing a media source resets playbackRate to defaultPlaybackRate.
@@ -194,7 +194,11 @@ async function checkAccounts(providers) {
   const values = {analysis_models_by_provider:{},api_keys:{}};
   for (const provider of providers) {
     const input = providerField('analysis-model', provider);
-    if (!modelValue('analysis', provider)) { showInlineError('#settings-error', `Enter an analysis model for ${analysisLabels[provider]} before checking its API.`); input.focus(); return; }
+    if (!modelValue('analysis', provider)) {
+      showInlineError('#settings-error', `Enter an analysis model for ${analysisLabels[provider]} before checking its API.`);
+      const target = input.value === '__custom__' ? modelCustom('analysis', provider) : input;
+      revealSetting(target); target.focus(); return;
+    }
     values.analysis_models_by_provider[provider] = modelValue('analysis', provider);
     const key = providerField('api-key', provider).value.trim();
     if (key) values.api_keys[provider] = key;
@@ -405,7 +409,21 @@ function reportPlaybackIssue(event, details = {}) {
     playback_rate:audio.playbackRate,operation:'media',...details});
 }
 function renderLibrary() {
-  $('#library-list').innerHTML = state.books.length ? state.books.map(book => `<button class="library-item ${state.book?.id === book.id ? 'active' : ''}" data-book="${escapeHTML(book.id)}" ${state.book?.id === book.id ? 'aria-current="true"' : ''}><span class="cover-thumb" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : escapeHTML((book.title || 'B').charAt(0))}</span><span><strong>${escapeHTML(book.title || 'Untitled')}</strong><small>${escapeHTML(book.author || 'Personal edition')}</small></span></button>`).join('') : '<p class="sidebar-hint">Your next great listen starts here.</p>';
+  const query = ($('#library-search')?.value || '').trim().toLocaleLowerCase();
+  const books = state.books.filter(book => !query || `${book.title || 'Untitled'} ${book.author || ''}`.toLocaleLowerCase().includes(query));
+  $('#library-list').innerHTML = books.length ? books.map(book => {
+    const active = !state.libraryView && state.book?.id === book.id;
+    return `<button class="library-item ${active ? 'active' : ''}" data-book="${escapeHTML(book.id)}" ${active ? 'aria-current="true"' : ''}><span class="cover-thumb" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : escapeHTML((book.title || 'B').charAt(0))}</span><span><strong>${escapeHTML(book.title || 'Untitled')}</strong><small>${escapeHTML(book.author || 'Personal edition')}</small></span></button>`;
+  }).join('') : `<p class="sidebar-hint">${state.books.length ? `No books match “${escapeHTML(query)}”. Try another title or author.` : 'Your next great listen starts here.'}</p>`;
+  const status = $('#library-search-status');
+  if (status) status.textContent = query ? `${books.length} ${books.length === 1 ? 'book' : 'books'} found` : '';
+  $('#welcome').classList.toggle('has-books', Boolean(state.books.length));
+  const shelf = $('#home-books');
+  if (shelf) {
+    $('#home-library').hidden = !state.books.length;
+    $('#home-library-count').textContent = `${query ? `${books.length} of ` : ''}${state.books.length} ${state.books.length === 1 ? 'book' : 'books'}`;
+    shelf.innerHTML = books.length ? books.map(book => `<button type="button" class="shelf-book" data-book="${escapeHTML(book.id)}"><span class="shelf-cover" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : `<span>${escapeHTML((book.title || 'B').charAt(0))}</span>`}</span><span class="shelf-title">${escapeHTML(book.title || 'Untitled')}</span><span class="shelf-author">${escapeHTML(book.author || 'Personal edition')}</span><span class="shelf-meta">${state.book?.id === book.id ? 'Return to book' : 'Open book'} ${icon('arrow')}</span></button>`).join('') : `<p class="empty-state">No books match “${escapeHTML(query)}”. Try another title or author.</p>`;
+  }
 }
 async function refreshStatus({syncSettings = true} = {}) {
   state.status = await request('/api/status');
@@ -435,6 +453,11 @@ async function refreshLibrary() {
   renderLibrary();
 }
 async function selectBook(id) {
+  // Reopening the selected book is navigation, not a new listening session.
+  if (id === state.book?.id) {
+    if (state.loading) { state.selectionVersion++; state.loading = false; void pollJobs(false); }
+    setTab(state.tab); return;
+  }
   saveProgress();
   stopAudio({clear:true});
   clearTimeout(state.poll);
@@ -443,6 +466,7 @@ async function selectBook(id) {
   try {
     const book = await request(`/api/books/${encodeURIComponent(id)}`);
     if (version !== state.selectionVersion) return;
+    state.libraryView = false;
     state.book = book;
     state.analysisSummary = null;
     state.analysisError = null;
@@ -456,7 +480,12 @@ async function selectBook(id) {
     renderBook();
     saveProgress();
     await pollJobs(false);
-  } catch (error) { toast(error.message, true); } finally { state.loading = false; }
+  } catch (error) {
+    if (version !== state.selectionVersion) return;
+    toast(error.message, true);
+    syncWorkspaceNavigation();
+    if (state.book) void pollJobs(false);
+  } finally { if (version === state.selectionVersion) state.loading = false; }
 }
 function applyBook(book) {
   if (book.id !== state.book?.id) return;
@@ -472,15 +501,12 @@ function applyBook(book) {
 }
 function renderBook() {
   const book = state.book;
-  if (!book) { $('#welcome').hidden = false; $('#book-workspace').hidden = true; $('#player').hidden = true; return; }
-  $('#welcome').hidden = true;
-  $('#book-workspace').hidden = false;
-  $('#player').hidden = false;
+  syncWorkspaceNavigation();
+  if (!book) { renderLibrary(); return; }
   $('#book-title').textContent = book.title || 'Untitled';
-  document.title = `${book.title || 'Untitled'} — Bardic`;
   const narrativeCount = book.chapters.filter(c => c.kind === 'chapter').length;
   const otherCount = book.chapters.length - narrativeCount;
-  const structureLabel = narrativeCount ? `${narrativeCount} chapters${otherCount ? ` · ${otherCount} other sections` : ''}` : `${book.chapters.length} sections`;
+  const structureLabel = narrativeCount ? `${narrativeCount} ${narrativeCount === 1 ? 'chapter' : 'chapters'}${otherCount ? ` · ${otherCount} other ${otherCount === 1 ? 'section' : 'sections'}` : ''}` : `${book.chapters.length} ${book.chapters.length === 1 ? 'section' : 'sections'}`;
   $('#book-byline').textContent = [book.author, structureLabel].filter(Boolean).join('  ·  ');
   $('#cast-count').textContent = book.characters.filter(c => !['narrator','unassigned'].includes(c.id)).length;
   const ready = book.segments.filter(playable).length;
@@ -491,7 +517,7 @@ function renderBook() {
   renderCast();
   renderStudio();
   renderJob();
-  setTab(state.tab);
+  setTab(state.tab, {reveal:false});
   updatePlayer();
 }
 function renderReader() {
@@ -545,11 +571,16 @@ function renderReader() {
   content += escapeHTML(chapter.trailing_text ?? chapter.text.substring(cursor));
   $('#reader-text').innerHTML = content || escapeHTML(chapter.text);
   $('#chapter-list').innerHTML = state.book.chapters.map((item,index) => `<button class="chapter-link ${item.id === state.chapterId ? 'active' : ''}" data-chapter="${escapeHTML(item.id)}" ${item.id === state.chapterId ? 'aria-current="true"' : ''}><span class="chapter-num">${item.narrative_order ? String(item.narrative_order).padStart(2,'0') : '·'}</span><span>${escapeHTML(item.title)}</span></button>`).join('');
+  const chapterPicker = $('#reader-chapter');
+  if (chapterPicker) {
+    chapterPicker.innerHTML = state.book.chapters.map(item => `<option value="${escapeHTML(item.id)}" ${item.id === state.chapterId ? 'selected' : ''}>${escapeHTML(item.title)}</option>`).join('');
+    chapterPicker.value = state.chapterId;
+  }
   $('#previous-chapter').disabled = chapterIndex === 0;
   $('#next-chapter').disabled = chapterIndex === state.book.chapters.length - 1;
   const ready = segments.filter(listeningReady).length;
   const chunkedListening = simpleActive() && window.BardicListen?.getSelection?.(state.book)?.provider === 'gemini';
-  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Create a narration in the studio, then press play to follow each passage.';
+  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
   renderPassageDetail();
 }
 function renderPassageDetail() {
@@ -703,10 +734,70 @@ function renderStudio() {
   updateBusyControls();
   renderProduction();
 }
-function setTab(tab) {
+function setTab(tab, {reveal = true, focus = false} = {}) {
   state.tab = ['read','cast','studio'].includes(tab) ? tab : 'read';
-  $$('.tab').forEach(button => { button.classList.toggle('active', button.dataset.tab === state.tab); button.setAttribute('aria-current', button.dataset.tab === state.tab ? 'page' : 'false'); });
+  if (reveal && state.book && state.libraryView) { state.libraryView = false; syncWorkspaceNavigation(); }
+  $$('.tab').forEach(button => {
+    const active = button.dataset.tab === state.tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    button.removeAttribute('aria-current');
+    button.tabIndex = active ? 0 : -1;
+    if (active && focus) button.focus();
+  });
   ['read','cast','studio'].forEach(name => { $(`#${name}-view`).hidden = name !== state.tab; });
+}
+function syncWorkspaceNavigation() {
+  const home = state.libraryView || !state.book;
+  $('#welcome').hidden = !home;
+  $('#book-workspace').hidden = home;
+  $('#player').hidden = !state.book;
+  document.title = home ? 'Bardic — Your library' : `${state.book.title || 'Untitled'} — Bardic`;
+  const homeButton = $('#library-home');
+  if (homeButton) {
+    homeButton.classList.toggle('active', home);
+    if (home) homeButton.setAttribute('aria-current', 'page'); else homeButton.removeAttribute('aria-current');
+  }
+  $$('.library-item').forEach(button => {
+    const active = !home && button.dataset.book === state.book?.id;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
+  });
+}
+function showLibrary() {
+  // Home supersedes an unfinished book-open request without discarding the
+  // current selection. Its late response or error must not navigate us away.
+  if (state.loading) { state.selectionVersion++; state.loading = false; if (state.book) void pollJobs(false); }
+  state.libraryView = true;
+  syncWorkspaceNavigation();
+  const heading = $('#welcome h1');
+  heading?.setAttribute('tabindex', '-1');
+  heading?.focus({preventScroll:true});
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function navigateTabs(event) {
+  const tabs = $$('.tab');
+  const index = tabs.indexOf(event.currentTarget);
+  if (index < 0 || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  setTab(tabs[next].dataset.tab, {focus:true});
+}
+function openListeningSettings() {
+  setTab('read');
+  const panel = $('#simple-listen');
+  const disclosure = panel.closest('details');
+  if (disclosure) disclosure.open = true;
+  panel.scrollIntoView({behavior:'smooth',block:'center'});
+  $('#simple-listen [data-listen-field="voice"]')?.focus({preventScroll:true});
+}
+function openAnalysisPlanning() {
+  renderProduction();
+  const panel = $('#progressive-production');
+  const disclosure = panel.closest('details');
+  if (disclosure) disclosure.open = true;
+  panel.scrollIntoView({behavior:'smooth', block:'start'});
+  $('#progressive-production select')?.focus({preventScroll:true});
 }
 function setChapter(id, {scroll = true} = {}) {
   if (!state.book?.chapters.some(c => c.id === id)) return;
@@ -763,7 +854,13 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
     const simple = simpleActive();
     stopAudio({clear:true});
     updatePlayer(); saveProgress();
-    if (!simple) toast(segment.audio ? 'This take is out of date. Regenerate it in the studio.' : 'This passage is not narrated yet. Open the studio to give it a voice.');
+    if (!simple && autoplay) {
+      if (segment.audio) toast('This take is out of date. Regenerate it in the studio.');
+      else {
+        openListeningSettings();
+        toast('Choose a narrator in Listening settings to start listening, or prepare character voices in the Studio.');
+      }
+    }
     return;
   }
   if (audio.getAttribute('src') !== selectedAudio.url) {
@@ -980,8 +1077,9 @@ async function startJob(kind, scope = {}) {
 }
 function openSettings(provider) {
   clearKeyInputs(); fillSettings(); cloudProviders.forEach(renderAccountCheck); updateSettingsControls(); $('#settings-error').hidden = true; $('#settings-dialog').showModal();
-  if (cloudProviders.includes(provider)) providerField('api-key', provider).focus();
+  if (cloudProviders.includes(provider)) { const input = providerField('api-key', provider); revealSetting(input); input.focus(); }
 }
+function revealSetting(control) { const details = control.closest('details'); if (details) details.open = true; }
 function openImport() { $('#import-error').hidden = true; $('#import-dialog').showModal(); }
 function showInlineError(id, message) { const node = $(id); node.textContent = message; node.hidden = false; }
 async function saveEditor(form, kind, id) {
@@ -997,10 +1095,30 @@ async function saveEditor(form, kind, id) {
 }
 
 // Navigation and delegated editor actions.
-$('#library-list').addEventListener('click', event => { const button = event.target.closest('[data-book]'); if (button && button.dataset.book !== state.book?.id) selectBook(button.dataset.book); });
-$$('.tab').forEach(button => button.addEventListener('click', () => setTab(button.dataset.tab)));
-$('#go-studio').addEventListener('click', () => setTab('studio'));
+$('#library-list').addEventListener('click', event => { const button = event.target.closest('[data-book]'); if (button) selectBook(button.dataset.book); });
+$('#home-books')?.addEventListener('click', async event => {
+  const button = event.target.closest('[data-book]');
+  if (!button) return;
+  await selectBook(button.dataset.book);
+  if (state.book?.id === button.dataset.book && !state.libraryView) setTab(state.tab, {focus:true});
+});
+$('#library-search')?.addEventListener('input', renderLibrary);
+$('#library-home')?.addEventListener('click', showLibrary);
+$('.brand').addEventListener('click', event => { event.preventDefault(); showLibrary(); });
+$$('.tab').forEach(button => {
+  button.addEventListener('click', () => setTab(button.dataset.tab));
+  button.addEventListener('keydown', navigateTabs);
+});
+$('#go-studio').addEventListener('click', () => setTab('studio', {focus:true}));
+$('#reader-listen-setup')?.addEventListener('click', openListeningSettings);
+$('#studio-cast-link')?.addEventListener('click', () => setTab('cast', {focus:true}));
+$('#studio-script-link')?.addEventListener('click', () => {
+  const heading = $('#script-heading');
+  heading?.scrollIntoView({behavior:'smooth',block:'start'});
+  heading?.focus({preventScroll:true});
+});
 $('#chapter-list').addEventListener('click', event => { const button = event.target.closest('[data-chapter]'); if (button) setChapter(button.dataset.chapter); });
+$('#reader-chapter')?.addEventListener('change', event => setChapter(event.target.value, {scroll:false}));
 $('#previous-chapter').addEventListener('click', () => { const index = state.book.chapters.findIndex(c => c.id === state.chapterId); if (index > 0) setChapter(state.book.chapters[index - 1].id); });
 $('#next-chapter').addEventListener('click', () => { const index = state.book.chapters.findIndex(c => c.id === state.chapterId); if (index < state.book.chapters.length - 1) setChapter(state.book.chapters[index + 1].id); });
 $('#studio-chapter').addEventListener('change', event => setChapter(event.target.value, {scroll:false}));
@@ -1058,7 +1176,7 @@ for (const selector of ['#cast-grid','#scene-list']) {
   });
 }
 $('#export-link').addEventListener('click', event => { const ready = state.book?.segments.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.segments.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
-$('#analyze-button').addEventListener('click', () => { renderProduction(); $('#progressive-production').scrollIntoView({behavior:'smooth', block:'start'}); $('#progressive-production select')?.focus(); });
+$('#analyze-button').addEventListener('click', openAnalysisPlanning);
 $('#analysis-scope').addEventListener('change', renderAnalysisProgress);
 $('#analyze-from-cast').addEventListener('click', () => { setTab('studio'); $('#analysis-provider').focus(); });
 $('#render-button').addEventListener('click', () => startJob('render'));
@@ -1111,7 +1229,7 @@ $('#import-form').addEventListener('submit', async event => {
     const book = await request('/api/books',{method:'POST',body:data});
     await refreshLibrary(); await selectBook(book.id || book.book?.id);
     $('#import-dialog').close(); $('#import-form').reset(); $('#file-label').textContent = 'Drop your book here';
-    state.tab = 'read'; setTab('read'); toast('Your book is ready. Meet the cast, or start a local narration.');
+    state.tab = 'read'; setTab('read'); toast('Your book is ready to read. Open Listening settings when you want to hear it.');
   } catch (error) { showInlineError('#import-error', error.message); }
   finally { button.disabled = false; button.innerHTML = `Add to library ${icon('arrow')}`; }
 });
@@ -1131,6 +1249,7 @@ $('#settings-form').addEventListener('submit', async event => {
   }
   try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
 });
+$('#settings-form').addEventListener('invalid', event => revealSetting(event.target), true);
 $$('[data-clear-key]').forEach(button => button.addEventListener('click', async () => {
   const provider = button.dataset.clearKey;
   if (state.settingsBusy) return;
@@ -1156,11 +1275,7 @@ $('#settings-dialog').addEventListener('close', clearKeyInputs);
 // Clip-boundary synchronization: no fabricated word timing.
 $('#play-button').addEventListener('click', togglePlayback);
 $('#close-voice-preview').addEventListener('click', () => window.BardicVoicePreview?.stop());
-$('#player-listen-settings').addEventListener('click', () => {
-  setTab('read');
-  $('#simple-listen').scrollIntoView({behavior:'smooth',block:'center'});
-  $('#simple-listen [data-listen-field="voice"]')?.focus({preventScroll:true});
-});
+$('#player-listen-settings').addEventListener('click', openListeningSettings);
 $('#previous-segment').addEventListener('click', () => moveSegment(-1));
 $('#next-segment').addEventListener('click', () => moveSegment(1));
 $('#playback-speed').value = String(audio.playbackRate);
