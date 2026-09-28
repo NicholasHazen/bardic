@@ -45,13 +45,13 @@ Mentions, attributed dialogue and profile evidence are different reference types
 
 `artifact_dependencies` records existing artifact IDs. Retaining a current projection does not invent the historic prompt that produced it. Legacy outputs are marked when provenance is incomplete. Lost outputs from versions of the app before this change cannot be recovered.
 
-The derived `analysis_units` table remains the fast resumable cache. Replacing a cache entry now also appends an immutable output version. Request inputs are retained before the provider call; transport attempts, validation outcomes and cache reuse are separately recorded. A successful HTTP response is not an accepted analysis result. Rejected structured results are inspectable but not used as facts. Invalid cached results are retired from the cache and regenerated under the existing request/token/spend guards.
+The derived `pipeline_units` table is the fast resumable cache; libraries the removed Classic engine wrote to also keep its `analysis_units` cache until [stage 4](CLASSIC-REMOVAL.md), whose rows the legacy backfill retains as artifacts. Saving a cache entry also appends an immutable output version. Request inputs are retained before the provider call; transport attempts, validation outcomes and cache reuse are separately recorded. A successful HTTP response is not an accepted analysis result. Rejected structured results are inspectable but not used as facts. Invalid cached results are retired from the cache and regenerated; each new attempt is reserved and recorded first.
 
 New WAV files are identified by their bytes independently of the generation recipe. Forcing a different performance with the same voice and instructions therefore preserves the previous take. Legacy recipe-named WAVs remain readable. History records selected-take metadata; automatic storage pruning and a full take-comparison editor are future work. Copies of the database alone are not a complete media backup: preserve the original and audio directories too.
 
 ## Visibility and portability
 
-Production → Pipeline explorer shows source import, structure, census, discovery, profiles, directing, voice assignments, narration, alignment and export readiness. Counts are stage-specific. Profiles are marked provisional until full discovery; word alignment is visibly planned. Current timing follows passage boundaries.
+Details → Analysis explorer shows source import, series memory, one card per analysis step (accepted and total scopes, out-of-date results and versions waiting for review, the same numbers as the Analyze tab), voice assignments, narration, alignment and export readiness. Counts are stage-specific, and each card's saved-result count includes Classic-era history. Word alignment is visibly planned. Current timing follows passage boundaries.
 
 The explorer includes stage/type/current/history filters, paginated artifact inspection, dependency IDs, jobs, provider attempts and validation, per-unit cache/retry events, chapter/scene navigation and explicit lexical passage search. These controls do not start paid work. The activity preview is bounded to recent records; the analysis export includes all recorded events/attempts.
 
@@ -67,7 +67,7 @@ The explorer includes stage/type/current/history filters, paginated artifact ins
 
 No narration is required. The bundle excludes credentials and audio binaries; the separate audiobook export includes current playable takes. There is no bundle import/restore UI yet. Consumers can use the documented JSON directly, and the standalone source/graph remains usable if providers change.
 
-The domain graph (book → chapter → scene → passage, references and speakers) differs from the execution graph (request → input artifacts → validated output). Both are exported. Ordinary book jobs use the local single-worker runner; series jobs now use a separate coordinator with up to two discovery workers and ordered later phases. This is not a distributed workflow engine and does not automatically schedule every invalidated descendant. See [architecture](ARCHITECTURE.md) for the current execution model.
+The domain graph (book → chapter → scene → passage, references and speakers) differs from the execution graph (request → input artifacts → validated output). Both are exported. Ordinary book jobs use the local single-worker runner; series runs use a separate coordinator that runs one book's pipeline run at a time, in reading order. This is not a distributed workflow engine and does not automatically schedule every invalidated descendant. See [architecture](ARCHITECTURE.md) for the current execution model.
 
 ## Primary references
 

@@ -1,10 +1,9 @@
 """Request builders for the LLM analysis steps: prompts, schemas and source locators.
 
-Discovery, Profiles and Directing build their requests here. The legacy phase
-engine (``bardic/progressive.py``) imports these builders back until it is
-removed. Prompt text, schemas and output caps are part of every cached unit's
-identity: ``tests/test_prompt_identity.py`` pins them, so a change here is a
-deliberate request change, never a refactor.
+Discovery, Profiles and Directing build their requests here. The builders came
+from the removed Classic engine unchanged. Prompt text, schemas and output caps
+are part of every cached unit's identity: ``tests/test_prompt_identity.py`` pins
+them, so a change here is a deliberate request change, never a refactor.
 """
 from __future__ import annotations
 

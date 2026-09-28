@@ -23,10 +23,9 @@ Each item needs a decision, and many would be a breaking contract change. Before
 | Library | `audio_count` counts stored takes that are no longer current, so it can exceed the number of playable passages. | `bardic/library.py` |
 | Library | The cover `ETag` is not quoted, `If-None-Match` is ignored, and the middleware overrides the route's `Cache-Control` with `no-store`, so the content-hash `?v=` does not help caching. | `bardic/app.py:906-909,1504-1510` |
 | Library | The 413 size check runs after the whole upload is received. A failed save after the original is written leaves an orphaned `originals/{id}/` directory. | `bardic/app.py:1089-1103` |
-| Books | Any edit request, even an empty or unchanged one, marks the item edited and increments `revision`. Classic analysis then treats the whole item as locked. | `bardic/app.py:1263` |
+| Books | Any edit request, even an empty or unchanged one, marks the item edited and increments `revision`. | `bardic/app.py:1263` |
 | Books | A blank Breeze voice ID falls back to the default voice, while Gemini and device store the blank. `VoiceChoice.seed` is ignored for library choices and non-Breeze providers. `SegmentEdit.seed` cannot be cleared. | `bardic/app.py:684`, `bardic/breeze.py:246` |
 | Books | `addCharacter` never assigns a device voice, unlike imported characters. | `bardic/app.py` add character |
-| Books | Character references are written only by classic analysis. Manual edits and pipeline acceptance leave them stale. | `bardic/store.py` references |
 | Books | A book whose stored data has a dangling reference returns 404, via the global `KeyError` handler, instead of a server error. | `bardic/app.py:912-914` |
 | Series | Most series routes on a removed series answer 404 "Series not found", so the intended 400 "Restore this series" is unreachable and archiving is not idempotent. | `bardic/app.py:1511`, `bardic/series_processing.py:13`, `bardic/library.py:127` |
 | Series | Listing and creating series characters ignore removal, and creating one ignores an active series run. `restoreSeries` does not check for active series runs. | `bardic/app.py:1192-1198,1535` |
@@ -34,8 +33,8 @@ Each item needs a decision, and many would be a breaking contract change. Before
 | Pipeline | Reject does not check that the book exists or is active. A `same_as_accepted` candidate cannot be rejected. | `bardic/pipeline/api.py:531-543` |
 | Pipeline | The returned `run` is the object the worker mutates, so a response can be serialized mid-change. | `bardic/pipeline/api.py:392` |
 | Jobs | A job cancelled while queued is settled again when its worker slot comes up. In a shutdown race, `cancelled` can become `interrupted`. | `bardic/app.py:697,714` |
-| Inspection | Pipeline stage status checks for a `cancelled` checkpoint, but checkpoints record cancellation as `interrupted`. Story-map `attributed_speaker` edges can point at a missing character node. | `bardic/pipeline_view.py:72,117` |
-| Inspection | The analysis export dumps raw attempt rows, while the pipeline view filters them through an allowlist. | `bardic/pipeline_view.py:151,201` |
+| Inspection | Story-map `attributed_speaker` edges can point at a missing character node. | `bardic/pipeline_view.py:74` |
+| Inspection | The analysis export dumps raw attempt rows, while the pipeline view filters them through an allowlist. | `bardic/pipeline_view.py:142,198` |
 
 ## Inconsistencies a client will notice
 

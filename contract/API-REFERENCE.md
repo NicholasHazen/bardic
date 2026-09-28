@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.2.3
+# Bardic 0.3.0
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -73,7 +73,6 @@ reference is `contract/API-REFERENCE.md`.
 - **Series** — [`GET /api/books/{book_id}/series`](#getbookseries), [`PUT /api/books/{book_id}/series`](#setbookseries), [`PUT /api/books/{book_id}/series/characters/{character_id}`](#linkseriescharacter), [`GET /api/books/{book_id}/series/context`](#getbookseriescontext), [`GET /api/series`](#listseries), [`POST /api/series`](#createseries), [`PATCH /api/series/{series_id}`](#renameseries), [`POST /api/series/{series_id}/archive`](#archiveseries), [`GET /api/series/{series_id}/characters`](#listseriescharacters), [`POST /api/series/{series_id}/characters`](#createseriescharacter), [`GET /api/series/{series_id}/map`](#getseriesmap), [`POST /api/series/{series_id}/plan`](#planseriesprocessing), [`POST /api/series/{series_id}/process`](#startseriesprocessing), [`POST /api/series/{series_id}/restore`](#restoreseries), [`GET /api/series/{series_id}/runs`](#listseriesruns), [`PUT /api/series/{series_id}/volumes`](#putseriesvolume), [`DELETE /api/series/{series_id}/volumes/{position}`](#deleteseriesvolume)
 - **Books** — [`GET /api/books/{book_id}`](#getbook), [`POST /api/books/{book_id}/characters`](#addcharacter), [`PATCH /api/books/{book_id}/characters/{character_id}`](#editcharacter), [`GET /api/books/{book_id}/characters/{character_id}/references`](#listcharacterreferences), [`POST /api/books/{book_id}/repair-structure`](#repairbookstructure), [`PATCH /api/books/{book_id}/scenes/{scene_id}`](#editscene), [`PATCH /api/books/{book_id}/segments/{segment_id}`](#editpassage)
 - **Pronunciations** — [`GET /api/books/{book_id}/pronunciations`](#listpronunciations), [`POST /api/books/{book_id}/pronunciations`](#addpronunciation), [`PATCH /api/books/{book_id}/pronunciations/{entry_id}`](#updatepronunciation), [`DELETE /api/books/{book_id}/pronunciations/{entry_id}`](#deletepronunciation)
-- **Classic analysis** — [`GET /api/books/{book_id}/analysis`](#getanalysisstatus), [`POST /api/books/{book_id}/analysis-plan`](#previewclassicanalysis), [`POST /api/books/{book_id}/analyze`](#startclassicanalysis), [`GET /api/books/{book_id}/preprocessing`](#getanalysispreprocessing)
 - **Analysis pipeline** — [`GET /api/analysis-pipeline`](#getanalysispipeline), [`PUT /api/analysis-pipeline/steps/{step_id}/settings`](#saveanalysispipelinestepsettings), [`GET /api/books/{book_id}/analysis-pipeline`](#getbookanalysispipeline), [`POST /api/books/{book_id}/analysis-pipeline/plan`](#planbookanalysispipelinerun), [`POST /api/books/{book_id}/analysis-pipeline/runs`](#startbookanalysispipelinerun), [`GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions`](#listanalysispipelinestepversions), [`GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}`](#getanalysispipelinestepversion), [`POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/accept`](#acceptanalysispipelinestepversion), [`POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/preview`](#previewanalysispipelinestepversion), [`POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject`](#rejectanalysispipelinestepversion)
 - **Inspection** — [`GET /api/books/{book_id}/analysis-export`](#exportbookanalysis), [`GET /api/books/{book_id}/artifacts`](#listbookartifacts), [`GET /api/books/{book_id}/artifacts/{artifact_id}`](#getbookartifact), [`GET /api/books/{book_id}/pipeline`](#getpipelineinspector), [`GET /api/books/{book_id}/resources`](#getbookresourceusage), [`GET /api/books/{book_id}/search`](#searchbookpassages), [`GET /api/books/{book_id}/story-map`](#getstorymap)
 - **Narration** — [`GET /api/audio/{book_id}/{segment_id}`](#getpassageaudio), [`GET /api/books/{book_id}/audio-assets/{asset_id}`](#getretainedaudioasset), [`POST /api/books/{book_id}/render`](#startenhancedrender)
@@ -921,7 +920,7 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 
 Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` for the forms. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.
+Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
 
 Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
 
@@ -950,7 +949,7 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 
 **List source references to a character** · operation `listCharacterReferences` · cost `none`
 
-Returns every reference to this current cast member from the latest published analysis checkpoint, unpaginated, in insertion order: attributed dialogue passages, name/alias mentions, and discovery evidence quotations, each with a source anchor. References are replaced whenever Classic analysis (including series runs) publishes; structure repair carries them over. Manual edits and the step analysis pipeline (runs and acceptance) do not update them, so they can lag the book document. An empty list means no analysis checkpoint has recorded references (for example after import or the demo). Read-only. Works for archived books.
+Returns every reference to this current cast member, unpaginated, in insertion order: attributed dialogue passages, name/alias mentions, and evidence quotations, each with a source anchor. The references are a projection of the accepted analysis-pipeline versions (discovery, profiles, directing). They are rebuilt when a version is accepted, rolled back or set aside, and when the pipeline overview or the inspector records outside changes, so a manual edit appears after the next such call. Rows retained from the removed Classic engine are carried until a discovery version is accepted; structure repair carries them over. An empty list means nothing has been projected (for example after import or the demo). Read-only: this call never rebuilds them. Works for archived books.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -992,7 +991,7 @@ Refused, with existing work preserved, unless the re-parsed original has the sam
 
 Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.
+Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
 
 Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
 
@@ -1023,7 +1022,7 @@ Request body (`application/json`): [SceneEdit](#schema-sceneedit)
 
 Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`) and marks the passage edited. Sending `speaker_id` (even unchanged) sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take; like other performance edits it deselects the current take while retaining its history.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.
+Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
 
 Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
 
@@ -1144,149 +1143,6 @@ Removes the entry. Removing the last one removes the book's `pronunciations` fie
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | No book has this ID, or no entry has this ID ("Pronunciation not found"). |
 | 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-
-## Classic analysis
-
-The older phase-based story analysis, its plan preview and local preprocessing.
-
-<a id="getanalysisstatus"></a>
-### `GET /api/books/{book_id}/analysis`
-
-**Get classic analysis progress** · operation `getAnalysisStatus` · cost `none`
-
-Checkpoint summary of the classic analysis engine, including per-chapter progress. Returns `status: "not_started"` (with one pending row per chapter) when no checkpoint exists.
-
-The checkpoint belongs to the latest run that saved progress and survives failures, cancellation and restarts (a server restart marks a running checkpoint `interrupted`). Follow a running analysis through its job (`GET /api/jobs`); use this for per-chapter detail. The step pipeline (`/analysis-pipeline`) does not write this checkpoint.
-
-The classic engine may be retired in favor of the step pipeline.
-
-| Parameter | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `book_id` | path | string | yes | Book ID, from the library or the import response. |
-
-| Status | Body | Meaning |
-| --- | --- | --- |
-| 200 | [AnalysisStatus](#schema-analysisstatus) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-
-<a id="previewclassicanalysis"></a>
-### `POST /api/books/{book_id}/analysis-plan`
-
-**Preview classic analysis work** · operation `previewClassicAnalysis` · cost `none`
-
-Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without provider inference. Returns the requested phase, provider and configured models, pending requests, cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` (with defaults applied; the preview does not enforce them).
-
-The estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works on archived books and while a job is running. It has the same local side effects as `GET /api/books/{book_id}/preprocessing` (census cache and retained artifacts) and never changes the book.
-
-The request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from
-runtime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for
-the fast discovery model), not from this request. A typical body:
-
-```json
-{"provider": "openai", "phase": "scan", "resume": true,
- "limits": {"max_requests": 25, "max_input_tokens": 1000000, "max_output_tokens": 100000, "budget_usd": 1.0}}
-```
-
-Cloud phases (`provider` = `gemini`, `openai` or `anthropic`):
-
-| `phase` | Scope |
-| --- | --- |
-| `scan` | Discover characters over eligible source sections using the fast model. |
-| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |
-| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |
-| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |
-
-`provider: "local"` runs the free heuristic draft instead, without semantic model discovery; `phase` and
-`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when
-supplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names
-such a section. The main UI uses whole-book scan/profiles and selected-chapter direction.
-
-| Parameter | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `book_id` | path | string | yes | Book ID, from the library or the import response. |
-
-Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
-
-| Status | Body | Meaning |
-| --- | --- | --- |
-| 200 | [AnalysisPlan](#schema-analysisplan) | Success. |
-| 400 | [Error](#schema-error) | `chapter_id` is not a chapter of this book, or the provider is not `local`, `gemini`, `openai` or `anthropic`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-
-<a id="startclassicanalysis"></a>
-### `POST /api/books/{book_id}/analyze`
-
-**Start or resume classic analysis** · operation `startClassicAnalysis` · cost `may_charge`
-
-Queues an `analyze` job and returns it immediately. Poll `GET /api/jobs` until it is terminal; failures, cancellation and allowance stops (`budget_limited`) appear in the job, not as HTTP errors. Cancel with `POST /api/jobs/{job_id}/cancel`; a remote request already sent can still complete and be billed. To resume after a stop, failure or restart, call this endpoint again (an old job ID is never revived).
-
-Send the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud provider may incur charges; `provider: "local"` never contacts a provider. There is no server-enforced preview fingerprint for these runs (pipeline and series runs have one); the UI invalidates its preview when local inputs change.
-
-The request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from
-runtime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for
-the fast discovery model), not from this request. A typical body:
-
-```json
-{"provider": "openai", "phase": "scan", "resume": true,
- "limits": {"max_requests": 25, "max_input_tokens": 1000000, "max_output_tokens": 100000, "budget_usd": 1.0}}
-```
-
-Cloud phases (`provider` = `gemini`, `openai` or `anthropic`):
-
-| `phase` | Scope |
-| --- | --- |
-| `scan` | Discover characters over eligible source sections using the fast model. |
-| `profiles` | Refine character profiles from retained evidence and confirmed earlier-series context. |
-| `direct` | Annotate passages/scenes with the detailed model; set `chapter_id` to select a chapter. |
-| `full` | Discovery, profile refinement, and direction. Newly discovered work makes the initial estimate incomplete. |
-
-`provider: "local"` runs the free heuristic draft instead, without semantic model discovery; `phase` and
-`limits` do not apply to it; it drafts every chapter, or only `chapter_id`. `chapter_id` is optional; when
-supplied it must belong to the book. Cloud phases skip front and back matter unless `chapter_id` names
-such a section. The main UI uses whole-book scan/profiles and selected-chapter direction.
-
-The provider and configured models are snapshotted when the job is queued; the job carries `provider`, `model`, `scan_model`, `phase` and `chapter_id`.
-
-Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published.
-
-The classic engine may be retired in favor of the step pipeline.
-
-| Parameter | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `book_id` | path | string | yes | Book ID, from the library or the import response. |
-
-Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
-
-| Status | Body | Meaning |
-| --- | --- | --- |
-| 200 | [Job](#schema-job) | The queued `analyze` job. |
-| 400 | [Error](#schema-error) | The book is archived (restore it first); `chapter_id` is not a chapter of this book; the provider is not `local`, `gemini`, `openai` or `anthropic`; or the cloud provider has no API key configured. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is already queued or running for this book, or an active series run has reserved it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-
-<a id="getanalysispreprocessing"></a>
-### `GET /api/books/{book_id}/preprocessing`
-
-**Get the local census, discovery coverage and profile freshness** · operation `getAnalysisPreprocessing` · cost `none`
-
-Free local census (names, speech tags, dialogue counts and heuristic priority per character; words and token estimates per chapter), semantic source coverage from validated cloud discovery, tracked analysis usage, and profile freshness/provisional state. No provider is contacted.
-
-Not purely a read: it computes and caches the census when the book changed (retained as a `census` artifact and measured as a `census` resource operation), may import validated discovery from an older checkpoint into the unit cache, and may retain `series_context` artifacts for linked earlier volumes. None of this changes the book.
-
-| Parameter | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `book_id` | path | string | yes | Book ID, from the library or the import response. |
-
-| Status | Body | Meaning |
-| --- | --- | --- |
-| 200 | [AnalysisCoverage](#schema-analysiscoverage) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Analysis pipeline
@@ -1615,7 +1471,9 @@ Versioned envelope with stage IDs, status, counts and dependencies; retained art
 
 The pipeline is an inspector, not a generic dependency scheduler. Its stage counts have different units and must not be summed into a global completion percentage. An HTTP 200 attempt does not mean its output passed validation: use `validation_state`.
 
-No provider is contacted, but the first inspection of a book in a server process retains legacy data as artifacts (marked `legacy_provenance`), and it has the local side effects of `GET /api/books/{book_id}/preprocessing`. It never changes the book.
+Step cards count the step pipeline's accepted, out-of-date (`stale_count`) and waiting (`candidate_count`) results, as `GET /api/books/{book_id}/analysis-pipeline` does. Artifact counts include retained versions from the removed Classic engine.
+
+**This GET writes.** Like the pipeline overview, it first records outside changes as `baseline` or `external` step versions (see `GET /api/books/{book_id}/analysis-pipeline`). The first inspection of a book in a server process also retains legacy data as artifacts (marked `legacy_provenance`). No provider is contacted, and the book itself is not changed.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2662,84 +2520,6 @@ prices for standard text requests, not a bill.
 | `price_valid_until` | string \| null |  | Last date (YYYY-MM-DD) the quoted price applies; absent when open-ended. Cost estimates treat the price as unknown after it. |
 | `price_input_token_limit` | integer \| null |  | Prompt size in tokens above which the quoted price does not apply; absent when none. |
 
-<a id="schema-analysiscensus"></a>
-### AnalysisCensus
-
-Free, rules-based whole-book census. Cached per book input; recomputed when the text, structure, cast or
-attributions change. Retained as a `census` artifact.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `version` | integer | yes | Census algorithm version (currently 1). |
-| `fingerprint` | string | yes | Internal; do not rely on it. Cache key of the census inputs. |
-| `source_hash` | string | yes | Internal; do not rely on it. Hash of the chapter IDs and texts the census used. |
-| `local_complete` | boolean | yes | Always true: the local census covers every chapter. |
-| `local_chapters_scanned` | integer | yes | Chapters scanned (all chapters, including front/back matter). |
-| `eligible_chapter_ids` | list of string | yes | Chapters eligible for cloud discovery and direction, in book order. |
-| `eligible_chapters` | integer | yes | Count of eligible chapters. |
-| `chapters` | list of [CensusChapter](#schema-censuschapter) | yes | One row per chapter of the book in book order, including front and back matter (see `eligible`). |
-| `characters` | list of [CensusCharacter](#schema-censuscharacter) | yes | Known characters and speech-tag candidates (excluding `narrator` and `unassigned`), highest priority first. |
-| `words` | integer | yes | Total words across all chapters. |
-| `estimated_source_tokens` | integer | yes | Rough token estimate for eligible chapters only. |
-| `note` | string | yes | Interpretation caveat. Display only. |
-
-<a id="schema-analysischapterprogress"></a>
-### AnalysisChapterProgress
-
-Per-chapter progress row of the classic analysis checkpoint.
-
-Rows are created for every chapter of the book when a checkpoint is first
-written; chapters outside the requested scope keep their earlier state.
-Rows written by a newer cloud run start with only ``id``, ``title``,
-``status``, ``discovery_complete`` and ``directing_complete``; the other
-fields appear once the run reaches that chapter.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Chapter ID. |
-| `title` | string \| null |  | Chapter title at the time the row was written. |
-| `stage` | `"discovery"` \| `"directing"` \| `"complete"` \| null |  | Last stage this chapter reached. Absent until a run works on the chapter. |
-| `status` | `"pending"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"budget_limited"` | yes | State of the chapter within its current stage. `interrupted` also covers a user cancellation and a server restart; `budget_limited` means a request/token/dollar allowance stopped the run. |
-| `completed_units` | integer \| null |  | Requests (units) finished for this chapter in its current stage. |
-| `total_units` | integer \| null |  | Requests (units) planned for this chapter in its current stage. |
-| `error` | string \| null |  | Human-readable failure text for this chapter, or null. Display only. |
-| `discovery_complete` | boolean \| null |  | True when character discovery covers this chapter (for newer cloud runs: validated discovery covers the whole chapter text). |
-| `directing_complete` | boolean \| null |  | True when passage direction for this chapter is complete and still matches the current cast. |
-
-<a id="schema-analysiscoverage"></a>
-### AnalysisCoverage
-
-Local census, semantic discovery coverage, tracked usage and profile freshness.
-
-Whole-book discovery coverage and profile freshness are separate facts.
-Only validated cloud discovery counts as semantic coverage; local drafts do not.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `local` | [AnalysisCensus](#schema-analysiscensus) | yes | The free local census. |
-| `semantic_chapters_complete` | integer | yes | Eligible chapters whose full text is covered by validated cloud discovery. |
-| `semantic_chapter_ids` | list of string | yes | Those chapter IDs, in book order. |
-| `eligible_chapters` | integer | yes | Eligible chapters (same as `local.eligible_chapters`). |
-| `whole_book_discovered` | boolean | yes | True when every eligible chapter is covered (false for a book with none). |
-| `profiles_provisional` | boolean | yes | True unless the whole book is discovered and every profile is current or reviewed. |
-| `usage` | [AnalysisUsage](#schema-analysisusage) | yes |  |
-| `note` | string | yes | Interpretation caveat. Display only. |
-| `characters` | list of [ProfileFreshness](#schema-profilefreshness) | yes | Profile freshness per cast member, excluding `narrator` and `unassigned`. |
-| `profiles_current` | integer | yes | Profiles whose state is `current` or `reviewed`. |
-| `profiles_total` | integer | yes | Profiles considered (cast members excluding `narrator` and `unassigned`). |
-
-<a id="schema-analysislimits"></a>
-### AnalysisLimits
-
-Allowances reserved before every analysis HTTP attempt, including retries and evidence repairs. When one would be exceeded the run stops as `budget_limited` and keeps its validated work. Request and token caps apply to the run; the dollar guard includes prior tracked analysis for the book. Unknown prices, or earlier attempts of unknown cost, stop a run that has a dollar guard. These limits do not cap narration (TTS) spending and do not represent account credit.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `max_requests` | integer |  | Maximum HTTP attempts in this run, 1–1,000 (default 25). (≥ `1.0`; ≤ `1000.0`; default `25`) |
-| `max_input_tokens` | integer |  | Maximum input tokens in this run, 1,000–10,000,000 (default 1,000,000). Reported usage counts; attempts without reported usage count their conservative reservation. (≥ `1000.0`; ≤ `10000000.0`; default `1000000`) |
-| `max_output_tokens` | integer |  | Maximum output tokens in this run, 1,000–2,000,000 (default 100,000). Same accounting. (≥ `1000.0`; ≤ `2000000.0`; default `100000`) |
-| `budget_usd` | number \| null |  | Tracked analysis allowance for the whole book in USD, including earlier runs: greater than 0 and at most 1,000 (default 1.0). Explicit null removes the dollar guard, leaving the request and token caps. (default `1.0`) |
-
 <a id="schema-analysismodelcatalog"></a>
 ### AnalysisModelCatalog
 
@@ -2757,51 +2537,6 @@ Analysis model choices for one cloud provider: the curated list, or the last ref
 | `models` | list of [AnalysisCatalogModel](#schema-analysiscatalogmodel) | yes | Curated models first (in curated order), then models only the listing found, sorted by ID. |
 | `partial` | boolean \| null |  | Present after a successful refresh: true when the listing had more pages than were read, so unlisted curated models stay `unverified`. |
 
-<a id="schema-analysisplan"></a>
-### AnalysisPlan
-
-Preview of currently known classic-analysis work. No provider is contacted.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` | yes | Requested phase. |
-| `provider` | string | yes | Resolved provider: the request value, or the saved default analysis provider. |
-| `scan_model` | string \| null | yes | Configured discovery (fast) model for this provider, or null when none is configured (the run then falls back to the detailed model or the built-in default). |
-| `model` | string \| null | yes | Configured detailed model for this provider, or null (the run then uses the built-in default). |
-| `requests` | integer | yes | Requests that are not already cached. Always 0 for `local`. Excludes retries and evidence repairs. |
-| `cached_units` | integer | yes | Known units that validated cached output would satisfy (only when `resume` is true). |
-| `estimated_input_tokens` | integer | yes | Approximate input tokens of the pending requests (0 for `local`). |
-| `output_token_allowance` | integer | yes | Sum of the pending requests' output caps (0 for `local`). |
-| `estimated_cost_usd` | number \| null | yes | Approximate USD cost of the pending requests; null when a model has no known price; 0 for `local`. Not an invoice. |
-| `steps_by_stage` | [AnalysisPlanStageCounts](#schema-analysisplanstagecounts) | yes | Pending requests by stage. Computed for `local` too, although a local run does not send these requests. |
-| `coverage` | [AnalysisCoverage](#schema-analysiscoverage) | yes | Same body as `GET /api/books/{book_id}/preprocessing`, with profile freshness computed against the plan's working cast. |
-| `future_work_unknown` | boolean | yes | True for `full`: discovery can add profiles and change direction prompts, so the estimate is incomplete. |
-| `note` | string | yes | Interpretation caveat. Display only. |
-| `limits` | [AnalysisPlanLimits](#schema-analysisplanlimits) | yes |  |
-
-<a id="schema-analysisplanlimits"></a>
-### AnalysisPlanLimits
-
-Echo of the request's `limits` with defaults applied. The preview does not enforce them.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `max_requests` | integer | yes | Per-run HTTP request cap. |
-| `max_input_tokens` | integer | yes | Per-run input-token cap. |
-| `max_output_tokens` | integer | yes | Per-run output-token cap. |
-| `budget_usd` | number \| null | yes | Cumulative tracked analysis allowance for the book in USD; null means no dollar guard. |
-
-<a id="schema-analysisplanstagecounts"></a>
-### AnalysisPlanStageCounts
-
-Pending (uncached) requests by stage.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `discovery` | integer | yes | Character-discovery requests (fast model). |
-| `profiles` | integer | yes | Profile-refinement requests (detailed model). |
-| `directing` | integer | yes | Passage/scene direction requests (detailed model). |
-
 <a id="schema-analysisproviderstatus"></a>
 ### AnalysisProviderStatus
 
@@ -2816,53 +2551,10 @@ An analysis provider and whether it is usable.
 | `model` | string \| null | yes | The saved analysis model for this provider, or null for `local`. |
 | `models` | list of string | yes | Curated model IDs (empty for `local`). A saved custom model may be absent from this list. |
 
-<a id="schema-analysisrequest"></a>
-### AnalysisRequest
-
-A classic analysis request, used both to preview (`analysis-plan`) and to start (`analyze`). Send the same body to both.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `provider` | string \| null |  | `local`, `gemini`, `openai` or `anthropic`. Omitted or null uses the saved default analysis provider. `local` runs the free heuristic draft (no semantic discovery) and ignores `phase` and `limits`. |
-| `chapter_id` | string \| null |  | Limit the run to this chapter of the book (must belong to it). Omitted or null: the whole book (cloud phases skip front and back matter; the local draft covers every chapter). Profile refinement is book-wide regardless. |
-| `resume` | boolean |  | Reuse validated saved units and chapter progress (default true). False re-requests work that would otherwise be reused (retained history is kept). (default `true`) |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` |  | Cloud phase: `scan` (default; character discovery with the fast model), `profiles` (refine profiles from retained evidence and confirmed earlier-series context), `direct` (annotate passages and scenes with the detailed model) or `full` (all three; its initial estimate is incomplete). (default `"scan"`) |
-| `limits` | [AnalysisLimits](#schema-analysislimits) |  | Allowances checked before every HTTP attempt. Omitted: all defaults. |
-
-<a id="schema-analysisstatus"></a>
-### AnalysisStatus
-
-Checkpoint summary of the classic analysis engine for one book.
-
-When no checkpoint exists the server synthesizes `status: "not_started"`
-with one pending row per chapter. A checkpoint is written by
-`POST /api/books/{book_id}/analyze` (both the local draft and the cloud
-phases), and by the per-book `analyze` children of series runs recorded
-before contract 0.2.0 (newer series runs use the step pipeline). It
-survives failures, so it can describe an older run than the latest job.
-Source text and model responses are never included.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `fingerprint` | string \| null |  | Internal; do not rely on it. Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). Absent when no checkpoint exists. |
-| `provider` | string \| null | yes | Analysis provider of the checkpoint: `local`, `gemini`, `openai` or `anthropic`; null when not started. |
-| `model` | string \| null | yes | Detailed-analysis model ID used, or null (local drafts and not started). |
-| `status` | `"not_started"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"budget_limited"` | yes | Overall state. `interrupted` covers cancellation and server restarts; `budget_limited` means a request/token/dollar allowance stopped the run. Validated work is kept in every case. |
-| `stage` | `"discovery"` \| `"preprocessing"` \| `"profiles"` \| `"directing"` \| `"complete"` \| null |  | Stage in progress or last reached. `preprocessing` is the free local census at the start of a cloud run; `complete` after success. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| null |  | Requested cloud phase. Absent for local drafts and for checkpoints written before phases existed. |
-| `scan_model` | string \| null |  | Fast model used for discovery in cloud runs. Absent for local drafts. |
-| `completed_units` | integer \| null |  | Units (requests or batches) completed in the latest run. Absent only if a run failed before its first save. |
-| `total_units` | integer \| null |  | Units known so far for the latest run. A `full` run discovers more work as it goes, so this can grow. |
-| `current_chapter_id` | string \| null | yes | Chapter being worked on, or null between chapters, during profiles and when idle. |
-| `scope_chapter_id` | string \| null |  | The `chapter_id` the run was limited to, or null for the whole book. Absent when not started. |
-| `error` | string \| null |  | Human-readable failure text of the latest run, or null. Display only. |
-| `updated_at` | string \| null |  | ISO 8601 UTC time the checkpoint was last saved. Absent when not started. |
-| `chapters` | list of [AnalysisChapterProgress](#schema-analysischapterprogress) | yes | One row per chapter of the book (as of the checkpoint). |
-
 <a id="schema-analysisusage"></a>
 ### AnalysisUsage
 
-Tracked analysis request usage for a book, across all runs (classic and step pipeline).
+Tracked analysis request usage for a book, across all runs, including runs of the removed Classic engine.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3075,17 +2767,16 @@ novel is several megabytes).
 The current overall analysis summary for the book.
 
 Only a short label of who produced the current projection. Detailed,
-resumable progress is in `GET /api/books/{book_id}/analysis` and the
-analysis pipeline routes.
+resumable progress is in the analysis pipeline routes.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider` | string | yes | Who produced the current annotations: `local` (free heuristic draft, also at import), `gemini`, `openai`, `anthropic`, `local_llm`, or a self-hosted service (`novel_analyzer`, `booknlp`) accepted through the analysis pipeline. Open set. |
 | `model` | string \| null |  | Model ID used, or null/absent for local or service analysis. |
-| `status` | `"draft"` \| `"partial"` | yes | `draft`: a complete draft awaiting review (import, local or completed classic analysis). `partial`: staged work in progress or a pipeline step accepted; other parts may be missing or older. |
+| `status` | `"draft"` \| `"partial"` | yes | `draft`: a complete draft awaiting review (import, the local draft, or a completed run of the removed Classic engine). `partial`: staged work in progress or a pipeline step accepted; other parts may be missing or older. |
 | `notes` | string \| null |  | Human-readable explanation of the draft and what to review. Display only. The server writes it with every summary; treat an absent value as empty. |
-| `phase` | string \| null |  | Classic analysis phase that published this state (`scan`, `profiles`, `direct`, `full`) or the pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`). Absent for import and local drafts. |
-| `profiles_provisional` | boolean \| null |  | Classic progressive analysis only: true while character profiles still need whole-book discovery or refinement against current evidence. |
+| `phase` | string \| null |  | The pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`), or, on books last analyzed by the removed Classic engine, its phase (`scan`, `profiles`, `direct`, `full`). Absent for import and local drafts. |
+| `profiles_provisional` | boolean \| null |  | Written only by the removed Classic engine: true while character profiles still needed whole-book discovery or refinement against current evidence. |
 
 <a id="schema-bookbreezesettings"></a>
 ### BookBreezeSettings
@@ -3145,13 +2836,13 @@ separate). Every book has the reserved characters `narrator` and
 | `profile_provider` | string \| null |  | Provider of the refined profile. |
 | `profile_model` | string \| null |  | Model of the refined profile. |
 | `profile_priority` | `"deep"` \| `"standard"` \| `"basic"` \| null |  | Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`. |
-| `profile_state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` \| null |  | Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined). |
-| `profile_provisional` | boolean \| null |  | Classic progressive analysis: true while the profile may still change. |
+| `profile_state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` \| null |  | Written only by the removed Classic engine: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined). |
+| `profile_provisional` | boolean \| null |  | Written only by the removed Classic engine: true while the profile could still change. |
 | `profile_input_key` | string \| null |  | Internal; do not rely on it. Cache key of the profile request that produced the profile. |
 | `voice` | string \| null |  | Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`. |
 | `system_voice` | string \| null |  | Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`. |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
 
 <a id="schema-bookcharactervoice"></a>
 ### BookCharacterVoice
@@ -3247,8 +2938,8 @@ A passage ("segment"): the reader and narration unit, anchored to exact source o
 | `analysis_model` | string \| null |  | Model of that annotation; null for local or service providers. |
 | `audio` | [BookTake](#schema-booktake) \| null | yes | Presented: the selected enhanced take if still valid, else null. |
 | `leading_text` | string | yes | Presented only: chapter text between the previous passage (or the chapter start) and this passage, usually whitespace or a replaced scene-break ornament. |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
 
 <a id="schema-bookpronunciation"></a>
 ### BookPronunciation
@@ -3292,8 +2983,8 @@ not proof that the character is physically present.
 | `direction` | string \| null |  | Performance direction for the whole scene. Used in enhanced narration recipes. |
 | `segment_ids` | list of string | yes | IDs of the scene's passages, in reading order. |
 | `character_ids` | list of string | yes | IDs of characters attributed to its passages (including `narrator`/`unassigned`). |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
 
 <a id="schema-bookseries"></a>
 ### BookSeries
@@ -3384,49 +3075,6 @@ Result of cloning a Breeze voice from a recording.
 | `voice` | [LibraryVoice](#schema-libraryvoice) | yes | The new cloned library voice. |
 | `book` | [Book](#schema-book) \| null |  | The full book document after assignment; present only when `book_id` and `character_id` were given and the assignment succeeded. |
 | `assignment_error` | string \| null |  | Present when the assignment failed. The voice is still created; nothing is rolled back. |
-
-<a id="schema-censuschapter"></a>
-### CensusChapter
-
-Local census statistics for one chapter (section) of the book.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Chapter ID. |
-| `title` | string | yes | Chapter title as stored in the book. |
-| `kind` | string | yes | Section type: `chapter`, `recap`, `section`, `front_matter` or `back_matter` (older books may use other values; `section` when unrecorded). |
-| `eligible` | boolean | yes | False for front and back matter, which cloud discovery and direction skip. |
-| `words` | integer | yes | Whitespace-separated word count of the chapter text. |
-| `estimated_tokens` | integer | yes | Rough token estimate (UTF-8 bytes / 3), for sizing only. |
-| `passages` | integer | yes | Number of passages (segments) in the chapter. |
-| `dialogue_turns` | integer | yes | Number of dialogue passages. |
-| `unassigned_dialogue` | integer | yes | Dialogue passages whose speaker is `unassigned`. |
-
-<a id="schema-censuscharacter"></a>
-### CensusCharacter
-
-Heuristic effort signals for one known or candidate character.
-
-These count names and speech tags; they do not prove identity, presence
-or narrative importance.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Book-local character ID for a known character, or `candidate_<hash>` for a name found only in speech tags. |
-| `name` | string | yes | Cast name for a known character; for a candidate, the name as it appeared in the first matching speech tag. |
-| `aliases` | list of string | yes | Cast aliases of a known character (possibly empty); always empty for a speech-tag candidate. |
-| `known_character` | boolean | yes | True for a character already in the book cast; false for a speech-tag candidate. |
-| `mentions` | integer | yes | Whole-word name/alias matches in eligible chapters (only unambiguous names are counted). |
-| `explicit_speech_tags` | integer | yes | Speech tags such as `said Anna` naming this character. |
-| `dialogue_turns` | integer | yes | Dialogue passages currently attributed to this character. |
-| `dialogue_words` | integer | yes | Words in those dialogue passages. |
-| `chapter_count` | integer | yes | Eligible chapters with at least one mention. |
-| `chapter_mentions` | map of string → integer | yes | Mention count by chapter ID (chapters with none are omitted). |
-| `uncertain_attributions` | integer | yes | Attributed dialogue passages with missing or below-0.8 confidence. |
-| `ambiguous_aliases` | integer | yes | Names/aliases shared with another character. |
-| `priority_score` | integer | yes | Heuristic score combining mentions, tags, dialogue and spread. Higher means more effort. |
-| `priority` | `"deep"` \| `"standard"` \| `"basic"` | yes | Effort tier derived from the score and ambiguity. |
-| `recommended_evidence_limit` | integer | yes | Evidence quotations a profile request uses for this tier (16, 10 or 5). |
 
 <a id="schema-chapterlistencalibration"></a>
 ### ChapterListenCalibration
@@ -3794,7 +3442,7 @@ series child that is cancelled or passed over never starts later.
 | kind | started by | extra fields |
 | --- | --- | --- |
 | `render` | enhanced narration | none |
-| `analyze` | classic analysis | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
+| `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
 | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at` |
 | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
 | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
@@ -3826,7 +3474,7 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
 | `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
 | `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
@@ -4612,7 +4260,7 @@ The applied impact and the decision recorded.
 <a id="schema-pipelineattempt"></a>
 ### PipelineAttempt
 
-One recorded analysis HTTP attempt (classic or step pipeline), newest 100 for the book.
+One recorded analysis HTTP attempt, newest 100 for the book (step pipeline, or the removed Classic engine).
 
 Fields come from the stored attempt and may be absent on records from
 older versions. Prompts, responses and credentials are never included.
@@ -4621,7 +4269,7 @@ older versions. Prompts, responses and credentials are never included.
 | --- | --- | --- | --- |
 | `id` | string | yes | Attempt ID. |
 | `run_id` | string \| null |  | Job ID of the run that sent it. |
-| `stage` | string \| null |  | Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID. |
+| `stage` | string \| null |  | Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records. |
 | `unit_key` | string \| null |  | Opaque cache key of the unit of work. |
 | `provider` | string \| null |  | Provider ID. |
 | `model` | string \| null |  | Model ID. |
@@ -4798,14 +4446,14 @@ One retained analysis event (newest 100 for the book).
 | `id` | string | yes | Event ID (32 hex characters). |
 | `book_id` | string | yes | Book ID the event belongs to. |
 | `run_id` | string \| null | yes | Job ID of the run. |
-| `stage` | string \| null | yes | Classic stage or pipeline step ID. |
+| `stage` | string \| null | yes | Pipeline step ID, or a stage of the removed Classic engine on older records. |
 | `unit_key` | string \| null | yes | Opaque unit cache key. |
 | `event` | `"started"` \| `"accepted"` \| `"cache_hit"` \| `"cache_rejected"` \| `"cache_superseded"` \| `"validation_rejected"` \| `"budget_limited"` \| `"failed"` \| `"cancelled"` | yes | What happened to the unit. |
 | `created_at` | string | yes | ISO 8601 UTC. |
 | `artifact_id` | string \| null |  | Related artifact: request recipe (`started`), accepted output, cached output or rejection record. |
 | `attempt_id` | string \| null |  | Related HTTP attempt, when known. |
 | `error` | string \| null |  | Redacted failure or rejection text. Display only. |
-| `cached_unit_key` | string \| null |  | For `cache_rejected` in classic runs: the unit key of the rejected cache entry. |
+| `cached_unit_key` | string \| null |  | For `cache_rejected` in older Classic runs: the unit key of the rejected cache entry. |
 | `repair` | boolean \| null |  | For step-pipeline `started`: true when this is an evidence-repair request. |
 
 <a id="schema-pipelineinspector"></a>
@@ -4835,9 +4483,9 @@ A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Job ID. |
-| `kind` | string | yes | Job kind, e.g. `analyze`, `pipeline`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`. |
+| `kind` | string | yes | Job kind, e.g. `pipeline`, `series`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`, or `analyze` for historical jobs of the removed Classic engine. |
 | `status` | string | yes | Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, `quota_limited`. |
-| `phase` | string \| null |  | Classic analysis phase, present on `analyze` jobs. |
+| `phase` | string \| null |  | Phase of a historical `analyze` job of the removed Classic engine. |
 | `progress` | integer | yes | Units completed so far, in kind-specific units (see `Job`); not a percentage. |
 | `total` | integer | yes | Units planned, in the same units; 0 when not yet known. May grow while running. |
 | `message` | string | yes | Progress or outcome text. Display only. |
@@ -5045,16 +4693,25 @@ The queued job and the run record. A queued job is not a result: poll the job.
 
 One stage card of the pipeline inspector. Counts have stage-specific units; never sum them.
 
+Cards come in pipeline order: `import` and `series`, then one card per
+analysis step (the step IDs of `GET /api/analysis-pipeline`, currently
+`structure`, `census`, `discovery`, `quotes`, `profiles`, `directing`),
+then `voices`, `narration`, `alignment` and `export`. A step card counts
+accepted results of the step pipeline, the same numbers as
+`GET /api/books/{book_id}/analysis-pipeline`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `"import"` \| `"structure"` \| `"census"` \| `"series"` \| `"discovery"` \| `"profiles"` \| `"directing"` \| `"voices"` \| `"narration"` \| `"alignment"` \| `"export"` | yes | Stage ID, in pipeline order. |
-| `label` | string | yes | Display name. |
-| `status` | `"complete"` \| `"partial"` \| `"pending"` \| `"available"` \| `"not_started"` \| `"provisional"` \| `"planned"` \| `"ready"` \| `"queued"` \| `"running"` \| `"failed"` \| `"interrupted"` \| `"cancelled"` \| `"budget_limited"` | yes | `complete`/`partial`/`pending` from the counts. Fixed states: `series` is `available` (book is in a series) or `not_started`; `profiles` is `provisional` while whole-book discovery is incomplete and some profiles are current; `alignment` is `planned`; `export` is `ready`. An active `analyze` job whose checkpoint stage is this stage shows the job status (`queued`/`running`); likewise an active `render` job for `narration`. With no active job, a failed/interrupted/budget-limited checkpoint shows that status on its stage. |
-| `completed` | integer \| null | yes | Units done, or null where not counted (`series`, `export`). |
-| `total` | integer \| null | yes | Units in scope, or null where not counted. |
-| `unit_label` | string | yes | What the counts measure, e.g. `sections`, `eligible sections`, `profiles`, `passages`. |
-| `dependencies` | list of string | yes | Stage IDs this stage conceptually depends on. Descriptive, not a scheduler. |
-| `artifact_count` | integer | yes | Retained artifact versions whose stage equals this ID. |
+| `id` | string | yes | Stage ID: `import`, `series`, a pipeline step ID, `voices`, `narration`, `alignment` or `export`. Clients must tolerate new step IDs. |
+| `label` | string | yes | Display name. For a step card, the step's label. |
+| `status` | `"complete"` \| `"partial"` \| `"pending"` \| `"stale"` \| `"available"` \| `"not_started"` \| `"planned"` \| `"ready"` \| `"queued"` \| `"running"` | yes | `complete`/`partial`/`pending` from the counts. A step card is `queued`/`running` while its latest step version is, and otherwise `stale` when some accepted result is out of date with its inputs. `narration` shows an active `render` job's status. Fixed states: `series` is `available` (book is in a series) or `not_started`; `alignment` is `planned`; `export` is `ready`. |
+| `completed` | integer \| null | yes | Units done, or null where not counted (`series`, `export`). For a step card, accepted scopes. |
+| `total` | integer \| null | yes | Units in scope, or null where not counted. For a step card, its scopes; chapter-scoped steps count only eligible sections. |
+| `unit_label` | string | yes | What the counts measure, e.g. `sections`, `eligible sections`, `book result`, `profiles`, `passages`. |
+| `dependencies` | list of string | yes | Stage IDs this stage conceptually depends on. For a step card, the step's declared inputs, or `import` when it has none. Descriptive, not a scheduler. |
+| `artifact_count` | integer | yes | Retained artifact versions whose stage equals this ID, including versions from older engines that used the same stage name. |
+| `stale_count` | integer \| null | yes | Step cards: accepted scopes whose inputs changed since acceptance. Null for other cards. |
+| `candidate_count` | integer \| null | yes | Step cards: recent step versions (of the newest 20) waiting for review. Null for other cards. |
 | `note` | string | yes | Interpretation text. Display only. |
 
 <a id="schema-pipelinestepconfigview"></a>
@@ -5260,17 +4917,6 @@ Which steps to estimate, over which chapters, with which providers.
 | `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused. |
 | `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not requested are ignored. |
 | `fresh` | boolean |  | When true, cached validated units are not reused: new samples are requested (for comparing a model with itself). Part of the plan fingerprint. Default false. (default `false`) |
-
-<a id="schema-profilefreshness"></a>
-### ProfileFreshness
-
-Currency of one character's vocal profile.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `character_id` | string | yes | Book-local character ID. |
-| `state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` | yes | `reviewed`: manually edited (authoritative). `current`: refined from the current evidence set. `stale`: refined earlier but the evidence or settings changed. `draft`: never refined. |
-| `provisional` | boolean | yes | True when the profile may still change: the whole book is not yet discovered, or the state is neither `current` nor `reviewed`. |
 
 <a id="schema-pronunciationentry"></a>
 ### PronunciationEntry
@@ -5923,7 +5569,7 @@ A series parent job with its child jobs.
 | `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
 | `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
 | `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
@@ -5989,7 +5635,7 @@ A child job of a series run, with a summary of its book's pipeline run.
 | `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
 | `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
 | `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
@@ -6121,7 +5767,7 @@ A partial settings update. Every field is optional; omitted fields stay unchange
 | `api_keys` | map of string → string \| null |  | Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key. |
 | `analysis_models_by_provider` | map of string → string \| null |  | Analysis model per cloud provider (`gemini`, `openai`, `anthropic`). IDs are 1–200 characters of letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit; they need not be in the curated list. Saved. |
 | `preprocess_models_by_provider` | map of string → string \| null |  | Preprocessing (scan) model per cloud provider, same ID rules. Saved. |
-| `analysis_provider` | string \| null |  | Default classic-analysis provider: `local`, `gemini`, `openai` or `anthropic`. Saved. |
+| `analysis_provider` | string \| null |  | Default provider for model-based analysis steps without saved step settings: `local` (none), `gemini`, `openai` or `anthropic`. Saved. |
 | `tts_limits` | map of string → map of string → integer \| null |  | Gemini speech limits by TTS model: `{model: {rpm, tpm, rpd}}`. Each given model's limits are replaced as a whole: a limit left out of the object is reset to its default (rpm 10, tpm 10,000, rpd 100), not kept. Whole numbers: rpm 1–10,000, tpm 1–100,000,000, rpd 1–10,000,000. Models not included keep their limits. Saved. |
 | `listen_chunking` | [ChunkingOptions](#schema-chunkingoptions) \| null |  | Default chapter-listening chunk settings. Fields given are merged over the saved values and the result is validated. Saved. |
 | `breeze_url` | string \| null |  | Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. An empty string clears it. Saved. The saved Breeze check stays valid only for the URL it was made with. |
@@ -6141,7 +5787,7 @@ derived at request time.
 | --- | --- | --- | --- |
 | `has_api_key` | boolean | yes | True when a Gemini API key is loaded (from Settings or the environment). |
 | `tts_model` | string | yes | Selected Gemini speech model; one of `tts_models`. |
-| `analysis_provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Default provider for classic analysis. |
+| `analysis_provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Default provider for model-based analysis steps without saved step settings. `local` means none: the first cloud provider with a key is used. |
 | `analysis_model` | string | yes | Compatibility alias of `analysis_models_by_provider.gemini`. |
 | `analysis_models_by_provider` | map of string → string | yes | Selected analysis model per cloud provider (always all three). |
 | `preprocess_models_by_provider` | map of string → string | yes | Selected preprocessing (scan) model per cloud provider (always all three). |

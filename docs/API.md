@@ -18,7 +18,6 @@ The semantics behind several families are explained in their own guides:
 
 - [analysis pipeline](ANALYSIS-PIPELINE.md): steps, versions, acceptance and rollback;
 - [provider setup](ANALYSIS-PROVIDERS.md) and [account checks](ACCOUNT-CHECKS.md);
-- [classic chapter analysis](CHAPTER-ANALYSIS.md): resume and authority rules;
 - [artifacts and storage](ARTIFACTS-AND-STORAGE.md), including exports;
 - [book structure](STRUCTURE.md);
 - [library, listening and resources](LIBRARY-LISTENING-RESOURCES.md);
@@ -35,9 +34,8 @@ The reference groups operations by family:
 | [Series](../contract/API-REFERENCE.md#series) | Membership, volume placeholders, cross-book identities, collection runs |
 | [Books](../contract/API-REFERENCE.md#books) | The book document and manual edits |
 | [Pronunciations](../contract/API-REFERENCE.md#pronunciations) | Per-book respellings sent to narrators, with where each word occurs |
-| [Classic analysis](../contract/API-REFERENCE.md#classic-analysis) | The older phase-based analysis, its plan preview and local preprocessing |
 | [Analysis pipeline](../contract/API-REFERENCE.md#analysis-pipeline) | Step settings, previewed runs, versioned results to accept or reject |
-| [Inspection](../contract/API-REFERENCE.md#inspection) | Stages, artifacts, the story map, passage search, resource usage, the analysis export |
+| [Inspection](../contract/API-REFERENCE.md#inspection) | Stage cards (one per pipeline step), artifacts, the story map, passage search, resource usage, the analysis export |
 | [Narration](../contract/API-REFERENCE.md#narration) | Enhanced (cast) takes and their audio |
 | [Listening](../contract/API-REFERENCE.md#listening) | Simple single-narrator listening for passages and chapters |
 | [Performances](../contract/API-REFERENCE.md#performances) | Saved named selections over retained audio |

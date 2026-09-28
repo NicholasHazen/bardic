@@ -22,6 +22,25 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.0 — 2026-09-28
+<!-- contract-sha256: 664ac23b1de6cd11c89fbf01cd5c3608124cebbd3568a94685128a39c2a7a5aa -->
+
+**BREAKING.** The Classic analysis engine is removed (Classic removal, stage 3). The step pipeline (`/analysis-pipeline` routes) is the only way to analyze a book. Clients must change the following.
+
+- **Removed operations.** These paths are no longer served, and their operation IDs are gone. As for any unknown path, a GET gets 404 and a POST gets 405.
+  - `startClassicAnalysis` (`POST /api/books/{book_id}/analyze`). Queue steps with `startBookAnalysisPipelineRun` instead; preview with `planBookAnalysisPipelineRun`.
+  - `previewClassicAnalysis` (`POST /api/books/{book_id}/analysis-plan`).
+  - `getAnalysisPreprocessing` (`GET /api/books/{book_id}/preprocessing`). The census is the `census` step's accepted result; tracked usage is `usage` in `getPipelineInspector`.
+  - `getAnalysisStatus` (`GET /api/books/{book_id}/analysis`). Follow runs through their `pipeline` job and `getBookAnalysisPipeline`.
+- **Removed schemas.** `AnalysisRequest`, `AnalysisLimits`, `AnalysisStatus`, `AnalysisChapterProgress`, `AnalysisCoverage`, `AnalysisCensus`, `CensusChapter`, `CensusCharacter`, `ProfileFreshness`, `AnalysisPlan`, `AnalysisPlanStageCounts` and `AnalysisPlanLimits`. The `Classic analysis` tag is removed. `AnalysisUsage` stays.
+- **`getPipelineInspector` stage cards** (`PipelineStage`) are rebuilt from the step pipeline.
+  - The cards are `import`, `series`, one card per pipeline step in pipeline order (currently `structure`, `census`, `discovery`, `quotes`, `profiles`, `directing`), then `voices`, `narration`, `alignment` and `export`. `id` is now an open string instead of a fixed enumeration. A step card's counts are its accepted and total scopes, as in `getBookAnalysisPipeline`, and its dependencies are the step's declared inputs.
+  - New always-sent fields: `stale_count` and `candidate_count`. They are integers on step cards and null on the others.
+  - `status` gains `stale` and loses `provisional`, `failed`, `interrupted`, `cancelled` and `budget_limited`, which only a Classic checkpoint produced. An active `analyze` job no longer affects any card.
+  - The operation now records outside changes like `getBookAnalysisPipeline` does (it can store `baseline` or `external` step versions and rebuild character references). It no longer computes the census.
+- Descriptions of retained historical data now say which fields only the removed engine wrote: `analyze` jobs and their `phase`, `BookAnalysisSummary.phase` and `profiles_provisional`, and `BookCharacter.profile_state` and `profile_provisional`. The edit-lock note on `edited` (characters, passages, scenes and their edit operations) no longer mentions the engine. `listCharacterReferences` now describes the stage 2 projection. `Status.analysis_provider` is described as the default provider for model-based steps without saved settings, which is how the pipeline already used it.
+- Known issues resolved ([API known issues](../docs/API-KNOWN-ISSUES.md)): character references no longer lag pipeline acceptance (stage 2's projection, now described), and the inspector no longer reads a Classic checkpoint's `cancelled`/`interrupted` state.
+
 ## 0.2.3 — 2026-09-28
 <!-- contract-sha256: dab500d3243131d0bc6e4ababa688e65e98950905e3298dc7fda4530163883bb -->
 

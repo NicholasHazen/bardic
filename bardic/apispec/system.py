@@ -210,7 +210,8 @@ class Status(View):
     has_api_key: bool = Field(description='True when a Gemini API key is loaded (from Settings or the environment).')
     # Saved preferences
     tts_model: str = Field(description='Selected Gemini speech model; one of `tts_models`.')
-    analysis_provider: AnalysisProviderId = Field(description='Default provider for classic analysis.')
+    analysis_provider: AnalysisProviderId = Field(description='Default provider for model-based analysis steps without saved '
+                                                              'step settings. `local` means none: the first cloud provider with a key is used.')
     analysis_model: str = Field(description='Compatibility alias of `analysis_models_by_provider.gemini`.')
     analysis_models_by_provider: dict[CloudProvider, str] = Field(
         description='Selected analysis model per cloud provider (always all three).')
@@ -454,7 +455,8 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                                        '1–200 characters of letters, digits, `.`, `_`, `:` or `-`, starting with a '
                                        'letter or digit; they need not be in the curated list. Saved.',
         'preprocess_models_by_provider': 'Preprocessing (scan) model per cloud provider, same ID rules. Saved.',
-        'analysis_provider': 'Default classic-analysis provider: `local`, `gemini`, `openai` or `anthropic`. Saved.',
+        'analysis_provider': 'Default provider for model-based analysis steps without saved step settings: `local` (none), '
+                             '`gemini`, `openai` or `anthropic`. Saved.',
         'tts_limits': 'Gemini speech limits by TTS model: `{model: {rpm, tpm, rpd}}`. Each given model\'s limits are '
                       'replaced as a whole: a limit left out of the object is reset to its default (rpm 10, tpm '
                       '10,000, rpd 100), not kept. Whole numbers: rpm 1–10,000, tpm 1–100,000,000, rpd 1–10,000,000. '

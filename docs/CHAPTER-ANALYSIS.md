@@ -1,14 +1,16 @@
 # Chapter analysis and character references
 
+> **Historical record.** The engine this page describes was removed in Classic removal stage 3 (2026-09-28): its modules, routes and panel are gone. Analysis now runs only on the step pipeline; see the [analysis pipeline](ANALYSIS-PIPELINE.md) and [Classic removal](CLASSIC-REMOVAL.md). File and route names below refer to code that no longer exists.
+
 Implemented September 27, 2026 after a real-book analysis stopped on an invalid evidence quotation in its first discovery request. The original failed response was not retained, so its exact mismatch cannot be reconstructed. The former pipeline required a literal substring match and saved book annotations only after the complete run.
 
 ## Current processing
 
 In **Production studio → Process the story in stages**, preview and run `scan`, `profiles`, `direct` or `full`. The API defaults to `scan`; it does not silently run the entire pipeline. Whole-book scans use eligible narrative/recap sections, while explicit source-section selection is supported. Discovery saves source-anchored observations before profile refinement. Profile effort uses bounded, varied evidence gathered across the supplied book and explicitly linked earlier volumes. Directing uses known cast IDs and bounded source/passage batches; a completed chapter publishes its scene map and annotations together. No analysis stage generates audio automatically.
 
-The progressive runner in [progressive.py](../bardic/progressive.py) separates cheap discovery from detailed profiles/direction. Discovery uses contiguous source chunks capped at 24,000 characters. Direction uses its own smaller batches and bounded cast context. Read [the progressive design](PROGRESSIVE-ANALYSIS-PLAN.md), [data model](DATA-MODEL.md) and [API guide](API.md) for the current contracts. Complete coverage is separate from current profile refinement and is not a guarantee of perfect interpretation.
+The progressive runner in `progressive.py` separates cheap discovery from detailed profiles/direction. Discovery uses contiguous source chunks capped at 24,000 characters. Direction uses its own smaller batches and bounded cast context. Read [the progressive design](PROGRESSIVE-ANALYSIS-PLAN.md), [data model](DATA-MODEL.md) and [API guide](API.md) for the current contracts. Complete coverage is separate from current profile refinement and is not a guarantee of perfect interpretation.
 
-The earlier [staged runner](../bardic/staged_analysis.py) remains for compatibility and local chapter drafts. Its approximately 10,000-character/70-passage batches and combined discovery/profile/direction flow explain historical checkpoint records; they are not the current progressive scan settings.
+The earlier staged runner (`staged_analysis.py`) remains for compatibility and local chapter drafts. Its approximately 10,000-character/70-passage batches and combined discovery/profile/direction flow explain historical checkpoint records; they are not the current progressive scan settings.
 
 The local heuristic provider also respects chapter selection and saves chapter results. It makes no model requests and does not perform the cloud profile reconciliation pass.
 

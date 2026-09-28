@@ -50,7 +50,7 @@ def test_cancelled_or_invalid_analysis_leaves_book_unchanged():
     original = deepcopy(book)
     with pytest.raises(AnalysisCancelled):
         analyze_book(book, "local", cancelled=lambda: True)
-    with pytest.raises(ValueError, match="API key"):
+    with pytest.raises(ValueError, match="Only the local draft"):
         analyze_book(book, "gemini")
     assert book == original
 
@@ -62,69 +62,36 @@ def test_source_mismatch_is_rejected_before_analysis():
         analyze_book(book, "local")
 
 
-def fake_cloud(monkeypatch, book, *, provider="gemini", bad_id=False, bad_evidence=False, bad_speaker=False):
-    calls = []
-    profile = {"name": "Mara", "aliases": [], "description": "A quiet speaker.", "direction": "Understated.", "evidence": ['Mara whispered' if not bad_evidence else 'A nonexistent quotation.']}
-
-    def request(client, model, key, prompt, schema, cancelled):
-        calls.append(prompt)
-        if len(calls) <= 2:
-            return {"characters": [profile]}
-        mara_id = "character_" + analysis.hashlib.sha256(b"mara").hexdigest()[:12]
-        segments = [{"id": s["id"], "speaker_id": mara_id if s["kind"] == "dialogue" else "narrator", "confidence": 0.91, "direction": "Softly.", "cues": ["quiet"], "evidence": ["Mara whispered"] if s["kind"] == "dialogue" else []} for s in book["segments"]]
-        if bad_id:
-            segments[0]["id"] = "invented-id"
-        if bad_speaker:
-            segments[0]["speaker_id"] = "invented-character"
-        return {"summary": "Mara makes a quiet request.", "tone": "Quiet tension", "direction": "Understated.", "segments": segments, "scene_starts": []}
-
-    monkeypatch.setattr(analysis, {"gemini": "_request", "openai": "_openai_request", "anthropic": "_anthropic_request"}[provider], request)
-    return calls
+def annotation(book, *, bad_id=False, bad_evidence=False, bad_speaker=False):
+    mara_id = next(c["id"] for c in book["characters"] if c["name"] == "Mara")
+    segments = [{"id": s["id"], "speaker_id": mara_id if s["kind"] == "dialogue" else "narrator", "confidence": 0.91,
+                 "direction": "Softly.", "cues": ["quiet"],
+                 "evidence": (["A nonexistent quotation."] if bad_evidence else ["Mara whispered"]) if s["kind"] == "dialogue" else []}
+                for s in book["segments"]]
+    if bad_id:
+        segments[0]["id"] = "invented-id"
+    if bad_speaker:
+        segments[0]["speaker_id"] = "invented-character"
+    return {"summary": "Mara makes a quiet request.", "tone": "Quiet tension", "direction": "Understated.",
+            "segments": segments, "scene_starts": []}
 
 
-@pytest.mark.parametrize("provider", ["gemini", "openai", "anthropic"])
-def test_cloud_runs_cast_global_profile_and_id_anchored_annotation(monkeypatch, provider):
-    book = parse_book("sample.txt", '“Come here,” Mara whispered.'.encode())
-    calls = fake_cloud(monkeypatch, book, provider=provider)
-    progress = []
-    result = analyze_book(book, provider, api_key="fake-test-key", progress=lambda *args: progress.append(args))
-    assert len(calls) == 3
-    assert result["analysis"]["provider"] == provider
-    assert result["analysis"]["model"] == analysis.DEFAULT_MODELS[provider]
-    assert result["chapters"] == book["chapters"]
-    assert result["segments"][0]["speaker_id"].startswith("character_")
-    assert result["segments"][0]["text"] == book["segments"][0]["text"]
-    assert progress[-1][:2] == (3, 3)
-
-
-@pytest.mark.parametrize("provider", ["gemini", "openai", "anthropic"])
 @pytest.mark.parametrize("kwargs,match", [({"bad_id": True}, "source IDs"), ({"bad_evidence": True}, "evidence passage"), ({"bad_speaker": True}, "unknown speaker")])
-def test_cloud_rejects_invented_ids_or_evidence_without_partial_mutation(monkeypatch, provider, kwargs, match):
-    book = parse_book("sample.txt", '“Come here,” Mara whispered.'.encode())
-    original = deepcopy(book)
-    fake_cloud(monkeypatch, book, provider=provider, **kwargs)
-    with pytest.raises(ValueError, match=match):
-        analyze_book(book, provider, api_key="fake-test-key")
-    assert book == original
-
-
-@pytest.mark.parametrize("provider", ["gemini", "openai", "anthropic"])
-def test_cloud_preserves_reviewed_cast_scene_and_passage_choices(monkeypatch, provider):
+def test_annotations_reject_invented_ids_speakers_or_evidence(kwargs, match):
     book = analyze_book(parse_book("sample.txt", '“Come here,” Mara whispered.'.encode()), "local")
-    mara = next(c for c in book["characters"] if c["name"] == "Mara")
-    mara.update(voice="Leda", system_voice="Samantha", direction="Dry and steady.", description="My reviewed profile", edited=True)
+    with pytest.raises(ValueError, match=match):
+        analysis._apply_annotations(book, book["scenes"][0], book["segments"], annotation(book, **kwargs), {})
+
+
+def test_annotations_keep_reviewed_passages_and_scenes():
+    book = analyze_book(parse_book("sample.txt", '“Come here,” Mara whispered.'.encode()), "local")
     book["segments"][0].update(speaker_id="narrator", direction="An inner thought.", edited=True)
     book["scenes"][0].update(summary="My reviewed scene", tone="Hopeful", direction="Build gently.", edited=True)
     original = deepcopy(book)
-    fake_cloud(monkeypatch, book, provider=provider)
-    result = analyze_book(book, provider, api_key="fake-test-key")
-    reviewed = next(c for c in result["characters"] if c["id"] == mara["id"])
-    for field in ("voice", "system_voice", "direction", "description"):
-        assert reviewed[field] == mara[field]
-    assert result["segments"][0] == book["segments"][0]
+    analysis._apply_annotations(book, book["scenes"][0], book["segments"], annotation(book), {})
+    assert book["segments"][0] == original["segments"][0]
     for field in ("summary", "tone", "direction"):
-        assert result["scenes"][0][field] == book["scenes"][0][field]
-    assert book == original
+        assert book["scenes"][0][field] == original["scenes"][0][field]
 
 
 def test_low_confidence_dialogue_stays_unassigned_and_scene_splits_keep_spans():
@@ -157,38 +124,6 @@ def test_global_profile_improves_automatic_direction_but_preserves_voice_choice(
     analysis._merge_cast(book, [{"name": "Mara", "aliases": [], "description": "A low, measured voice.", "direction": "Measured and dry; clipped consonants.", "evidence": ["Mara said"]}])
     assert mara["direction"] == "Measured and dry; clipped consonants."
     assert mara["voice"] == "Aoede"
-
-
-def test_global_alias_reconciliation_merges_only_unreviewed_draft_duplicates():
-    book = analyze_book(parse_book("aliases.txt", '“Yes,” Mara said.\n\n“No,” Captain Voss replied.'.encode()), "local")
-    profiles = [{"name": "Mara", "aliases": ["Captain Voss"]}]
-    mara = next(c for c in book["characters"] if c["name"] == "Mara")
-    analysis._reconcile_known_aliases(book, profiles)
-    assert len(book["characters"]) == 3
-    assert "Captain Voss" in mara["aliases"]
-    assert all(s["speaker_id"] == mara["id"] for s in book["segments"] if s["kind"] == "dialogue")
-
-    reviewed = analyze_book(parse_book("aliases.txt", '“Yes,” Mara said.\n\n“No,” Captain Voss replied.'.encode()), "local")
-    for character in reviewed["characters"]:
-        character["edited"] = True
-    original = deepcopy(reviewed)
-    analysis._reconcile_known_aliases(reviewed, profiles)
-    assert reviewed == original
-
-
-def test_cloud_cast_cannot_silently_drop_discovered_characters(monkeypatch):
-    book = parse_book("mara.txt", '“Hello,” Mara said.'.encode())
-    original = deepcopy(book)
-    calls = []
-
-    def request(*args):
-        calls.append(1)
-        return {"characters": [{"name": "Mara", "aliases": [], "description": "Unknown vocal traits.", "direction": "Natural.", "evidence": ["Mara said"]}]} if len(calls) == 1 else {"characters": []}
-
-    monkeypatch.setattr(analysis, "_request", request)
-    with pytest.raises(ValueError, match="omitted discovered characters"):
-        analyze_book(book, "gemini", api_key="fake-test-key")
-    assert book == original
 
 
 def test_present_tense_attribution_supports_titles_and_apostrophized_names():

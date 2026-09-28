@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from bardic.analysis import analyze_book
 from bardic.app import create_app
 from bardic.importer import parse_book
 from bardic.pipeline import Registry, Step, default_registry
@@ -292,14 +293,32 @@ def test_outside_changes_are_recorded_as_external_versions(client):
     base = f"/api/books/{book['id']}/analysis-pipeline"
     step_state(client, book['id'], 'directing')
     before = client.get(f"/api/books/{book['id']}").json()
-    response = client.post(f"/api/books/{book['id']}/analyze", json={'provider': 'local', 'phase': 'full'})
-    assert wait_job(client, response.json()['id'])['status'] == 'completed'
+    # A writer the pipeline does not know about: the demo's local heuristic draft, saved directly.
+    runtime = client.app.state.runtime
+    with runtime.store.lock:
+        draft = analyze_book(runtime.store.book(book['id']), 'local')
+        runtime.store.save_book(draft)
+    assert [s['speaker_id'] for s in draft['segments']] != [s['speaker_id'] for s in before['segments']]
     state = step_state(client, book['id'], 'directing')
     assert state['accepted_origins'].get('external', 0) >= 1
     baseline = next(v for v in client.get(f"{base}/steps/directing/versions").json()['items'] if v['origin'] == 'baseline')
     assert client.post(f"{base}/steps/directing/versions/{baseline['id']}/accept", json={}).status_code == 200
     restored = client.get(f"/api/books/{book['id']}").json()
     assert [s['speaker_id'] for s in restored['segments']] == [s['speaker_id'] for s in before['segments']]
+
+
+def test_a_manual_passage_edit_is_a_lock_not_an_outside_change(client):
+    book = import_book(client)
+    step_state(client, book['id'], 'directing')
+    dialogue = next(s for s in book['segments'] if s['kind'] == 'dialogue')
+    speaker = next(c['id'] for c in book['characters'] if c['id'] != dialogue['speaker_id'])
+    response = client.patch(f"/api/books/{book['id']}/segments/{dialogue['id']}", json={'speaker_id': speaker})
+    assert response.status_code == 200, response.text
+    state = step_state(client, book['id'], 'directing')
+    # Accepted versions explain a locked field, so no external version is recorded.
+    assert state['accepted_origins'].get('external', 0) == 0
+    edited = next(s for s in client.get(f"/api/books/{book['id']}").json()['segments'] if s['id'] == dialogue['id'])
+    assert edited['speaker_id'] == speaker and edited['edited_fields'] == ['speaker_id']
 
 
 def test_budget_limit_keeps_completed_scopes_and_resume_reuses_them(client):
@@ -628,3 +647,43 @@ def test_version_states_reflect_decisions_not_coincidence(client):
     assert states[newer['id']] == 'accepted' and states[first['id']] == 'superseded'
     assert states[identical['id']] == 'superseded'  # its content was accepted before; it is not waiting
     assert step_state(client, book['id'], 'census')['pending_versions'] == 0
+
+
+def explorer_cards(client, book_id):
+    response = client.get(f'/api/books/{book_id}/pipeline')
+    assert response.status_code == 200, response.text
+    return response.json()['stages']
+
+
+def test_explorer_step_cards_match_the_overview(client):
+    book = import_book(client)
+    run(client, book['id'], ['discovery', 'profiles', 'directing'])
+    cards = explorer_cards(client, book['id'])
+    overview = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()
+    ids = [card['id'] for card in cards]
+    # Fixed cards around one card per step, in pipeline order.
+    assert ids == ['import', 'series', *[step['id'] for step in overview['steps']], 'voices', 'narration', 'alignment', 'export']
+    by_id = {card['id']: card for card in cards}
+    for step in overview['steps']:
+        card = by_id[step['id']]
+        assert (card['completed'], card['total']) == (step['accepted_scopes'], step['total_scopes'])
+        assert card['stale_count'] == len(step['stale_scopes']) and card['candidate_count'] == step['pending_versions']
+    directing = by_id['directing']
+    assert directing['status'] == 'complete' and directing['completed'] == 2
+    assert directing['dependencies'] == ['discovery', 'profiles', 'quotes'] and directing['artifact_count'] >= 2
+    assert by_id['quotes']['status'] == 'pending' and by_id['structure']['dependencies'] == ['import']
+    assert by_id['voices']['stale_count'] is None and by_id['voices']['candidate_count'] is None
+
+
+def test_explorer_shows_out_of_date_and_waiting_results_without_sending_requests(client):
+    book = import_book(client)
+    run(client, book['id'], ['discovery', 'profiles', 'directing'])
+    run(client, book['id'], ['profiles'], configs={'profiles': {'provider': 'openai', 'model': 'gpt-6-sol'}})
+    directing = next(card for card in explorer_cards(client, book['id']) if card['id'] == 'directing')
+    assert directing['status'] == 'stale' and directing['stale_count'] == 2 and directing['completed'] == 2
+    client.provider.speaker = 'Elio'
+    run(client, book['id'], ['directing'], gates={'directing': 'review'})
+    calls = len(client.provider.calls)
+    directing = next(card for card in explorer_cards(client, book['id']) if card['id'] == 'directing')
+    assert directing['candidate_count'] == 1 and 'wait' in directing['note']
+    assert len(client.provider.calls) == calls, 'Inspecting must not send requests'

@@ -203,24 +203,6 @@ def test_provider_usage_is_saved_before_later_audio_processing_and_network_failu
     assert row['status'] == 'failed' and row['estimated_cost_usd'] is None and row['input_tokens'] is None
 
 
-def test_progressive_validators_and_publication_measure_local_work_and_cache_validation(store, monkeypatch):
-    from test_progressive import FakeProvider, process, story
-    book = story(1)
-    store.save_book(book)
-    provider = FakeProvider(monkeypatch)
-    first = process(book, store, 'scan')
-    calls = len(provider.calls)
-    first_rows = resource_summary(store, book['id'])['operations']
-    validations = [r for r in first_rows if r['stage'] == 'discovery_validation']
-    assert validations and all(r['cpu_seconds'] is not None and r['request_count'] == 0 for r in validations)
-    assert any(r['stage'] == 'publication' and r['cpu_seconds'] is not None for r in first_rows)
-    process(first, store, 'scan')
-    assert len(provider.calls) == calls
-    value = resource_summary(store, book['id'])
-    assert len([r for r in value['operations'] if r['stage'] == 'discovery_validation']) == 2 * len(validations)
-    assert value['totals']['cached_operations'] == len(validations)
-
-
 def test_resource_api_is_read_only_and_paginated(tmp_path):
     from fastapi.testclient import TestClient
     from bardic.app import create_app

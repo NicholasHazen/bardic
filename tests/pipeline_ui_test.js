@@ -49,9 +49,9 @@ function search(container, query, scope = 'book') {
 const book = {id:'book/9', revision:2};
 const snapshot = {schema_version:1, book_id:book.id, stages:[
   {id:'import', label:'Imported source', status:'completed', completed:1,total:1,unit_label:'book',dependencies:[],artifact_count:1},
-  {id:'discovery', label:'Character <scan>', status:'partial', completed:1,total:3,unit_label:'sections',dependencies:['import'],artifact_count:2,note:'Saved evidence & references.'},
+  {id:'discovery', label:'Character <scan>', status:'partial', completed:1,total:3,unit_label:'sections',dependencies:['import'],artifact_count:2,stale_count:0,candidate_count:2,note:'Saved evidence & references.'},
   {id:'voices', label:'Voice assignments', status:'ready', completed:2,total:2,unit_label:'voices',dependencies:['discovery'],artifact_count:1},
-  {id:'directing', label:'Scene direction', status:'provisional', completed:0,total:3,unit_label:'sections',dependencies:['discovery'],artifact_count:1},
+  {id:'directing', label:'Scene direction', status:'stale', completed:3,total:3,unit_label:'eligible sections',dependencies:['discovery'],artifact_count:1,stale_count:1,candidate_count:0},
   {id:'alignment', label:'Word alignment', status:'planned', completed:null,total:null,unit_label:'words',dependencies:['narration'],artifact_count:0}
 ], artifact_kinds:['discovery','profiles'], capabilities:{word_alignment:false}, notes:['Historical calls may be untracked.'],
   jobs:[{id:'run-1',kind:'analyze',phase:'scan',status:'failed',progress:1,total:3,message:'Saved <one> section',error:'Bad <evidence>',created_at:'2026-09-27T16:00:00Z'}],
@@ -118,7 +118,10 @@ function environment(handler = ordinary) {
   assert.ok(container.nodes.stages.innerHTML.includes('Word alignment is planned'));
   assert.ok(container.nodes.stages.innerHTML.includes('data-pipeline-stage="import"'));
   assert.ok(container.nodes.stages.innerHTML.includes('Voice assignments'));
-  assert.ok(container.nodes.stages.innerHTML.includes('Provisional draft'));
+  assert.ok(container.nodes.stages.innerHTML.includes('Out of date'));
+  assert.ok(container.nodes.stages.innerHTML.includes('1 out of date'));
+  assert.ok(container.nodes.stages.innerHTML.includes('2 waiting for review'));
+  assert.ok(!container.nodes.stages.innerHTML.includes('0 out of date'));
   assert.ok(container.nodes.filters.innerHTML.includes('aria-label="Result type"'));
   assert.ok(container.innerHTML.includes('aria-label="Search scope"'));
   assert.ok(container.nodes.artifacts.innerHTML.includes('Saved &lt;output&gt; 0'));

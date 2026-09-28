@@ -105,7 +105,7 @@ class Job(View):
     | kind | started by | extra fields |
     | --- | --- | --- |
     | `render` | enhanced narration | none |
-    | `analyze` | classic analysis | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
+    | `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
     | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at` |
     | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
     | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
@@ -152,7 +152,7 @@ class Job(View):
         None, description='Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); '
                           'null for local analysis.')
     phase: Literal['scan', 'profiles', 'direct', 'full', 'simple_listen', 'chapter_listen', 'voice_preview', 'performance'] | None = Field(
-        None, description='`analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. '
+        None, description='`analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. '
                           'Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, '
                           '`performance`.')
     mode: Literal['serial', 'parallel', 'simple', 'cast'] | None = Field(

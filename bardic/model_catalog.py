@@ -60,7 +60,7 @@ _CATALOG = {
 }
 ANALYSIS_CATALOG = {provider: [item["id"] for item in models] for provider, models in _CATALOG.items()}
 # Self-hosted analysis providers (see local_services). Kept out of ANALYSIS_CATALOG,
-# which lists the cloud accounts that Settings, account checks and the phase controls use.
+# which lists the cloud accounts that Settings and account checks use.
 SELF_HOSTED = frozenset({"local_llm", "booknlp", "novel_analyzer"})
 
 

@@ -13,8 +13,8 @@ Each HTTP attempt is still reserved and recorded by the pipeline runner.
 
 The pipeline does not yet carry knowledge between volumes: accepted results in
 one book are not read by another. Reading order is kept so that the only
-cross-book input that exists today (confirmed-link observations the older phase
-engine retained, read by the profiles step) comes strictly from earlier volumes.
+cross-book input that exists today (confirmed-link observations the removed
+Classic engine retained, read by the profiles step) comes strictly from earlier volumes.
 """
 from __future__ import annotations
 

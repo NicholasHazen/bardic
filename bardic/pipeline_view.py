@@ -83,64 +83,59 @@ def story_map(store, book):
             'note': 'Scene characters are attributed speakers, not verified physical presence. Mentions and profile evidence remain separate source references. Scene boundaries may be local drafts. Offsets are Python Unicode character offsets into the identified chapter source.'}
 
 
-def pipeline(store, book, valid_audio):
-    from .analysis import PROVIDER_LABELS
-    from .preprocessing import eligible_chapters
-    # The legacy phase readout behind GET /pipeline; removed with the phase engine (docs/CLASSIC-REMOVAL.md).
-    from .legacy_phase import LegacyProcessingStore, coverage
-    from .progressive import profile_status, checkpoint_for, direction_baseline, direction_specs, unit_key
+UNIT_LABELS = {'book': 'book result', 'chapter': 'sections', 'character': 'profiles'}
+
+
+def pipeline(store, book, valid_audio, registry):
+    """The Details explorer: step-pipeline stage cards plus the shared request history.
+
+    Step cards count accepted, out-of-date and candidate results from the step
+    pipeline's own tables, the same numbers the Analyze tab shows. Artifact
+    counts are retained versions per stage, including older history.
+    """
+    from .pipeline.api import step_states
+    from .pipeline.repository import ACTIVE, PipelineRepository
     repository = prepare(store, book['id'])
-    knowledge = coverage(book, store)
-    profiles = profile_status(book, store, discovered=knowledge)
-    processing = LegacyProcessingStore(store)
+    processing = ProcessingStore(store)
     counts = repository.counts(book['id'])
-    checkpoint = store.analysis_status(book['id']) or {}
     jobs = store.jobs(book['id'])
-    active = next((j for j in jobs if j['status'] in {'running', 'queued'}), None)
-    eligible = knowledge['eligible_chapters']
-    selected = eligible_chapters(book)
-    selected_ids = {c['id'] for c in selected}
-    historical_direction = sum(c.get('directing_complete') is True and c['id'] in selected_ids
-                               for c in checkpoint.get('chapters', []))
-    directed = 0
-    if checkpoint.get('provider') in PROVIDER_LABELS:
-        work = direction_baseline(book, checkpoint_for(book, store), selected)
-        expected = defaultdict(list)
-        for spec in direction_specs(work, selected):
-            expected[spec['chapter_id']].append(unit_key(spec, checkpoint['provider'], checkpoint.get('model')))
-        directed = sum(bool(keys) and all(processing.unit(book['id'], key) is not None for key in keys)
-                       for keys in expected.values())
-    audio = sum(valid_audio(book, s) for s in book['segments'])
+    rendering = next((j for j in jobs if j['status'] in ACTIVE and j['kind'] == 'render'), None)
     stages = []
 
-    def stage(identifier, label, completed, total, unit, dependencies, note, status=None):
+    def stage(identifier, label, completed, total, unit, dependencies, note, status=None, stale=None, candidates=None):
         state = status or ('complete' if total and completed >= total else 'partial' if completed else 'pending')
-        if active and ((active['kind'] == 'render' and identifier == 'narration') or
-                       (active['kind'] == 'analyze' and checkpoint.get('stage') == identifier)):
-            state = active['status']
-        elif not active and checkpoint.get('stage') == identifier and checkpoint.get('status') in {'failed', 'interrupted', 'cancelled', 'budget_limited'}:
-            state = checkpoint['status']
         stages.append({'id': identifier, 'label': label, 'status': state, 'completed': completed, 'total': total,
-                       'unit_label': unit, 'dependencies': dependencies, 'artifact_count': counts['stages'].get(identifier, 0), 'note': note})
+                       'unit_label': unit, 'dependencies': dependencies, 'artifact_count': counts['stages'].get(identifier, 0),
+                       'stale_count': stale, 'candidate_count': candidates, 'note': note})
 
-    stage('import', 'Source import', len(book['chapters']), len(book['chapters']), 'sections', [], 'Original source text and stable source locations are retained.')
-    stage('structure', 'Book structure', len(book['chapters']), len(book['chapters']), 'sections', ['import'], 'Names, order, section types and logical headings are recorded. They remain reviewable.')
-    stage('census', 'Local census', knowledge['local']['local_chapters_scanned'], len(book['chapters']), 'sections', ['structure'], 'Free rules-based scan; frequency guides effort but does not prove identity or presence.')
+    stage('import', 'Source import', len(book['chapters']), len(book['chapters']), 'sections', [],
+          'Original source text and stable source locations are retained.')
     member = SeriesRepository(store).membership(book['id'])
     stage('series', 'Series memory', None, None, 'identities', ['import'],
           'Confirmed links and earlier-volume observations supply optional profile context. Each book retains its own evidence.',
           status='available' if member else 'not_started')
-    stage('discovery', 'Character discovery', knowledge['semantic_chapters_complete'], eligible, 'eligible sections', ['census'], 'Validated source coverage across the whole book. Completed coverage is not a guarantee of perfect interpretation.')
-    stage('profiles', 'Character profiles', profiles['profiles_current'], profiles['profiles_total'], 'profiles', ['discovery', 'series'],
-          'Profiles remain provisional until the whole book is discovered.' if profiles['profiles_provisional'] else 'Current or manually reviewed profiles; earlier-book evidence is used only through confirmed series identities.',
-          status='provisional' if profiles['profiles_provisional'] and profiles['profiles_current'] else None)
-    stage('directing', 'Scene and performance map', directed, eligible, 'eligible sections', ['profiles'],
-          f'Counts semantic direction reusable with current request inputs. {historical_direction} sections were marked directed in the saved checkpoint; earlier and local draft maps remain available.')
+    for item in step_states(store, PipelineRepository(store), registry, book):
+        step = registry.get(item['id'])
+        latest = item['latest'] or {}
+        stale = len(item['stale_scopes'])
+        status = latest.get('status') if latest.get('status') in ACTIVE else 'stale' if stale else None
+        unit = 'eligible sections' if step.chapter_scoped else UNIT_LABELS.get(step.scope, 'results')
+        waiting = item['pending_versions']
+        note = step.summary + (f" {waiting} {'versions wait' if waiting != 1 else 'version waits'} for review in Analyze." if waiting else '')
+        stage(step.id, step.label, item['accepted_scopes'], item['total_scopes'], unit, list(step.inputs) or ['import'],
+              note, status=status, stale=stale, candidates=waiting)
     cast = [c for c in book['characters'] if c['id'] != 'unassigned']
-    stage('voices', 'Voice assignments', sum(bool(c.get('voices') or c.get('voice') or c.get('system_voice')) for c in cast), len(cast), 'voices', ['profiles'], 'Saved choices may be defaults. Review them for the selected narration provider.')
-    stage('narration', 'Audio takes', audio, len(book['segments']), 'passages', ['directing', 'voices'], 'Counts selected takes valid for current performance settings. Earlier takes remain stored.')
-    stage('alignment', 'Word alignment', 0, None, 'words', ['narration'], 'Not implemented. Current read-along timing follows passage boundaries.', status='planned')
-    stage('export', 'Reusable analysis export', None, None, 'bundles', ['import'], 'Download source, graph, profiles, observations, version history and provenance without generating audio. Audio files use the separate audiobook export.', status='ready')
+    stage('voices', 'Voice assignments', sum(bool(c.get('voices') or c.get('voice') or c.get('system_voice')) for c in cast), len(cast),
+          'voices', ['profiles'], 'Saved choices may be defaults. Review them for the selected narration provider.')
+    audio = sum(valid_audio(book, s) for s in book['segments'])
+    stage('narration', 'Audio takes', audio, len(book['segments']), 'passages', ['directing', 'voices'],
+          'Counts selected takes valid for current performance settings. Earlier takes remain stored.',
+          status=rendering['status'] if rendering else None)
+    stage('alignment', 'Word alignment', 0, None, 'words', ['narration'],
+          'Not implemented. Current read-along timing follows passage boundaries.', status='planned')
+    stage('export', 'Reusable analysis export', None, None, 'bundles', ['import'],
+          'Download source, graph, profiles, observations, version history and provenance without generating audio. '
+          'Audio files use the separate audiobook export.', status='ready')
     events = processing.events(book['id'], 100)
     # Look up validation for displayed attempts across all history, not just the
     # event preview. HTTP success alone never means an output passed validation.
@@ -158,15 +153,16 @@ def pipeline(store, book, valid_audio):
     for attempt in attempts:
         item = {k: attempt[k] for k in attempt_fields if k in attempt}
         item['validation_state'] = validation.get(attempt['id'], 'unknown')
-        if item.get('status') == 'reserved' and not any(j['id'] == item.get('run_id') and j['status'] in {'running', 'queued'} for j in jobs):
+        if item.get('status') == 'reserved' and not any(j['id'] == item.get('run_id') and j['status'] in ACTIVE for j in jobs):
             item['status'] = 'interrupted_unknown'
         public_attempts.append(item)
     job_fields = ('id', 'kind', 'status', 'phase', 'progress', 'total', 'message', 'error', 'created_at', 'updated_at')
     return {'schema_version': 1, 'book_id': book['id'], 'stages': stages,
             'jobs': [{k: j[k] for k in job_fields if k in j} for j in jobs],
-            'usage': knowledge['usage'], 'attempts': public_attempts, 'events': events,
+            'usage': processing.usage(book['id']), 'attempts': public_attempts, 'events': events,
             'capabilities': {'word_alignment': False}, 'artifact_kinds': counts['kinds'], 'artifact_counts': counts,
-            'notes': ['Historical records imported from older versions may lack exact request provenance. Lost versions cannot be reconstructed.',
+            'notes': ['Step counts are accepted results. Run, review and accept steps in Analyze.',
+                      'Historical records imported from older versions may lack exact request provenance. Lost versions cannot be reconstructed.',
                       'These are stage-specific counts, not a single percentage for an unknown amount of future work.',
                       'Dependency cards describe the pipeline. The artifact browser records actual retained input dependencies.']}
 
