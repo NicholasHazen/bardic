@@ -68,9 +68,11 @@ class ResourceLedger:
         if _OPERATION.get() is not None:
             raise ValueError('Resource operations must measure separate, non-nested steps.')
         local = provider in {'local', 'system'}
+        # A self-hosted server has no per-request charge, but it is still a request.
+        self_hosted = provider == 'breeze' and not cached
         metrics = {'request_count': 0 if local or cached else None,
-                   'estimated_cost_usd': 0. if local or cached else None,
-                   'cost_basis': 'no_provider_request' if local or cached else 'unknown'}
+                   'estimated_cost_usd': 0. if local or cached or self_hosted else None,
+                   'cost_basis': 'no_provider_request' if local or cached else 'self_hosted' if self_hosted else 'unknown'}
         row = {'id': uuid4().hex, 'book_id': book_id, 'run_id': run_id, 'stage': stage,
                'unit_key': unit_key, 'chapter_id': chapter_id, 'provider': provider, 'model': model,
                'kind': kind, 'cached': bool(cached), 'status': 'running', 'process_id': PROCESS_ID, 'created_at': now(), **_metrics(metrics)}

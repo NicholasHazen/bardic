@@ -218,7 +218,7 @@ def _merge_cast(book, candidates):
             while any(c["id"] == identifier for c in book["characters"]):
                 identifier = "character_" + hashlib.sha256(key.encode()).hexdigest()[:12] + f"_{suffix}"
                 suffix += 1
-            character = {"id": identifier, "name": candidate["name"], "aliases": [], "description": candidate.get("description", ""), "evidence": [], "voice": VOICES[index % len(VOICES)], "system_voice": "", "direction": candidate.get("direction", "Natural dialogue. Maintain a consistent voice; follow each passage's direction.")}
+            character = {"id": identifier, "name": candidate["name"], "aliases": [], "description": candidate.get("description", ""), "evidence": [], "voices": {"gemini": {"id": VOICES[index % len(VOICES)]}}, "direction": candidate.get("direction", "Natural dialogue. Maintain a consistent voice; follow each passage's direction.")}
             book["characters"].append(character)
         if character["id"] in {"narrator", "unassigned"}:
             continue

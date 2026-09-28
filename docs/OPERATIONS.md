@@ -54,6 +54,8 @@ For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` 
 | `GOOGLE_API_KEY` | Fallback Gemini alias if `GEMINI_API_KEY` is unset or empty. |
 | `OPENAI_API_KEY` | OpenAI text-analysis credential. |
 | `ANTHROPIC_API_KEY` | Anthropic text-analysis credential. |
+| `BREEZE_TTS_URL` | Breeze narration server root, for example `http://host.local:7860`. Used when no URL has been saved in Settings. |
+| `BREEZE_API_KEY` | Optional bearer key, only if the Breeze server requires one. |
 | `BARDIC_DATA_DIR` | Library root; defaults to `.bardic` relative to the launch working directory, with existing `.spintails` fallback described above. Prefer an absolute path for alternate libraries. |
 | `BARDIC_PORT` | Local port for `python -m bardic`; defaults to `8765`. |
 
@@ -62,6 +64,8 @@ Environment values already present in the launching shell win over the same `.en
 Restart the server after changing `.env`. A browser refresh does not reload credentials. If a new file value appears ignored, check whether the terminal or launcher already supplies that variable; remove the unwanted inherited value in that launcher and restart. Diagnose variable names/configuration status without printing credentials.
 
 Keys entered in **Settings** replace the current server session's in-memory value only. They are not written to `.env`, SQLite or browser storage. Clearing a session key does not erase the file/environment value; it returns after restart. Provider/model preferences are saved in SQLite. A queued job captures its configuration so changing Settings does not reroute a request already scheduled.
+
+The Breeze server URL entered in **Settings → Breeze** is saved in SQLite and takes precedence over `BREEZE_TTS_URL`; clearing it falls back to the environment value after restart. The optional Breeze key follows the key rules above (memory only). **Check connection** reads the server's health, voice list and each cloned voice's reference clip; it never generates audio. The result, including pinned voice revisions, is saved so existing Breeze audio stays playable while the server is off. Only `cloned` voices can narrate; create or clone voices with the Breeze server's own tools. Breeze narration sends passage text and performance notes to that server over the local network, in plain HTTP unless the URL uses `https`.
 
 `.env`, `.bardic/` and legacy `.spintails/` directories are excluded by [`.gitignore`](../.gitignore). Git is for source and documentation, not library backup. If using another data directory inside the checkout, add its precise path to the ignore rules before staging files, or keep that directory outside the checkout. Exports and screenshots can contain private book content even when they contain no API keys.
 
@@ -77,7 +81,7 @@ A successful text check establishes that one request worked at that time. It doe
 
 | Need | Workflow | What can call a provider |
 | --- | --- | --- |
-| Listen immediately | Read & listen → simple listening, choose one narrator, start playback. Optionally prepare the rest of the chapter first. | Gemini requests uncached passages serially for warmup/lookahead or the selected chapter preparation. Device voices stay local. |
+| Listen immediately | Read & listen → simple listening, choose one narrator, start playback. Optionally prepare the rest of the chapter first. | Gemini requests uncached passages serially for warmup/lookahead or the selected chapter preparation. Breeze sends uncached passages to the configured server the same way. Device voices stay local. |
 | Build a character performance | Studio → free census → cheap discovery → profiles → chapter direction → review voices/notes → render a short scene. | Selected cloud analysis stages and Gemini narration. |
 | Process supplied series volumes | Manage books & series → membership/order/placeholders → confirm character links → preview a series run. | Explicit series analysis; at most two discovery books concurrently, later phases in reading order. |
 | Inspect existing work | Pipeline explorer, artifact inspection, source search, resource dashboard, analysis export. | None of these inspection actions generates model output. Local indices/artifact projections may be prepared as needed. |

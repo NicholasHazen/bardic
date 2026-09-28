@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import TTS_MODELS, create_app
-from bardic.audio import render_fingerprint
+from bardic.audio import render_fingerprint, voice_id
 from bardic.store import Store
 
 
@@ -255,7 +255,7 @@ def test_gemini_narration_uses_its_own_key_and_model_with_anthropic_analysis_sel
             wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
             wav.writeframes(b"\x10\0" * 2400)
         return {"fingerprint": render_fingerprint(segment, character, scene, provider, model),
-                "duration": .1, "provider": provider, "model": model, "voice": character["voice"]}
+                "duration": .1, "provider": provider, "model": model, "voice": voice_id(character, provider)}
 
     monkeypatch.setattr("bardic.app.synthesize", synthesize)
     response = client.post("/api/settings", json={

@@ -217,7 +217,7 @@ def test_separate_chapter_runs_keep_earlier_annotations_and_accumulate_cast(tmp_
     cast = {c["name"]: c for c in second["characters"]}
     assert {"Mara", "Captain Voss"} <= cast.keys()
     assert cast["Mara"]["id"] == mara["id"]
-    assert cast["Mara"]["voice"] == mara["voice"]
+    assert cast["Mara"]["voices"] == mara["voices"]
     assert {r["chapter_id"] for r in store.character_references(story["id"]) if r["kind"] == "profile_evidence"} == {first_id, second_id}
     assert all(c["chapter_id"] != first_id for c in provider.calls[3:] if c["stage"] != "profiles")
 

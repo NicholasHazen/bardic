@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
-from bardic.audio import DEFAULT_TTS_MODEL, render_fingerprint
+from bardic.audio import DEFAULT_TTS_MODEL, render_fingerprint, voice_id
 from bardic.resources import publish_metrics
 from test_app import import_text, wait_job
 from test_audio import wav_bytes
@@ -36,7 +36,7 @@ def renderer(monkeypatch):
                             cached_input_tokens=0, estimated_cost_usd=.002, cost_basis='offline_test_usage')
         path.write_bytes(wav_bytes(frames=2400+len(calls)))
         return {'fingerprint':render_fingerprint(segment,character,scene,provider,model),
-                'duration':.1,'provider':provider,'model':model,'voice':character.get('system_voice') if provider=='system' else character['voice']}
+                'duration':.1,'provider':provider,'model':model,'voice':voice_id(character, provider)}
     monkeypatch.setattr('bardic.app.synthesize', synthesize)
     return calls, synthesize
 

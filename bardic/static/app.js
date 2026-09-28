@@ -66,6 +66,7 @@ function fillSettings() {
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
   $('#tts-model').value = state.status?.tts_model || '';
   fillNarrationLimits();
+  fillBreezeSettings();
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
@@ -89,6 +90,29 @@ function narrationLimitValues() {
   const whole = id => Number($(id).value);
   return {tts_limits:{[$('#tts-model').value.trim()]:{rpm:whole('#tts-rpm'),tpm:whole('#tts-tpm'),rpd:whole('#tts-rpd')}},
     listen_chunking:{ramp_seconds:ramp,target_seconds:whole('#tts-target'),concurrency:whole('#tts-concurrency')}};
+}
+// Breeze is a self-hosted narration server on the local network. Checking it
+// reads health and the voice library only; it never generates audio.
+const breezeStates = {unconfigured:'Not set up', unchecked:'Not checked', ready:'Connected', loading:'Model loading', unreachable:'Unreachable', error:'Error'};
+function fillBreezeSettings() {
+  $('#breeze-url').value = state.status?.breeze?.base_url || '';
+  $('#breeze-api-key').value = '';
+  renderBreezeStatus();
+}
+function renderBreezeStatus() {
+  const breeze = state.status?.breeze || {state:'unconfigured'};
+  const chip = $('#breeze-status');
+  chip.textContent = state.breezeChecking ? 'Checking…' : breezeStates[breeze.state] || breeze.state || 'Not set up';
+  chip.classList?.toggle('connected', breeze.state === 'ready' && !state.breezeChecking);
+  const voices = breeze.voices || [];
+  const usable = voices.filter(voice => voice.usable !== false).length;
+  const parts = [breeze.message || (breeze.configured ? 'Check the connection to load voices.' : 'Enter your Breeze server URL, then check the connection.')];
+  if (voices.length) parts.push(`${usable} of ${voices.length} voice${voices.length === 1 ? '' : 's'} can narrate`);
+  if (breeze.has_api_key) parts.push('server key set');
+  if (breeze.checked_at) parts.push(`checked ${new Date(breeze.checked_at).toLocaleString()}`);
+  $('#breeze-check-status').textContent = parts.join(' · ');
+  $('#breeze-voices').innerHTML = voices.map(voice => `<li${voice.usable === false ? ' class="unusable"' : ''}><strong>${escapeHTML(voice.name || voice.id)}</strong> <code>${escapeHTML(voice.id)}</code>${voice.description ? ` · ${escapeHTML(voice.description)}` : ''}${voice.usable === false ? ` · ${escapeHTML(voice.reason || 'Cannot narrate')}` : ''}</li>`).join('');
+  $('#breeze-check').disabled = Boolean(state.breezeChecking || state.settingsBusy);
 }
 function modelPicker(role, provider) { return providerField(`${role}-model`, provider); }
 function modelCustom(role, provider) { return $(`#${modelPicker(role, provider).id}-custom`); }
@@ -154,7 +178,7 @@ async function refreshModels(provider) {
   } catch (error) { showInlineError('#settings-error', error.message); }
   finally { state.settingsBusy = false; button.textContent = 'Refresh models'; updateSettingsControls(); }
 }
-function clearKeyInputs() { cloudProviders.forEach(provider => { providerField('api-key', provider).value = ''; }); }
+function clearKeyInputs() { cloudProviders.forEach(provider => { providerField('api-key', provider).value = ''; }); $('#breeze-api-key').value = ''; }
 const accountCheckLabels = {unchecked:'Not checked', checking:'Checking…', ready:'Request succeeded', missing_key:'No key configured', billing_blocked:'Billing blocked', rate_limited:'Rate limited', invalid_key:'Key rejected', access_denied:'Access denied', model_unavailable:'Model unavailable', network_error:'Connection failed', provider_error:'Provider error', inconclusive:'Could not confirm access'};
 function dashboardLink(url, label) {
   try {
@@ -188,6 +212,35 @@ function updateSettingsControls() {
     $(`[data-check-account="${provider}"]`).textContent = state.accountChecksPending.has(provider) ? 'Checking…' : 'Check API';
   });
   $('#check-all-accounts').textContent = state.accountChecksPending.size ? 'Checking accounts…' : 'Check all accounts';
+  $('#clear-breeze-key').disabled = state.settingsBusy || !state.status?.breeze?.has_api_key;
+  $('#breeze-check').disabled = state.settingsBusy || Boolean(state.breezeChecking);
+}
+// Checking Breeze reads the server's health and voice library (free, no audio).
+// From Settings it first saves a changed URL or a newly entered key.
+async function refreshBreeze({save = false} = {}) {
+  if (state.breezeChecking || (save && state.settingsBusy)) return;
+  state.breezeChecking = true;
+  if (save) { state.settingsBusy = true; $('#settings-error').hidden = true; updateSettingsControls(); }
+  renderBreezeStatus();
+  try {
+    if (save) {
+      const pending = {}, url = $('#breeze-url').value.trim(), key = $('#breeze-api-key').value.trim();
+      if (url !== (state.status?.breeze?.base_url || '')) pending.breeze_url = url;
+      if (key) pending.breeze_api_key = key;
+      if (Object.keys(pending).length) { await post('/api/settings', pending); $('#breeze-api-key').value = ''; }
+    }
+    await post('/api/narration/breeze/refresh');
+    await refreshStatus({syncSettings:false});
+    if (save) $('#breeze-url').value = state.status?.breeze?.base_url || '';
+    if (state.book) renderReader();
+  } catch (error) {
+    if (save) showInlineError('#settings-error', error.message); else toast(error.message, true);
+  } finally {
+    state.breezeChecking = false;
+    if (save) state.settingsBusy = false;
+    updateSettingsControls();
+    renderBreezeStatus();
+  }
 }
 async function checkAccounts(providers) {
   if (state.settingsBusy) return;
@@ -292,25 +345,42 @@ function startVoicePreview(config, label) {
   if (!state.book) return;
   void window.BardicVoicePreview?.start(state.book, config, label);
 }
+// One cast voice per narration provider. Characters carry a normalized
+// `voices` map; older records may still only have the legacy fields.
+const NARRATION_LABELS = {system:'Device', gemini:'Gemini', breeze:'Breeze'};
+const VOICE_FIELDS = {gemini:'voice', system:'system_voice', breeze:'breeze_voice'};
+// Only Gemini offers a model choice; Breeze resolves its model on the server.
+const narrationModel = provider => provider === 'gemini' ? state.status?.tts_model : provider === 'system' ? 'macos-say' : null;
+const chunkedProvider = provider => {
+  const capabilities = state.status?.narration_providers?.[provider]?.capabilities;
+  return capabilities ? capabilities.chunked_listening === true : provider === 'gemini';
+};
+function characterVoice(character, provider) {
+  const chosen = character?.voices?.[provider]?.id;
+  if (typeof chosen === 'string') return chosen;
+  return provider === 'gemini' ? character?.voice || '' : provider === 'system' ? character?.system_voice || '' : '';
+}
 function auditionCharacter(form, provider) {
   const character = characterById(form.dataset.characterForm);
   if (!character) return;
+  const voice = form.elements[VOICE_FIELDS[provider] || 'voice']?.value || '';
+  if (provider === 'breeze' && !voice) { toast(`Choose a Breeze voice for ${character.name} first.`, true); return; }
   const chosen = segmentById(state.segmentId);
   const passage = chosen?.speaker_id === character.id ? chosen :
     chapterSegments().find(item => item.speaker_id === character.id);
   startVoicePreview({provider, character_id:character.id,
     ...(passage ? {segment_id:passage.id} : {}),
-    voice:form.elements[provider === 'system' ? 'system_voice' : 'voice'].value,
-    model:provider === 'system' ? 'macos-say' : state.status.tts_model,
-    direction:form.elements.direction.value}, `${character.name} · ${provider === 'system' ? 'Device' : 'Gemini'}`);
+    voice, model:narrationModel(provider),
+    direction:form.elements.direction.value}, `${character.name} · ${NARRATION_LABELS[provider] || provider}`);
 }
 function auditionPassage(form) {
   const character = characterById(form.elements.speaker_id.value);
   if (!character) return;
   const provider = $('#render-provider').value;
+  const voice = characterVoice(character, provider) || (provider === 'gemini' ? 'Kore' : '');
+  if (provider === 'breeze' && !voice) { toast(`Choose a Breeze voice for ${character.name} in Cast & voices first.`, true); return; }
   startVoicePreview({provider, character_id:character.id, segment_id:form.dataset.segmentForm,
-    voice:provider === 'system' ? character.system_voice || '' : character.voice || 'Kore',
-    model:provider === 'system' ? 'macos-say' : state.status.tts_model,
+    voice, model:narrationModel(provider),
     segment_direction:form.elements.direction.value}, `${character.name} · Passage example`);
 }
 function setupVoicePreviews() {
@@ -443,7 +513,12 @@ function updateStatusUI({syncSettings = true} = {}) {
   const providers = state.status.providers || [];
   const system = providers.find(p => p.id === 'system');
   $('#render-provider option[value="system"]').textContent = system?.available === false ? 'Device voices · unavailable' : 'Device voices · local';
+  const breeze = providers.find(p => p.id === 'breeze');
+  const breezeOption = $('#render-provider option[value="breeze"]');
+  if (breezeOption) breezeOption.textContent = breeze?.available ? 'Breeze · local network' : 'Breeze · not connected';
   if (system?.available === false && !$('#render-provider').dataset.chosen) $('#render-provider').value = 'gemini';
+  renderBreezeStatus();
+  updateBreezeSelects();
   updateProviderHint();
   updateAnalysisHint();
 }
@@ -532,6 +607,7 @@ function renderReader() {
     onRateChange:setPlaybackRate,
     beforeChapterPrepare:() => window.BardicVoicePreview?.waitForStopped?.(),
     onPreview:config => startVoicePreview(config, `${config.voice || 'Default device voice'} · Narrator example`),
+    onRefreshBreeze:() => refreshBreeze(),
     onJob:job => {
       if (!job || job.book_id !== state.book?.id) return;
       const index = state.jobs.findIndex(j => j.id === job.id);
@@ -579,7 +655,7 @@ function renderReader() {
   $('#previous-chapter').disabled = chapterIndex === 0;
   $('#next-chapter').disabled = chapterIndex === state.book.chapters.length - 1;
   const ready = segments.filter(listeningReady).length;
-  const chunkedListening = simpleActive() && window.BardicListen?.getSelection?.(state.book)?.provider === 'gemini';
+  const chunkedListening = simpleActive() && chunkedProvider(window.BardicListen?.getSelection?.(state.book)?.provider);
   $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
   renderPassageDetail();
 }
@@ -596,6 +672,21 @@ function systemVoiceOptions(selected) {
   let html = '<option value="">Device default</option>';
   if (selected && !voices.some(v => v.id === selected || v.name === selected)) html += `<option selected value="${escapeHTML(selected)}">${escapeHTML(selected)}</option>`;
   return html + voices.map(voice => { const id = voice.id || voice.name; return `<option value="${escapeHTML(id)}" ${id === selected || voice.name === selected ? 'selected' : ''}>${escapeHTML(voice.name || id)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`; }).join('');
+}
+// Only cloned voices narrate consistently; others are listed but disabled. A
+// pinned voice missing from the latest server list stays visible and selected.
+function breezeVoiceOptions(selected) {
+  const voices = state.status?.breeze?.voices || [];
+  let html = `<option value="" ${selected ? '' : 'selected'}>No Breeze voice</option>`;
+  if (selected && !voices.some(voice => voice.id === selected)) html += `<option selected value="${escapeHTML(selected)}">${escapeHTML(selected)} (not on server)</option>`;
+  return html + voices.map(voice => {
+    const unusable = voice.usable === false && voice.id !== selected;
+    return `<option value="${escapeHTML(voice.id)}" ${voice.id === selected ? 'selected' : ''} ${unusable ? 'disabled' : ''}>${escapeHTML(voice.name || voice.id)}${unusable ? ` · ${escapeHTML(voice.reason || 'cannot narrate')}` : ''}</option>`;
+  }).join('');
+}
+// Refresh Breeze choices in place so unsaved cast edits survive a voice-list update.
+function updateBreezeSelects() {
+  $$('#cast-grid select[name="breeze_voice"]').forEach(select => { select.innerHTML = breezeVoiceOptions(select.value); });
 }
 function referenceContent(character) {
   const entry = state.referenceCache.get(character.id);
@@ -671,7 +762,7 @@ function renderCast() {
   const provider = book.analysis?.provider || 'local';
   const attribution = provider === 'local' ? 'Local draft' : `${analysisLabels[provider] || provider} analysis${book.analysis?.model ? ` · ${book.analysis.model}` : ''}`;
   $('#analysis-note').textContent = `${attribution} · ${book.analysis?.status === 'reviewed' ? 'Edited by you.' : 'Review the cast and speaker assignments before narration.'}${noteText ? ` ${noteText}` : ''}`;
-  $('#cast-grid').innerHTML = book.characters.map(character => `<form class="cast-card" data-character-form="${escapeHTML(character.id)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="voice-fields"><div><label class="field-label" for="voice-${escapeHTML(character.id)}">Gemini voice</label><input id="voice-${escapeHTML(character.id)}" name="voice" list="gemini-voices" value="${escapeHTML(character.voice || 'Kore')}" placeholder="Kore"><button type="button" class="button subtle voice-example" data-preview-character="gemini" aria-label="Hear ${escapeHTML(character.name)} with Gemini voice">Hear example</button></div><div><label class="field-label" for="system-${escapeHTML(character.id)}">Device voice</label><select id="system-${escapeHTML(character.id)}" name="system_voice">${systemVoiceOptions(character.system_voice)}</select><button type="button" class="button subtle voice-example" data-preview-character="system" aria-label="Hear ${escapeHTML(character.name)} with device voice">Hear example</button></div></div><p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved voice and direction are included. Gemini examples may incur charges.</p><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save voice ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
+  $('#cast-grid').innerHTML = book.characters.map(character => `<form class="cast-card" data-character-form="${escapeHTML(character.id)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="voice-fields"><div><label class="field-label" for="voice-${escapeHTML(character.id)}">Gemini voice</label><input id="voice-${escapeHTML(character.id)}" name="voice" list="gemini-voices" value="${escapeHTML(characterVoice(character, 'gemini') || 'Kore')}" placeholder="Kore"><button type="button" class="button subtle voice-example" data-preview-character="gemini" aria-label="Hear ${escapeHTML(character.name)} with Gemini voice">Hear example</button></div><div><label class="field-label" for="system-${escapeHTML(character.id)}">Device voice</label><select id="system-${escapeHTML(character.id)}" name="system_voice">${systemVoiceOptions(characterVoice(character, 'system'))}</select><button type="button" class="button subtle voice-example" data-preview-character="system" aria-label="Hear ${escapeHTML(character.name)} with device voice">Hear example</button></div><div><label class="field-label" for="breeze-${escapeHTML(character.id)}">Breeze voice</label><select id="breeze-${escapeHTML(character.id)}" name="breeze_voice">${breezeVoiceOptions(characterVoice(character, 'breeze'))}</select><button type="button" class="button subtle voice-example" data-preview-character="breeze" aria-label="Hear ${escapeHTML(character.name)} with Breeze voice">Hear example</button></div></div><p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved voice and direction are included. Gemini examples may incur charges; Breeze examples run on your server.${state.status?.breeze?.state === 'ready' ? '' : ' Breeze voices appear after you check the connection in Settings.'}</p><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save voice ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
 }
 function speakerOptions(selected) {
   return state.book.characters.map(character => `<option value="${escapeHTML(character.id)}" ${character.id === selected ? 'selected' : ''}>${escapeHTML(character.name)}</option>`).join('');
@@ -977,7 +1068,10 @@ function updatePlayer() {
   $('#next-segment').disabled = ordered.findIndex(s => s.id === state.segmentId) >= ordered.length - 1;
 }
 function updateProviderHint() {
-  $('#render-description').textContent = $('#render-provider').value === 'gemini' ? 'Expressive cloud narration. Sends text to Google; usage may be billed.' : 'Private, on-device narration. Performance notes are saved for Gemini.';
+  const provider = $('#render-provider').value;
+  $('#render-description').textContent = provider === 'gemini' ? 'Expressive cloud narration. Sends text to Google; usage may be billed.'
+    : provider === 'breeze' ? 'Directed narration on your Breeze server. Sends passage text and performance notes over your local network; no per-request charge. Retake picks a new seed.'
+    : 'Private, on-device narration. Performance notes are used by Gemini and Breeze.';
 }
 function updateAnalysisHint() {
   const provider = $('#analysis-provider').value;
@@ -1062,7 +1156,9 @@ async function startJob(kind, scope = {}) {
   if (!state.book || busyJob()) return;
   const provider = $(kind === 'analyze' ? '#analysis-provider' : '#render-provider').value;
   if (cloudProviders.includes(provider) && !providerHasKey(provider)) { openSettings(provider); toast(`Add ${provider === 'gemini' ? 'a' : 'an'} ${analysisLabels[provider]} API key to use ${kind === 'analyze' ? 'story analysis' : 'narration'}.`); return; }
-  if (provider === 'system' && state.status?.providers?.find(p => p.id === 'system')?.available === false) { toast('Device narration is unavailable on this server. Connect Gemini in settings.', true); return; }
+  if (provider === 'system' && state.status?.providers?.find(p => p.id === 'system')?.available === false) { toast('Device narration is unavailable on this server. Connect Gemini or Breeze in settings.', true); return; }
+  const breeze = state.status?.providers?.find(p => p.id === 'breeze');
+  if (kind === 'render' && provider === 'breeze' && breeze?.available !== true) { openSettings('breeze'); toast(breeze?.reason || 'Connect your Breeze server in Settings to narrate with Breeze.'); return; }
   const id = state.book.id;
   stopAudio({clear:true});
   updateBusyControls(true);
@@ -1075,16 +1171,45 @@ async function startJob(kind, scope = {}) {
     return job;
   } catch (error) { toast(error.message, true); updateBusyControls(); return null; }
 }
+// A seeded provider (Breeze) returns the same take for the same seed. Retaking
+// an existing take of that provider first saves a new random passage seed.
+const randomSeed = () => globalThis.crypto?.getRandomValues ? crypto.getRandomValues(new Uint32Array(1))[0] : Math.floor(Math.random() * 4294967296);
+async function retakeSegment(id) {
+  if (!state.book || busyJob()) return;
+  const provider = $('#render-provider').value;
+  const segment = segmentById(id);
+  const seeded = state.status?.narration_providers?.[provider]?.capabilities?.seeded_takes === true;
+  if (seeded && playable(segment) && segment.audio?.provider === provider) {
+    try { applyBook(await patch(`/api/books/${encodeURIComponent(state.book.id)}/segments/${encodeURIComponent(id)}`, {seed:randomSeed()})); }
+    catch (error) { toast(error.message, true); return null; }
+  }
+  return startJob('render', {segment_id:id, force:true});
+}
 function openSettings(provider) {
   clearKeyInputs(); fillSettings(); cloudProviders.forEach(renderAccountCheck); updateSettingsControls(); $('#settings-error').hidden = true; $('#settings-dialog').showModal();
   if (cloudProviders.includes(provider)) { const input = providerField('api-key', provider); revealSetting(input); input.focus(); }
+  else if (provider === 'breeze') { const input = $('#breeze-url'); revealSetting(input); input.focus(); }
 }
 function revealSetting(control) { const details = control.closest('details'); if (details) details.open = true; }
 function openImport() { $('#import-error').hidden = true; $('#import-dialog').showModal(); }
 function showInlineError(id, message) { const node = $(id); node.textContent = message; node.hidden = false; }
+// Cast cards edit one voice per provider. Send only providers whose voice
+// changed, so an unrelated edit never re-pins a Breeze voice's revision.
+function characterVoicePatch(character, values) {
+  const body = {...values}, voices = {};
+  for (const [provider, field] of Object.entries(VOICE_FIELDS)) {
+    if (!(field in body)) continue;
+    const chosen = String(body[field] ?? '').trim();
+    delete body[field];
+    if (chosen !== characterVoice(character, provider)) voices[provider] = chosen ? {id:chosen} : null;
+  }
+  if (Object.keys(voices).length) body.voices = voices;
+  return body;
+}
 async function saveEditor(form, kind, id) {
   const bookId = state.book.id;
-  const values = Object.fromEntries(new FormData(form));
+  const entries = Object.fromEntries(new FormData(form));
+  const values = kind === 'characters' ? characterVoicePatch(characterById(id), entries) : entries;
   const button = $('button[type="submit"]', form);
   button.disabled = true;
   try {
@@ -1166,7 +1291,7 @@ $('#analysis-progress').addEventListener('click', event => {
   const chapter = event.target.closest('[data-analysis-chapter]');
   if (chapter) { setChapter(chapter.dataset.analysisChapter, {scroll:false}); $('#studio-chapter').focus(); }
 });
-$('#scene-list').addEventListener('click', event => { const example = event.target.closest('[data-preview-speaker]'); if (example) { auditionPassage(example.closest('[data-segment-form]')); return; } const scene = event.target.closest('[data-render-scene]'); const segment = event.target.closest('[data-render-segment]'); const play = event.target.closest('[data-play-segment]'); if (scene) startJob('render',{scene_id:scene.dataset.renderScene}); else if (segment) startJob('render',{segment_id:segment.dataset.renderSegment,force:true}); else if (play) startSegment(play.dataset.playSegment, {enhanced:true}); });
+$('#scene-list').addEventListener('click', event => { const example = event.target.closest('[data-preview-speaker]'); if (example) { auditionPassage(example.closest('[data-segment-form]')); return; } const scene = event.target.closest('[data-render-scene]'); const segment = event.target.closest('[data-render-segment]'); const play = event.target.closest('[data-play-segment]'); if (scene) startJob('render',{scene_id:scene.dataset.renderScene}); else if (segment) retakeSegment(segment.dataset.renderSegment); else if (play) startSegment(play.dataset.playSegment, {enhanced:true}); });
 for (const selector of ['#cast-grid','#scene-list']) {
   $(selector).addEventListener('input', event => {
     if (state.voicePreview && event.target.matches('input,textarea,select')) window.BardicVoicePreview?.stop();
@@ -1180,7 +1305,11 @@ $('#analyze-button').addEventListener('click', openAnalysisPlanning);
 $('#analysis-scope').addEventListener('change', renderAnalysisProgress);
 $('#analyze-from-cast').addEventListener('click', () => { setTab('studio'); $('#analysis-provider').focus(); });
 $('#render-button').addEventListener('click', () => startJob('render'));
-$('#render-provider').addEventListener('change', () => { $('#render-provider').dataset.chosen = 'true'; updateProviderHint(); });
+$('#render-provider').addEventListener('change', () => {
+  $('#render-provider').dataset.chosen = 'true'; updateProviderHint();
+  // Choosing an unchecked Breeze server fetches its voice list once; no audio is generated.
+  if ($('#render-provider').value === 'breeze' && state.status?.breeze?.state === 'unchecked') void refreshBreeze();
+});
 $('#analysis-provider').addEventListener('change', async event => {
   const provider = event.target.value;
   event.target.disabled = true;
@@ -1247,6 +1376,9 @@ $('#settings-form').addEventListener('submit', async event => {
     const key = providerField('api-key', provider).value.trim();
     if (key) values.api_keys[provider] = key;
   }
+  const breezeUrl = $('#breeze-url').value.trim(), breezeKey = $('#breeze-api-key').value.trim();
+  if (breezeUrl !== (state.status?.breeze?.base_url || '')) values.breeze_url = breezeUrl;
+  if (breezeKey) values.breeze_api_key = breezeKey;
   try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
 });
 $('#settings-form').addEventListener('invalid', event => revealSetting(event.target), true);
@@ -1259,6 +1391,15 @@ $$('[data-clear-key]').forEach(button => button.addEventListener('click', async 
   catch (error) { showInlineError('#settings-error',error.message); }
   finally { state.settingsBusy = false; updateSettingsControls(); }
 }));
+$('#breeze-check').addEventListener('click', () => refreshBreeze({save:true}));
+$('#clear-breeze-key').addEventListener('click', async () => {
+  if (state.settingsBusy) return;
+  state.settingsBusy = true; updateSettingsControls();
+  $('#settings-error').hidden = true;
+  try { await post('/api/settings',{breeze_api_key:''}); $('#breeze-api-key').value = ''; await refreshStatus({syncSettings:false}); toast('Breeze server key cleared for this session.'); }
+  catch (error) { showInlineError('#settings-error',error.message); }
+  finally { state.settingsBusy = false; updateSettingsControls(); }
+});
 $$('[data-check-account]').forEach(button => button.addEventListener('click', () => checkAccounts([button.dataset.checkAccount])));
 $('#check-all-accounts').addEventListener('click', () => checkAccounts(cloudProviders));
 $('#tts-model').addEventListener('change', fillNarrationLimits);

@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .alignment import align_file
-from .audio import AudioError, DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
 from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SECONDS
 from .store import now
 from .take_archive import produce_take
@@ -87,22 +87,35 @@ class ListeningRepository:
                         BEFORE {operation} ON {table} BEGIN
                         SELECT RAISE(ABORT, 'Listening takes are immutable'); END''')
 
-    def session(self, book_id, provider, voice=None, model=None):
+    def session(self, book_id, provider, voice=None, model=None, *, selection=None):
+        """Resolve a narrator choice. ``selection`` is the pinned Breeze voice
+        ``{id, revision, seed}``; it becomes part of the session identity, so a
+        voice changed on the server starts a new session and keeps old takes."""
         self.store.book(book_id)
-        if provider not in {'system', 'gemini'}:
-            raise ValueError('Choose system or Gemini narration.')
+        if provider not in PROVIDERS:
+            raise ValueError('Choose system, Gemini or Breeze narration.')
         if voice is not None and (not isinstance(voice, str) or len(voice) > 256):
             raise ValueError('Choose a valid narrator voice.')
         voice = voice.strip() if voice else ''
+        pinned = {}
         if provider == 'system':
             if model not in (None, '', SYSTEM_MODEL):
                 raise ValueError('Device narration uses the installed macOS voice model.')
             model = SYSTEM_MODEL
+        elif provider == 'breeze':
+            if model not in (None, '', BREEZE_MODEL):
+                raise ValueError('Breeze narration uses the breeze-tts-2 model.')
+            if not isinstance(selection, dict) or (voice and selection.get('id') != voice):
+                raise ValueError('Choose a Breeze voice from the last voice check.')
+            voice, model = selection['id'], BREEZE_MODEL
+            # Only speech-affecting pins; Gemini and device sessions keep their original identity.
+            pinned = {'voice_revision': selection.get('revision'), 'seed': selection.get('seed'),
+                      **({'settings': selection['settings']} if selection.get('settings') else {})}
         else:
             voice = voice or 'Kore'
             model = model or DEFAULT_TTS_MODEL
         config = {'schema_version': VERSION, 'book_id': book_id, 'provider': provider,
-                  'voice': voice, 'model': model}
+                  'voice': voice, 'model': model, **pinned}
         # Provider validation is pure; it neither queries installed voices nor calls a model.
         self._audio_recipe({'id': 'configuration-check', 'text': 'Voice configuration'}, config)
         config['id'] = _hash(config)
@@ -127,6 +140,10 @@ class ListeningRepository:
         passage = {'id': segment['id'], 'text': segment['text']}
         narrator = {'id': 'simple-narrator', 'voice': session['voice'] or 'Kore',
                     'system_voice': session['voice']}
+        if session['provider'] == 'breeze':
+            narrator['voices'] = {'breeze': {'id': session['voice'], 'revision': session.get('voice_revision'),
+                                             'seed': session.get('seed'),
+                                             **({'settings': session['settings']} if session.get('settings') else {})}}
         fingerprint = render_fingerprint(passage, narrator, {}, session['provider'], session['model'])
         return passage, narrator, fingerprint
 

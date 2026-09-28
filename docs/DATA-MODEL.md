@@ -52,15 +52,25 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 | `id`, `title`, `author`, `source_name`, `created_at`, `revision` | Book identity, editable display metadata, safe original filename, and projection revision. |
 | `structure_version` | Structure interpretation version, separate from book revision and artifact schema. |
 | `chapters[]` | Ordered source containers with `id`, `index`, `title`, `text`, `kind`, `title_source`, `source_href`, optional `narrative_order`, and `logical_sections`. |
-| `characters[]` | Book-local cast, including `narrator` and `unassigned`, with name/aliases, description/direction, evidence, voice choices, edit flags, and profile freshness/provenance fields. |
+| `characters[]` | Book-local cast, including `narrator` and `unassigned`, with name/aliases, description/direction, evidence, per-provider voice choices (`voices`), edit flags, and profile freshness/provenance fields. |
 | `scenes[]` | Chapter-scoped scene IDs, title, summary, tone, direction, passage IDs, attributed character IDs, and optional edit flag. |
-| `segments[]` | Passage ID, chapter/scene IDs, exact source offsets and text, kind, speaker, confidence, direction/cues/evidence, optional edit/provenance data, and presented audio selection. |
+| `segments[]` | Passage ID, chapter/scene IDs, exact source offsets and text, kind, speaker, confidence, direction/cues/evidence, optional `seed` for seeded narration providers, optional edit/provenance data, and presented audio selection. |
 | `analysis` | Current overall analysis summary; detailed resumable state lives in checkpoint/cache tables. |
 | `cover` | Thumbnail metadata/hash. Image bytes live in `book_covers`, not book JSON. |
 
 `logical_sections` records navigation/headings within a retained EPUB container. Its existence does not mean each logical section is independently scheduled. Scene boundaries may be local drafts. A scene's attributed speakers and a character mention are not proof that the character is physically present.
 
 `Store.book()` overlays `takes` onto each passage's `audio`. Reading raw `books.body` directly can therefore show an outdated embedded audio field. Use the repository's hydrated projection for production decisions. Import-only `_cover_data` is removed before JSON persistence and written as a bounded JPEG BLOB.
+
+### Narration voice choices and seeds
+
+Since 2026-09-27 a character stores `voices: {provider: {id, ...}}`, one entry per narration provider (`gemini`, `system`, `breeze`). New characters from import, analysis and the cast editor start with `{"gemini": {"id": ...}}`; the device-voice assignment adds `system`. Characters saved earlier keep their `voice` (Gemini) and `system_voice` (macOS) fields, and `audio.voice_selection()` reads them whenever the map has no entry for that provider. Editing any voice choice through the API rewrites the character with a `voices` map and removes both legacy fields, leaving one stored source per provider. Presented books always include the normalized map. Because Gemini and device recipes contain only the voice string, both layouts produce identical fingerprints; `tests/test_narration_providers.py` pins pre-change fingerprints, listening session IDs and synthesis keys.
+
+A Breeze choice is `{id, revision, seed, settings?}`. `revision` is a SHA-256 over schema version, voice ID, kind, `created_at`, `instruction`, voice `settings`, reference transcript and the SHA-256 of the reference clip bytes. Labels, name, description and `updated_at` are excluded, so relabelling a voice does not invalidate audio. Only `cloned` voices are pinned; `designed` voices are listed as unusable because they change between requests. `seed` defaults to the voice's own seed, else 42. A passage `seed` overrides it for seeded providers; Gemini and device recipes ignore it. Setting a new passage seed is how a Breeze retake differs from the previous take, and like other performance edits it retires the currently selected take while retaining history.
+
+A Breeze recipe adds `voice_revision`, `seed`, `settings` (validated temperature/cfg_scale/top_p/top_k overrides; no current API or UI sets them, so this is empty), the explicit `segmentation` sent to the server, `style` (the Breeze instruction built from performance notes) and `adapter_version` (1) to the shared recipe fields. Breeze take metadata may include `provider_timing` (`{schema_version:1, kind:"sentence", source:"breeze", offsets:"recipe_text_code_points", segments:[{char_start,char_end,start,end}]}`, kept only when every server offset resolves to the exact sent text, else `null`) and a `breeze` block with the server `request_id`, `timing_accepted` and any `vocal_event_markup` found in the source text.
+
+Settings preferences store `breeze_url` and `breeze_catalog`, the last voice check (state, message, model, default voice, voices with revisions, checked URL and time). The catalog is persisted so pinned sessions, previews and cached audio still resolve after a restart while the server is offline; a failed check keeps the previous voices for the same URL. The optional Breeze key is held only in process memory or the environment.
 
 ## SQLite table inventory
 
@@ -162,7 +172,7 @@ When a scene/chapter/profile/audio selection disappears from the current project
 | `voice_preview_requests` | PK `id`; `book_id`, JSON `body` | Retained version-1 effective request: preview metadata, exact bounded passage/demo text, performer, scene inputs and underlying audio fingerprint. |
 | `voice_preview_takes` | PK `id`; `preview_id` FK to requests, `book_id`, `asset_id`, JSON `body`; index by book/preview | Immutable independent take metadata and the actual WAV asset identity. |
 
-Both tables reject UPDATE and DELETE with SQLite triggers. Request IDs hash the canonical versioned recipe before the ID is added; the recipe includes book/source identity, exact text, provider/model/voice, effective character/scene/passage directions and audio recipe version through its fingerprint. Repeated equivalent requests retain the original row. Credentials and reader state are excluded; cast inputs are immutable snapshots rather than pointers to the mutable projection. The archive is separate from selected enhanced takes and simple-listening sessions; it does not support cross-book synthesis reuse or force-rerender selection.
+Both tables reject UPDATE and DELETE with SQLite triggers. A Breeze request's performer snapshot includes the pinned `voices.breeze` selection. Request IDs hash the canonical versioned recipe before the ID is added; the recipe includes book/source identity, exact text, provider/model/voice, effective character/scene/passage directions and audio recipe version through its fingerprint. Repeated equivalent requests retain the original row. Credentials and reader state are excluded; cast inputs are immutable snapshots rather than pointers to the mutable projection. The archive is separate from selected enhanced takes and simple-listening sessions; it does not support cross-book synthesis reuse or force-rerender selection.
 
 A source sample is an exact prefix capped at 400 Python Unicode code points. Its version-1 `source_anchor` stores book/chapter/passage IDs, exact start/end and SHA-256 of the prefix. The full original passage is validated against canonical text before extracting it. Demo samples use a versioned original fixed transcript and a null source anchor; they never claim invented book coordinates. Character-associated inputs include saved scene/passage cues and explicit unsaved direction overrides. Simple/generic narrator samples omit enhanced direction.
 
@@ -172,7 +182,7 @@ Take IDs hash `[preview_id, asset_id]`. Metadata retains its producer fingerprin
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
-| `listening_sessions` | PK `(book_id, id)`; `body` | Deterministic single-narrator configuration: schema, book, provider, voice, model. |
+| `listening_sessions` | PK `(book_id, id)`; `body` | Deterministic single-narrator configuration: schema, book, provider, voice, model. Breeze sessions also include `voice_revision`, `seed` and any `settings`, so a voice changed on the server starts a new session; Gemini/device configurations are unchanged. |
 | `listening_takes` | PK `id`; `book_id`, `session_id`, `segment_id`, `recipe`, `asset_id`, `body` | Retained take metadata indexed by book/session/passage/recipe; update/delete triggers guard existing rows. |
 | `listening_synthesis_cache` | PK `(content_key, take_id)`; FK `take_id` to `listening_takes.id` | Rebuildable index of equivalent synthesis inputs. New takes and validated exact-source legacy cache hits populate it. |
 | `listening_chunks` | PK `id`; `book_id`, `session_id`, `chapter_id`, `asset_id`, `body` | Version-1 chunk: chapter slice `start`/`end` (code points), `text_sha256`, passage anchors `[id,start,end]`, recipe fingerprint, provider/model/voice, content asset and duration, `timing` (`pause_alignment` v1 clips plus match quality), flags, request/job details and usage. Update/delete triggers guard rows. |

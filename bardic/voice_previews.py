@@ -11,7 +11,7 @@ import json
 import re
 from urllib.parse import quote
 
-from .audio import AudioError, DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
 from .store import now
 from .take_archive import produce_take
 
@@ -69,10 +69,11 @@ class VoicePreviewRepository:
                         SELECT RAISE(ABORT, 'Voice previews are immutable'); END''')
 
     def prepare(self, book_id, provider, voice=None, model=None, *, segment_id=None,
-                character_id=None, direction=None, segment_direction=None):
+                character_id=None, direction=None, segment_direction=None, selection=None):
+        """``selection`` is the pinned Breeze voice; it is retained in the recipe."""
         book = self.store.book(book_id)
-        if provider not in {'system', 'gemini'}:
-            raise ValueError('Choose system or Gemini narration.')
+        if provider not in PROVIDERS:
+            raise ValueError('Choose system, Gemini or Breeze narration.')
         if direction is not None and not character_id:
             raise ValueError('Performance direction requires a selected character.')
         if segment_direction is not None and not (segment_id and character_id):
@@ -88,6 +89,12 @@ class VoicePreviewRepository:
             if model not in (None, '', SYSTEM_MODEL):
                 raise ValueError('Device narration uses the installed macOS voice model.')
             model = SYSTEM_MODEL
+        elif provider == 'breeze':
+            if model not in (None, '', BREEZE_MODEL):
+                raise ValueError('Breeze narration uses the breeze-tts-2 model.')
+            if not isinstance(selection, dict) or (voice and selection.get('id') != voice):
+                raise ValueError('Choose a Breeze voice from the last voice check.')
+            voice, model = selection['id'], BREEZE_MODEL
         else:
             voice, model = voice or 'Kore', model or DEFAULT_TTS_MODEL
         segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
@@ -119,6 +126,8 @@ class VoicePreviewRepository:
         else:
             passage = {'id': 'voice-preview-demo-v1', 'text': DEMO_TEXT}
         performer = {'id': character_id or 'preview-narrator', 'voice': voice or 'Kore', 'system_voice': voice}
+        if provider == 'breeze':
+            performer['voices'] = {'breeze': copy.deepcopy(selection)}
         if character is not None:
             performer['direction'] = character.get('direction', '') if direction is None else direction
         fingerprint = render_fingerprint(passage, performer, scene, provider, model)

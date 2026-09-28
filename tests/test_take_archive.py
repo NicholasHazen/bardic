@@ -4,7 +4,7 @@ import wave
 
 import pytest
 
-from bardic.audio import AudioError, DEFAULT_TTS_MODEL, render_fingerprint
+from bardic.audio import AudioError, DEFAULT_TTS_MODEL, render_fingerprint, voice_id
 from bardic.take_archive import produce_take
 
 
@@ -32,7 +32,7 @@ def fake_renderer(data, calls=None):
             calls.append(path)
         path.write_bytes(data)
         return {"fingerprint": render_fingerprint(segment, character, scene, provider, model),
-                "duration": 999, "provider": provider, "model": model, "voice": character["voice"]}
+                "duration": 999, "provider": provider, "model": model, "voice": voice_id(character, provider)}
     return render
 
 
