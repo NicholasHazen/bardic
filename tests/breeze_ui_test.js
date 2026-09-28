@@ -1,4 +1,4 @@
-/* Breeze narration in the browser: per-provider models and voices, capability
+/* Breeze and library voices in the browser: per-provider models and voices, capability
    gating of chunked listening, and cast voice selection. No audio is generated. */
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
@@ -60,40 +60,70 @@ function environment(prior) {
 }
 const options = (extra = {}) => ({status:status(),chapterId:'chapter-1',segmentId:'segment-1',...extra});
 
-test('Breeze uses per-passage listening with its default voice and no model', async () => {
+// The voice library snapshot (/api/voices) the listen panel and cast read.
+function library(extra = {}) {
+  return {
+    voices:[
+      {id:'vl_narr',provider:'breeze',name:'Narrator',origin:'imported',current_version:1,assignable:true,is_default:false,
+        versions:[{version:1,provider_voice_id:'narrator',revision:'r1',made:'imported',server_state:'ok'}],usage:[],warnings:[]},
+      {id:'vl_story',provider:'breeze',name:'Story <teller>',origin:'designed',current_version:1,assignable:true,is_default:true,
+        versions:[{version:1,provider_voice_id:'storyteller',revision:'r2',made:'designed',server_state:'ok'}],usage:[],warnings:[]},
+      {id:'vl_gone',provider:'breeze',name:'Old Sailor',origin:'imported',current_version:1,assignable:false,
+        versions:[{version:1,provider_voice_id:'sailor',revision:'r3',made:'imported',server_state:'missing'}],usage:[],warnings:[]},
+      {id:'vl_gem',provider:'gemini',name:'Astronomer',origin:'designed',current_version:1,assignable:true,
+        versions:[{version:1,provider_voice_id:'voice_abc',made:'designed',server_state:'ok'}],usage:[],warnings:[]},
+    ],
+    defaults:{breeze:'vl_story'},drafts:[],
+    providers:{breeze:{state:'ready',message:'Connected.'},
+      gemini:{has_api_key:true,state:'ready',tts_model:'gemini-3.8-flash-tts',designed_voices_supported:true,stored_count:3,limit:200,
+        project_voices:[{id:'voice_studio',display_name:'Studio <pick>',type:'prompted',in_library:false,draft_candidate:false},
+          {id:'voice_abc',display_name:'Astronomer',type:'prompted',in_library:true,draft_candidate:false},
+          {id:'voice_draft',display_name:'Unsaved',type:'prompted',in_library:false,draft_candidate:true}]}},
+    builtin:{gemini:['Kore','Puck'],system:[{id:'Samantha',name:'Samantha',locale:'en-US'}]},
+    ...extra};
+}
+
+test('Breeze narration defaults to the library default voice, lists library voices and sends no model', async () => {
   const env = environment();
   let refreshes = 0;
-  const hooks = options({onRefreshBreeze:() => refreshes++});
+  const hooks = options({voiceLibrary:library(),onRefreshBreeze:() => refreshes++});
   await env.api.render(env.container,book,hooks);
   env.change('mode','simple');
   env.change('provider','breeze');
   await env.api.render(env.container,book,hooks);
   assert.equal(refreshes,0,'A checked server is not refreshed again');
-  assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'breeze',voice:'storyteller',model:null},
-    'The server default voice is chosen visibly; Breeze sends no model');
-  assert.match(env.container.innerHTML,/value="storyteller" selected >Story &lt;teller&gt;/);
-  assert.match(env.container.innerHTML,/value="sailor"  disabled>Old Sailor · Designed voices drift/,'Designed voices cannot narrate');
-  assert.match(env.container.drawer.summary.textContent,/One narrator: Story <teller> \/ Breeze · runs on your Breeze server/);
-  assert.match(env.container.innerHTML,/over the local network, so passage text is sent there/);
+  assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'breeze',voice:'',model:null},
+    'Default is an empty choice the server resolves; Breeze sends no model');
+  assert.match(env.container.innerHTML,/<option value="" selected >Default \(Story &lt;teller&gt;\)<\/option>/);
+  assert.match(env.container.innerHTML,/<option value="library:vl_narr"  >Narrator<\/option>/);
+  assert.match(env.container.innerHTML,/<option value="library:vl_gone"  disabled>Old Sailor · unavailable<\/option>/,'Unassignable voices are listed but disabled');
+  assert.doesNotMatch(env.container.innerHTML,/Astronomer/,'Gemini voices are not offered for Breeze');
+  assert.match(env.container.drawer.summary.textContent,/One narrator: Default \(Story <teller>\) \/ Breeze · runs on your Breeze server/);
   assert.doesNotMatch(env.container.innerHTML,/data-listen-field="chunk-preset"/,'Breeze has no Gemini chunk settings');
   assert.doesNotMatch(env.container.innerHTML,/data-listen-field="model"/,'Breeze has no speech model choice');
   const result = await env.api.ensure(book,book.segments[0]);
   assert.equal(result.asset_id,'take');
   const posts = env.calls.filter(call => call.method === 'POST');
   assert.equal(posts.length,1);
-  assert.equal(posts[0].url,'/api/books/book-b/listen');
-  assert.deepEqual(posts[0].body,{provider:'breeze',voice:'storyteller',model:null,segment_id:'segment-1'});
+  assert.deepEqual(posts[0].body,{provider:'breeze',voice:'',model:null,segment_id:'segment-1'});
   assert.equal(env.calls.filter(call => call.url.includes('/listen/chapter')).length,0,'No chapter job for a non-chunked provider');
   const saved = JSON.parse(env.storage.get('bardic:listen:book-b'));
   assert.equal(saved.provider,'breeze');
-  assert.equal(saved.voices.breeze,'storyteller');
+  assert.equal(saved.voices.breeze,'');
+  env.change('voice','library:vl_narr');
+  assert.equal(env.api.getSelection(book).voice,'library:vl_narr','A library voice is sent by reference');
 });
 
-test('saved Breeze selection is restored, and a missing pinned voice stays visible', async () => {
+test('an earlier Breeze server-voice choice follows its library voice; an unknown one stays visible', async () => {
+  const adopted = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Leda',breeze:'storyteller'},model:'gemini-3.8-flash-tts'});
+  await adopted.api.render(adopted.container,book,options({voiceLibrary:library()}));
+  assert.equal(adopted.api.getSelection(book).voice,'library:vl_story','The saved server voice maps to the library voice whose current version it is');
+  assert.equal(JSON.parse(adopted.storage.get('bardic:listen:book-b')).voices.breeze,'library:vl_story');
+
   const env = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Leda',breeze:'retired'},model:'gemini-3.8-flash-tts'});
-  await env.api.render(env.container,book,options());
+  await env.api.render(env.container,book,options({voiceLibrary:library()}));
   assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'breeze',voice:'retired',model:null});
-  assert.match(env.container.innerHTML,/value="retired" selected >retired \(not on server\)/);
+  assert.match(env.container.innerHTML,/value="retired" selected >retired \(not in library\)/);
   env.change('provider','gemini');
   assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-tts'});
   env.change('provider','system');
@@ -102,12 +132,49 @@ test('saved Breeze selection is restored, and a missing pinned voice stays visib
   assert.equal(env.api.getSelection(book).provider,'system','Unknown providers fall back to device voices');
 });
 
+test('Gemini narrators include library voices, disabled when the speech model cannot use them', async () => {
+  const env = environment({mode:'simple',provider:'gemini',voices:{system:'',gemini:'Kore',breeze:''},model:'gemini-3.8-flash-tts'});
+  await env.api.render(env.container,book,options({voiceLibrary:library()}));
+  assert.match(env.container.innerHTML,/<option value="Kore" selected >Kore<\/option>/);
+  assert.match(env.container.innerHTML,/<option value="library:vl_gem"  >Astronomer<\/option>/);
+  const legacy = library();
+  legacy.providers.gemini.designed_voices_supported = false;
+  await env.api.render(env.container,book,options({voiceLibrary:legacy}));
+  assert.match(env.container.innerHTML,/<option value="library:vl_gem"  disabled>Astronomer · needs Gemini 3.8 TTS<\/option>/);
+});
+
+test('a new current version or default voice never reuses the earlier listening session', async () => {
+  const env = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Kore',breeze:'library:vl_story'},model:'gemini-3.8-flash-tts'});
+  const first = library();
+  await env.api.render(env.container,book,options({voiceLibrary:first}));
+  await env.api.ensure(book,book.segments[0]);
+  const saved = JSON.parse(env.storage.get('bardic:listen:book-b'));
+  assert.equal(saved.sessionId,'session-b');
+  // A fresh book state with the same library reloads that session's saved takes.
+  const again = environment(saved);
+  await again.api.render(again.container,book,options({voiceLibrary:library()}));
+  assert.equal(again.calls.filter(call => call.url.includes('/takes?session_id=session-b')).length,1);
+  // The same saved session with a new current version is a different narrator.
+  const switched = environment(saved);
+  const next = library();
+  const story = next.voices.find(voice => voice.id === 'vl_story');
+  story.versions.push({version:2,provider_voice_id:'storyteller-v2',revision:'r9',made:'designed',server_state:'ok'});
+  story.current_version = 2;
+  await switched.api.render(switched.container,book,options({voiceLibrary:next}));
+  assert.equal(switched.calls.filter(call => call.url.includes('/takes?')).length,0,'Saved takes of the old version are not loaded as current');
+  // Default follows the library default; changing it changes the narrator too.
+  const onDefault = environment({...saved,voices:{...saved.voices,breeze:''}});
+  const moved = library({defaults:{breeze:'vl_narr'}});
+  await onDefault.api.render(onDefault.container,book,options({voiceLibrary:moved}));
+  assert.equal(onDefault.calls.filter(call => call.url.includes('/takes?')).length,0);
+});
+
 test('selecting an unchecked Breeze server asks the app to refresh once; rendering never does', async () => {
   const env = environment();
   let refreshes = 0;
   const unchecked = status({breeze:{configured:true,state:'unchecked',message:'Not checked',voices:[]},
     providers:[{id:'system',available:true},{id:'gemini',available:true},{id:'breeze',available:false,reason:'Check the Breeze connection in Settings.'}]});
-  const hooks = options({status:unchecked,onRefreshBreeze:() => refreshes++});
+  const hooks = options({status:unchecked,voiceLibrary:library({voices:[],defaults:{breeze:null}}),onRefreshBreeze:() => refreshes++});
   await env.api.render(env.container,book,hooks);
   await env.api.render(env.container,book,hooks);
   assert.equal(refreshes,0);
@@ -116,9 +183,10 @@ test('selecting an unchecked Breeze server asks the app to refresh once; renderi
   assert.equal(refreshes,1);
   await env.api.render(env.container,book,hooks);
   assert.equal(refreshes,1);
-  assert.match(env.container.innerHTML,/Choose a Breeze voice/);
+  assert.match(env.container.innerHTML,/Default \(none set yet\)/);
   assert.match(env.container.innerHTML,/Check the Breeze connection in Settings\./,'The unavailable reason is shown');
   assert.match(env.container.innerHTML,/data-listen-action="start" disabled/,'Nothing can be generated without a connection');
+  assert.match(env.container.innerHTML,/data-listen-action="preview" [^>]*disabled/,'No example without a Breeze voice');
   assert.equal(env.calls.filter(call => call.method === 'POST').length,0);
 });
 
@@ -146,58 +214,90 @@ test('chunked chapter listening follows the provider capability, not its name', 
   assert.match(legacy.container.innerHTML,/data-listen-field="chunk-preset"/);
 });
 
-// App-level cast helpers, executed from the real source.
+// App-level cast helpers, executed from the real sources.
 const appSource = fs.readFileSync(path.join(__dirname,'../bardic/static/app.js'),'utf8');
+const voicesSource = fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8');
 function between(start, end) {
   const a = appSource.indexOf(start), b = appSource.indexOf(end, a + start.length);
   assert.ok(a >= 0 && b > a, `${start} boundaries`);
   return appSource.slice(a, b);
 }
-function castHelpers(appStatus = status()) {
-  const context = {state:{status:appStatus}};
+function castHelpers(appStatus = status(), voiceLibrary = library()) {
+  const toasts = [];
+  const context = {state:{status:appStatus,voiceLibrary},window:{},toast:message => toasts.push(message)};
+  vm.runInNewContext(voicesSource, context);
   vm.runInNewContext([
     appSource.split('\n').find(line => line.startsWith('const escapeHTML =')),
     between('// One cast voice per narration provider.', 'function auditionCharacter('),
-    between('// Only cloned voices narrate consistently;', '// Refresh Breeze choices in place'),
-    between('// Cast cards edit one voice per provider.', 'async function saveEditor('),
-    'globalThis.helpers = {narrationModel, chunkedProvider, characterVoice, breezeVoiceOptions, characterVoicePatch};',
+    between('// A cast card edits the voice of the provider it shows.', 'async function saveEditor('),
+    'globalThis.helpers = {narrationModel, chunkedProvider, characterVoice, voiceRequest, characterVoicePatch, cast:window.BardicVoices.cast};',
   ].join('\n'), context);
-  return context.helpers;
+  return {...context.helpers, toasts};
 }
 
-test('cast Breeze selector lists usable voices, disables others, keeps a missing pin and escapes names', () => {
-  const {breezeVoiceOptions} = castHelpers();
-  const empty = breezeVoiceOptions('');
-  assert.match(empty,/<option value="" selected>No Breeze voice<\/option>/);
-  assert.match(empty,/<option value="narrator"  >Narrator<\/option>/);
-  assert.match(empty,/Story &lt;teller&gt;/);
-  assert.match(empty,/<option value="sailor"  disabled>Old Sailor · Designed voices drift between segments<\/option>/);
-  const chosen = breezeVoiceOptions('narrator');
-  assert.match(chosen,/<option value="" >No Breeze voice/);
-  assert.match(chosen,/value="narrator" selected/);
-  const missing = breezeVoiceOptions('retired');
-  assert.match(missing,/<option selected value="retired">retired \(not on server\)<\/option>/);
-  assert.equal(castHelpers({}).breezeVoiceOptions(''),'<option value="" selected>No Breeze voice</option>',
-    'Before a connection check only the empty choice exists');
+test('cast voice options: Default names the default voice, library and direct voices, and Create new', () => {
+  const {cast} = castHelpers();
+  const breeze = cast.castOptions('breeze','',library(),status());
+  assert.match(breeze,/^<option value="" selected >Default \(Story &lt;teller&gt;\)<\/option>/);
+  assert.match(breeze,/<optgroup label="Your voices"><option value="library:vl_narr"  >Narrator<\/option>/);
+  assert.match(breeze,/<option value="library:vl_gone"  disabled>Old Sailor · unavailable<\/option>/);
+  assert.match(breeze,/<option value="__create__">Create new voice…<\/option>$/);
+  assert.doesNotMatch(breeze,/Astronomer/);
+  const deleted = cast.castOptions('breeze','library:vl_removed',library(),status());
+  assert.match(deleted,/<option value="library:vl_removed" selected >Deleted voice<\/option>/,'A deleted assignment stays visible and selected');
+  const pinned = cast.castOptions('breeze','id:narrator',library(),status());
+  assert.match(pinned,/narrator \(server voice outside the library\)/);
+  assert.match(cast.castOptions('breeze','',library({defaults:{breeze:null}}),status()),/Default \(none set yet\)/);
+
+  const gemini = cast.castOptions('gemini','id:Puck',library(),status());
+  assert.match(gemini,/<option value=""  >Default \(Kore\)<\/option>/);
+  assert.match(gemini,/<optgroup label="Your voices"><option value="library:vl_gem"  >Astronomer<\/option><\/optgroup>/);
+  assert.match(gemini,/<optgroup label="Project voices"><option value="id:voice_studio"  >Studio &lt;pick&gt;<\/option><\/optgroup>/,
+    'Project voices already in the library or belonging to an open draft are not offered twice');
+  assert.match(gemini,/<option value="id:Puck" selected >Puck<\/option>/);
+  assert.match(gemini,/Create new voice…/);
+  const old = library();
+  old.providers.gemini.designed_voices_supported = false;
+  assert.match(cast.castOptions('gemini','',old,status()),/value="library:vl_gem"  disabled>Astronomer · needs Gemini 3.8 TTS/);
+
+  const device = cast.castOptions('system','',library(),status());
+  assert.match(device,/<option value="" selected >Default device voice<\/option><optgroup label="Device voices"><option value="id:Samantha"  >Samantha · en-US<\/option>/);
+  assert.doesNotMatch(device,/Create new voice/,'Device voices cannot be created');
 });
 
-test('cast voices prefer the per-provider map, fall back to legacy fields and patch only changes', () => {
-  const {characterVoice, characterVoicePatch, narrationModel, chunkedProvider} = castHelpers();
+test('cast choices encode the per-provider map, read legacy fields, and decode to assignments', () => {
+  const {cast, characterVoice} = castHelpers();
   const legacy = {id:'mara',voice:'Puck',system_voice:'Samantha'};
-  assert.equal(characterVoice(legacy,'gemini'),'Puck');
-  assert.equal(characterVoice(legacy,'system'),'Samantha');
-  assert.equal(characterVoice(legacy,'breeze'),'');
-  const mapped = {id:'mara',voice:'Old',voices:{gemini:{id:'Leda'},system:{id:''},breeze:{id:'narrator',revision:'r1',seed:42}}};
-  assert.equal(characterVoice(mapped,'gemini'),'Leda','The normalized map wins over legacy fields');
+  assert.equal(characterVoice(legacy,'gemini'),'id:Puck');
+  assert.equal(characterVoice(legacy,'system'),'id:Samantha');
+  assert.equal(characterVoice(legacy,'breeze'),'','No Breeze choice means Default');
+  const mapped = {id:'mara',voice:'Old',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr',id:'narrator',revision:'r1'},system:{id:''}}};
+  assert.equal(characterVoice(mapped,'gemini'),'id:Leda','The normalized map wins over legacy fields');
+  assert.equal(characterVoice(mapped,'breeze'),'library:vl_narr','A library reference wins over its resolved concrete voice');
   assert.equal(characterVoice(mapped,'system'),'');
-  assert.equal(characterVoice(mapped,'breeze'),'narrator');
+  assert.equal(JSON.stringify(cast.decodeChoice('library:vl_narr')),JSON.stringify({library:'vl_narr'}));
+  assert.equal(JSON.stringify(cast.decodeChoice('id:Kore')),JSON.stringify({id:'Kore'}));
+  assert.equal(cast.decodeChoice(''),null,'Default is sent as null');
+  assert.equal(cast.decodeChoice(cast.CREATE),null);
+  assert.equal(cast.requestVoice('gemini',''),'Kore');
+  assert.equal(cast.requestVoice('breeze',''),'');
+  assert.equal(cast.requestVoice('breeze','library:vl_narr'),'library:vl_narr');
+  assert.equal(cast.requestVoice('system','id:Samantha'),'Samantha');
+});
 
-  const unchanged = characterVoicePatch(mapped,{description:'Kind.',voice:'Leda',system_voice:'',breeze_voice:'narrator',direction:'Soft.'});
-  assert.deepEqual({...unchanged},{description:'Kind.',direction:'Soft.'},'Unchanged voices are not re-sent, so Breeze is not re-pinned');
-  const changed = characterVoicePatch(mapped,{voice:'Kore',system_voice:'Alex',breeze_voice:''});
-  assert.deepEqual(JSON.parse(JSON.stringify(changed)),{voices:{gemini:{id:'Kore'},system:{id:'Alex'},breeze:null}});
-  const picked = characterVoicePatch(legacy,{voice:'Puck',system_voice:'Samantha',breeze_voice:'storyteller'});
-  assert.deepEqual(JSON.parse(JSON.stringify(picked)),{voices:{breeze:{id:'storyteller'}}});
+test('cast saves send only the shown provider, and only when its choice changed', () => {
+  const {characterVoicePatch, narrationModel, chunkedProvider} = castHelpers();
+  const character = {id:'mara',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr'}}};
+  const unchanged = characterVoicePatch(character,{description:'Kind.',voice_choice:'library:vl_narr',direction:'Soft.'},'breeze');
+  assert.deepEqual(JSON.parse(JSON.stringify(unchanged)),{description:'Kind.',direction:'Soft.'},'An unchanged voice is not re-sent');
+  const changed = characterVoicePatch(character,{voice_choice:'library:vl_story'},'breeze');
+  assert.deepEqual(JSON.parse(JSON.stringify(changed)),{voices:{breeze:{library:'vl_story'}}});
+  const toDefault = characterVoicePatch(character,{voice_choice:''},'breeze');
+  assert.deepEqual(JSON.parse(JSON.stringify(toDefault)),{voices:{breeze:null}},'Default clears the provider choice');
+  const gemini = characterVoicePatch(character,{voice_choice:'id:Kore'},'gemini');
+  assert.deepEqual(JSON.parse(JSON.stringify(gemini)),{voices:{gemini:{id:'Kore'}}});
+  const create = characterVoicePatch(character,{voice_choice:'__create__'},'breeze');
+  assert.deepEqual(JSON.parse(JSON.stringify(create)),{},'Create new voice is an action, never an assignment');
 
   assert.equal(narrationModel('gemini'),'gemini-3.8-flash-tts');
   assert.equal(narrationModel('system'),'macos-say');
@@ -205,4 +305,25 @@ test('cast voices prefer the per-provider map, fall back to legacy fields and pa
   assert.equal(chunkedProvider('gemini'),true);
   assert.equal(chunkedProvider('breeze'),false);
   assert.equal(castHelpers({}).chunkedProvider('gemini'),true,'Without capabilities only Gemini is chunked');
+});
+
+test('cast warnings explain deleted, changed and unsupported voices and a missing default', () => {
+  const {cast, voiceRequest, toasts} = castHelpers(status(), library({defaults:{breeze:null}}));
+  assert.deepEqual([...cast.castWarnings('breeze','',library({defaults:{breeze:null}}),status())],
+    ['No default Breeze voice yet. Check the Breeze connection in Settings, or choose a default in Voices.']);
+  assert.deepEqual([...cast.castWarnings('breeze','library:vl_removed',library(),status())],['This voice was deleted. Choose another voice.']);
+  assert.deepEqual([...cast.castWarnings('breeze','library:vl_gone',library(),status())],['Missing from the server; it cannot be re-rendered.']);
+  const changed = library();
+  changed.voices[1].versions[0].server_state = 'changed';
+  assert.deepEqual([...cast.castWarnings('breeze','',changed,status())],['Default voice: Changed on the Breeze server since this version was saved.']);
+  const old = library();
+  old.providers.gemini.designed_voices_supported = false;
+  old.providers.gemini.tts_model = 'gemini-3.1-flash-tts-preview';
+  assert.match(cast.castWarnings('gemini','library:vl_gem',old,status())[0],/need Gemini 3\.8 TTS; the current speech model is gemini-3\.1-flash-tts-preview/);
+  assert.deepEqual([...cast.castWarnings('gemini','id:Kore',old,status())],[],'Built-in voices always work');
+  assert.equal(voiceRequest({name:'Mara'},'breeze',''),null,'Breeze Default without a default voice requests nothing');
+  assert.match(toasts.at(-1),/no default Breeze voice yet/);
+  assert.equal(voiceRequest({name:'Mara'},'breeze','library:vl_narr'),'library:vl_narr');
+  assert.deepEqual([...cast.identity('breeze','',library())],['vl_story',1,'storyteller','r2'],'Default resolves to the default voice identity');
+  assert.equal(cast.identity('gemini','id:Kore',library()),null);
 });

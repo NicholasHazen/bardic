@@ -30,9 +30,9 @@ Google also documents the equivalent `generateContent` route with `parts[].speec
 
 ## Cast consistency and voice design
 
-The app accepts prebuilt voice names and manually supplied `voice_...` IDs for 3.8. Voice design is a useful later addition to the casting screen: `POST /v1beta/voices` creates a prompted persona and returns an ID plus an audition WAV. Permanent identity traits belong there; short situational style prompts control delivery. Long character biographies in every style prompt can undermine voice consistency, so the adapter uses the editable character delivery field and keeps biography/evidence in the casting UI.
+The app accepts prebuilt voice names, the project's stored `voice_...` IDs and, since 2026-09-27, Gemini voices designed in the Voices tab for 3.8. `POST /v1beta/voices` with `store: true` and `type: "prompted"` creates a persona from a natural-language description and returns an ID plus a `sample_audio` WAV; `GET /v1beta/voices` lists stored and prebuilt voices (paginated, filterable by type), `GET /v1beta/voices/{id}` returns the sample again, and `DELETE` removes a stored voice. The documentation shows snake_case REST fields (`display_name`, `sample_audio`), while Google REST APIs often return lowerCamelCase (`displayName`, `sampleAudio`, `nextPageToken`, `expireTime`); the client accepts both. Permanent identity traits belong there; short situational style prompts control delivery. Long character biographies in every style prompt can undermine voice consistency, so the adapter uses the editable character delivery field and keeps biography/evidence in the casting UI.
 
-Stored custom voices are limited to 200/project and have a one-year TTL. Save the original design prompt, date, ID, and audition before relying on them for a lengthy production. This version does not create or clone voices automatically.
+Stored custom voices are limited to 200/project and have a one-year TTL; every create is billed and stored. Bardic records the design description, model, language, gender, server expiry, a hash of the creating key and a local copy of the sample for each version, requires a confirmation for every create, and deletes unchosen candidates. **Gemini voice creation has not been exercised live by this project**; it is covered only by offline tests against a fake API, so the response casing, sample format and billing are unverified. Voice replication (`type: "replicated"`) is not implemented.
 
 Source: [Google voice design](https://ai.google.dev/gemini-api/docs/voice-design).
 
@@ -81,6 +81,13 @@ Researched and measured **September 27, 2026** against the owner's server (`bree
 - Slower samples, causes not isolated: the first 6.5 s take of a run took 14.1 s (2.2×); a 4.2 s take with an instruction took 7.3 s (1.7×); an earlier non-streamed 5.1 s request took 5.6 s while the server reported busy. The server guide says an instruction costs about 10–15 % and the first use of a voice or input size after a restart up to about 1 s.
 - Speech rate on these samples was 13.4–15.5 code points per second. Repeating the same text, voice and seed gave identical duration and sentence timing; waveform bit-identity was not checked (the server says it is not guaranteed).
 - Voice revisions were identical across two consecutive checks.
+
+**Voice management, measured the same day** (synthetic text; each test voice was deleted afterwards):
+
+- One design preview of 3.2 s audio took 5.3 s. In a browser run, one request produced two previews of 6.6 s and 7.1 s; its wall time was not measured precisely.
+- Preview audio (`/v1/voice-previews/{id}/audio`) and reference clips (`/v1/voices/{id}/reference`) are mono 16-bit 24 kHz WAV.
+- A clone upload of that preview WAV succeeded, but the stored reference's bytes differed from the upload: the server re-encodes references. Bardic therefore pins the revision from the reference read back after creation and keeps the auditioned clip itself as the version's audition.
+- The pinned revision matched the next voice check; a rename (`PATCH` name) left the revision unchanged; `DELETE` removed the voice from the list.
 
 At about real time, a listener at 1.5× or faster overtakes generation unless the chapter is prepared ahead. Offline tests (`tests/test_narration_providers.py`) cover the documented HTTP/SSE contract with a fake server; they do not measure quality or speed.
 

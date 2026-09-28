@@ -22,7 +22,7 @@ Verified on September 27, 2026, with Python 3.11.5 (worktree venv) and uv 0.8.17
   - waiting for the server process, the loopback Host header, and refusing unreadable jobs;
   - the own-process readiness check, restarting with the same library, the worktree `--yes` check, the file-identity library check, and the name-ownership check.
 
-  Removing the `terminate` call was not detected, because the 30 s `kill` fallback still stops the process. Full suite: **952 passed, 1 skipped** (the opt-in macOS speech test).
+  Removing the `terminate` call was not detected, because the 30 s `kill` fallback still stops the process. Full suite: **952 passed, 1 skipped** (the opt-in macOS speech test). After merging the voice-library and chapter-player changes from main: **964 passed, 1 skipped**, all **115** Node tests passed, and every browser JavaScript syntax check passed.
 - An adversarial review found problems that are now fixed: a `uv run` wrapper whose Bardic child survived launchd's SIGKILL while `stop` reported success; the job guard passing when the server could not be read (including a server bound to a LAN address); the 100-job bound; case/containment gaps in the library check; `dev restart` switching libraries; readiness accepting another server; stopping the owner's server from a worktree without confirmation; and default-name collisions between checkouts.
 - Real launchd, under the throwaway label `local.bardic-itest` with a copied checkout, port 8790 and a scratch library:
   - `install` 2.1 s including a fresh `uv sync`; `status` showed launchd as the owner; `start` did nothing because the server was running; `restart` 1.2 s with a new process.
