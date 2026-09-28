@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .base import Op, View, internal, op
-from .media import AudioTakeBreezeInfo, AudioTakeSentenceTiming
+from .media import AudioRef, AudioTakeBreezeInfo, AudioTakeSentenceTiming, AudioTakeVoiceLibrary
 
 # ------------------------------------------------------------------ shared text
 
@@ -186,40 +186,31 @@ class BookSpeakerCheck(View):
     tag_conflict: bool | None = Field(default=None, description='True when BookNLP\'s own speech tag contradicts its speaker; then the comparison is only recorded.')
 
 
-class BookTakeVoiceLibrary(View):
-    """The library voice and version that performed a take."""
-    id: str = Field(description='Library voice ID (`vl_` + 16 hex).')
-    version: int | None = Field(default=None, description='Version number of that library voice.')
-
-
-class BookTake(View):
+class BookTake(AudioRef):
     """The selected enhanced (cast) narration take of a passage.
 
     Presented only when it is still valid: its recipe fingerprint matches the
     passage's current speaker voice, directions, scene notes, provider and
     model, and its WAV file exists. Otherwise the passage's `audio` is null.
+    Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
     """
     url: str = Field(
         description='Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The '
-                    '`v` query changes when the selected audio changes, so the URL is safe to cache.')
-    fingerprint: str = internal('Hex SHA-256 of the render recipe (the take\'s reuse identity).')
+                    '`v` query changes when the selected audio changes, so the URL is safe to cache and compare.')
     asset_id: str | None = Field(
-        default=None,
         description='Hex SHA-256 of the WAV bytes (content address), also usable with '
-                    '`GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content '
-                    'addressing, whose file is named by `fingerprint`.')
-    duration: float = Field(description='Audio duration in seconds, measured from the WAV.')
+                    '`GET /api/books/{book_id}/audio-assets/{asset_id}`. Null for takes made before content '
+                    'addressing.')
+    duration: float | None = Field(description='Audio duration in seconds, measured from the WAV; null only for a take '
+                                               'stored without it.')
     provider: str = Field(description='Narration provider: `system` (device), `gemini` or `breeze`.')
-    model: str | None = Field(default=None, description='Speech model ID (`macos-say` for device narration).')
-    voice: str | None = Field(default=None, description='Concrete provider voice that performed the take.')
-    voice_library: BookTakeVoiceLibrary | None = Field(default=None, description='Library voice that was followed, when the character used one.')
+    model: str | None = Field(description='Speech model ID (`macos-say` for device narration).')
+    voice: str | None = Field(description='Concrete provider voice that performed the take, or null when not recorded.')
+    created_at: str | None = Field(description='Always null for Studio takes: their retention time is not recorded on the take.')
+    voice_library: AudioTakeVoiceLibrary | None = Field(default=None, description='Library voice that was followed, when the character used one; absent otherwise.')
     voice_revision: str | None = Field(default=None, description='Breeze only: the pinned server revision of the voice.')
     provider_timing: AudioTakeSentenceTiming | None = Field(default=None, description='Breeze only: sentence timing, or null when the server\'s timing was not usable.')
     breeze: AudioTakeBreezeInfo | None = Field(default=None, description='Breeze only: request details.')
-    resource_usage: dict[str, Any] | None = internal(
-        'Measured provider usage for the request that produced the take (token counts, estimated cost in USD, '
-        'cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage.',
-        default=None)
 
 
 class BookPassage(View):

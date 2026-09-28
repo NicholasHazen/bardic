@@ -53,6 +53,10 @@ from .take_archive import produce_take
 from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
 from .tts_limits import CANCEL_CHECK, DEFAULT_LIMITS as DEFAULT_TTS_LIMITS, LIMITER, normalize_limits, quota_day, requests_today
+from .tts_limits import seconds_until_reset
+from .audio_refs import audio_ref
+from .errors import Conflict, Invalid, RateLimited as QuotaRefused, Unavailable
+from .listening import require_active_book
 
 TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview"]
 ANALYSIS_LABELS = {"local": "Local draft", "gemini": "Gemini", "openai": "OpenAI", "anthropic": "Anthropic"}
@@ -284,6 +288,24 @@ class SeriesCharacterLinkRequest(StrictModel):
     series_character_id: str | None = Field(default=None, max_length=200)
 
 
+# Optional public extras of a selected Studio take, copied when the stored take has them.
+_STUDIO_EXTRAS = ("voice_library", "voice_revision", "provider_timing", "breeze")
+
+
+def studio_audio(book_id, segment_id, metadata):
+    """The public audio object (contract ``BookTake``) for a passage's selected Studio take.
+
+    The recipe fingerprint and measured usage stay in storage (usage is served by the
+    resources routes). A take made before content addressing has no ``asset_id``.
+    """
+    content = metadata.get("asset_id")
+    version = (content or metadata["fingerprint"])[:16]
+    return audio_ref(f"/api/audio/{book_id}/{segment_id}?v={version}", asset_id=content,
+                     duration=metadata.get("duration"), provider=metadata.get("provider"), model=metadata.get("model"),
+                     voice=metadata.get("voice"), created_at=metadata.get("created_at"),
+                     **{key: metadata[key] for key in _STUDIO_EXTRAS if key in metadata})
+
+
 class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
@@ -306,7 +328,12 @@ class Runtime:
         # sends its requests through the narration pool like live listening.
         self.performance_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='performance')
         from .performances import PerformanceRepository
+        from .listening import ListeningRepository
+        from .voice_previews import VoicePreviewRepository
+        # Narration schemas are created once here, never on a request.
         PerformanceRepository(self.store)
+        ListeningRepository(self.store)
+        VoicePreviewRepository(self.store)
         # Creates the diagnostics table once, at startup; requests only read or append.
         self.diagnostics = DiagnosticRepository(self.store)
         self.stopping = threading.Event()
@@ -474,16 +501,19 @@ class Runtime:
         reference = voice[len("library:"):] if isinstance(voice, str) and voice.startswith("library:") else None
         if reference is not None or (provider == "breeze" and not voice):
             if provider not in ("breeze", "gemini"):
-                raise Invalid("library_voice_unavailable", "Library voices are Breeze or Gemini voices.")
+                raise Invalid("narrator_voice_invalid", "Library voices are Breeze or Gemini voices.")
             resolved = self.resolve_choice(provider, {"library": reference} if reference else None)
             if resolved is None or resolved.get("error"):
                 if reference is None:
-                    raise Invalid("breeze_default_voice_missing", "No usable default Breeze voice is set.")
-                raise Invalid("library_voice_unavailable",
+                    raise Invalid("narrator_voice_invalid", "No usable default Breeze voice is set.")
+                raise Invalid("narrator_voice_invalid",
                               "The library voice does not exist, was deleted, or belongs to another provider.")
             return resolved["id"], (resolved if provider == "breeze" else None)
         if provider == "breeze":
-            return voice, self.breeze_selection(voice)
+            try:
+                return voice, self.breeze_selection(voice)
+            except (ApiError, HTTPException, ValueError) as error:
+                raise Invalid("narrator_voice_invalid", str(getattr(error, "detail", error))) from None
         return voice, None
 
     def breeze_selection(self, voice, seed=None):
@@ -716,8 +746,7 @@ class Runtime:
             s["leading_text"] = chapter["text"][previous.get(chapter["id"], 0):s["start"]]
             previous[chapter["id"]] = s["end"]
             if s.get("audio") and self.valid_audio(book, s, cast):
-                audio_id = s["audio"].get("asset_id") or s["audio"]["fingerprint"]
-                s["audio"]["url"] = f"/api/audio/{book['id']}/{s['id']}?v={audio_id[:16]}"
+                s["audio"] = studio_audio(book["id"], s["id"], s["audio"])
             else:
                 s["audio"] = None
         for c in result["chapters"]:
@@ -825,19 +854,26 @@ class Runtime:
 
     def render(self, book_id, request):
         with self.store.lock:
+            require_active_book(self.store, book_id)
             self.require_idle(book_id)
+            if self.stopping.is_set():
+                raise Unavailable("shutting_down", "The server is shutting down and accepts no new narration.")
             book = self.store.book(book_id)
             if request.provider not in NARRATION_PROVIDERS:
-                raise HTTPException(400, "Choose system, gemini or breeze narration")
+                raise Invalid("provider_unsupported", "The narration provider must be system, gemini or breeze.")
             if request.provider == "gemini" and not self.api_key:
-                raise HTTPException(400, "Add a Gemini API key in Settings first")
+                raise Invalid("gemini_key_missing", "No Gemini API key is configured.")
             if request.provider == "system" and not (shutil.which("say") and shutil.which("ffmpeg")):
-                raise HTTPException(400, "Local narration requires macOS say and ffmpeg. Choose Gemini on other systems.")
+                raise Invalid("device_narration_unavailable", "Device narration requires macOS say and ffmpeg on the server.")
             if request.provider == "breeze":
                 self.require_breeze()
+            if request.segment_id and not any(s["id"] == request.segment_id for s in book["segments"]):
+                raise Invalid("unknown_passage", "No passage with this ID is in the book.")
+            if request.scene_id and not any(s["id"] == request.scene_id for s in book["scenes"]):
+                raise Invalid("unknown_scene", "No scene with this ID is in the book.")
             selected = [s for s in book["segments"] if (not request.scene_id or s["scene_id"] == request.scene_id) and (not request.segment_id or s["id"] == request.segment_id)]
             if not selected:
-                raise HTTPException(400, "No passages selected")
+                raise Invalid("no_passages_selected", "The passage is not in the selected scene.")
             # Snapshot the resolved voices: a version or default change while
             # this job runs must not mix voices within it.
             cast = self.resolved_cast(book)
@@ -854,8 +890,9 @@ class Runtime:
                 if problems:
                     names = sorted(problems)
                     more = "…" if len(names) > 5 else ""
-                    raise HTTPException(400, f"Fix the {NARRATION_PROVIDERS[request.provider]['label'].split(' ·')[0]} voice for "
-                                             f"{', '.join(names[:5])}{more}: {problems[names[0]]}")
+                    raise Invalid("cast_voice_unusable",
+                                  f"The {NARRATION_PROVIDERS[request.provider]['label'].split(' ·')[0]} voice of "
+                                  f"{', '.join(names[:5])}{more} cannot be used: {problems[names[0]]}")
             model = {"gemini": self.preferences["tts_model"], "breeze": BREEZE_MODEL}.get(request.provider, "macos-say")
             # Snapshot credentials and server configuration for this queued job.
             key = self.narration_credentials(request.provider)
@@ -920,7 +957,12 @@ class Runtime:
                         metrics.update(audio_seconds=metadata["duration"], output_bytes=self.take_path(book_id, metadata).stat().st_size)
                     self.store.update_job(job["id"], progress=i+1, message=f"Saved {i+1}/{len(selected)} passages · {reused} reused")
 
-            self.pool.submit(self.run, job, work, self.narration_secrets(request.provider))
+            try:
+                self.pool.submit(self.run, job, work, self.narration_secrets(request.provider))
+            except RuntimeError:
+                self.store.update_job(job["id"], status="failed", error="The local narration worker could not accept this request.",
+                                      message="No narration was started. Restart Bardic and try again.")
+                raise Unavailable("shutting_down", "The narration worker is stopping and accepted no work. No narration was started.") from None
             return job
 
     def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
@@ -1716,8 +1758,10 @@ def create_app(data_dir: Path | None = None):
         runtime = rt(request)
         book = runtime.store.book(book_id)
         segment = next((s for s in book["segments"] if s["id"] == segment_id), None)
-        if not segment or not runtime.valid_audio(book, segment):
-            raise HTTPException(404, "This passage needs audio generation")
+        if not segment:
+            raise NotFound("passage_not_found", "No passage with this ID is in the book.")
+        if not runtime.valid_audio(book, segment):
+            raise NotFound("audio_not_found", "The passage has no current enhanced take.")
         return FileResponse(runtime.take_path(book_id, segment["audio"]), media_type="audio/wav")
 
     @app.get("/api/books/{book_id}/audio-assets/{asset_id}")
@@ -1727,9 +1771,9 @@ def create_app(data_dir: Path | None = None):
         try:
             path = runtime.audio_path(book_id, asset_id)
         except (ValueError, TypeError):
-            raise HTTPException(404, "Audio asset not found") from None
+            raise NotFound("audio_not_found", "No retained audio asset has this ID.") from None
         if not path.is_file():
-            raise HTTPException(404, "Audio asset not found")
+            raise NotFound("audio_not_found", "No retained audio asset has this ID.")
         return FileResponse(path, media_type="audio/wav")
 
     @app.get("/api/books/{book_id}/export")
@@ -1939,7 +1983,7 @@ def create_app(data_dir: Path | None = None):
         store = runtime.store
         repository = ListeningRepository(store)
         with store.lock:
-            store.require_active(book_id)
+            require_active_book(store, book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
             voice, selection = runtime.narrator_choice(body.provider, body.voice)
             session = repository.session(book_id, body.provider, voice, model, selection=selection)
@@ -1960,12 +2004,12 @@ def create_app(data_dir: Path | None = None):
                 return {'session': session, 'job': pending, 'cached': False}
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
-                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
+                raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
             key = runtime.narration_credentials(body.provider)
             if body.provider == 'gemini' and not key:
-                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+                raise Invalid('gemini_key_missing', 'No Gemini API key is configured.')
             if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
-                raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+                raise Invalid('device_narration_unavailable', 'Device narration requires macOS say and ffmpeg on the server.')
             if body.provider == 'breeze':
                 runtime.require_breeze()
             book = store.book(book_id)
@@ -1976,11 +2020,15 @@ def create_app(data_dir: Path | None = None):
             def work():
                 with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job['id'], unit_key=body.segment_id,
                     chapter_id=segment['chapter_id'], provider=body.provider, model=session['model'], kind='narration') as metrics:
-                    audio = repository.render_passage(book_id, session['id'], body.segment_id, key, synthesizer=synthesize,
-                                                       check_cancel=lambda: runtime.check_cancel(job['id']))
-                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
-                    if audio.get('cache_hit'):
+                    runtime.check_cancel(job['id'])
+                    # Equivalent work may have finished while this job waited: reuse it (never persisted as a flag).
+                    audio = repository.cached(book_id, session['id'], body.segment_id)
+                    if audio is not None:
                         metrics['cached'] = True
+                    else:
+                        audio = repository.generate_passage(book_id, session['id'], body.segment_id, key, synthesizer=synthesize,
+                                                            check_cancel=lambda: runtime.check_cancel(job['id']))
+                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
                 store.update_job(job['id'], progress=1, audio=audio)
             try:
                 future = runtime.pool.submit(runtime.run, job, work, runtime.narration_secrets(body.provider))
@@ -1990,7 +2038,7 @@ def create_app(data_dir: Path | None = None):
                 record_safely(store, 'listen_submit_failed', book_id=book_id, segment_id=body.segment_id,
                               session_id=session['id'], job_id=job['id'], provider=body.provider,
                               operation='submit', status='failed')
-                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+                raise Unavailable('shutting_down', 'The narration worker is stopping and accepted no work. No narration was started.') from None
             def settle_cancelled(future):
                 if future.cancelled():
                     state = 'interrupted' if runtime.stopping.is_set() else 'cancelled'
@@ -2017,14 +2065,14 @@ def create_app(data_dir: Path | None = None):
         from .listening import ListeningRepository
         store = runtime.store
         repository = ListeningRepository(store)
-        store.require_active(book_id)
+        require_active_book(store, book_id)
         model = body.model or runtime.preferences['tts_model']
         voice, _ = runtime.narrator_choice(body.provider, body.voice)
         session = repository.session(book_id, body.provider, voice, model)
         book = store.book(book_id)
         segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
         if segment is None:
-            raise NotFound('passage_not_found', 'Passage not found in this book')
+            raise Invalid('unknown_passage', 'No passage with this ID is in the book.')
         chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
         chosen = {**runtime.preferences['listen_chunking'], **(body.chunking.model_dump(exclude_none=True) if body.chunking else {})}
         if body.intent == 'queue' and not (body.chunking and body.chunking.ramp_seconds is not None):
@@ -2076,11 +2124,11 @@ def create_app(data_dir: Path | None = None):
             if active:
                 if active.get('parent_id'):
                     # Joining would let live listening stop the performance's job.
-                    raise HTTPException(409, 'A saved performance is preparing this book. Play that performance, or wait for it to finish.')
+                    raise Conflict('performance_active', 'A saved performance is preparing this book.')
                 if active.get('session_id') != session['id'] or active.get('chapter_id') != chapter['id']:
-                    raise HTTPException(409, 'Another chapter or narrator is being prepared. Stop it before starting this one.')
+                    raise Conflict('chapter_listen_active', 'Another chapter or narrator is being prepared for this book.')
                 if active.get('closing'):
-                    raise HTTPException(409, 'The chapter job is finishing. Try again in a moment.')
+                    raise Conflict('chapter_job_closing', 'The chapter job is finishing; retry in a moment.')
                 # Joining moves generation to the listener; it never starts a second job.
                 fields = {'focus_segment_id': segment['id'], 'joins': active.get('joins', 0) + 1}
                 if position[segment['id']] < position.get(active.get('scope_start_segment_id'), 0):
@@ -2093,16 +2141,25 @@ def create_app(data_dir: Path | None = None):
                 return {'session': session, 'job': store.update_job(active['id'], **fields), 'joined': True}
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
-                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
+                raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
             key = runtime.api_key
             if not key:
-                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+                raise Invalid('gemini_key_missing', 'No Gemini API key is configured.')
             limits = runtime.preferences['tts_limits'].get(session['model'], dict(DEFAULT_TTS_LIMITS))
             blocked_for = LIMITER.daily_block(session['model'])
             if blocked_for > 0:
                 # A provider daily-quota rejection holds until the Pacific reset
                 # (or until the limits are saved again in Settings).
-                raise HTTPException(429, f'The daily Gemini request quota for this model is used up. It resets at midnight Pacific time, in about {max(1, round(blocked_for / 3600))} h.')
+                raise QuotaRefused('daily_quota_reached', 'The daily Gemini request quota for this model is used up. It resets at '
+                                   f'midnight Pacific time, in about {max(1, round(blocked_for / 3600))} h.',
+                                   headers={'Retry-After': str(max(1, int(blocked_for + 0.999)))})
+            used = requests_today(store, session['model'])
+            if used >= limits['rpd']:
+                # Refuse before queueing: a job would only stop at once as quota_limited.
+                wait = seconds_until_reset()
+                raise QuotaRefused('daily_quota_reached', f'This library has used {used} of its {limits["rpd"]} daily Gemini '
+                                   f'requests for this model. The count resets at midnight Pacific time, in about '
+                                   f'{max(1, round(wait / 3600))} h.', headers={'Retry-After': str(max(1, int(wait + 0.999)))})
             job = store.create_job(book_id, 'listen_chapter', len(segments) - position[segment['id']])
             job = store.update_job(job['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                                    model=session['model'], voice=session['voice'], intent=body.intent,
@@ -2116,7 +2173,7 @@ def create_app(data_dir: Path | None = None):
             except RuntimeError:
                 store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                                  message='No narration was started. Restart Bardic and try again.')
-                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+                raise Unavailable('shutting_down', 'The narration worker is stopping and accepted no work. No narration was started.') from None
 
             def settle_cancelled(future):
                 if future.cancelled():
@@ -2142,7 +2199,7 @@ def create_app(data_dir: Path | None = None):
     def preview_performance(book_id: str, body: PerformanceRequest, request: Request):
         from . import performances
         runtime = rt(request)
-        runtime.store.require_active(book_id)
+        require_active_book(runtime.store, book_id)
         return performances.plan(runtime, book_id, performance_request(body))['public']
 
     @app.post('/api/books/{book_id}/performances')
@@ -2156,6 +2213,7 @@ def create_app(data_dir: Path | None = None):
     def get_performance(book_id: str, performance_id: str, request: Request):
         from . import performances
         runtime = rt(request)
+        runtime.store.book(book_id)
         record = performances.PerformanceRepository(runtime.store).get(book_id, performance_id)
         return {'performance': performances.present(runtime, record)}
 
@@ -2163,6 +2221,7 @@ def create_app(data_dir: Path | None = None):
     def performance_audio(book_id: str, performance_id: str, request: Request):
         from . import performances
         runtime = rt(request)
+        runtime.store.book(book_id)
         record = performances.PerformanceRepository(runtime.store).get(book_id, performance_id)
         return {'performance_id': performance_id, 'audio': performances.ready_audio(runtime, record)}
 
@@ -2178,12 +2237,13 @@ def create_app(data_dir: Path | None = None):
         from . import performances
         runtime = rt(request)
         repository = performances.PerformanceRepository(runtime.store)
+        runtime.store.book(book_id)
         repository.get(book_id, performance_id)
         fields = body.model_dump(exclude_none=True)
         if 'name' in fields:
             fields['name'] = fields['name'].strip()
             if not fields['name']:
-                raise HTTPException(400, 'A performance name is required.')
+                raise Invalid('performance_name_required', 'A performance name cannot be only whitespace.')
         record = repository.update(book_id, performance_id, **fields) if fields else repository.get(book_id, performance_id)
         return {'performance': performances.present(runtime, record)}
 
@@ -2195,7 +2255,7 @@ def create_app(data_dir: Path | None = None):
         store = runtime.store
         repository = VoicePreviewRepository(store)
         with store.lock:
-            store.require_active(book_id)
+            require_active_book(store, book_id)
             model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
             voice, selection = runtime.narrator_choice(body.provider, body.voice)
             preview = repository.prepare(book_id, body.provider, voice, model,
@@ -2218,12 +2278,12 @@ def create_app(data_dir: Path | None = None):
                 return {'preview': preview, 'job': pending, 'cached': False}
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
-                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before previewing a voice.')
+                raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
             key = runtime.narration_credentials(body.provider)
             if body.provider == 'gemini' and not key:
-                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+                raise Invalid('gemini_key_missing', 'No Gemini API key is configured.')
             if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
-                raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+                raise Invalid('device_narration_unavailable', 'Device narration requires macOS say and ffmpeg on the server.')
             if body.provider == 'breeze':
                 runtime.require_breeze()
             job = store.create_job(book_id, 'voice_preview', 1)
@@ -2233,11 +2293,14 @@ def create_app(data_dir: Path | None = None):
             def work():
                 with ResourceLedger(store).operation(book_id, 'voice_preview', run_id=job['id'], unit_key=preview['id'],
                         chapter_id=preview['chapter_id'], provider=body.provider, model=preview['model'], kind='narration') as metrics:
-                    audio = repository.render(book_id, preview['id'], key, synthesizer=synthesize,
-                                              check_cancel=lambda: runtime.check_cancel(job['id']))
-                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
-                    if audio.get('cache_hit'):
+                    runtime.check_cancel(job['id'])
+                    audio = repository.cached(book_id, preview['id'])
+                    if audio is not None:
                         metrics['cached'] = True
+                    else:
+                        audio = repository.generate(book_id, preview['id'], key, synthesizer=synthesize,
+                                                    check_cancel=lambda: runtime.check_cancel(job['id']))
+                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
                 store.update_job(job['id'], progress=1, audio=audio)
             try:
                 future = runtime.pool.submit(runtime.run, job, work, runtime.narration_secrets(body.provider))
@@ -2247,7 +2310,7 @@ def create_app(data_dir: Path | None = None):
                 record_safely(store, 'voice_preview_submit_failed', book_id=book_id,
                               segment_id=preview['segment_id'], job_id=job['id'],
                               provider=body.provider, operation='submit', status='failed')
-                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+                raise Unavailable('shutting_down', 'The narration worker is stopping and accepted no work. No narration was started.') from None
             def settle_cancelled(future):
                 if future.cancelled():
                     state = 'interrupted' if runtime.stopping.is_set() else 'cancelled'

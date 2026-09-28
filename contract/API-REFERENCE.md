@@ -1714,7 +1714,7 @@ server ignores. Local read.
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `This passage needs audio generation`: unknown passage, no take, or the take is stale or missing. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `passage_not_found`: The book has no passage with this ID. - `audio_not_found`: The passage has no take, or its take is stale or its file is missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -1736,7 +1736,7 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Audio asset not found`: malformed ID (32-128 lower-case hex) or no such file. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (32-128 lower-case hex) or no such file. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -1760,7 +1760,7 @@ word-perfect speech.
 
 Returns the queued job; poll it. Progress counts passages; the message reports reused passages. For
 Breeze and Gemini every selected speaker must have a usable voice, otherwise 400 before queueing.
-Unlike the listening routes, this route does not check for server shutdown.
+Refused with 503 while the server is shutting down.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1771,11 +1771,12 @@ Request body (`application/json`): [RenderRequest](#schema-renderrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued `render` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: provider is not `system`, `gemini` or `breeze`; the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL; `No passages selected`; or a selected speaker has no usable Breeze/Gemini voice (`Fix the … voice for …`). |
+| 400 | [Error](#schema-error) | - `provider_unsupported`: `provider` is not `system`, `gemini` or `breeze`. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_scene`: The body names a scene (`scene_id`) that is not in this book. - `no_passages_selected`: The named passage is not in the named scene. - `cast_voice_unusable`: A selected speaker has no usable Breeze or Gemini voice; the detail names up to five speakers. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Listening
 
@@ -1803,19 +1804,21 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound record whose `reuse` points at the original take; the
-   original producer `fingerprint` is kept and the new `recipe`/`source_anchor` describe the new binding.
-   A cache hit records a cached resource operation (stage `simple_listen`).
+   this book and retains a new source-bound take whose `reuse` points at the original take. A cache hit
+   records a cached resource operation (stage `simple_listen`); it may also add the take to the
+   equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
    request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.
-3. **Queue.** Otherwise requires an idle book (409), a running worker (503) and an available provider
-   (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
+3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an
+   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
 
-Poll the job: when completed, its `audio` is the take (`mode: "simple"`, `url`, duration,
-provider/model/voice, asset and recipe identity). Failure and cancellation are job outcomes; audio
-finished during a Stop is still retained and can be found in `/listen/takes`. There is no narration
-budget or dollar cap. Do not automatically repeat this POST after an uncertain network response;
-retry only read-only polling.
+Poll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when
+chapter listening finished the passage meanwhile). The job worker checks the cache again before
+synthesis, so equivalent audio retained while the job waited is reused without a provider request; the
+job does not report whether that happened (its resource operation is marked `cached`). Failure and
+cancellation are job outcomes; audio finished during a Stop is still retained and can be found in
+`/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
+after an uncertain network response; retry only read-only polling.
 
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
@@ -1832,12 +1835,12 @@ Request body (`application/json`): [ListenRequest](#schema-listenrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ListenCached](#schema-listencached) \| [ListenQueued](#schema-listenqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `listen` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); the passage no longer matches its source text; or (only when synthesis is needed) the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
-| 409 | [Error](#schema-error) | Only when synthesis is needed: Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getlisteningaudio"></a>
 ### `GET /api/books/{book_id}/listen/audio/{asset_id}`
@@ -1857,7 +1860,7 @@ For a chunk clip, play from `clip_start` to `clip_end`. Local read.
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Listening audio not found`: malformed ID (64 lower-case hex), not retained for this book, or file missing. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (64 lower-case hex), not retained for this book, or file missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -1881,14 +1884,22 @@ the passage, `scope_start_segment_id` extends backwards when needed, `joins` inc
 request for a passage with no audio and no request in flight increments `ramp_restart` (the job
 restarts its ramp). Joining never checks the key or quota and never starts a second job.
 
-**Refusals (409).** The active chapter job belongs to a saved performance (`parent_id`); it is for a
-different chapter or narrator; it is closing (retry shortly); or other work holds the book.
+**Refusals (409).** The active chapter job belongs to a saved performance (`performance_active`); it is
+for a different chapter or narrator (`chapter_listen_active`); it is closing (`chapter_job_closing`,
+retry shortly); or other work holds the book.
 
-**Start.** Otherwise requires a Gemini key (400) and a running worker (503). While a daily-quota block
-holds for the model it returns 429 without sending anything. The block is set in this process after a
-daily-quota 429 from Gemini or after a chapter job stops at the configured requests per day, and lasts
-until midnight Pacific or until limits are saved in Settings. A library already over its configured
-requests per day with no block recorded yet is accepted and the job ends promptly as `quota_limited`.
+**Start.** Otherwise requires a Gemini key (400) and a server that is not shutting down (503). It then
+refuses with 429 `daily_quota_reached`, without queueing or sending anything, when either:
+
+- a daily-quota block holds for the model in this process (set after a daily-quota 429 from Gemini or
+  after a chapter job stopped at the configured requests per day; it lasts until midnight Pacific or
+  until limits are saved in Settings); or
+- this library's recorded Gemini speech requests for the model since midnight Pacific (the
+  `quota.requests_today` of the chapter preview, counting every narration path) have reached the
+  configured requests per day (`limits.rpd`).
+
+The 429 response carries a `Retry-After` header: whole seconds until the block lifts or the quota day
+resets at midnight Pacific.
 
 The job paces requests with the shared per-minute limiter (`waiting_seconds` while waiting), recounts
 this library's daily requests before every send, keeps up to `concurrency` requests in flight (1 until a
@@ -1900,8 +1911,9 @@ passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `ex
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
 `speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
-the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks
-are kept on every outcome; start the chapter again to resume.
+the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
+other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
+start the chapter again to resume.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1912,13 +1924,13 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ChapterListenStarted](#schema-chapterlistenstarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); or no Gemini API key (only when starting). |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when starting: no Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
-| 409 | [Error](#schema-error) | A saved performance is preparing this book; another chapter or narrator is being prepared; the chapter job is closing (retry shortly); or Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `performance_active`: A saved performance's chapter job is preparing this book. - `chapter_listen_active`: A chapter job for another chapter or narrator is active. - `chapter_job_closing`: The matching chapter job is finishing; retry shortly. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 429 | [Error](#schema-error) | A daily-quota block holds for this model in this process (`The daily Gemini request quota for this model is used up. It resets at midnight Pacific time, in about N h.`). Nothing was sent. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 429 | [Error](#schema-error) | - `daily_quota_reached`: Only when starting: a daily-quota block holds for the model, or this library's requests today have reached the configured requests per day. Nothing was queued or sent; `Retry-After` gives the seconds to wait. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewchapterlistening"></a>
 ### `POST /api/books/{book_id}/listen/chapter/preview`
@@ -1930,7 +1942,8 @@ needed, expected audio, ready passages and seconds, effective chunk options, cal
 limits and this library's daily request count for the model. Takes the same body as
 `POST /listen/chapter` (`intent: "queue"` without explicit ramp steps plans full-size chunks only).
 Creates the deterministic narrator session row only; no job, no provider request, no key required, and
-it works while the book is busy.
+it works while the book is busy. When `quota.requests_today` has reached `limits.rpd`, starting the
+chapter is refused with 429.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1941,9 +1954,10 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ChapterListenPlan](#schema-chapterlistenplan) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice). |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="listlisteningtakes"></a>
@@ -1955,7 +1969,7 @@ Saved simple audio for the session, one entry per passage in book order: a chunk
 applies, otherwise the newest single-passage take whose source recipe still matches the passage.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
-No generation. Works for archived books.
+No generation and no stored change. Works for archived books.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1965,7 +1979,7 @@ No generation. Works for archived books.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ListeningTakes](#schema-listeningtakes) | Success. |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Listening session not found`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `listening_session_not_found`: The book has no listening session with this `session_id`. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Performances
@@ -1977,7 +1991,7 @@ Saved performances: named selections of chapters and narration settings over ret
 
 **List saved performances** · operation `listPerformances` · cost `none`
 
-Performances of the book, newest first, each with its latest job summary and readiness. Archived records are included only with `archived=true`. Local read; readiness uses file existence, not WAV validation.
+Performances of the book, newest first, each with its latest job summary and readiness. Archived records are included only with `archived=true`. Local read with no stored change; readiness uses file existence, not WAV validation.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1987,7 +2001,7 @@ Performances of the book, newest first, each with its latest job summary and rea
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceList](#schema-performancelist) | Success. |
-| 404 | [Error](#schema-error) | `Book not found`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="createperformance"></a>
@@ -1998,7 +2012,8 @@ Performances of the book, newest first, each with its latest job summary and rea
 Validate, record and start a performance. Simple performances pin a listening session (takes made
 earlier by live listening with the same narrator count as ready); cast performances snapshot the
 resolved cast now. Returns `{performance, job}`; `job` is null when every passage is already ready.
-The record is saved before the job starts.
+The record is saved before the job starts. When the preview would report `problems`, the request is
+refused with 400: the code is the first problem's, and the detail joins every problem's sentence.
 
 The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
 start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
@@ -2029,12 +2044,12 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: any preview `problems` (joined into one message), unknown chapters, or an unsupported/mismatched model. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_invalid`: The simple narrator voice cannot be used (see `previewPerformance` problems). - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewperformance"></a>
 ### `POST /api/books/{book_id}/performances/preview`
@@ -2045,7 +2060,7 @@ Local plan: readiness, passages to generate, request estimate, expected audio, b
 advisory `notes`, and for Gemini this library's daily request count. No provider calls and no job;
 creating the deterministic listening session row is allowed. Narrator and provider conditions the user
 can fix (missing key, unusable voice, narrator without a voice for a cast) are returned in `problems`
-rather than as errors.
+rather than as errors; `createPerformance` refuses them with the codes it lists.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2056,9 +2071,10 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformancePlan](#schema-performanceplan) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: a chapter ID is not in this book (`Choose chapters from this book.`); the Gemini model is not supported; or the model does not match the device/Breeze fixed model. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getperformance"></a>
@@ -2066,7 +2082,7 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 
 **Get a performance** · operation `getPerformance` · cost `none`
 
-The performance with its latest job summary and readiness. Local read. The book itself is not checked first: an unknown book also gives `Performance not found`.
+The performance with its latest job summary and readiness. Local read with no stored change.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2076,7 +2092,7 @@ The performance with its latest job summary and readiness. Local read. The book 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
-| 404 | [Error](#schema-error) | `Performance not found` (no such performance in this book). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="updateperformance"></a>
@@ -2084,7 +2100,7 @@ The performance with its latest job summary and readiness. Local read. The book 
 
 **Rename or archive a performance** · operation `updatePerformance` · cost `none`
 
-Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched).
+Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2096,10 +2112,10 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
-| 400 | [Error](#schema-error) | `A performance name is required.`: `name` is only whitespace. |
+| 400 | [Error](#schema-error) | - `performance_name_required`: `name` is only whitespace. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Performance not found`. |
-| 422 | [Error](#schema-error) | Request validation failed, including an empty `name` string or one over 200 characters. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getperformanceaudio"></a>
 ### `GET /api/books/{book_id}/performances/{performance_id}/audio`
@@ -2107,10 +2123,10 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 **List a performance's playable audio** · operation `getPerformanceAudio` · cost `none`
 
 Audio for each selected passage that is ready against its current source, as JSON (not bytes); play
-each `url`. Every object has `mode: "performance"` and `performance_id`. Simple performances return the
-`/listen/takes` objects (single-passage takes or chunk clips with `clip_start`/`clip_end`); cast
-performances return the newest retained take per passage, served from `/audio-assets/`. Local read;
-file existence is checked but WAVs are not re-validated.
+each `url`. Simple performances return the `/listen/takes` objects (single-passage takes or chunk clips
+with `clip_start`/`clip_end`); cast performances return the newest retained take per passage
+(`PerformanceCastAudio`, with `speaker_id`), served from `/audio-assets/`. Local read with no stored
+change; file existence is checked but WAVs are not re-validated.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2120,7 +2136,7 @@ file existence is checked but WAVs are not re-validated.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceAudioMap](#schema-performanceaudiomap) | Success. |
-| 404 | [Error](#schema-error) | `Performance not found`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="prepareperformance"></a>
@@ -2133,7 +2149,8 @@ creation do not apply, except that current credentials, limits and chunk options
 resume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes
 match the damaged one's content address is refused rather than overwritten (possible with
 deterministic device voices). Chapters removed from the book are skipped. Returns `{performance, job}`
-with `job` null when nothing is missing.
+with `job` null when nothing is missing. Blocking problems are refused with 400 as for
+`createPerformance`.
 
 The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
 start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
@@ -2163,12 +2180,12 @@ job for the book (including child jobs beyond the 100-job list bound).
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL; or a planning problem such as the cast narrator having no usable voice. |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Performance not found`, or `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Voice previews
 
@@ -2202,10 +2219,11 @@ Reuse is book-scoped and covers source and the effective performance recipe (a c
 reuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled
 `voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after
 the busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its
-`preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is
-checked before synthesis; a take finished in flight is still retained after Stop. There is no retry of
-this POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which
-keeps reported usage and records an unknown cost as unknown, not zero).
+`preview` and, when completed, `audio` (a `VoicePreviewAudio`). The worker checks the cache again
+before synthesis. Credentials are snapshotted at queue time and cancellation is checked before
+synthesis; a take finished in flight is still retained after Stop. There is no retry of this POST and
+no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which keeps reported
+usage and records an unknown cost as unknown, not zero).
 
 Book pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`
 of the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the
@@ -2229,12 +2247,12 @@ Request body (`application/json`): [VoicePreviewRequest](#schema-voicepreviewreq
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoicePreviewCached](#schema-voicepreviewcached) \| [VoicePreviewQueued](#schema-voicepreviewqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `voice_preview` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); `direction` without `character_id`; `segment_direction` without both a passage and a character; the passage no longer matches its source; or (only when synthesis is needed) the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_character`: The body names a character (`character_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `direction_requires_character`: `direction` without `character_id`. - `segment_direction_requires_passage`: `segment_direction` without both a passage and a character. - `pronunciation_invalid`: The `pronunciation` entry is not valid. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book` / `Character not found in this book`. |
-| 409 | [Error](#schema-error) | Only when synthesis is needed: Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getvoicepreviewaudio"></a>
 ### `GET /api/books/{book_id}/voice-preview/audio/{asset_id}`
@@ -2252,7 +2270,7 @@ A retained audition WAV, scoped to its owning book. Every request verifies the c
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Voice preview audio not found` (malformed ID or not retained for this book) / `Voice preview audio is missing or damaged`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID, not retained for this book, or the file is missing or damaged. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -3317,31 +3335,21 @@ The selected enhanced (cast) narration take of a passage.
 Presented only when it is still valid: its recipe fingerprint matches the
 passage's current speaker voice, directions, scene notes, provider and
 model, and its WAV file exists. Otherwise the passage's `audio` is null.
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The `v` query changes when the selected audio changes, so the URL is safe to cache. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hex SHA-256 of the render recipe (the take's reuse identity). |
-| `asset_id` | string \| null |  | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content addressing, whose file is named by `fingerprint`. |
-| `duration` | number | yes | Audio duration in seconds, measured from the WAV. |
+| `url` | string | yes | Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The `v` query changes when the selected audio changes, so the URL is safe to cache and compare. |
+| `asset_id` | string \| null | yes | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Null for takes made before content addressing. |
+| `duration` | number \| null | yes | Audio duration in seconds, measured from the WAV; null only for a take stored without it. |
 | `provider` | string | yes | Narration provider: `system` (device), `gemini` or `breeze`. |
-| `model` | string \| null |  | Speech model ID (`macos-say` for device narration). |
-| `voice` | string \| null |  | Concrete provider voice that performed the take. |
-| `voice_library` | [BookTakeVoiceLibrary](#schema-booktakevoicelibrary) \| null |  | Library voice that was followed, when the character used one. |
+| `model` | string \| null | yes | Speech model ID (`macos-say` for device narration). |
+| `voice` | string \| null | yes | Concrete provider voice that performed the take, or null when not recorded. |
+| `created_at` | string \| null | yes | Always null for Studio takes: their retention time is not recorded on the take. |
+| `voice_library` | [AudioTakeVoiceLibrary](#schema-audiotakevoicelibrary) \| null |  | Library voice that was followed, when the character used one; absent otherwise. |
 | `voice_revision` | string \| null |  | Breeze only: the pinned server revision of the voice. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: sentence timing, or null when the server's timing was not usable. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
-| `resource_usage` | object \| null |  | Internal; do not rely on it. Measured provider usage for the request that produced the take (token counts, estimated cost in USD, cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage. |
-
-<a id="schema-booktakevoicelibrary"></a>
-### BookTakeVoiceLibrary
-
-The library voice and version that performed a take.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Library voice ID (`vl_` + 16 hex). |
-| `version` | integer \| null |  | Version number of that library voice. |
 
 <a id="schema-breezevoicecloned"></a>
 ### BreezeVoiceCloned
@@ -3981,13 +3989,13 @@ designed version, and null for a cloned or imported version, whose clip is a rec
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). |
-| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed. |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not build audio URLs from other fields. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed (takes recorded before content addressing). A different `asset_id` means different audio. |
 | `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
 | `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
 | `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
 | `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
-| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when it was not recorded. |
 
 <a id="schema-libraryvoicedeleted"></a>
 ### LibraryVoiceDeleted
@@ -4094,52 +4102,44 @@ One passage with one simple narrator.
 One passage's estimated clip inside a multi-passage chunk WAV (Gemini chapter listening).
 
 Play ``url`` from ``clip_start`` to ``clip_end``. Consecutive clips of one
-chunk share the same file and play gaplessly.
+chunk share the same file and play gaplessly. Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"simple"` | yes | Always `simple` here. |
-| `available` | `true` | yes | Always true. |
-| `segment_id` | string | yes | Passage this clip narrates. |
 | `url` | string | yes | Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the chunk WAV. |
-| `chunk_id` | string | yes | ID of the retained chunk. |
-| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
-| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
 | `duration` | number | yes | Clip length in seconds (`clip_end - clip_start`, rounded to ms). |
-| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
-| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
 | `provider` | string | yes | Speech provider that produced the chunk, for example `gemini`. |
 | `model` | string | yes | Speech model that produced the chunk, for example `gemini-3.8-flash-tts`. |
 | `voice` | string | yes | Provider voice actually used for the chunk. |
-| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
+| `segment_id` | string | yes | Passage this clip narrates. |
+| `chunk_id` | string | yes | ID of the retained chunk. |
+| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
+| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
+| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
+| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
+| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
 
 <a id="schema-listeningpassageaudio"></a>
 ### ListeningPassageAudio
 
 A retained single-passage simple-listening take, ready to play.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"simple"` | yes | Always `simple` here. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
 | `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the WAV bytes (content address). |
 | `duration` | number | yes | Audio length in seconds. |
-| `provider` | string | yes | Provider that produced the bytes. |
+| `provider` | string | yes | Provider that produced the bytes (`system`, `gemini` or `breeze`). |
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
+| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
-| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
-| `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
-| `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
 | `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
@@ -4181,22 +4181,6 @@ changed on the server (new revision) starts a new session and keeps old takes.
 | `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. |
 | `seed` | integer \| null |  | Breeze only: the pinned generation seed. |
 | `settings` | object \| null |  | Breeze only, when set: pinned speech settings for the voice (provider-defined keys). |
-
-<a id="schema-listeningsourceanchor"></a>
-### ListeningSourceAnchor
-
-The exact source binding a simple take was retained against.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `schema_version` | integer | yes | Anchor format version (1). |
-| `book_id` | string | yes | Book ID the take is bound to (the book it was retained in, even when its bytes were reused from another book). |
-| `session_id` | string | yes | Listening (narrator) session ID: 64 hex characters, a hash of the session configuration. |
-| `chapter_id` | string | yes | Chapter ID containing the passage; `start` and `end` index this chapter's text. |
-| `segment_id` | string | yes | Passage (segment) ID the take narrates. |
-| `start` | integer | yes | Passage start, chapter-local code-point offset. |
-| `end` | integer | yes | Passage end (exclusive), chapter-local code-point offset. |
-| `fingerprint` | string | yes | Hash of the passage speech recipe. |
 
 <a id="schema-listeningtake"></a>
 ### ListeningTake
@@ -4340,29 +4324,27 @@ Playable audio of a performance.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `performance_id` | string | yes | ID of the performance (`pf_…`). |
-| `audio` | map of string → [PerformancePassageAudio](#schema-performancepassageaudio) \| [PerformanceChunkClipAudio](#schema-performancechunkclipaudio) \| [PerformanceCastAudio](#schema-performancecastaudio) | yes | Keyed by passage (segment) ID; only passages ready against their current source. |
+| `audio` | map of string → [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [PerformanceCastAudio](#schema-performancecastaudio) | yes | Keyed by passage (segment) ID; only passages ready against their current source. Simple performances give the `/listen/takes` objects; cast performances give `PerformanceCastAudio`. |
 
 <a id="schema-performancecastaudio"></a>
 ### PerformanceCastAudio
 
 A cast performance's retained passage take.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this take belongs to. |
-| `available` | `true` | yes | Always true. |
-| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{asset_id}`. |
-| `asset_id` | string | yes | Content hash of the WAV (hex). For reused legacy Studio takes it can be a recipe fingerprint. |
-| `duration` | number \| null | yes | Audio length in seconds. |
-| `fingerprint` | string \| null | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes. |
+| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{id}`. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the WAV (content address), or null for a reused Studio take recorded before content addressing (its URL then names the file by recipe). |
+| `duration` | number \| null | yes | Audio length in seconds, or null when the retained record lacks it. |
 | `provider` | string \| null | yes | Narration provider that produced the take (`system`, `gemini` or `breeze`); null when the retained take metadata does not record it. |
 | `model` | string \| null | yes | Speech model that produced the take (for example `macos-say`, `breeze-tts-2` or a Gemini TTS model); null when the retained take metadata does not record it. |
-| `voice` | string \| null | yes | Provider voice that performed the take. |
+| `voice` | string \| null | yes | Provider voice that performed the take, or null when not recorded. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the take was retained for this performance. |
 | `speaker_id` | string \| null | yes | The passage's speaker (a character ID, `narrator` or `unassigned`). |
 | `character_id` | string \| null | yes | Character whose voice was used (`narrator` when falling back). |
 | `fallback` | boolean | yes | True when the speaker had no usable voice and the narrator voice was used. |
-| `created_at` | string \| null | yes | ISO 8601 UTC time the take was retained for this performance. |
 
 <a id="schema-performancecastmember"></a>
 ### PerformanceCastMember
@@ -4387,33 +4369,6 @@ Readiness of one selected chapter.
 | `title` | string | yes | Chapter title; empty string when the chapter has none. |
 | `passages_total` | integer | yes | Passages in the chapter. |
 | `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
-
-<a id="schema-performancechunkclipaudio"></a>
-### PerformanceChunkClipAudio
-
-A simple performance's chunk clip (the `/listen/takes` object relabelled).
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `available` | `true` | yes | Always true. |
-| `segment_id` | string | yes | Passage this clip narrates. |
-| `url` | string | yes | Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`. |
-| `asset_id` | string | yes | SHA-256 hex of the chunk WAV. |
-| `chunk_id` | string | yes | ID of the retained chunk. |
-| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
-| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
-| `duration` | number | yes | Clip length in seconds (`clip_end - clip_start`, rounded to ms). |
-| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
-| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
-| `provider` | string | yes | Speech provider that produced the chunk, for example `gemini`. |
-| `model` | string | yes | Speech model that produced the chunk, for example `gemini-3.8-flash-tts`. |
-| `voice` | string | yes | Provider voice actually used for the chunk. |
-| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
-| `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
-| `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
 
 <a id="schema-performanceedit"></a>
 ### PerformanceEdit
@@ -4443,36 +4398,6 @@ Performances of a book, newest first.
 | --- | --- | --- | --- |
 | `performances` | list of [Performance](#schema-performance) | yes | Performances of the book, newest first. Archived ones only when requested with `archived=true`. |
 
-<a id="schema-performancepassageaudio"></a>
-### PerformancePassageAudio
-
-A simple performance's single-passage take (the `/listen/takes` object relabelled).
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
-| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`. |
-| `asset_id` | string | yes | SHA-256 hex of the WAV bytes (content address). |
-| `duration` | number | yes | Audio length in seconds. |
-| `provider` | string | yes | Provider that produced the bytes. |
-| `model` | string | yes | Speech model that produced the bytes. |
-| `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
-| `session_id` | string | yes | Listening session the take belongs to. |
-| `segment_id` | string | yes | Passage the take narrates. |
-| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
-| `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
-| `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
-| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
-| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
-
 <a id="schema-performanceplan"></a>
 ### PerformancePlan
 
@@ -4490,7 +4415,7 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `requests_estimate` | integer | yes | Gemini simple: planned full-size chunk requests; otherwise passages to generate. |
 | `expected_seconds` | number | yes | Missing text at 14 code points per second plus ready durations. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Readiness per requested chapter, in book order. |
-| `problems` | list of string | yes | Blocking conditions; create refuses (400) while any exist. |
+| `problems` | list of string | yes | Blocking conditions, as sentences that state the condition; create refuses (400, with the first problem's code) while any exist. |
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
@@ -6307,13 +6232,13 @@ design model used.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). |
-| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed. |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not build audio URLs from other fields. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed (takes recorded before content addressing). A different `asset_id` means different audio. |
 | `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
 | `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
 | `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
 | `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
-| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when it was not recorded. |
 
 <a id="schema-voicedraftsaved"></a>
 ### VoiceDraftSaved
@@ -6498,22 +6423,19 @@ An immutable audition request.
 
 A retained audition take.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"preview"` | yes | Always `preview`. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
 | `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/voice-preview/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the WAV bytes. |
 | `duration` | number | yes | Seconds. |
 | `provider` | string | yes | Provider that produced the bytes: `system`, `gemini` or `breeze`. |
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used. |
+| `created_at` | string | yes | ISO 8601 UTC time the take was retained. |
 | `preview_id` | string | yes | ID of the audition request (`VoicePreview.id`) this take was retained for. |
 | `schema_version` | integer | yes | Take record format version (1). |
-| `created_at` | string | yes | ISO 8601 UTC. |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes. |
-| `source_anchor` | [VoicePreviewSourceAnchor](#schema-voicepreviewsourceanchor) \| null | yes | Internal; do not rely on it. Copy of the preview source anchor. |
 | `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). |
 | `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. |

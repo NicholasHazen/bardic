@@ -34,7 +34,6 @@ function toast(message, error = false) {
 const ERROR_HINTS = {
   breeze_voice_unavailable:'Refresh Breeze voices in Settings.',
   breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.',
-  breeze_default_voice_missing:'Choose a default Breeze voice in Voices.',
   book_archived:'It is listed under Removed items.',
 };
 async function request(path, options = {}) {
@@ -60,7 +59,7 @@ const currentChapter = () => state.book?.chapters.find(c => c.id === state.chapt
 const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === state.chapterId) || [];
 const segmentById = (id) => state.book?.segments.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
-const playable = (segment) => Boolean(segment?.audio?.url && segment.audio.available !== false && !segment.audio.stale && !segment.audio.is_stale);
+const playable = (segment) => Boolean(segment?.audio?.url && !segment.audio.stale && !segment.audio.is_stale);
 const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
 const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.BardicListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
 const listeningReady = segment => Boolean(listeningAudio(segment)?.url);
@@ -985,7 +984,7 @@ function applyBook(book) {
   if (referencesStale) { state.referenceCache.clear(); state.referenceVersion++; }
   state.book = book;
   const next = segmentById(state.segmentId);
-  if (!simpleActive() && state.audioSegmentId && (!playable(next) || (next?.audio?.asset_id || next?.audio?.fingerprint) !== (previous?.audio?.asset_id || previous?.audio?.fingerprint))) stopAudio({clear:true});
+  if (!simpleActive() && state.audioSegmentId && (!playable(next) || next?.audio?.url !== previous?.audio?.url)) stopAudio({clear:true});
   if (!book.chapters.some(c => c.id === state.chapterId)) state.chapterId = book.chapters[0]?.id;
   if (!next) state.segmentId = chapterSegments()[0]?.id;
   const index = state.books.findIndex(b => b.id === book.id);

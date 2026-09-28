@@ -34,6 +34,20 @@ def setup(tmp_path):
     return store, repository, book, calls, render
 
 
+def stored(store, audio):
+    """The retained take record behind a presented audio object (newest when bytes repeat)."""
+    book_id = audio['url'].split('/')[3]
+    with store.connect() as conn:
+        row = conn.execute("""SELECT body FROM listening_takes WHERE book_id=? AND session_id=? AND segment_id=?
+            AND asset_id=? ORDER BY rowid DESC LIMIT 1""", (book_id, audio['session_id'], audio['segment_id'],
+                                                            audio['asset_id'])).fetchone()
+    return json.loads(row[0])
+
+
+PUBLIC = {'url', 'asset_id', 'duration', 'provider', 'model', 'voice', 'created_at', 'session_id', 'segment_id',
+          'reuse', 'resource_usage', 'provider_timing', 'breeze', 'voice_revision'}
+
+
 def production_snapshot(store):
     with store.connect() as conn:
         return {table: conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
@@ -49,7 +63,7 @@ def test_one_voice_verbatim_transcript_and_no_enhanced_production_mutation(setup
     assert repo.takes(book['id'], session['id']) == {'session':session, 'takes':[]}
     for segment in book['segments'][:2]:
         audio = repo.render_passage(book['id'], session['id'], segment['id'], 'private-test-key', synthesizer=render)
-        assert audio['mode'] == 'simple' and audio['available'] is True
+        assert set(audio) <= PUBLIC, 'recipe hashes, anchors and lookup keys stay in storage'
         assert audio['voice'] == 'Kore' and audio['duration'] > 0
         assert audio['url'].startswith(f"/api/books/{book['id']}/listen/audio/")
         assert repo.asset_path(book['id'], audio['asset_id']).read_bytes()
@@ -86,7 +100,7 @@ def test_cached_recipe_survives_restart_enhanced_edits_and_voice_round_trip(setu
     assert len(calls) == 1
     other = repo.session(book['id'], 'gemini', 'Puck')
     replacement = repo.render_passage(book['id'], other['id'], segment['id'], synthesizer=render)
-    assert replacement['recipe'] != audio['recipe'] and len(calls) == 2
+    assert stored(store, replacement)['recipe'] != stored(store, audio)['recipe'] and len(calls) == 2
     assert repo.cached(book['id'], first['id'], segment['id'])['asset_id'] == audio['asset_id']
     assert repo.asset_path(book['id'], audio['asset_id']).read_bytes() == original_bytes
     assert len(repo.takes(book['id'], first['id'])['takes']) == 1
@@ -122,7 +136,7 @@ def test_model_and_source_changes_need_distinct_recipes(setup):
     store.save_book(edited)
     assert repo.cached(book['id'], first['id'], segment['id']) is None
     new = repo.render_passage(book['id'], first['id'], segment['id'], synthesizer=render)
-    assert new['recipe'] != old['recipe']
+    assert stored(store, new)['recipe'] != stored(store, old)['recipe']
     assert repo.asset_path(book['id'], old['asset_id']).is_file()
 
 
@@ -189,13 +203,16 @@ def test_source_anchors_and_cross_book_ownership_are_enforced(setup):
     for identifier in ('../escape', 'g' * 64, '../' + audio['asset_id']):
         with pytest.raises(KeyError):
             repo.asset_path(book['id'], identifier)
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match='No passage'):
         repo.render_passage(book['id'], session['id'], 'missing', synthesizer=render)
     malformed = store.book(book['id'])
     malformed['segments'][0]['text'] = 'Text absent from the original source'
     store.save_book(malformed)
     with pytest.raises(ValueError, match='original source'):
         repo.render_passage(book['id'], session['id'], malformed['segments'][0]['id'], synthesizer=render)
+    with pytest.raises(ValueError) as error:
+        repo.render_passage(book['id'], session['id'], malformed['segments'][0]['id'], synthesizer=render)
+    assert error.value.code == 'passage_source_mismatch'
 
 
 @pytest.mark.parametrize('provider,voice,model', [('openai','Kore',None),('gemini','Kore','bad-model'),
@@ -222,16 +239,19 @@ def test_same_text_reuses_across_passage_ids_books_and_restart_with_real_provena
     store.save_book(repeated)
     repo = ListeningRepository(Store(store.root))
     repeated_session = repo.session(repeated['id'], 'gemini', 'Kore')
+    first_record = stored(store, first)
     for target in repeated['segments']:
         reused = repo.render_passage(repeated['id'], repeated_session['id'], target['id'],
                                      synthesizer=lambda *_: pytest.fail('Equivalent speech should be reused'))
-        assert reused['cache_hit'] is True
+        assert 'cache_hit' not in reused, 'a cache hit is never a field of the audio'
         assert reused['asset_id'] == first['asset_id']
-        assert reused['fingerprint'] == first['fingerprint'], 'Do not invent a new producer fingerprint'
-        assert reused['source_anchor']['fingerprint'] != first['fingerprint']
-        assert reused['source_anchor']['book_id'] == repeated['id']
-        assert reused['source_anchor']['start'] == target['start']
-        assert reused['recipe'] != first['recipe']
+        record = stored(store, reused)
+        assert record['fingerprint'] == first_record['fingerprint'], 'Do not invent a new producer fingerprint'
+        assert record['source_anchor']['fingerprint'] != first_record['fingerprint']
+        assert record['source_anchor']['book_id'] == repeated['id']
+        assert record['source_anchor']['start'] == target['start']
+        assert record['recipe'] != first_record['recipe']
+        assert reused['reuse']['fingerprint'] == first_record['fingerprint']
         with store.connect() as conn:
             reused_row = conn.execute('SELECT body FROM listening_takes WHERE id=?', (reused['reuse']['take_id'],)).fetchone()
         assert reused_row, 'Every reuse dependency references an actual retained take'
@@ -291,7 +311,7 @@ def test_shared_cache_never_reuses_changed_speech_inputs(setup, monkeypatch, cha
     assert repo.cached(another['id'], other['id'], another['segments'][0]['id']) is None
     new = repo.render_passage(another['id'], other['id'], another['segments'][0]['id'], synthesizer=render)
     assert len(calls) == 2
-    assert new['synthesis_key'] != old['synthesis_key']
+    assert stored(store, new)['synthesis_key'] != stored(store, old)['synthesis_key']
     assert 'reuse' not in new
 
 
@@ -342,12 +362,13 @@ def test_cache_version_bump_retains_new_identity_even_when_audio_bytes_are_ident
         old_id, old_body = conn.execute('SELECT id,body FROM listening_takes').fetchone()
     monkeypatch.setattr('bardic.listening.SYNTHESIS_CACHE_VERSION', 2)
     second = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic)
-    assert second['asset_id'] == first['asset_id'] and second['recipe'] == first['recipe']
-    assert second['synthesis_key'] != first['synthesis_key']
+    old, new = json.loads(old_body), stored(store, second)
+    assert second['asset_id'] == first['asset_id'] and new['recipe'] == old['recipe']
+    assert new['synthesis_key'] != old['synthesis_key']
     assert len(calls) == 2 and 'reuse' not in second
     with store.connect() as conn:
         assert conn.execute('SELECT count(*) FROM listening_takes').fetchone()[0] == 2
         assert conn.execute('SELECT body FROM listening_takes WHERE id=?', (old_id,)).fetchone()[0] == old_body
-    assert repo.cached(book['id'], session['id'], segment['id'])['synthesis_key'] == second['synthesis_key']
-    assert repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic)['cache_hit'] is True
-    assert len(calls) == 2
+    assert repo.cached(book['id'], session['id'], segment['id'])['created_at'] == new['created_at']
+    assert repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic) is not None
+    assert len(calls) == 2, 'the new identity is a cache hit'

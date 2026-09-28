@@ -147,7 +147,7 @@ def test_device_simple_performance_prepares_only_selected_chapters_and_replays_w
     assert {call['segment']['id'] for call in calls} == {segment['id'] for segment in selected}
     ready = audio(client, book, performance)
     assert set(ready) == {segment['id'] for segment in selected}
-    assert all(item['mode'] == 'performance' and item['performance_id'] == performance['id'] for item in ready.values())
+    assert all(item['session_id'] == performance['session_id'] for item in ready.values())
     assert client.get(next(iter(ready.values()))['url']).status_code == 200
     again = client.post(f"/api/books/{book['id']}/performances/{performance['id']}/prepare").json()
     assert again['job'] is None and len(calls) == len(selected)
