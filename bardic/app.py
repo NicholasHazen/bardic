@@ -38,7 +38,7 @@ from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, 
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
 from .voice_routes import import_breeze_voices, register as register_voice_routes
 from .config import data_directory
-from .errors import STATUS_CODES, ApiError, NotFound
+from .errors import STATUS_CODES, ApiError, Conflict, NotFound
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .lan import allowed_hosts
@@ -46,7 +46,7 @@ from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .pipeline import default_registry
 from .pipeline.api import build_router as pipeline_router
 from .pipeline.repository import PipelineRepository
-from .series import SeriesRepository
+from .series import SeriesRepository, require_active_book
 from .structure import repair_structure, transform_checkpoint_structure
 from .store import InstanceLock, Store
 from .take_archive import produce_take
@@ -579,10 +579,10 @@ class Runtime:
         self.store.require_active(book_id)
         # Every active job counts: a long run can have more than 100 newer child jobs.
         if any(j["status"] in ACTIVE for j in self.store.jobs(book_id, limit=None, active=True)):
-            raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
+            raise Conflict('job_active', "A job is working on this book.")
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
                for j in self.store.jobs(limit=None)):
-            raise HTTPException(409, 'This book is reserved by an active series run. Stop the series run before editing.')
+            raise Conflict('series_run_active', 'An active series run reserves this book.')
 
     def audio_path(self, book_id, audio_id):
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", book_id) or not re.fullmatch(r"[a-f0-9]{32,128}", audio_id):
@@ -1202,7 +1202,7 @@ def create_app(data_dir: Path | None = None):
 
     def require_series_not_running(runtime, series_id):
         if series_id and any(job['status'] in ACTIVE for job in runtime.store.jobs('series:' + series_id)):
-            raise HTTPException(409, 'Wait for this series run to finish or stop it first.')
+            raise Conflict('series_run_active', 'This series has an active processing run.')
 
     def book_series(runtime, book_id):
         repository = SeriesRepository(runtime.store)
@@ -1220,6 +1220,7 @@ def create_app(data_dir: Path | None = None):
     def set_book_series(book_id: str, body: SeriesMembershipRequest, request: Request):
         runtime = rt(request)
         with runtime.store.lock:
+            require_active_book(runtime.store, book_id)
             runtime.require_idle(book_id)
             require_series_not_running(runtime, body.series_id)
             SeriesRepository(runtime.store).set_membership(book_id, body.series_id, body.position)
@@ -1231,12 +1232,18 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/series/{series_id}/characters")
     def create_series_character(series_id: str, body: SeriesNameRequest, request: Request):
-        return SeriesRepository(rt(request).store).create_character(series_id, body.name)
+        from .series_processing import series_view
+        runtime = rt(request)
+        with runtime.store.lock:
+            series_view(runtime.store, series_id, active=True)
+            require_series_not_running(runtime, series_id)
+            return SeriesRepository(runtime.store).create_character(series_id, body.name)
 
     @app.put("/api/books/{book_id}/series/characters/{character_id}")
     def link_series_character(book_id: str, character_id: str, body: SeriesCharacterLinkRequest, request: Request):
         runtime = rt(request)
         with runtime.store.lock:
+            require_active_book(runtime.store, book_id)
             runtime.require_idle(book_id)
             repository = SeriesRepository(runtime.store)
             if body.series_character_id is None:
@@ -1245,7 +1252,12 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/books/{book_id}/series/context")
     def get_book_series_context(book_id: str, request: Request):
-        return SeriesRepository(rt(request).store).context_for_book(book_id)
+        context = SeriesRepository(rt(request).store).context_for_book(book_id)
+        # Source hashes are validation bookkeeping; analysis still receives them.
+        for character in context['characters']:
+            character['observations'] = [{k: v for k, v in item.items() if k != 'source_hash'}
+                                         for item in character['observations']]
+        return context
 
     @app.get("/api/books/{book_id}/analysis")
     def get_analysis(book_id: str, request: Request):
@@ -1621,41 +1633,58 @@ def create_app(data_dir: Path | None = None):
         data, media_type, etag = LibraryRepository(rt(request).store).cover(book_id)
         return Response(data, media_type=media_type, headers={'ETag': etag, 'Cache-Control': 'private, max-age=300'})
 
-    def require_series_idle(runtime, series_id):
+    def require_series_idle(runtime, series):
+        """409 while this series has an active run, or any member book (removed ones too) is busy."""
+        require_series_not_running(runtime, series['id'])
+        members = {volume['book_id'] for volume in series['volumes'] if volume.get('book_id')}
+        for book_id in sorted(members):
+            if any(j['status'] in ACTIVE for j in runtime.store.jobs(book_id, limit=None, active=True)):
+                raise Conflict('job_active', 'A job is working on a book of this series.')
+        if any(j['kind'] == 'series' and j['status'] in ACTIVE and members.intersection(j.get('book_ids', []))
+               for j in runtime.store.jobs(limit=None)):
+            raise Conflict('series_run_active', 'An active series run reserves a book of this series.')
+
+    def editable_series(runtime, series_id):
         from .series_processing import series_view
-        series = series_view(runtime.store, series_id)
-        for book in series['books']:
-            runtime.require_idle(book['book_id'])
-        require_series_not_running(runtime, series_id)
+        series = series_view(runtime.store, series_id, active=True)
+        require_series_idle(runtime, series)
         return series
 
     @app.patch('/api/series/{series_id}')
     def rename_series(series_id: str, body: SeriesNameRequest, request: Request):
         from .library import LibraryRepository
+        from .series import _name
         runtime = rt(request)
         with runtime.store.lock:
-            require_series_idle(runtime, series_id)
-            return LibraryRepository(runtime.store).rename_series(series_id, body.name)
+            editable_series(runtime, series_id)
+            return LibraryRepository(runtime.store).rename_series(series_id, _name(body.name, 'series name'))
+
+    def set_series_archived(request, series_id, archived):
+        # Idempotent: a series already in the requested state is returned unchanged, with no checks or records.
+        from .library import LibraryRepository
+        from .series_processing import series_view
+        runtime = rt(request)
+        with runtime.store.lock:
+            series = series_view(runtime.store, series_id)
+            if series['archived'] == archived:
+                return {'id': series_id, 'archived': archived, 'retained': True}
+            require_series_idle(runtime, series)
+            return LibraryRepository(runtime.store).archive_series(series_id, archived=archived)
 
     @app.post('/api/series/{series_id}/archive')
     def archive_series(series_id: str, request: Request):
-        from .library import LibraryRepository
-        runtime = rt(request)
-        with runtime.store.lock:
-            require_series_idle(runtime, series_id)
-            return LibraryRepository(runtime.store).archive_series(series_id)
+        return set_series_archived(request, series_id, True)
 
     @app.post('/api/series/{series_id}/restore')
     def restore_series(series_id: str, request: Request):
-        from .library import LibraryRepository
-        return LibraryRepository(rt(request).store).archive_series(series_id, archived=False)
+        return set_series_archived(request, series_id, False)
 
     @app.put('/api/series/{series_id}/volumes')
     def add_series_volume(series_id: str, body: SeriesVolumeRequest, request: Request):
         from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
-            require_series_idle(runtime, series_id)
+            editable_series(runtime, series_id)
             return LibraryRepository(runtime.store).add_volume(series_id, body.position, body.title, body.status)
 
     @app.delete('/api/series/{series_id}/volumes/{position}')
@@ -1663,7 +1692,7 @@ def create_app(data_dir: Path | None = None):
         from .library import LibraryRepository
         runtime = rt(request)
         with runtime.store.lock:
-            require_series_idle(runtime, series_id)
+            editable_series(runtime, series_id)
             return LibraryRepository(runtime.store).remove_volume(series_id, position)
 
     @app.post('/api/series/{series_id}/plan')

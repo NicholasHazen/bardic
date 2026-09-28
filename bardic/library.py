@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 
 from .store import now
-from .errors import NotFound
+from .errors import Conflict, Invalid, NotFound
 
 
 def initialize_schema(conn):
@@ -62,16 +62,16 @@ def persist_cover(conn, book):
 
 def _position(value):
     if type(value) not in {int, float} or not math.isfinite(value) or not 0 <= value <= 1_000_000:
-        raise ValueError('Set a finite reading order between 0 and 1,000,000; decimals allow side stories.')
+        raise Invalid('position_invalid', 'A reading order must be a finite number from 0 through 1,000,000.')
     return float(value)
 
 
 def _label(value, name, *, required=False, maximum=500):
     if not isinstance(value, str) or len(value) > maximum or any(ord(c) < 32 and c not in '\t\r\n' for c in value):
-        raise ValueError(f'Choose a {name} of at most {maximum} characters.')
+        raise Invalid('text_invalid', f'A {name} must have at most {maximum} characters and no control characters.')
     value = ' '.join(value.split())
     if required and not value:
-        raise ValueError(f'Enter a {name}.')
+        raise Invalid('text_invalid', f'A {name} cannot be blank.')
     return value
 
 
@@ -125,7 +125,7 @@ class LibraryRepository:
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
                 raise NotFound('series_not_found', 'Series not found')
             if is_archived(conn, 'series', series_id):
-                raise ValueError('Restore this series from Removed items before processing or editing it.')
+                raise Conflict('series_archived', 'The series is removed (archived). Restore it first.')
 
     def summary(self, book_id):
         from .series import _membership
@@ -247,7 +247,7 @@ class LibraryRepository:
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
                 raise NotFound('series_not_found', 'Series not found')
             if any(row[0].casefold() == name.casefold() for row in conn.execute('SELECT name FROM series WHERE id!=?', (series_id,))):
-                raise ValueError('A series with that name already exists.')
+                raise Invalid('series_name_taken', 'Another series already has this name (names are compared ignoring case).')
             ids = [r[0] for r in conn.execute('SELECT book_id FROM series_books WHERE series_id=?', (series_id,))]
             for book_id in ids:
                 self._idle(book_id)
@@ -264,7 +264,7 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             self.require_active_series(series_id)
             if conn.execute('SELECT 1 FROM series_books WHERE series_id=? AND position=?', (series_id, position)).fetchone():
-                raise ValueError('A book already occupies that reading order, including removed books.')
+                raise Invalid('position_taken', 'A supplied book (possibly a removed one) already has this reading order.')
             conn.execute('''INSERT INTO series_volume_slots VALUES (?,?,?,?,?) ON CONFLICT(series_id,position)
                 DO UPDATE SET title=excluded.title,status=excluded.status''', (series_id, position, title, status, now()))
         return {'series_id': series_id, 'position': position, 'title': title, 'status': status, 'book_id': None}

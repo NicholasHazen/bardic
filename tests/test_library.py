@@ -10,6 +10,7 @@ from PIL import Image
 import pytest
 
 from bardic.artifacts import ArtifactRepository
+from bardic.errors import Conflict
 from bardic.importer import parse_book
 from bardic.library import LibraryRepository
 from bardic.series import SeriesRepository
@@ -147,7 +148,7 @@ def test_series_removal_preserves_memberships_links_observations_and_book_visibi
     assert series.list_series() == [] and series.list_series(include_archived=True)[0]['archived']
     assert len(store.books()) == 1 and series.membership(book['id']) is None
     assert series.links_for_book(book['id']) == links
-    with pytest.raises(ValueError, match='Restore'):
+    with pytest.raises(Conflict, match='Restore'):
         repository.require_active_series(saga['id'])
     assert series.context_for_book(book['id'])['characters'] == []
     repository.archive_series(saga['id'], False)
@@ -190,7 +191,7 @@ def test_missing_and_planned_slots_are_explicit_and_replaced_by_real_book(librar
     series.set_membership(book['id'], saga['id'], 1)
     volumes = series.list_series()[0]['volumes']
     assert len(volumes) == 2 and volumes[0]['book_id'] == book['id'] and volumes[0]['status'] == 'available'
-    with pytest.raises(ValueError, match='already occupies'):
+    with pytest.raises(ValueError, match='already has this reading order'):
         repository.add_volume(saga['id'], 1, status='missing')
     repository.remove_volume(saga['id'], 1.5)
     assert len(series.list_series()[0]['volumes']) == 1

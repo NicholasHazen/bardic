@@ -188,7 +188,7 @@ def test_definitions_expose_steps_and_validated_settings(client):
     assert [s['id'] for s in body['steps']] == ['structure', 'census', 'discovery', 'quotes', 'profiles', 'directing']
     discovery = next(s for s in body['steps'] if s['id'] == 'discovery')
     assert {s['id']: s['requires'] for s in body['steps']}['directing'] == ['profiles']
-    assert discovery['settings'] == {'provider': 'openai', 'model': MODEL, 'gate': 'auto', 'saved': False}
+    assert discovery['settings'] == {'provider': 'openai', 'model': MODEL, 'gate': 'auto', 'saved': False, 'saved_invalid': False}
     assert client.put('/api/analysis-pipeline/steps/structure/settings', json={'provider': 'openai', 'model': MODEL}).status_code == 400
     assert client.put('/api/analysis-pipeline/steps/profiles/settings', json={'provider': 'local'}).status_code == 400
     saved = client.put('/api/analysis-pipeline/steps/profiles/settings',
@@ -255,7 +255,7 @@ def test_review_gate_candidate_diff_accept_and_rollback(client):
     assert speakers(client, book['id']) == ['Mara', 'Mara', 'Mara']
     decisions = client.get(f"{base}/steps/directing/versions").json()['decisions']
     assert [d['mode'] for d in decisions[:3]] == ['user', 'user', 'auto']
-    assert client.post(f"{base}/steps/directing/versions/{accepted_version['id']}/reject", json={}).status_code == 400
+    assert client.post(f"{base}/steps/directing/versions/{accepted_version['id']}/reject", json={}).status_code == 409
     assert client.post(f"{base}/steps/directing/versions/{candidate['id']}/reject", json={}).status_code == 200
     assert latest(client, book['id'], 'directing')['state'] == 'rejected'
 
@@ -290,7 +290,8 @@ def test_manual_edits_survive_acceptance_and_only_lock_their_fields(client):
 def test_outside_changes_are_recorded_as_external_versions(client):
     book = import_book(client)
     base = f"/api/books/{book['id']}/analysis-pipeline"
-    step_state(client, book['id'], 'directing')
+    # Opening the tab (a GET) records nothing; the first pipeline POST records the baseline.
+    assert client.post(f'{base}/plan', json={'steps': ['directing']}).status_code == 200
     before = client.get(f"/api/books/{book['id']}").json()
     response = client.post(f"/api/books/{book['id']}/analyze", json={'provider': 'local', 'phase': 'full'})
     assert wait_job(client, response.json()['id'])['status'] == 'completed'
@@ -417,7 +418,7 @@ def test_a_second_bad_id_response_fails_the_unit_without_a_third_request(client)
 def test_run_validation_rejects_unsafe_requests(client):
     book = import_book(client)
     base = f"/api/books/{book['id']}/analysis-pipeline"
-    assert client.post(f'{base}/runs', json={'steps': ['nope']}).status_code == 404
+    assert client.post(f'{base}/runs', json={'steps': ['nope']}).status_code == 400
     assert client.post(f'{base}/runs', json={'steps': ['discovery'], 'chapter_ids': ['missing']}).status_code == 400
     assert client.post(f'{base}/runs', json={'steps': ['discovery'], 'expected_fingerprint': 'stale'}).status_code == 409
     unconfirmed = client.post(f'{base}/runs', json={'steps': ['census']})
@@ -441,7 +442,7 @@ def test_plain_steps_run_without_keys_and_chapter_scope_narrows_work(client):
 
 def test_decision_log_is_append_only(client, tmp_path):
     book = import_book(client)
-    step_state(client, book['id'], 'directing')
+    client.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={'steps': ['structure']})  # records the baseline
     with sqlite3.connect(tmp_path / 'library.sqlite3') as conn:
         with pytest.raises(sqlite3.DatabaseError, match='append-only'):
             conn.execute('DELETE FROM pipeline_decisions')

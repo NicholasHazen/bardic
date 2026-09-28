@@ -42,13 +42,13 @@ def test_version_tables_diffs_and_decision_errors(client, monkeypatch):  # noqa:
         f"{base}/steps/discovery/versions/{candidate['id']}", params={'scope': scope}).json()['rows'])
 
     path = f"{base}/steps/discovery/versions/{candidate['id']}"
-    assert client.get(path, params={'offset': -1}).status_code == 400
-    assert client.get(path, params={'compare': 'f' * 32}).status_code == 404
+    assert client.get(path, params={'offset': -1}).json()['offset'] == 0  # clamped
+    assert client.get(path, params={'compare': 'f' * 32}).status_code == 400
     assert client.get(f'{base}/steps/nope/versions').status_code == 404
     assert client.get(f"{base}/steps/discovery/versions/{'f' * 32}").status_code == 404
     assert client.get(f"{base}/steps/census/versions/{candidate['id']}").status_code == 404
     assert client.post(f'{path}/preview', json={'scopes': []}).status_code == 400
-    assert client.post(f'{base}/steps/discovery/versions/accepted/reject', json={}).status_code == 400
+    assert client.post(f'{base}/steps/discovery/versions/accepted/reject', json={}).status_code == 409
 
     impact = client.post(f'{path}/preview', json={}).json()
     assert impact['changed_scopes']
@@ -57,5 +57,5 @@ def test_version_tables_diffs_and_decision_errors(client, monkeypatch):  # noqa:
     accepted = client.post(f'{path}/accept', json={'expected_revision': impact['revision']}).json()
     assert accepted['decision']['action'] == 'accept' and accepted['revision'] == impact['revision'] + 1
     rejected = client.post(f'{path}/reject', json={})
-    assert rejected.status_code == 400  # an accepted version cannot be rejected
+    assert rejected.status_code == 409  # an accepted version cannot be rejected
     assert client.get(base).json()['steps'][2]['latest']['state'] == 'accepted'

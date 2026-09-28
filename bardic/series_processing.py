@@ -8,26 +8,28 @@ from .artifacts import record
 from .processing import BudgetReached, digest, source_hash
 from .series import SeriesRepository
 from .store import now
-from .errors import NotFound
+from .errors import Conflict, Invalid, Unavailable
+from .series import SERIES_ARCHIVED
 
 
-def series_view(store, series_id):
-    series = next((s for s in SeriesRepository(store).list_series() if s['id'] == series_id), None)
-    if series is None:
-        raise NotFound('series_not_found', 'Series not found')
+def series_view(store, series_id, *, active=False):
+    """The series entry, removed or not (404 when unknown). ``active`` refuses a removed one (409)."""
+    series = SeriesRepository(store).series(series_id)
+    if active and series['archived']:
+        raise Conflict('series_archived', SERIES_ARCHIVED)
     return series
 
 
 def plan(runtime, series_id, *, provider=None, phase='scan', concurrency=2, limits=None):
     from .progressive import plan as book_plan
     if phase not in {'scan', 'profiles', 'direct', 'full'}:
-        raise ValueError('Choose scan, profiles, direct or full processing.')
+        raise Invalid('phase_invalid', 'The phase must be scan, profiles, direct or full.')
     if type(concurrency) is not int or not 1 <= concurrency <= 2:
-        raise ValueError('Choose one or two parallel discovery workers.')
+        raise Invalid('concurrency_invalid', 'Series discovery concurrency must be 1 or 2.')
     provider = provider or runtime.preferences['analysis_provider']
     if provider not in {'gemini', 'openai', 'anthropic'}:
-        raise ValueError('Choose a cloud analysis provider for staged series processing. Local census is free in each book.')
-    series = series_view(runtime.store, series_id)
+        raise Invalid('provider_not_cloud', 'Series processing needs a cloud analysis provider: gemini, openai or anthropic.')
+    series = series_view(runtime.store, series_id, active=True)
     books = sorted(series['books'], key=lambda b: (b['position'], b['book_id']))
     books = [b for b in books if not runtime.store.is_archived(b['book_id'])]
     model = runtime.preferences['analysis_models_by_provider'][provider]
@@ -67,13 +69,13 @@ def start(runtime, series_id, *, provider=None, phase='scan', concurrency=2, lim
     with runtime.store.lock:
         preview = plan(runtime, series_id, provider=provider, phase=phase, concurrency=concurrency, limits=limits)
         if expected_plan_fingerprint is not None and expected_plan_fingerprint != preview['plan_fingerprint']:
-            raise ValueError('The series or processing plan changed. Preview it again before starting; no processing was queued.')
+            raise Conflict('plan_stale', 'The series or processing plan changed since the preview. No processing was queued.')
         if not preview['books']:
-            raise ValueError('Add a book to this series before processing it.')
+            raise Invalid('series_empty', 'The series has no supplied, active book to process.')
         if not runtime.api_keys.get(preview['provider']):
-            raise ValueError('Add an API key for the selected analysis provider first.')
+            raise Invalid('api_key_missing', f"No API key is configured for the {preview['provider']} analysis provider.")
         if any(j['status'] in {'queued', 'running'} for j in runtime.store.jobs('series:' + series_id)):
-            raise ValueError('This series already has an active run.')
+            raise Conflict('series_run_active', 'This series already has an active processing run.')
         book_ids = [b['book_id'] for b in preview['books']]
         for book_id in book_ids:
             runtime.require_idle(book_id)
@@ -207,5 +209,6 @@ def start(runtime, series_id, *, provider=None, phase='scan', concurrency=2, lim
                     runtime.store.update_job(child['id'], status='interrupted',
                                              message='Series worker could not start. Resume to try again.')
             _record_run(runtime.store, series_id, book_ids, runtime.store.job(parent['id']))
-        raise ValueError('The series worker could not start. No analysis was started; try again.') from None
+        raise Unavailable('shutting_down', 'The series worker is not accepting work (the server is shutting down). '
+                                           'No analysis was started.') from None
     return runtime.store.job(parent['id'])

@@ -177,7 +177,7 @@ def test_incoming_book_cannot_join_active_target_series_but_unrelated_book_work_
     parent = store.create_job('series:' + series_id, 'series')
     store.update_job(parent['id'], status='running', book_ids=[member['id']], child_job_ids=[])
     response = client.put(f"/api/books/{incoming['id']}/series", json={'series_id': series_id, 'position': 2})
-    assert response.status_code == 409 and 'series run' in response.text.lower()
+    assert response.status_code == 409 and response.json()['code'] == 'series_run_active'
     assert client.get(f"/api/books/{incoming['id']}/series").json()['membership'] is None
     assert len(client.get('/api/series').json()[0]['books']) == 1
     store.update_job(parent['id'], status='completed')
