@@ -26,7 +26,7 @@ const capabilities = {
   breeze:{performance_direction:true,chunked_listening:false,seeded_takes:true,cost:'self_hosted'},
 };
 function status(extra = {}) {
-  return {has_api_key:true,tts_model:'gemini-3.8-flash-tts',tts_models:['gemini-3.8-flash-tts'],system_voices:[],
+  return {tts_model:'gemini-3.8-flash-tts',tts_models:['gemini-3.8-flash-tts'],system_voices:[],
     providers:[{id:'system',available:true},{id:'gemini',available:true},{id:'breeze',available:true,reason:null}],
     narration_providers:Object.fromEntries(Object.entries(capabilities).map(([id, value]) => [id,{id,capabilities:value}])),
     breeze:{configured:true,state:'ready',message:'Connected',default_voice_id:'storyteller',voices:[
@@ -36,7 +36,7 @@ function status(extra = {}) {
     ]},
     ...extra};
 }
-const audio = {url:'/api/books/book-b/listen/audio/take',duration:2,available:true,asset_id:'take',mode:'simple'};
+const audio = {url:'/api/books/book-b/listen/audio/take',duration:2,asset_id:'take'};
 function environment(prior) {
   const calls = [], storage = new Map(prior ? [['bardic:listen:book-b',JSON.stringify(prior)]] : []);
   const scope = {window:{},setTimeout:fn => setImmediate(fn),
@@ -265,14 +265,12 @@ test('cast voice options: Default names the default voice, library and direct vo
   assert.doesNotMatch(device,/Create new voice/,'Device voices cannot be created');
 });
 
-test('cast choices encode the per-provider map, read legacy fields, and decode to assignments', () => {
+test('cast choices encode the per-provider map and decode to assignments', () => {
   const {cast, characterVoice} = castHelpers();
-  const legacy = {id:'mara',voice:'Puck',system_voice:'Samantha'};
-  assert.equal(characterVoice(legacy,'gemini'),'id:Puck');
-  assert.equal(characterVoice(legacy,'system'),'id:Samantha');
-  assert.equal(characterVoice(legacy,'breeze'),'','No Breeze choice means Default');
-  const mapped = {id:'mara',voice:'Old',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr',id:'narrator',revision:'r1'},system:{id:''}}};
-  assert.equal(characterVoice(mapped,'gemini'),'id:Leda','The normalized map wins over legacy fields');
+  const unset = {id:'mara',voices:{}};
+  assert.equal(characterVoice(unset,'breeze'),'','No Breeze choice means Default');
+  const mapped = {id:'mara',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr',id:'narrator',revision:'r1'},system:{id:''}}};
+  assert.equal(characterVoice(mapped,'gemini'),'id:Leda');
   assert.equal(characterVoice(mapped,'breeze'),'library:vl_narr','A library reference wins over its resolved concrete voice');
   assert.equal(characterVoice(mapped,'system'),'');
   assert.equal(JSON.stringify(cast.decodeChoice('library:vl_narr')),JSON.stringify({library:'vl_narr'}));

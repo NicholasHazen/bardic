@@ -21,12 +21,22 @@ from uuid import uuid4
 
 from ..artifacts import output_head, record, select_head
 from ..store import now
+from ..errors import NotFound
 
 KIND = 'step_output'
 PAYLOAD_SCHEMA = 1
 ORIGINS = ('run', 'baseline', 'external')
 MODES = ('user', 'auto', 'baseline', 'external')
 ACTIVE = ('queued', 'running')
+
+
+def _run(value):
+    """A stored run in the current shape. Runs stored before contract 0.2.0 name ``scheduling`` ``mode``."""
+    if 'mode' in value:
+        value = dict(value)
+        mode = value.pop('mode')
+        value.setdefault('scheduling', mode)
+    return value
 
 
 def version_key(step_id, scope):
@@ -53,9 +63,8 @@ def initialize_schema(conn):
 
 class PipelineRepository:
     def __init__(self, store):
+        # The tables are created once, when the Store opens the library (see Store.__init__).
         self.store = store
-        with store.lock, store.connect() as conn:
-            initialize_schema(conn)
 
     def recover_interrupted(self):
         """At startup, no pipeline work is running: mark leftovers interrupted."""
@@ -77,15 +86,15 @@ class PipelineRepository:
         return value
 
     def update_run(self, run_id, **fields):
-        return self._update('pipeline_runs', run_id, fields)
+        return _run(self._update('pipeline_runs', run_id, fields))
 
     def run(self, run_id):
-        return self._get('pipeline_runs', run_id)
+        return _run(self._get('pipeline_runs', run_id))
 
     def runs(self, book_id, limit=20):
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('SELECT body FROM pipeline_runs WHERE book_id=? ORDER BY rowid DESC LIMIT ?', (book_id, limit)).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return [_run(json.loads(row[0])) for row in rows]
 
     # --- step runs ------------------------------------------------------------------
     def create_step_run(self, book_id, step, *, run_id=None, origin='run', provider=None, model=None,
@@ -112,7 +121,7 @@ class PipelineRepository:
     def step_run(self, book_id, step_run_id):
         value = self._get('pipeline_step_runs', step_run_id)
         if value['book_id'] != book_id:
-            raise KeyError('Step version not found')
+            raise NotFound('step_version_not_found', 'Step version not found')
         return value
 
     def step_runs(self, book_id, step_id=None, limit=50):
@@ -199,6 +208,14 @@ class PipelineRepository:
             rows = conn.execute(query + ' ORDER BY rowid DESC LIMIT ?', [*args, limit]).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def was_accepted(self, conn, book_id, step_id, step_run_id):
+        """True when an accept decision (by anyone) names this step version."""
+        if step_run_id is None:
+            return False
+        rows = conn.execute('SELECT body FROM pipeline_decisions WHERE book_id=? AND step_id=?', (book_id, step_id))
+        return any((value := json.loads(body))['action'] == 'accept' and value.get('step_run_id') == step_run_id
+                   for (body,) in rows)
+
     def head(self, conn, book_id, step_id, scope):
         return output_head(conn, book_id, KIND, version_key(step_id, scope))
 
@@ -217,14 +234,14 @@ class PipelineRepository:
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute(f'SELECT body FROM {table} WHERE id=?', (identifier,)).fetchone()
         if not row:
-            raise KeyError('Pipeline record not found')
+            raise NotFound('pipeline_record_not_found', 'Pipeline record not found')
         return json.loads(row[0])
 
     def _update(self, table, identifier, fields):
         with self.store.lock, self.store.connect() as conn:
             row = conn.execute(f'SELECT body FROM {table} WHERE id=?', (identifier,)).fetchone()
             if not row:
-                raise KeyError('Pipeline record not found')
+                raise NotFound('pipeline_record_not_found', 'Pipeline record not found')
             value = {**json.loads(row[0]), **fields, 'updated_at': now()}
             conn.execute(f'UPDATE {table} SET body=? WHERE id=?', (json.dumps(value, ensure_ascii=False), identifier))
         return value

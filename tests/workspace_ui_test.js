@@ -292,7 +292,8 @@ test('playing an unnarrated passage opens narrator setup without generating audi
   assert.equal(calls.requests, 0);
 });
 
-test('passive unnarrated selection keeps setup closed; stale takes retain Studio guidance', async () => {
+test('passive unnarrated selection keeps setup closed', async () => {
+  // The server presents an out-of-date take as null audio, so no staleness flag is read here.
   const {workspace, state, node, media} = environment();
   const segment = {id:'s1', chapter_id:'c1', text:'An original short line.'};
   state.book.segments = [segment];
@@ -300,10 +301,6 @@ test('passive unnarrated selection keeps setup closed; stale takes retain Studio
   node('#simple-listen').details = details;
   await workspace.startSegment('s1', {autoplay:false});
   assert.equal(details.open, false);
-  segment.audio = {url:'/saved-take.wav', stale:true};
-  await workspace.startSegment('s1');
-  assert.equal(details.open, false);
-  assert.match(node('#toast').textContent, /out of date.*studio/);
   assert.equal(media.generations, 0);
   assert.equal(media.plays, 0);
 });

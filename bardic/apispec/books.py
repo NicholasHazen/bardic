@@ -11,36 +11,53 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .base import Op, View, internal, op
-from .media import AudioTakeBreezeInfo, AudioTakeSentenceTiming
+from .media import AudioRef, AudioTakeBreezeInfo, AudioTakeSentenceTiming, AudioTakeVoiceLibrary
 
 # ------------------------------------------------------------------ shared text
 
 _EDIT_LOCKS = (
-    'Manual edits are recorded per field in `edited_fields`, and only for values that actually changed '
-    '(editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited '
-    'before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); '
-    'it stays wholly locked. '
-    'The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every '
-    'successful edit request sets to true, even one that changes nothing.')
+    'A manual edit locks each field whose value it actually changes, so generated analysis never overwrites it '
+    '(editors may resend a whole form; unchanged values are not locked). Confirming a passage\'s current speaker '
+    '(sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 '
+    'and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field '
+    'as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\n'
+    'A request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current '
+    'ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.')
 
 _EDIT_COMMON = (
-    '\n\nEdits are rejected while any job is queued or running for the book, or while an active series run '
-    'reserves it (409); archived books must be restored first (400). There is no optimistic concurrency '
-    'check: the last write wins, and every successful edit increments the book `revision` by 1.\n\n'
-    'After the change, every passage\'s selected enhanced take is re-validated against its render recipe '
+    '\n\nEdits require a book that is not archived (409 `book_archived`) and that no queued or running job '
+    '(409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency '
+    'check: the last write wins, and every edit that changes something increments the book `revision` by 1.\n\n'
+    'After a change, every passage\'s selected enhanced take is re-validated against its render recipe '
     '(passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no '
     'longer matches is deselected (the passage\'s `audio` becomes null). Its WAV bytes are kept, so restoring '
     'the previous values and rendering again reuses the archived take without a provider request. Every '
     'scene\'s `character_ids` is then recomputed (sorted) from its passages\' speakers.\n\n'
-    'The review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. '
-    'Returns the full, presented book document.')
+    'Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty '
+    'string or array to clear a value. Returns the full, presented book document.\n\n'
+    "Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.")
 
-_BOOK_ERRORS = {404: 'No book has this ID.'}
-_EDIT_ERRORS = {
-    400: 'The book is archived (restore it first), or a value is invalid as described above.',
-    404: 'No book has this ID, or no item of that kind has this ID in the book ("Item not found").',
-    409: 'A job is queued or running for this book, or an active series run reserves it.',
+_BOOK_NOT_FOUND = {'book_not_found': 'No book has this ID.'}
+_BOOK_ERRORS = {404: _BOOK_NOT_FOUND}
+_BUSY = {
+    'job_active': 'A job is queued or running for this book.',
+    'series_run_active': 'An active series run reserves this book.',
+    'book_archived': 'The book is archived; restore it first.',
 }
+_VOICE_ERRORS = {
+    'voice_provider_unknown': '`voices` names a provider other than `system`, `gemini` or `breeze`.',
+    'library_voice_unavailable': 'A `library` voice does not exist, is deleted, or belongs to another provider.',
+    'breeze_voice_unavailable': 'A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) '
+                                'voice.',
+    'seed_not_applicable': 'A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`.',
+}
+_PRONUNCIATION_INVALID = {
+    'pronunciation_invalid': 'The entry breaks a field rule (see the fields of `PronunciationEntry`).',
+    'pronunciation_duplicate': 'Another entry already has this term (under the case rules).',
+    'pronunciation_limit_reached': 'The book already has 500 entries.',
+    'character_not_in_cast': '`character_id` is not a character in the book\'s current cast.',
+}
+_PRONUNCIATION_NOT_FOUND = {'pronunciation_not_found': 'No entry in this book has this ID.'}
 
 
 # ------------------------------------------------------------------ book views
@@ -52,12 +69,6 @@ class BookCover(View):
     height: int = Field(description='Thumbnail height in pixels (at most 360).')
     sha256: str = Field(description='Lowercase hex SHA-256 of the thumbnail bytes; changes when the cover changes.')
     source: Literal['epub'] = Field(description='Where the cover came from: the EPUB\'s own cover metadata.')
-
-
-class BookMetadataEdits(View):
-    """Which display metadata fields a person set; a later metadata refresh from the original keeps them."""
-    title: bool | None = Field(default=None, description='True when the title was set by hand.')
-    author: bool | None = Field(default=None, description='True when the author was set by hand.')
 
 
 class BookAnalysisSummary(View):
@@ -156,8 +167,6 @@ class BookScene(View):
     direction: str | None = Field(default=None, description='Performance direction for the whole scene. Used in enhanced narration recipes.')
     segment_ids: list[str] = Field(description='IDs of the scene\'s passages, in reading order.')
     character_ids: list[str] = Field(description='IDs of characters attributed to its passages (including `narrator`/`unassigned`).')
-    edited: bool | None = internal('True once the scene was edited by hand. ' + _EDIT_LOCKS, default=None)
-    edited_fields: list[str] | None = internal('Names of fields edited by hand; `"*"` means all. ' + _EDIT_LOCKS, default=None)
 
 
 class BookSpeakerCheck(View):
@@ -178,40 +187,31 @@ class BookSpeakerCheck(View):
     tag_conflict: bool | None = Field(default=None, description='True when BookNLP\'s own speech tag contradicts its speaker; then the comparison is only recorded.')
 
 
-class BookTakeVoiceLibrary(View):
-    """The library voice and version that performed a take."""
-    id: str = Field(description='Library voice ID (`vl_` + 16 hex).')
-    version: int | None = Field(default=None, description='Version number of that library voice.')
-
-
-class BookTake(View):
+class BookTake(AudioRef):
     """The selected enhanced (cast) narration take of a passage.
 
     Presented only when it is still valid: its recipe fingerprint matches the
     passage's current speaker voice, directions, scene notes, provider and
     model, and its WAV file exists. Otherwise the passage's `audio` is null.
+    Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
     """
     url: str = Field(
         description='Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The '
-                    '`v` query changes when the selected audio changes, so the URL is safe to cache.')
-    fingerprint: str = internal('Hex SHA-256 of the render recipe (the take\'s reuse identity).')
+                    '`v` query changes when the selected audio changes, so the URL is safe to cache and compare.')
     asset_id: str | None = Field(
-        default=None,
         description='Hex SHA-256 of the WAV bytes (content address), also usable with '
-                    '`GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content '
-                    'addressing, whose file is named by `fingerprint`.')
-    duration: float = Field(description='Audio duration in seconds, measured from the WAV.')
+                    '`GET /api/books/{book_id}/audio-assets/{asset_id}`. Null for takes made before content '
+                    'addressing.')
+    duration: float | None = Field(description='Audio duration in seconds, measured from the WAV; null only for a take '
+                                               'stored without it.')
     provider: str = Field(description='Narration provider: `system` (device), `gemini` or `breeze`.')
-    model: str | None = Field(default=None, description='Speech model ID (`macos-say` for device narration).')
-    voice: str | None = Field(default=None, description='Concrete provider voice that performed the take.')
-    voice_library: BookTakeVoiceLibrary | None = Field(default=None, description='Library voice that was followed, when the character used one.')
+    model: str | None = Field(description='Speech model ID (`macos-say` for device narration).')
+    voice: str | None = Field(description='Concrete provider voice that performed the take, or null when not recorded.')
+    created_at: str | None = Field(description='Always null for Studio takes: their retention time is not recorded on the take.')
+    voice_library: AudioTakeVoiceLibrary | None = Field(default=None, description='Library voice that was followed, when the character used one; absent otherwise.')
     voice_revision: str | None = Field(default=None, description='Breeze only: the pinned server revision of the voice.')
     provider_timing: AudioTakeSentenceTiming | None = Field(default=None, description='Breeze only: sentence timing, or null when the server\'s timing was not usable.')
     breeze: AudioTakeBreezeInfo | None = Field(default=None, description='Breeze only: request details.')
-    resource_usage: dict[str, Any] | None = internal(
-        'Measured provider usage for the request that produced the take (token counts, estimated cost in USD, '
-        'cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage.',
-        default=None)
 
 
 class BookPassage(View):
@@ -240,8 +240,9 @@ class BookPassage(View):
                     'paraphrase). Absent until analysis sets it.')
     seed: int | None = Field(
         default=None,
-        description='Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed '
-                    'means a new take. Ignored by Gemini and device narration.')
+        description='Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit; absent when '
+                    'not set, in which case the speaker\'s Breeze voice seed applies. A new seed means a new take. '
+                    'Ignored by Gemini and device narration.')
     speaker_check: BookSpeakerCheck | None = Field(default=None, description='BookNLP comparison; absent when not checked.')
     analysis_provider: str | None = Field(
         default=None,
@@ -253,8 +254,6 @@ class BookPassage(View):
     leading_text: str = Field(
         description='Presented only: chapter text between the previous passage (or the chapter start) and this '
                     'passage, usually whitespace or a replaced scene-break ornament.')
-    edited: bool | None = internal('True once the passage was edited by hand. ' + _EDIT_LOCKS, default=None)
-    edited_fields: list[str] | None = internal('Names of fields edited by hand; `"*"` means all. ' + _EDIT_LOCKS, default=None)
 
 
 class BookBreezeSettings(View):
@@ -298,8 +297,8 @@ class BookCharacter(View):
     voices: dict[str, BookCharacterVoice] = Field(
         description='Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A '
                     'missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: '
-                    'the system voice). Library references are shown as references, not resolved. Legacy '
-                    '`voice`/`system_voice` fields are folded in here.')
+                    'the system voice). Library references are shown as references, not resolved. Choices saved '
+                    'by older versions in single-provider fields are included here.')
     former_names: list[str] | None = Field(
         default=None,
         description='Names replaced by a manual rename. Discovery still resolves them to this character; they are '
@@ -314,11 +313,6 @@ class BookCharacter(View):
         description='Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current '
                     'evidence), `stale` (refined, evidence changed since), `draft` (not refined).')
     profile_provisional: bool | None = Field(default=None, description='Classic progressive analysis: true while the profile may still change.')
-    profile_input_key: str | None = internal('Cache key of the profile request that produced the profile.', default=None)
-    voice: str | None = internal('Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`.', default=None)
-    system_voice: str | None = internal('Legacy device voice field; already reflected in `voices.system`.', default=None)
-    edited: bool | None = internal('True once the character was edited by hand or added manually. ' + _EDIT_LOCKS, default=None)
-    edited_fields: list[str] | None = internal('Names of fields edited by hand; `"*"` means all. ' + _EDIT_LOCKS, default=None)
 
 
 # ------------------------------------------------------------------ pronunciations
@@ -385,7 +379,6 @@ class Book(View):
     characters: list[BookCharacter] = Field(description='The book-local cast, including `narrator` and `unassigned`.')
     analysis: BookAnalysisSummary = Field(description='Who produced the current annotations.')
     cover: BookCover | None = Field(default=None, description='Cover thumbnail metadata; absent when the original had no usable cover.')
-    metadata_edited: BookMetadataEdits | None = internal('Display fields set by hand, which metadata refresh preserves.', default=None)
     pronunciations: list[BookPronunciation] | None = Field(
         None, description='The book\'s pronunciations, in saved order; absent when there are none. Managed with the '
                           'Pronunciations operations, which also report where each term occurs.')
@@ -433,7 +426,7 @@ class PronunciationSaved(View):
 # ------------------------------------------------------------------ references
 
 class CharacterReference(View):
-    """One source-anchored reference to a character from the latest published analysis.
+    """One source-anchored reference to a character in the current book.
 
     `chapter.text[start:end] == quote`. A mention is an explicit textual
     reference, not proof that the character is present in the scene.
@@ -446,14 +439,16 @@ class CharacterReference(View):
     end: int = Field(description='Exclusive end offset in code points.')
     quote: str = Field(description='The exact source text of the span.')
     kind: Literal['dialogue', 'mention', 'profile_evidence'] = Field(
-        description='`dialogue`: a passage attributed to the character. `mention`: the character\'s unique name or '
-                    'alias occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence.')
+        description='`dialogue`: a dialogue passage currently attributed to the character. `mention`: the '
+                    'character\'s name or an alias, unique within the cast, occurs in the text. `profile_evidence`: '
+                    'a quotation a discovery request cited as evidence.')
     confidence: float | None = Field(default=None, description='Attribution confidence for `dialogue` (0–1); null otherwise.')
     provider: str | None = Field(
         default=None,
-        description='Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited '
-                    'dialogue attribution; null when unknown. Current analysis always writes `confidence`, '
-                    '`provider` and `model`; references retained from older versions may omit them.')
+        description='Who produced it: the analysis provider of the passage\'s attribution or of the evidence, '
+                    '`local` for mentions, or `reviewed` for a dialogue attribution a person set or confirmed; null '
+                    'when unknown. Evidence retained from older versions may omit `confidence`, `provider` and '
+                    '`model`.')
     model: str | None = Field(default=None, description='Model that produced it, or null.')
     profile_description: str | None = Field(default=None, description='`profile_evidence` only: the description proposed with this evidence.')
     profile_direction: str | None = Field(default=None, description='`profile_evidence` only: the direction proposed with this evidence.')
@@ -476,11 +471,15 @@ _PRONUNCIATION_EFFECTS = (
 )
 
 
+
 OPS: list[Op] = [
     op('GET', '/api/books/{book_id}', 'getBook', 'Books', 'Get the full book document',
        'Returns the full reader projection: chapters with canonical text, scenes, passages with source offsets, '
        'the cast with voice choices, `revision`, and the analysis summary. Valid enhanced audio has a playback '
-       'URL; an unavailable or stale selected take is presented as `null`. Read-only. Works for archived books.',
+       'URL; an unavailable or stale selected take is presented as `null`. Server bookkeeping (edit locks, '
+       'metadata locks, cache keys, single-provider voice fields of older versions) is not included. Read-only. '
+       'Works for archived books. A book whose stored data is inconsistent (for example a passage naming a '
+       'missing chapter) is a server defect (500 `internal_error`), never 404.',
        response=Book, errors=_BOOK_ERRORS, params={'book_id': 'Book ID.'}),
 
     op('POST', '/api/books/{book_id}/repair-structure', 'repairBookStructure', 'Books',
@@ -488,116 +487,116 @@ OPS: list[Op] = [
        'Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, '
        '`title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, '
        'text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old '
-       'chapter title are renamed; edited scenes are not. A saved analysis checkpoint is transformed to the '
-       'new titles in the same transaction. Increments `revision`.\n\n'
+       'chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed '
+       'to the new titles in the same transaction. Increments `revision`.\n\n'
        'Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with '
-       'exactly the same text (400). Requires an idle, non-archived book. Runs locally with no provider request; '
-       'every attempt, including a refused one, records a local `structure_repair` resource measurement. '
-       'Returns the full, presented book.',
+       'exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; '
+       'these preconditions are checked first and a refused precondition records nothing. Runs locally with no '
+       'provider request; every attempt that passes them, including one refused with 400, records a local '
+       '`structure_repair` resource measurement. Returns the full, presented book.\n\n'
+       "Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.",
        response=Book, params={'book_id': 'Book ID.'},
-       errors={400: 'The book is archived; it has no saved original EPUB/TXT; the original is missing, larger than '
-                    '30 MiB (the import limit) or an unreadable EPUB; or the re-parsed source does not match the saved chapters or '
-                    'checkpoint. Existing work is preserved.',
-               404: 'No book has this ID.',
-               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+       errors={400: {'original_missing': 'The book has no saved original EPUB or TXT, or the saved file is missing.',
+                     'original_too_large': 'The saved original is larger than 30 MiB (the import limit).',
+                     'original_unreadable': 'The saved original could not be parsed (for example an unreadable EPUB).',
+                     'structure_mismatch': 'The re-parsed source does not match the saved chapters or the saved '
+                                           'analysis checkpoint.'},
+               404: _BOOK_NOT_FOUND, 409: _BUSY}),
 
     op('PATCH', '/api/books/{book_id}/characters/{character_id}', 'editCharacter', 'Books', 'Edit a character',
        'Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). '
        'Renaming records the previous name in `former_names`, so later discovery still resolves it to this '
-       'character. `voices` changes only the providers it names; see `CharacterEdit.voices` for the forms. '
+       'character. `voices` changes only the providers it names; see `CharacterEdit.voices` and `VoiceChoice` '
+       'for the forms. For every provider, `null` or a blank `id` clears the choice, so Default applies. '
        'Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state '
        'only (no server request). Changing a voice or direction deselects that character\'s now-stale takes.\n\n'
        + _EDIT_LOCKS + _EDIT_COMMON,
        response=Book, params={'book_id': 'Book ID.', 'character_id': 'Book-local character ID.'},
-       errors={**_EDIT_ERRORS,
-               400: 'The book is archived; `voices` names a provider other than system, gemini or breeze; a '
-                    '`library` voice does not exist, is deleted or belongs to another provider; or a Breeze `id` '
-                    'is not in the last Breeze check or is not a usable (cloned) voice.'}),
+       errors={400: _VOICE_ERRORS,
+               404: {**_BOOK_NOT_FOUND, 'character_not_found': 'No character in this book has this ID.'},
+               409: _BUSY}),
 
     op('POST', '/api/books/{book_id}/characters', 'addCharacter', 'Books', 'Add a character',
        'Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same '
-       '`CharacterEdit` as editing, but `name` is required. Omitted fields start empty; voices start as '
-       '`{"gemini": {"id": "Kore"}}` plus any `voices` sent. The new character has `edited: true` and '
-       '`edited_fields` listing only the fields sent (always including `name`), so generated profile text may '
-       'still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage '
-       'edit. Rejected while a job or series run holds the book (409) or when it is archived (400). Returns the '
-       'full, presented book.',
+       '`CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as '
+       '`{"gemini": {"id": "Kore"}}` plus a device (`system`) voice chosen from the installed voices the same way '
+       'imported characters get one (none when no suitable voice is installed), then any `voices` sent are '
+       'applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always '
+       'including `name`) are locked against generated analysis, so generated profile text may still fill the '
+       'rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a '
+       'non-archived, idle book (409). Returns the full, presented book.\n\n'
+       "Before it changes the book, the current projection is recorded in the step pipeline's version history (as "
+       '`baseline` or `external` versions of the capturable steps) when the history does not already explain it, '
+       'so the replaced state stays restorable.',
        response=Book, params={'book_id': 'Book ID.'},
-       errors={400: 'The book is archived; `name` is missing ("A character name is required"); or a `voices` '
-                    'choice is invalid (see editCharacter).',
-               404: 'No book has this ID.',
-               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+       errors={400: {'character_name_required': '`name` is missing.', **_VOICE_ERRORS},
+               404: _BOOK_NOT_FOUND, 409: _BUSY}),
 
     op('PATCH', '/api/books/{book_id}/segments/{segment_id}', 'editPassage', 'Books', 'Edit a passage',
-       'Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`) and marks '
-       'the passage edited. Sending `speaker_id` (even unchanged) sets `confidence` to 1.0; changing it also '
-       'drops the passage\'s `speaker_check`. The text and offsets never change. A new `seed` makes seeded '
-       'providers (Breeze) produce a new take; like other performance edits it deselects the current take while '
-       'retaining its history.\n\n' + _EDIT_LOCKS + _EDIT_COMMON,
+       'Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending '
+       '`speaker_id` sets `confidence` to 1.0; changing it also drops the passage\'s `speaker_check`. The text '
+       'and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` '
+       'clears it so the speaker\'s voice seed applies; like other performance edits this deselects the current '
+       'take while retaining its history.\n\n' + _EDIT_LOCKS + _EDIT_COMMON,
        response=Book, params={'book_id': 'Book ID.', 'segment_id': 'Passage (segment) ID.'},
-       errors={**_EDIT_ERRORS,
-               400: 'The book is archived, or `speaker_id` is not a character in this book\'s cast '
-                    '("Choose a character in this book\'s cast").'}),
+       errors={400: {'character_not_in_cast': '`speaker_id` is not a character in this book\'s cast.'},
+               404: {**_BOOK_NOT_FOUND, 'passage_not_found': 'No passage in this book has this ID.'},
+               409: _BUSY}),
 
     op('PATCH', '/api/books/{book_id}/scenes/{scene_id}', 'editScene', 'Books', 'Edit a scene',
        'Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and '
        'direction are part of every enhanced narration recipe of the scene\'s passages, so changing them '
        'deselects those takes. Scene boundaries cannot be edited here.\n\n' + _EDIT_LOCKS + _EDIT_COMMON,
        response=Book, params={'book_id': 'Book ID.', 'scene_id': 'Scene ID.'},
-       errors={**_EDIT_ERRORS, 400: 'The book is archived.'}),
+       errors={404: {**_BOOK_NOT_FOUND, 'scene_not_found': 'No scene in this book has this ID.'}, 409: _BUSY}),
 
     op('GET', '/api/books/{book_id}/characters/{character_id}/references', 'listCharacterReferences', 'Books',
        'List source references to a character',
-       'Returns every reference to this current cast member from the latest published analysis checkpoint, '
-       'unpaginated, in insertion order: attributed dialogue passages, name/alias mentions, and discovery '
-       'evidence quotations, each with a source anchor. References are replaced whenever Classic analysis '
-       '(including series runs) publishes; structure repair carries them over. Manual edits and the step '
-       'analysis pipeline (runs and acceptance) do not update them, so they can lag the book document. An empty '
-       'list means no analysis checkpoint has recorded references (for example after import or the demo). '
-       'Read-only. Works for archived books.',
+       'Returns every source reference to this current cast member, unpaginated, in reading order (chapter, then '
+       'offset): dialogue passages currently attributed to it, mentions of its name or aliases, and discovery '
+       'evidence quotations, each with a source anchor. Dialogue and mentions are derived from the current book '
+       'on every call, so manual edits, pipeline acceptance and analysis are all reflected at once. A name or '
+       'alias that another cast member shares is not counted as a mention. Discovery evidence comes from the '
+       'latest Classic analysis (including series runs) and is listed while its quote still matches the chapter '
+       'text; other analyses record none. `narrator` and `unassigned` have no references. Read-only; nothing is '
+       'written. Works for archived books.',
        response=list[CharacterReference], params={'book_id': 'Book ID.', 'character_id': 'Book-local character ID.'},
-       errors={404: 'No book has this ID, or the character is not in its current cast ("Character not found").'}),
+       errors={404: {**_BOOK_NOT_FOUND, 'character_not_found': 'No character in the book\'s current cast has this ID.'}}),
     op('GET', '/api/books/{book_id}/pronunciations', 'listPronunciations', 'Pronunciations', "List the book's pronunciations",
        "Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many "
-       "of those have a current Studio take, and up to three examples. Nothing is generated; the usage is computed "
-       "from the current text on each call.",
+       "of those have a current Studio take, and up to three examples. Nothing is generated or written; the usage is "
+       "computed from the current text on each call.",
        response=PronunciationList, params={'book_id': 'Book ID.'},
-       errors={404: 'No book has this ID.'}),
+       errors=_BOOK_ERRORS),
     op('POST', '/api/books/{book_id}/pronunciations', 'addPronunciation', 'Pronunciations', 'Add a pronunciation',
        _PRONUNCIATION_EFFECTS + "\n\nAdds one entry; only `term` and `respelling` are required, and the server assigns "
-       "`id` (an `id` in the body is ignored). At most 500 entries per book.",
+       "`id` (an `id` in the body is ignored). At most 500 entries per book. Requires a non-archived, idle book (409).",
        response=PronunciationSaved, params={'book_id': 'Book ID.'},
-       errors={400: 'The book is archived (restore it first); the entry is invalid (see the field rules); the term '
-                    'already has a pronunciation; the book has 500 entries; or `character_id` is not in the cast '
-                    '("Choose a character in this book\'s cast").',
-               404: 'No book has this ID.',
-               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+       errors={400: _PRONUNCIATION_INVALID, 404: _BOOK_NOT_FOUND, 409: _BUSY}),
     op('PATCH', '/api/books/{book_id}/pronunciations/{entry_id}', 'updatePronunciation', 'Pronunciations',
        'Change a pronunciation',
-       _PRONUNCIATION_EFFECTS + "\n\nThe body has the same fields as for adding. Fields left out keep their saved "
-       "values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a "
-       "`respelling`, and is validated like a new one.",
+       _PRONUNCIATION_EFFECTS + "\n\nA partial update (body `PronunciationPatch`): every field is optional, fields "
+       "left out keep their saved values, and `null` (or `{}` for `providers`) clears one. The merged entry must "
+       "still have a `term` and a `respelling` (so `null` for either is 400), and is validated like a new one. A "
+       "change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a "
+       "non-archived, idle book (409).",
        response=PronunciationSaved, params={'book_id': 'Book ID.', 'entry_id': 'Pronunciation entry ID (`pr_…`).'},
-       errors={400: 'The book is archived; the merged entry is invalid; the term now duplicates another entry; or '
-                    '`character_id` is not in the cast.',
-               404: 'No book has this ID, or no entry has this ID ("Pronunciation not found").',
-               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+       errors={400: _PRONUNCIATION_INVALID, 404: {**_BOOK_NOT_FOUND, **_PRONUNCIATION_NOT_FOUND}, 409: _BUSY}),
     op('DELETE', '/api/books/{book_id}/pronunciations/{entry_id}', 'deletePronunciation', 'Pronunciations',
        'Remove a pronunciation',
-       _PRONUNCIATION_EFFECTS + "\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` field.",
+       _PRONUNCIATION_EFFECTS + "\n\nRemoves the entry. Removing the last one removes the book's `pronunciations` "
+       "field. Requires a non-archived, idle book (409).",
        response=PronunciationSaved, params={'book_id': 'Book ID.', 'entry_id': 'Pronunciation entry ID (`pr_…`).'},
-       errors={400: 'The book is archived (restore it first).',
-               404: 'No book has this ID, or no entry has this ID ("Pronunciation not found").',
-               409: 'A job is queued or running for this book, or an active series run reserves it.'}),
+       errors={404: {**_BOOK_NOT_FOUND, **_PRONUNCIATION_NOT_FOUND}, 409: _BUSY}),
 ]
 
 REQUEST_DOCS: dict[str, dict[str, str]] = {
     'PronunciationEntry': {
-        '__doc__': 'A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left '
-                   'out keep their saved values. Also used, with the `id` of the entry it edits, to audition an '
-                   'unsaved respelling in a voice example.',
-        'id': 'Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved '
-              'version replaces; omit it for a new word.',
+        '__doc__': 'A pronunciation entry. For adding, `term` and `respelling` are required. Also used, with the `id` '
+                   'of the entry it edits, to audition an unsaved respelling in a voice example. Changing a saved '
+                   'entry uses `PronunciationPatch`.',
+        'id': 'Ignored when adding (the server assigns one). In a voice example, the entry this unsaved version '
+              'replaces; omit it for a new word.',
         'term': 'The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one '
                 'letter or digit (the request accepts up to 200 before normalization).',
         'respelling': 'How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, '
@@ -608,6 +607,17 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'character_id': 'Optional book-local character the word belongs to; must be in the current cast.',
         'note': 'Optional free-text note, at most 500 characters.',
     },
+    'PronunciationPatch': {
+        '__doc__': 'Changes to a saved pronunciation. Every field is optional: a field left out keeps its saved value, '
+                   'and `null` clears it. The path names the entry, so there is no `id`.',
+        'term': 'New word or phrase, with the same rules as when adding. `null` is refused: an entry needs a term.',
+        'respelling': 'New respelling, with the same rules as when adding. `null` is refused: an entry needs one.',
+        'providers': 'Replacement per-narrator overrides keyed by `system`, `gemini` or `breeze`; `{}` or `null` removes '
+                     'them all, and an empty or null value drops that override.',
+        'match_case': 'True: match exact case. False: match any case. `null` restores the default (true).',
+        'character_id': 'Book-local character the word belongs to; must be in the current cast. `null` removes the link.',
+        'note': 'Free-text note, at most 500 characters. `null` or an empty string removes it.',
+    },
     'CharacterEdit': {
         '__doc__': 'Character fields to change (edit) or set (create). Omitted or null fields are ignored; send "" '
                    'or [] to clear. Creation requires a nonempty `name` even though this DTO marks it optional.',
@@ -615,33 +625,35 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'aliases': 'Complete replacement list of other names for the character.',
         'description': 'Voice and personality profile, at most 3,000 characters.',
         'voices': 'Per-provider voice choices: `{provider: VoiceChoice | null}` where provider is `system`, `gemini` '
-                  'or `breeze` (another key is rejected with 400). Only the providers present change; `null` '
-                  'removes that provider\'s choice, which means Default. The stored map is returned in '
+                  'or `breeze` (another key is 400 `voice_provider_unknown`). Only the providers present change; '
+                  '`null`, or a choice whose `id` is empty or blank, removes that provider\'s choice, which means '
+                  'Default. This rule is the same for every provider. The stored map is returned in '
                   '`characters[].voices` (library references stay references).',
-        'voice': 'Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is stored as '
-                 '`voices.gemini = {id}`; an empty or blank string removes it. Ignored for Gemini when `voices` '
-                 'also names `gemini`. Any voice change removes the legacy fields from the stored character.',
-        'system_voice': 'Compatibility alias for the device (`system`) choice, with the same rules as `voice`.',
         'direction': 'Standing performance direction, at most 3,000 characters.',
     },
     'VoiceChoice': {
         '__doc__': 'One provider\'s voice choice. Exactly one of `id` or `library` (otherwise 422).',
-        'id': 'A direct provider voice ID, 1–200 characters, trimmed of surrounding spaces. For Breeze it must be '
-              'a usable (cloned) voice in the last Breeze check and is stored pinned as `{id, revision, seed}`; '
-              'for Gemini and device voices it is stored as `{id}`.',
-        'library': 'A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted. Stored as '
-                   '`{library}`: the character follows that voice\'s current version.',
-        'seed': 'Breeze `id` choices only: take seed 0–4294967295 for the pin; defaults to the voice\'s own seed, '
-                'else 42. Ignored with `library` and for other providers.',
+        'id': 'A direct provider voice ID, at most 200 characters, trimmed of surrounding spaces. Empty or blank '
+              '(after trimming) clears the choice so Default applies, for every provider; it never selects a '
+              'provider\'s own default voice. For Breeze a nonblank ID must be a usable (cloned) voice in the last '
+              'Breeze check (400 `breeze_voice_unavailable`) and is stored pinned as `{id, revision, seed}`; for '
+              'Gemini and device voices it is stored as `{id}`.',
+        'library': 'A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted (400 '
+                   '`library_voice_unavailable`). Stored as `{library}`: the character follows that voice\'s '
+                   'current version.',
+        'seed': 'Take seed 0–4294967295 for a Breeze pin; only with a nonblank Breeze `id`. Defaults to the voice\'s '
+                'own seed, else 42. With `library`, a blank `id` or another provider it is 400 '
+                '`seed_not_applicable` (it is never silently ignored).',
     },
     'SegmentEdit': {
-        '__doc__': 'Passage fields to change. Omitted or null fields are ignored; send "" or [] to clear.',
+        '__doc__': 'Passage fields to change. Omitted or null fields are ignored, except `seed`; send "" or [] to clear.',
         'speaker_id': 'Character ID from this book\'s cast (including `narrator` or `unassigned`); anything else is '
-                      '400. Sets `confidence` to 1.0.',
+                      '400 `character_not_in_cast`. Sets `confidence` to 1.0.',
         'direction': 'Performance direction for the passage, at most 3,000 characters.',
         'cues': 'Complete replacement list of cue labels.',
-        'seed': 'Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. Gemini and '
-                'device narration ignore it. It cannot be cleared through this endpoint (null is ignored).',
+        'seed': 'Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. `null` '
+                'clears it, so the speaker\'s Breeze voice seed applies; omitting it keeps the saved seed. Gemini '
+                'and device narration ignore it.',
     },
     'SceneEdit': {
         '__doc__': 'Scene fields to change. Omitted or null fields are ignored; send "" to clear.',

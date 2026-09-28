@@ -5,7 +5,7 @@
   const encode = value => encodeURIComponent(value);
   const wait = () => new Promise(resolve => setTimeout(resolve, 400));
   const busy = job => ['queued', 'running'].includes(job?.status);
-  const playable = audio => Boolean(audio?.url && audio.available !== false && !audio.stale && !audio.is_stale);
+  const playable = audio => Boolean(audio?.url);
   const idle = () => ({status:'idle', label:'', preview:null, error:'', jobId:null, bookId:null});
   let hooks = {}, state = idle(), active = null, knownJob = null;
   let serial = Promise.resolve();
@@ -20,14 +20,18 @@
   function configure(callbacks = {}) { hooks = {...callbacks}; }
   const current = task => active === task;
 
+  // Server details state the condition; the hint says where to fix it.
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.'};
   async function request(url, body) {
     const response = await fetch(url, body === undefined ? {headers:{Accept:'application/json'}} :
       {method:'POST', headers:{Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify(body)});
     let data;
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
-      const error = new Error(typeof data?.detail === 'string' ? data.detail : `Voice preview request failed (${response.status}).`);
+      const detail = typeof data?.detail === 'string' ? data.detail : `Voice preview request failed (${response.status}).`;
+      const error = new Error(HINTS[data?.code] ? `${detail} ${HINTS[data.code]}` : detail);
       error.status = response.status;
+      error.code = data?.code;
       throw error;
     }
     return data;

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .contract import GATES, LLM_PROVIDERS, METHODS, SCOPES, SERVICE_PROVIDERS, Step
+from ..errors import NotFound
 
 STEP_ID = re.compile(r'[a-z][a-z0-9_]{1,39}')
 
@@ -62,7 +63,7 @@ class Registry:
         try:
             return self._steps[step_id]
         except KeyError:
-            raise KeyError(f'Unknown pipeline step: {step_id}') from None
+            raise NotFound('step_not_found', f'Unknown pipeline step: {step_id}') from None
 
     def ids(self):
         return list(self._steps)

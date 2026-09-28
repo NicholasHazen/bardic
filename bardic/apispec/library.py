@@ -23,8 +23,9 @@ class LibraryBookCover(View):
     width: int = Field(description='Thumbnail width in pixels.')
     height: int = Field(description='Thumbnail height in pixels.')
     sha256: str = Field(description='Lowercase hex SHA-256 of the thumbnail bytes. Changes when the cover changes.')
-    url: str = Field(description='Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. The `v` query '
-                                 'value is a cache-busting token only; the server ignores it.')
+    url: str = Field(description='Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. Because the '
+                                 '`v` value names these exact bytes, the server lets clients cache this URL indefinitely '
+                                 '(see `getBookCover`); a changed cover gets a new URL.')
 
 
 class LibraryBookStorage(View):
@@ -67,11 +68,12 @@ class LibraryBookSummary(View):
     character_count: int = Field(description='Cast members, excluding the two built-in entries `narrator` and `unassigned`. '
                                              'Not a count of text characters (see `text_character_count`).')
     text_character_count: int = Field(description='Length of all section text in Unicode code points.')
-    segment_count: int = Field(description='Number of passages (reader units).')
-    passage_count: int = Field(description='Same value as `segment_count`; "passage" and "segment" name the same unit.')
+    segment_count: int = Field(description='Number of passages (reader units; "passage" and "segment" name the same unit).')
     scene_count: int = Field(description='Number of scenes.')
-    audio_count: int = Field(description='Passages that have a stored selected enhanced take, whether or not that take is still '
-                                         'current. The book document shows only current takes, so this can exceed the playable count.')
+    audio_count: int = Field(description='Passages whose selected enhanced (cast) take is current and playable: it still matches '
+                                         'the passage\'s text, speaker, resolved voice, scene direction and provider/model, and '
+                                         'its audio file exists. Equals the number of passages with a non-null `audio` in '
+                                         '`GET /api/books/{book_id}`. Superseded or stale takes stay stored but are not counted.')
     membership: SeriesMembership | None = Field(
         description='Series membership, or null when the book is in no series. Reported even when the book or its series is removed.')
     cover: LibraryBookCover | None = Field(description='Saved cover thumbnail, or null when there is none (TXT imports, the demo, '
@@ -96,7 +98,7 @@ class LibraryStorage(View):
 class LibrarySnapshot(View):
     """The library-management view: books, series and storage in one response."""
     books: list[LibraryBookSummary] = Field(
-        description='Book summaries, most recently saved first (any save of a book, including a metadata edit, moves it to the front). '
+        description='Book summaries, most recently imported first (see `listBooks` for the exact order). '
                     'Removed books are included only with `include_archived=true`.')
     series: list[Series] = Field(
         description='Series sorted by name (ignoring case), then ID. Removed series are included only with `include_archived=true`.')
@@ -106,12 +108,17 @@ class LibrarySnapshot(View):
 # ---------------------------------------------------------------- shared text
 
 _BOOK_ID = 'Opaque book ID.'
-_SUMMARY_ORDER = ('Books are ordered most recently saved first: any save of the book (a metadata edit, an analysis '
-                  'result, a manual edit) moves it to the front. ')
+_SUMMARY_ORDER = ('Books are ordered by import time, most recently imported first (`created_at` descending). Saving a '
+                  'book (a metadata edit, an analysis result, a manual edit) does not change its place. Books stored '
+                  'without `created_at` come last, in a stable order. ')
 _REMOVAL = ('There is no destructive book-delete endpoint. Removal (archiving) changes visibility only: the original '
             'upload, analysis, audio, series links and history are retained and remain readable (for example '
             '`GET /api/books/{book_id}`, the cover and the export keep working), and no disk space is reclaimed. '
-            'Active processing and most edits reject a removed book with 400 until it is restored.')
+            'Active processing and most edits reject a removed book with 409 `book_archived` until it is restored.')
+_NOT_FOUND = {'book_not_found': 'No book has this ID.'}
+_BUSY = {'job_active': 'A job is queued or running for this book.',
+         'series_run_active': 'An active series run has reserved this book.'}
+_ARCHIVED = {'book_archived': 'The book is removed (archived); restore it first.'}
 
 OPS: list[Op] = [
     op('GET', '/api/books', 'listBooks', 'Library', 'List active books',
@@ -119,39 +126,45 @@ OPS: list[Op] = [
        'storage. This is not the prose projection; fetch `GET /api/books/{book_id}` for that. '
        + _SUMMARY_ORDER +
        'Removed books are never listed here; use `GET /api/library?include_archived=true`.\n\n'
-       'Each call measures the book\'s media folders on disk and its database payload, so it is proportionally '
-       'slower for large libraries. Counts distinguish narrative chapters (`chapter_count`) from other sections '
-       '(`section_count`); see docs/STRUCTURE.md.',
-       response=list[LibraryBookSummary], response_description='Book summaries, most recently saved first.'),
+       'Read-only. Each call measures the book\'s media folders on disk and its database payload, and checks '
+       'which takes are still current (`audio_count`), so it is proportionally slower for large libraries. Counts '
+       'distinguish narrative chapters (`chapter_count`) from other sections (`section_count`); see docs/STRUCTURE.md.',
+       response=list[LibraryBookSummary], response_description='Book summaries, most recently imported first.'),
 
     op('POST', '/api/books', 'importBook', 'Library', 'Import an EPUB or TXT book',
        'Imports a DRM-free EPUB or UTF-8 TXT uploaded as multipart form data with the single field `file`, and '
        'returns the new book as the full presented book document (the same shape as `GET /api/books/{book_id}`).\n\n'
        '- The format is chosen by the uploaded **file name\'s extension** (`.epub` or `.txt`, any case); the part\'s '
        'content type is ignored. A part without a file name is treated as `book.txt`.\n'
-       '- Upload maximum is 30 MiB (31,457,280 bytes); a larger upload is rejected with 413 (the whole request body is '
-       'still received first). EPUBs are additionally limited to 100 MB / 5,000 files when expanded.\n'
+       '- Upload maximum is 30 MiB (31,457,280 bytes) of file content. A request whose `Content-Length` exceeds that '
+       'limit plus 64 KiB of multipart framing is refused with 413 before its body is read; a body sent without '
+       '`Content-Length` is read only up to that limit. EPUBs are additionally limited to 100 MB / 5,000 files when '
+       'expanded.\n'
        '- The title comes from EPUB metadata, or for TXT from the file name (without extension, underscores as spaces); '
        'the author from EPUB creators, or an empty string. An EPUB cover image becomes a JPEG thumbnail.\n'
        '- The book starts with a free local draft (`analysis.provider` `local`, status `draft`): chapters, scenes '
        'and passages are split locally; dialogue passages are `unassigned` until analysis. The narrator and '
        '`unassigned` entries get installed device (macOS) voices when available. No provider is contacted.\n'
        '- The original bytes are saved in the data directory (`originals/{book_id}/source.{ext}`) for later '
-       '`refreshBookMetadata` and structure repair. A resource record (stage `import`) is written.\n'
+       '`refreshBookMetadata` and structure repair. A resource record (stage `import`) measures the import.\n'
+       '- A failed import leaves nothing behind: no book, no saved original and no resource record.\n'
        '- Not idempotent and not deduplicated: every call creates a new book with a new ID, even for the same file.\n\n'
        'Example (synthetic file): `curl --fail --request POST http://127.0.0.1:8765/api/books '
        '--form \'file=@/absolute/path/to/synthetic-story.txt;type=text/plain\'`',
        response=Book, response_description='The newly imported book, presented like `GET /api/books/{book_id}`.',
-       errors={400: 'The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary '
-                    'data, unreadable/unsafe/encrypted EPUB, or no readable text. `detail` explains which.',
-               413: 'The upload is larger than 30 MiB.'}),
+       errors={400: {'book_file_invalid': 'The file could not be imported: empty file, unsupported extension, TXT not '
+                                          'UTF-8 or containing binary data, unreadable, unsafe or encrypted EPUB, or no '
+                                          'readable text. `detail` says which.',
+                     'cover_unreadable': 'The EPUB\'s cover image could not be read safely.',
+                     'invalid_request': 'The multipart body could not be parsed.'},
+               413: {'upload_too_large': 'The upload is larger than 30 MiB.'}}),
 
     op('POST', '/api/demo', 'createDemoBook', 'Library', 'Create the demo book',
        'Creates the built-in original sample story ("The Last Light") with a free local heuristic draft analysis '
        '(explicit speech tags only; `analysis.provider` `local`) and returns it as the full presented book document. '
        'No request body and no provider contact.\n\n'
        'Not idempotent: every call creates another copy with a new ID. The demo has no saved original file, so '
-       '`refreshBookMetadata` on it fails with 400 and its `storage.original_bytes` is 0.',
+       '`refreshBookMetadata` on it fails with 400 `original_unavailable` and its `storage.original_bytes` is 0.',
        response=Book, response_description='The new demo book, presented like `GET /api/books/{book_id}`.'),
 
     op('GET', '/api/library', 'getLibrary', 'Library', 'Get the library snapshot',
@@ -160,83 +173,86 @@ OPS: list[Op] = [
        + _SUMMARY_ORDER +
        'With `include_archived=true`, removed books and removed series are included (each flagged `archived`); '
        'otherwise both are omitted. A series\' `volumes` always include its removed books (status `archived`).\n\n'
-       'Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or free space '
-       'exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. Removed items '
-       'retain their files and data. Every call walks the data directory to measure sizes.',
+       'Read-only. Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or '
+       'free space exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. '
+       'Removed items retain their files and data. Every call walks the data directory to measure sizes.',
        response=LibrarySnapshot,
        params={'include_archived': 'Include removed (archived) books and series. Default false.'}),
 
     op('PATCH', '/api/books/{book_id}/metadata', 'updateBookMetadata', 'Library', 'Edit display title and author',
        'Sets the display title and author and returns the updated summary. Whitespace is normalized (runs of '
        'spaces, tabs and newlines become one space; leading and trailing whitespace is removed). Title is required '
-       '(1–500 characters); author defaults to an empty string (maximum 500).\n\n'
-       'Both fields are then marked as reviewed: a later `refreshBookMetadata` never overwrites either of them, '
-       'even the author when it was sent empty. The edit increments the book\'s `revision`, retains the previous '
-       'projection in history, and moves the book to the front of the library order. It does not rename the '
-       'original file or change the text.\n\n'
+       '(1–500 characters); author defaults to an empty string (maximum 500). A missing `title`, a value longer '
+       'than 500 characters or an unknown field is a 422 validation error.\n\n'
+       'Each field whose value this edit changes is marked as reviewed: a later `refreshBookMetadata` never '
+       'overwrites it. A field sent with its current value is not marked, and earlier marks are kept. An edit that '
+       'changes a field increments the book\'s `revision` and retains the previous projection in history; an edit '
+       'that changes nothing saves nothing. It does not rename the original file, change the text, or change the '
+       'book\'s place in the library order.\n\n'
        'Refused while any job is queued or running for the book, while an active series run has reserved it, '
        'or while the book is removed.',
        response=LibraryBookSummary, params={'book_id': _BOOK_ID},
-       errors={400: 'The book is removed (restore it first), or the normalized title is empty, or a value contains control characters.',
-               404: 'No book has this ID.',
-               409: 'A job is working on this book, or an active series run has reserved it.',
-               422: 'Missing `title`, a title or author longer than 500 characters, or an unknown field.'}),
+       errors={400: {'metadata_invalid': 'The normalized title is empty, or a value contains control characters.'},
+               404: _NOT_FOUND,
+               409: {**_BUSY, **_ARCHIVED}}),
 
     op('POST', '/api/books/{book_id}/archive', 'archiveBook', 'Library', 'Remove a book from the library (reversibly)',
        'Reversibly removes the book from normal library views (`listBooks`, the default `getLibrary`, series '
        '`books` lists) and returns `{id, archived: true, retained: true}`. No request body.\n\n'
        + _REMOVAL + ' Removal of a series member leaves the series intact; the book appears in the series\' '
        '`volumes` with status `archived`.\n\n'
-       'Each successful call records a `library_state` artifact in the book\'s history. Removing an already '
-       'removed book is refused with 400 (not idempotent). Refused while any job is queued or running for the '
-       'book or an active series run has reserved it.',
+       'Idempotent: removing an already removed book succeeds with the same response and changes nothing. A call '
+       'that removes the book records a `library_state` artifact in its history. Refused while any job is queued or '
+       'running for the book or an active series run has reserved it.',
        response=SeriesArchiveState, params={'book_id': _BOOK_ID},
-       errors={400: 'The book is already removed.',
-               404: 'No book has this ID.',
-               409: 'A job is working on this book, or an active series run has reserved it.'}),
+       errors={404: _NOT_FOUND, 409: _BUSY}),
 
     op('POST', '/api/books/{book_id}/restore', 'restoreBook', 'Library', 'Restore a removed book',
        'Restores a removed book to normal library views and returns `{id, archived: false, retained: true}`. '
        'No request body. Everything retained during removal becomes usable again.\n\n'
-       'Idempotent in effect: restoring a book that is not removed succeeds with the same response (and, like '
-       'every successful call, records a `library_state` artifact in the book\'s history). Respects series-run '
-       'guards: refused while a run of the book\'s series is queued or running (even if the series itself is '
-       'removed). Restoring a book does not restore its removed series.',
+       'Idempotent: restoring a book that is not removed succeeds with the same response and changes nothing. A '
+       'call that restores the book records a `library_state` artifact in its history. Refused while a job is queued '
+       'or running for the book, or while a run of the book\'s series is queued or running (even if the series '
+       'itself is removed). Restoring a book does not restore its removed series.',
        response=SeriesArchiveState, params={'book_id': _BOOK_ID},
-       errors={400: 'A job is queued or running for this book.',
-               404: 'No book has this ID.',
-               409: 'A run of the book\'s series is queued or running.'}),
+       errors={404: _NOT_FOUND,
+               409: {'job_active': 'A job is queued or running for this book.',
+                     'series_run_active': 'A run of the book\'s series is queued or running.'}}),
 
     op('POST', '/api/books/{book_id}/refresh-metadata', 'refreshBookMetadata', 'Library',
        'Re-read title, author and cover from the saved original',
        'Re-parses the saved original EPUB or TXT (locally; it does not download metadata from the web) and '
        'returns the updated summary. No request body.\n\n'
-       '- Title and author are replaced by the values parsed from the original, except a field that was set by '
-       '`updateBookMetadata` (reviewed display metadata is preserved; that edit marks both fields).\n'
+       '- Title and author are replaced by the values parsed from the original, except a field that an '
+       '`updateBookMetadata` call changed (reviewed display metadata is preserved per field).\n'
        '- If the original yields a cover thumbnail, it replaces the saved cover. A missing cover in the original '
        'does not remove an existing one.\n'
        '- Chapters, passages, analysis and audio are not changed; use `POST /api/books/{book_id}/repair-structure` '
        'for structure.\n'
        '- Always increments the book\'s `revision` and retains the previous projection in history, even when nothing changed.\n'
-       '- A resource record (stage `metadata_refresh`) is written for every attempt, including failed ones (also for an unknown ID).\n\n'
+       '- A resource record (stage `metadata_refresh`) measures each refresh that reaches the original, including one '
+       'that fails to parse it. A refused request (unknown, removed or busy book) records nothing.\n\n'
        'Refused while any job is queued or running for the book, while an active series run has reserved it, or '
        'while the book is removed.',
        response=LibraryBookSummary, params={'book_id': _BOOK_ID},
-       errors={400: 'The book is removed; the saved original is unavailable (for example the demo book, which has '
-                    'none) or larger than the import limit; or it can no longer be parsed or its cover read.',
-               404: 'No book has this ID.',
-               409: 'A job is working on this book, or an active series run has reserved it.'}),
+       errors={400: {'original_unavailable': 'The book has no readable saved original (for example the demo book).',
+                     'original_too_large': 'The saved original is larger than the import limit.',
+                     'original_unreadable': 'The saved original can no longer be parsed. `detail` says why.',
+                     'cover_unreadable': 'The original\'s cover image could not be read safely.'},
+               404: _NOT_FOUND,
+               409: {**_BUSY, **_ARCHIVED}}),
 
     op('GET', '/api/books/{book_id}/cover', 'getBookCover', 'Library', 'Download the cover thumbnail',
        'The saved cover thumbnail bytes. Covers are always stored as JPEG (at most 240 x 360 pixels, at most '
-       '256 KiB), so the content type is `image/jpeg`. Works for removed books too. Use the `cover.url` from a '
-       'summary, which appends `?v={sha256}` as a cache-busting token; the server ignores any query parameters.\n\n'
-       'Caching, as actually sent: the response has an `ETag` header whose value is the SHA-256 hex of the bytes '
-       '**without the quotes** HTTP requires, and `Cache-Control: no-store` (the route asks for '
-       '`private, max-age=300`, but the `/api/` middleware overrides it). Conditional requests are not supported: '
-       '`If-None-Match` is ignored and the full image is always returned with 200.',
-       media='image/jpeg', response_description='JPEG image bytes.', params={'book_id': _BOOK_ID},
-       errors={404: 'No book has this ID (`Book not found`), or the book has no saved cover (`Cover not found`).'}),
+       '256 KiB), so the content type is `image/jpeg`. Works for removed books too. Read-only.\n\n'
+       'Caching: the response has a strong `ETag`, the quoted SHA-256 hex of the bytes (`"{sha256}"`, where '
+       '`sha256` is `cover.sha256` in a summary). A request whose `If-None-Match` lists that tag (weak comparison, '
+       'or `*`) gets 304 Not Modified with an empty body. With `?v=` equal to the current `sha256` (the summary\'s '
+       '`cover.url`), the response carries `Cache-Control: private, max-age=31536000, immutable`, because that URL '
+       'always names these bytes; any other URL gets `Cache-Control: private, no-cache` (revalidate with the '
+       '`ETag`). Errors are `no-store` like every other `/api/` response. Other query parameters are ignored.',
+       media='image/jpeg', response_description='JPEG image bytes.', params={'book_id': _BOOK_ID}, conditional=True,
+       errors={404: {**_NOT_FOUND, 'cover_not_found': 'The book has no saved cover.'}}),
 
     op('GET', '/api/books/{book_id}/export', 'exportAudiobook', 'Library', 'Download the audiobook ZIP',
        'Builds and downloads an audiobook ZIP from the book\'s valid enhanced (cast) takes. Requires at least one '
@@ -246,12 +262,12 @@ OPS: list[Op] = [
        'The response is `application/zip` with `Content-Disposition: attachment` and a file name derived from the '
        'title (characters other than letters, digits, underscore, space, `.` and `-` removed; at most 80 characters; '
        '`audiobook` if nothing remains) plus `.zip`. The archive is assembled synchronously in a temporary folder '
-       'before the response starts, so a large book takes a while. A resource record (stage `audio_export`) is written: '
-       'this GET writes local bookkeeping but never contacts a provider.\n\n'
-       'Archive contents:\n\n'
-       '- `production.json`: the raw stored book JSON (pretty-printed UTF-8), not the presented document: no '
-       '`leading_text`/`trailing_text` or audio URLs, and each passage\'s `audio` is its stored take metadata '
-       '(or null), including takes that are no longer current. Treat its fields as storage, not as a contract.\n'
+       'before the response starts, so a large book takes a while. Read-only: it records nothing and never contacts '
+       'a provider; the temporary folder is deleted after the response.\n\n'
+       'Archive layout:\n\n'
+       '- `production.json`: the book exactly as `GET /api/books/{book_id}` presents it at export time (the `Book` '
+       'schema, pretty-printed UTF-8), including `leading_text`/`trailing_text`; each passage\'s `audio` is its '
+       'current take or null. Its audio `url` values point at this server, not into the archive; use `takes/`.\n'
        '- `README.txt`: a short plain-text explanation.\n'
        '- `takes/{segment_id}.wav`: one file per passage with a valid take, even when its chapter is incomplete.\n'
        '- `chapters/NNN.txt`: the text of every section, numbered from `001` in book order (all sections, not only '
@@ -264,9 +280,9 @@ OPS: list[Op] = [
        '`{segment_id, start, end}` in seconds within that WAV (empty for unassembled sections). Timings mark exact '
        'passage boundaries, not words. `missing_segment_ids` lists passages without a valid take.',
        media='application/zip', ranges=True, response_description='The audiobook ZIP archive.', params={'book_id': _BOOK_ID},
-       errors={400: 'No passage has a valid enhanced take (`Generate some audio before exporting`), or a take '
-                    'file is not a readable mono 24 kHz 16-bit PCM WAV.',
-               404: 'No book has this ID.'}),
+       errors={400: {'export_audio_missing': 'No passage has a current enhanced take.',
+                     'take_unreadable': 'A take file is not a readable mono 24 kHz 16-bit PCM WAV.'},
+               404: _NOT_FOUND}),
 ]
 
 REQUEST_DOCS: dict[str, dict[str, str]] = {

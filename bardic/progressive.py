@@ -31,10 +31,17 @@ def checkpoint_for(book, store):
     return None
 
 
-def discoveries(book, store, repository):
-    """Reuse validated discoveries, including pre-upgrade work, with honest provenance."""
+def discoveries(book, store, repository, *, persist=True):
+    """Reuse validated discoveries, including pre-upgrade work, with honest provenance.
+
+    Validated discovery found only in an older checkpoint is imported into the
+    unit cache (with its artifacts) when ``persist`` is true. With ``persist``
+    false (GET views) the same units are returned without being saved.
+    """
     source = source_hash(book)
-    stored_keys = {u.get('unit_key') for u in repository.units(book['id'], 'discovery', source)}
+    stored = repository.units(book['id'], 'discovery', source)
+    stored_keys = {u.get('unit_key') for u in stored}
+    imported = []
     checkpoint = checkpoint_for(book, store)
     if checkpoint:
         for unit in checkpoint.get('units', {}).values():
@@ -56,11 +63,14 @@ def discoveries(book, store, repository):
             unit_key = candidate.get('unit_key') or 'imported:' + digest(candidate)
             candidate['unit_key'] = unit_key
             if unit_key not in stored_keys:
-                repository.save_unit(book['id'], unit_key, 'discovery', source, candidate)
+                if persist:
+                    repository.save_unit(book['id'], unit_key, 'discovery', source, candidate)
+                else:
+                    imported.append(candidate)
                 stored_keys.add(unit_key)
     # One accepted observation set per identical source interval; latest wins.
     result = {}
-    for unit in repository.units(book['id'], 'discovery', source):
+    for unit in (repository.units(book['id'], 'discovery', source) if persist else [*stored, *imported]):
         result[(unit['chapter_id'], unit['start'], unit['end'])] = unit
     return list(result.values())
 
@@ -150,10 +160,12 @@ def cast_signature(book):
     return digest([{k: c[k] for k in ('id', 'name', 'aliases', 'description', 'direction')} for c in book['characters']])
 
 
-def profile_specs(book, store, accepted):
+def profile_specs(book, store, accepted, *, persist=True):
+    """Profile requests. ``persist`` false (GET views) retains no census or series-context artifacts;
+    such specs have empty ``series_context_artifact_ids`` but the same unit keys."""
     from .artifacts import capture_series
 
-    local = census(book, store)
+    local = census(book, store, retain=persist)
     stats = {c['id']: c for c in local['characters']}
     # Capture the links that actually selected this evidence. Another volume's
     # membership may change while a profile request is in flight.
@@ -161,7 +173,7 @@ def profile_specs(book, store, accepted):
         series = SeriesRepository(store).context_for_book(book['id'], max_chars=30000, max_observations_per_character=16)
         prior_book_ids = {o['book_id'] for character in series['characters'] for o in character['observations']}
         series_artifacts = {}
-        if prior_book_ids:
+        if prior_book_ids and persist:
             with store.connect() as conn:
                 series_artifacts = {bid: capture_series(conn, bid) for bid in {book['id'], *prior_book_ids}}
     prior = {c['character_id']: c for c in series['characters']}
@@ -207,7 +219,7 @@ def profile_specs(book, store, accepted):
                       'input_unit_keys': sorted({observation_units[digest(o)] for o in observations}),
                       'prior_observations': previous,
                       'series_context_artifact_ids': sorted(series_artifacts[bid] for bid in
-                                                           {book['id'], *(o['book_id'] for o in previous)}) if previous else []})
+                                                           {book['id'], *(o['book_id'] for o in previous)}) if previous and persist else []})
     return specs
 
 
@@ -266,13 +278,13 @@ def direction_specs(book, selected):
     return specs
 
 
-def profile_status(book, store, accepted=None, discovered=None):
-    """Discovery coverage and profile currency are separate facts."""
+def profile_status(book, store, accepted=None, discovered=None, *, persist=True):
+    """Discovery coverage and profile currency are separate facts. ``persist`` false retains nothing."""
     if accepted is None:
-        accepted = discoveries(book, store, ProcessingStore(store))
+        accepted = discoveries(book, store, ProcessingStore(store), persist=persist)
     if discovered is None:
-        discovered = coverage(book, store)
-    specs = {s['character_id']: s for s in profile_specs(book, store, accepted)}
+        discovered = coverage(book, store, retain=persist, units=None if persist else accepted)
+    specs = {s['character_id']: s for s in profile_specs(book, store, accepted, persist=persist)}
     states = []
     for c in book['characters']:
         if c['id'] in {'narrator', 'unassigned'}:
@@ -390,7 +402,8 @@ def run(book, provider, api_key, model, progress, cancelled, *, store, phase, sc
     units = {u['unit_key']: u for u in accepted}
     checkpoint = {'provider': provider, 'model': model, 'scan_model': scan_model, 'phase': phase, 'working_book': baseline,
                   'units': units, 'chapters': list(rows.values()), 'references': store.character_references(book['id']),
-                  'status': 'running', 'stage': 'preprocessing', 'current_chapter_id': None, 'scope_chapter_id': chapter_id}
+                  'status': 'running', 'stage': 'preprocessing', 'current_chapter_id': None, 'scope_chapter_id': chapter_id,
+                  'run_id': run_id}
     checkpoint_key = fingerprint(book, provider, model)
     budget = RequestBudget(repository, book['id'], run_id, **(limits or {}))
     resources = ResourceLedger(store)

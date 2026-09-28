@@ -24,9 +24,9 @@ const book = {id:'book-9',revision:1,chapters:[{id:'chapter-1'},{id:'chapter-2'}
   {id:'segment-2',chapter_id:'chapter-1',start:12,end:25,text:'Elio replied.',speaker_id:'elio',direction:'Louder.'},
   {id:'segment-3',chapter_id:'chapter-2',start:0,end:6,text:'Dawn.'}
 ],characters:[{id:'mara',voice:'Puck'}],scenes:[{id:'scene-1',tone:'Tense'}]};
-const status = {has_api_key:true,providers:[{id:'system',available:true},{id:'gemini',available:true}],
+const status = {providers:[{id:'system',available:true},{id:'gemini',available:true}],
   system_voices:[{id:'Samantha',name:'Samantha',locale:'en-US'}],tts_models:['gemini-3.8-flash-tts','gemini-3.8-flash-lite-tts'],tts_model:'gemini-3.8-flash-tts'};
-const simpleAudio = {url:'/api/books/book-9/listen/audio/simple',duration:2,available:true,asset_id:'simple',mode:'simple'};
+const simpleAudio = {url:'/api/books/book-9/listen/audio/simple',duration:2,asset_id:'simple'};
 const session = {id:'session-1',provider:'system',voice:'',model:'macos-say'};
 function environment(handler, prior={}){
   const calls=[];
@@ -306,7 +306,7 @@ function ordinary(call){
 
   // Device-unavailable defaults to a visible cloud choice but never submits automatically.
   const offline=environment(ordinary),offlineContainer=new Container();
-  await offline.api.render(offlineContainer,book,options({status:{has_api_key:false,providers:[{id:'system',available:false},{id:'gemini',available:false}]}}));
+  await offline.api.render(offlineContainer,book,options({status:{providers:[{id:'system',available:false},{id:'gemini',available:false}]}}));
   assert.equal(offline.calls.length,0);
   assert.ok(offlineContainer.innerHTML.includes('Add a Gemini API key'));
   assert.ok(offlineContainer.innerHTML.includes('data-listen-action="start" disabled'));

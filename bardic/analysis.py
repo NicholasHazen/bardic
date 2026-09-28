@@ -588,7 +588,7 @@ def _local_llm_request(client, model, base_url, prompt, schema, cancelled):
     from .local_services import TIMEOUTS, normalize_url
     base_url = normalize_url(base_url or "", "local_llm")
     if not base_url:
-        raise ValueError("Add the Local LLM server URL in Settings first.")
+        raise ValueError("No Local LLM server URL is configured.")
     # A low temperature, as for Gemini: the same request should give much the same cast.
     body = {"model": model, "instructions": DIRECTOR_INSTRUCTION,
             "input": [{"role": "user", "content": prompt}], "store": False,
@@ -779,7 +779,7 @@ def _cloud(book, provider, api_key, model, progress, cancelled):
     label = PROVIDER_LABELS[provider]
     request = {"gemini": _request, "openai": _openai_request, "anthropic": _anthropic_request}[provider]
     if not api_key:
-        raise ValueError(f"Add your {label} API key in Settings before running cloud analysis.")
+        raise ValueError(f"No {label} API key is configured, so cloud analysis cannot run.")
     if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", model):
         raise ValueError(f"Choose a valid {label} analysis model ID.")
     chunks = list(_batches(book["segments"]))

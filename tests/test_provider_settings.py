@@ -122,26 +122,30 @@ def test_provider_settings_persist_but_credentials_do_not(tmp_path):
         status = second.get("/api/status").json()
         assert status["analysis_provider"] == "anthropic"
         assert status["analysis_models_by_provider"] == MODELS
-        assert status["analysis_model"] == MODELS["gemini"]
-        assert not status["has_api_key"]
         cloud = [provider for provider in status["analysis_providers"] if provider["id"] != "local"]
         assert all(not provider["available"] and not provider["has_api_key"] for provider in cloud)
 
 
-def test_legacy_gemini_preferences_and_fields_remain_compatible(tmp_path):
+def test_legacy_saved_gemini_model_is_read_but_status_and_settings_have_no_aliases(tmp_path):
     Store(tmp_path).save_settings({"analysis_model": "gemini-legacy-custom", "tts_model": TTS_MODELS[-1]})
     with TestClient(create_app(tmp_path)) as client:
         status = client.get("/api/status").json()
-        assert status["analysis_model"] == "gemini-legacy-custom"
+        # An older library's saved Gemini model is still read into the per-provider map.
         assert status["analysis_models_by_provider"]["gemini"] == "gemini-legacy-custom"
         assert status["tts_model"] == TTS_MODELS[-1]
-        response = client.post("/api/settings", json={"api_key": KEYS["gemini"], "analysis_model": "gemini-new-custom"})
+        # The top-level aliases are gone: the per-provider entries carry the same facts.
+        assert "analysis_model" not in status and "has_api_key" not in status
+        local = next(provider for provider in status["analysis_providers"] if provider["id"] == "local")
+        assert local["available"] and not local["has_api_key"], "local runs without a key"
+        for legacy in ({"api_key": KEYS["gemini"]}, {"analysis_model": "gemini-new-custom"}):
+            response = client.post("/api/settings", json=legacy)
+            assert response.status_code == 422 and response.json()["code"] == "validation_error", response.text
+        response = client.post("/api/settings", json={"api_keys": {"gemini": KEYS["gemini"]},
+                                                      "analysis_models_by_provider": {"gemini": "gemini-new-custom"}})
         assert response.status_code == 200, response.text
-        assert response.json()["has_api_key"]
-        assert response.json()["analysis_models_by_provider"]["gemini"] == "gemini-new-custom"
-        runtime = client.app.state.runtime
-        assert runtime.api_key == KEYS["gemini"]
-        assert runtime.api_keys["gemini"] == KEYS["gemini"]
+        gemini = next(provider for provider in response.json()["analysis_providers"] if provider["id"] == "gemini")
+        assert gemini["has_api_key"] and gemini["available"] and gemini["model"] == "gemini-new-custom"
+        assert client.app.state.runtime.api_keys["gemini"] == KEYS["gemini"]
 
 
 def test_partial_settings_and_clearing_one_key_preserve_other_providers(client):
@@ -164,8 +168,6 @@ def test_partial_settings_and_clearing_one_key_preserve_other_providers(client):
     {"analysis_models_by_provider": {"openai": ""}},
     {"analysis_models_by_provider": {"openai": "model\nInjected"}},
     {"tts_model": "unsupported"},
-    {"api_key": "conflicting-legacy-key"},
-    {"analysis_model": "conflicting-legacy-model"},
 ])
 def test_invalid_mixed_settings_do_not_partially_change_keys_or_preferences(client, invalid):
     runtime = client.app.state.runtime

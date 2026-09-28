@@ -11,6 +11,7 @@ from pydantic import Field
 
 from .base import Op, View, op
 from .books import Book
+from .media import AudioRef
 
 # ----------------------------------------------------------------- shared text
 
@@ -21,9 +22,8 @@ _FAMILY = (
 )
 
 _SINGLE_VIEW_STATE = (
-    '\n\nThe returned `LibraryVoice` is built without the saved provider checks, so each version\'s '
-    '`server_state` is `unknown` (or `other_project` for a Gemini version made with another key) and '
-    '`assignable`/`warnings` reflect only that. Call `GET /api/voices` for checked server states.'
+    '\n\nThe returned `LibraryVoice` compares each version with the same saved provider checks as '
+    '`GET /api/voices` (read locally; this does not contact a provider to check).'
 )
 
 _REVOICE = (
@@ -34,14 +34,18 @@ _REVOICE = (
     'the voice.'
 )
 
-_NARRATION_409 = ('A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book '
-                  'whose characters follow an affected voice ("Narration is being prepared for a book that uses '
-                  'this voice…").')
-
-_DRAFT_404 = 'The draft does not exist ("Voice draft not found"), including a malformed draft ID.'
-_VOICE_404 = 'The library voice does not exist ("Voice not found"), including a malformed voice ID.'
-_CLAIM_409 = ('The draft is no longer open ("This voice draft is already finished."), or another request is '
-              'working on it ("This voice draft is already working. Wait for it to finish.").')
+_NARRATION = {'narration_active': 'A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or '
+                                  'running for a book whose characters follow an affected voice.'}
+_DRAFT_404 = {'voice_draft_not_found': 'No voice draft has this ID (including a malformed ID).'}
+_VOICE_404 = {'voice_not_found': 'No library voice has this ID (including a malformed ID).'}
+_CLAIM = {'draft_finished': 'The draft is already saved or abandoned.',
+          'draft_busy': 'Another generate, discard, abandon or save request is working on the draft.'}
+_GEMINI_KEY = {'gemini_key_missing': 'No Gemini API key is configured.'}
+_BREEZE_URL = {'breeze_url_missing': 'No Breeze server URL is configured.'}
+_PROVIDER = {'provider_error': 'The provider refused or failed the request, or was unreachable. The detail is '
+                               'Bardic\'s own sentence; provider text is not echoed.'}
+_OTHER_PROJECT = {'candidate_other_project': 'A Gemini candidate that must be deleted or saved was made with a '
+                                             'different Google API key than the current one.'}
 
 # ----------------------------------------------------------------------- views
 
@@ -68,6 +72,16 @@ class LibraryVoiceRecipe(View):
                                                  'only; absent when none was given.')
 
 
+class LibraryVoiceAudition(AudioRef):
+    """A voice version's audition clip (`GET /api/voices/{voice_id}/versions/{version}/audition`).
+
+    Always present. When Bardic retained the clip (24 kHz mono WAV), `asset_id`, `duration` and `created_at` are
+    set. When it did not, they are null and the URL fetches the Breeze reference clip or Gemini sample from the
+    provider on each request. `voice` is the version's provider voice ID. `model` is the design model for a
+    designed version, and null for a cloned or imported version, whose clip is a recording.
+    """
+
+
 class LibraryVoiceVersion(View):
     """One immutable version of a library voice: one fixed provider voice."""
     version: int = Field(description='Version number, starting at 1. Versions are append-only.')
@@ -85,14 +99,14 @@ class LibraryVoiceVersion(View):
                                                'timestamp string; stored voices live about one year). Null for '
                                                'Breeze or when unknown.')
     server_state: Literal['ok', 'changed', 'missing', 'unknown', 'other_project'] = Field(
-        description='Result of comparing this version with the last saved provider check, computed locally. '
-                    '`ok`: present (Breeze: same revision). `changed`: Breeze only, the server voice changed since '
-                    'it was saved. `missing`: not in the last check. `unknown`: no check to compare with (Breeze '
-                    'never checked or checked against another URL; Gemini project voices not refreshed with the '
-                    'current key; or a single-voice response, which never compares). `other_project`: Gemini '
-                    'only, made with a different Google API key than the current one.')
-    audition_url: str = Field(description='Root-relative URL of this version\'s audition WAV '
-                                          '(`GET /api/voices/{voice_id}/versions/{version}/audition`).')
+        description='Result of comparing this version with the last saved provider check, computed locally in '
+                    'every response that returns a voice. `ok`: present (Breeze: same revision). `changed`: Breeze '
+                    'only, the server voice changed since it was saved. `missing`: not in the last check, or '
+                    'already deleted on the provider by an unfinished deletion of this voice. `unknown`: no check '
+                    'to compare with (Breeze never checked or checked against another URL; Gemini project voices '
+                    'never listed with the current key, or the last listing failed). `other_project`: Gemini only, '
+                    'made with a different Google API key than the current one.')
+    audition: LibraryVoiceAudition = Field(description='This version\'s audition clip.')
     recipe: LibraryVoiceRecipe = Field(description='How the version was made.')
 
 
@@ -128,10 +142,20 @@ class LibraryVoice(View):
     usage: list[LibraryVoiceUsage] = Field(description='Characters (in non-archived books) that follow this voice.')
     source: VoiceCharacterContext | None = Field(description='The character the voice was designed or cloned for, '
                                                              'or null.')
-    warnings: list[str] = Field(description='Human-readable problems: the current version changed on the Breeze '
-                                            'server (narration refused), is missing from the server, was made with '
-                                            'another Google key, or the selected Gemini speech model accepts only '
-                                            'built-in voices.')
+    warnings: list[str] = Field(description='Human-readable problems: an unfinished deletion already removed some '
+                                            'of its provider voices (delete it again to finish), the current version '
+                                            'changed on the Breeze server (narration refused), is missing from the '
+                                            'server, was made with another Google key, or the selected Gemini '
+                                            'speech model accepts only built-in voices.')
+
+
+class VoiceDraftCandidateAudio(AudioRef):
+    """Bardic's retained copy of a candidate's audio (24 kHz mono WAV).
+
+    Served by `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`. `voice` is the Gemini `voice_…`
+    ID, or null for a Breeze preview, which is not a server voice. `model` is the Breeze model or the Gemini
+    design model used.
+    """
 
 
 class VoiceDraftCandidate(View):
@@ -151,9 +175,8 @@ class VoiceDraftCandidate(View):
                                                '(about 24 hours; irrelevant to saving, which uploads the retained '
                                                'clip) or the Gemini stored voice\'s expiry. Null when not reported.')
     discarded: bool = Field(description='True once discarded (explicitly, or by abandoning the draft).')
-    audio_url: str | None = Field(description='Root-relative URL of the retained audio '
-                                              '(`GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`), '
-                                              'or null when none was retained.')
+    audio: VoiceDraftCandidateAudio | None = Field(description='The retained audio, or null when none was '
+                                                               'retained (a Gemini sample that could not be stored).')
 
 
 class VoiceDraft(View):
@@ -245,7 +268,9 @@ class VoiceLibraryGeminiStatus(View):
     tts_model: str = Field(description='The selected Gemini speech model preference.')
     state: Literal['unchecked', 'ready', 'error'] = Field(
         description='`unchecked`: never refreshed with the current key (a listing made with another key is '
-                    'ignored). `ready` or `error`: the last refresh result.')
+                    'ignored). `ready` or `error`: the last refresh result. After `error`, `stored_count` is null, '
+                    '`project_voices` is empty and Gemini versions report `server_state` `unknown` until a refresh '
+                    'succeeds.')
     message: str = Field(description='Human-readable result, for example "3 stored voices in this Google '
                                      'project."; empty when unchecked.')
     checked_at: str | None = Field(description='When the last refresh with the current key finished (ISO 8601 '
@@ -257,7 +282,8 @@ class VoiceLibraryGeminiStatus(View):
                                                  'listed or the last refresh failed.')
     limit: int = Field(description='Google\'s stored-voice limit per project (200).')
     project_voices: list[VoiceLibraryGeminiProjectVoice] = Field(
-        description='Stored voices from the last successful listing with the current key, newest first.')
+        description='Stored voices from the last refresh with the current key, newest first. Empty when never '
+                    'listed or when the last refresh failed.')
 
 
 class VoiceLibraryProviders(View):
@@ -291,8 +317,9 @@ class VoiceLibraryOverview(View):
 class LibraryVoiceDeleted(View):
     """Result of deleting a library voice."""
     deleted: str = Field(description='The library voice ID.')
-    server_deleted: list[str] = Field(description='Provider voice IDs deleted on the provider in this request, '
-                                                  'sorted. Empty when removed from Bardic only, or when the voice '
+    server_deleted: list[str] = Field(description='Provider voice IDs this deletion removed on the provider, '
+                                                  'sorted, including those removed by earlier attempts that failed '
+                                                  'part-way. Empty when removed from Bardic only, or when the voice '
                                                   'was already deleted.')
 
 
@@ -329,29 +356,27 @@ class BreezeVoiceCloned(View):
 
 OPS: list[Op] = [
     op('GET', '/api/voices', 'getVoiceLibrary', 'Voices', 'Get the voice library',
-       _FAMILY + '\n\nLocal only: reads SQLite and the saved Breeze and Gemini checks; never contacts a provider. '
-       'Returns live library voices, the defaults, open drafts, provider state and built-in voices. Each '
-       'version\'s `server_state` compares it with the last saved Breeze check (for this URL) and the last '
-       'Gemini listing (for this key).\n\n'
-       '**Known defect:** after a Gemini refresh that failed (`providers.gemini.state` would be `error`), this '
-       'route fails with a plain-text HTTP 500 until a refresh succeeds or the Gemini key changes, because the '
-       'failed listing is stored as null and then iterated.',
+       _FAMILY + '\n\nLocal only and read-only: reads SQLite and the saved Breeze and Gemini checks; never '
+       'contacts a provider and never writes. Returns live library voices, the defaults, open drafts, provider '
+       'state and built-in voices. Each version\'s `server_state` compares it with the last saved Breeze check '
+       '(for this URL) and the last Gemini listing (for this key). When the last Gemini refresh failed, '
+       '`providers.gemini.state` is `error` and this still returns 200.',
        response=VoiceLibraryOverview,
-       errors={500: 'Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON).'},
+       errors={},
        cost='none'),
 
     op('POST', '/api/voices/gemini/refresh', 'refreshGeminiVoices', 'Voices', "List the Google project's stored voices",
        'Lists the Google project\'s stored `prompted` and `replicated` voices (metadata only; no generation, up to '
        '5 pages of 100) and saves the listing with a hash of the key, so a listing made with another key is '
-       'ignored. A provider failure is saved as `state: "error"` with a message rather than returned as an HTTP '
-       'error. Returns `providers.gemini` of the library overview.\n\n'
-       '**Known defect:** when the listing fails, the failure is saved and then this route (and '
-       '`GET /api/voices`) fails with a plain-text HTTP 500 instead of returning `state: "error"`.',
+       'ignored. Returns `providers.gemini` of the library overview.\n\n'
+       'When the listing fails (an HTTP error, no connection, or an unreadable response), the failure is saved '
+       'first, so that `GET /api/voices` reports `providers.gemini.state: "error"` with the message, and then this '
+       'returns 502 `provider_error`.',
        response=VoiceLibraryGeminiStatus,
-       errors={400: 'No Gemini API key is loaded ("Add a Gemini API key in Settings first."), or Gemini returned '
-                    'a body that is not JSON (the decoder message is the detail).',
-               409: 'The Gemini key changed during the check ("Refresh again."); nothing is saved.',
-               500: 'Known defect: the listing failed (see description; plain-text body).'},
+       errors={400: _GEMINI_KEY,
+               409: {'gemini_key_changed': 'The Gemini API key changed during the check; nothing is saved. '
+                                           'Refresh again.'},
+               502: _PROVIDER},
        cost='network'),
 
     op('PATCH', '/api/voices/{voice_id}', 'updateLibraryVoice', 'Voices', 'Rename or redescribe a voice',
@@ -361,8 +386,8 @@ OPS: list[Op] = [
        'sent; failures are ignored because the library record is authoritative). Gemini voices change locally '
        'only.' + _SINGLE_VIEW_STATE,
        response=LibraryVoice,
-       errors={400: 'The name is only whitespace ("The voice name must be 1–100 characters.").',
-               404: _VOICE_404 + ' Deleted voices also return 404.'},
+       errors={400: {'voice_name_invalid': 'The name is only whitespace.'},
+               404: {'voice_not_found': _VOICE_404['voice_not_found'] + ' Deleted voices also return it.'}},
        params={'voice_id': 'Library voice ID (`vl_…`).'},
        cost='network'),
 
@@ -371,9 +396,9 @@ OPS: list[Op] = [
        'Makes an existing version the current one. Choosing the version that is already current is a no-op that '
        'still returns 200. Local only.' + _REVOICE + _SINGLE_VIEW_STATE,
        response=LibraryVoice,
-       errors={400: 'The version does not exist ("That version does not exist.").',
-               404: _VOICE_404 + ' Deleted voices also return 404.',
-               409: _NARRATION_409},
+       errors={400: {'unknown_version': 'The voice has no version with the given number.'},
+               404: {'voice_not_found': _VOICE_404['voice_not_found'] + ' Deleted voices also return it.'},
+               409: _NARRATION},
        params={'voice_id': 'Library voice ID (`vl_…`).'},
        cost='none'),
 
@@ -387,21 +412,25 @@ OPS: list[Op] = [
        'deleted on the provider, while voices imported from the Breeze server are removed from Bardic only. '
        '`server=true` deletes every distinct provider voice behind every version (Breeze server voices, or '
        'stored Gemini voices in the current Google project); `server=false` never touches the provider. A '
-       'provider that says the voice is already gone (404) counts as deleted. Deletion is not atomic: if one of '
-       'several provider voices fails to delete, the earlier ones are already gone, the library voice is not '
-       'marked deleted, and the request fails; retrying is safe.\n\n'
+       'provider that says the voice is already gone (404) counts as deleted.\n\n'
+       '**Partial failure is recorded and resumable.** Provider voices are deleted one at a time, and each '
+       'deletion is recorded before the next starts. If one fails, the request returns 502 `provider_error` '
+       '(the detail says how many are deleted), and the library voice stays live: the already-deleted versions '
+       'report `server_state: "missing"`, and `warnings` says the deletion is unfinished. Deleting again skips '
+       'the recorded ones, deletes the rest, then marks the voice deleted. `server_deleted` lists every provider '
+       'voice the deletion removed, across attempts.\n\n'
        'Deleting an already-deleted voice returns 200 with an empty `server_deleted` and changes nothing. '
        'Refused while any narration job is active for a book that follows the voice.',
        response=LibraryVoiceDeleted,
-       errors={400: 'Provider deletion was requested and the provider is not usable: no Breeze server URL ("Add the '
-                    'Breeze server URL in Settings first, or choose another narrator."), no Gemini key ("Add a '
-                    'Gemini API key in Settings first."), or the provider request failed (a provider failure here '
-                    'is 400, not 502; the detail is Bardic\'s own message such as "Breeze returned HTTP 500…" or '
-                    '"Gemini returned HTTP 403 while deleting a voice…").',
+       errors={400: {**_BREEZE_URL, **_GEMINI_KEY},
                404: _VOICE_404,
-               409: 'The voice is the Breeze default ("Choose another default before deleting it."); a Gemini '
-                    'voice has a version made with a different Google API key and provider deletion was requested '
-                    '("…or remove it from Bardic only." — retry with `server=false`); or ' + _NARRATION_409},
+               409: {'voice_is_default': 'The voice is the Breeze default; choose another default first.',
+                     'voice_other_project': 'Provider deletion was requested for a Gemini voice with a version made '
+                                            'with a different Google API key. Retry with `server=false` to remove '
+                                            'it from Bardic only.',
+                     **_NARRATION},
+               502: {'provider_error': 'Deleting a provider voice failed. Earlier ones in this request are recorded '
+                                       'as deleted; deleting again resumes.'}},
        params={'voice_id': 'Library voice ID (`vl_…`).',
                'server': 'Whether to delete the provider voices too. Omit for the default (true for designed or '
                          'cloned voices, false for imported ones). Accepts `true`/`false` (also `1`/`0`, '
@@ -415,10 +444,9 @@ OPS: list[Op] = [
            'the affected voice', 'the previous or the new default')
        + ' Both the previous and the new default\'s followers are checked.',
        response=VoiceLibraryDefaultsResult,
-       errors={400: 'The voice is deleted or is not a Breeze voice ("Choose a Breeze voice from the library as the '
-                    'default.").',
-               404: _VOICE_404,
-               409: _NARRATION_409},
+       errors={400: {'unknown_voice': 'No library voice has the given `voice_id`.',
+                     'default_voice_invalid': 'The voice is deleted or is not a Breeze voice.'},
+               409: _NARRATION},
        cost='none'),
 
     op('GET', '/api/voices/{voice_id}/versions/{version}/audition', 'getLibraryVoiceAudition', 'Voices',
@@ -428,11 +456,12 @@ OPS: list[Op] = [
        'Gemini stored voice\'s sample from the provider on every request (not cached) and returns those bytes '
        'labelled `audio/wav`. Works for deleted voices too.',
        media='audio/wav', ranges=True,
-       errors={400: 'A provider fetch is needed and the provider is not configured: no Breeze server URL, or no '
-                    'Gemini API key; or Gemini returned a body that is not JSON.',
-               404: _VOICE_404 + ' Also "Voice version not found", or "No audition audio is available for this '
-                    'voice." when the provider has no sample.',
-               502: 'The provider request failed (Bardic\'s own message; provider text is not echoed).'},
+       errors={400: {'breeze_url_missing': 'A provider fetch is needed and no Breeze server URL is configured.',
+                     'gemini_key_missing': 'A provider fetch is needed and no Gemini API key is configured.'},
+               404: {**_VOICE_404,
+                     'voice_version_not_found': 'The voice has no version with this number.',
+                     'audio_not_found': 'Nothing is retained and the provider has no sample for this version.'},
+               502: _PROVIDER},
        params={'voice_id': 'Library voice ID (`vl_…`).', 'version': 'Version number (integer, from 1).'},
        cost='network'),
 
@@ -451,11 +480,13 @@ OPS: list[Op] = [
        '3. A Breeze draft with no sample text uses the built-in demo text; a Gemini draft keeps an empty '
        'sample text (Gemini does not use it).',
        response=VoiceDraft,
-       errors={400: 'The base voice is deleted or belongs to the other provider ("Iterate on an existing voice of '
-                    'the same provider."), or a filled-in value is too long (for example a character name over '
-                    '100 characters).',
-               404: 'The book ("Book not found"), the character ("Character not found in this book") or the base '
-                    'voice ("Voice not found") does not exist.'},
+       errors={400: {'unknown_book': 'No book has the given `book_id`.',
+                     'unknown_character': 'The book has no character with the given `character_id`.',
+                     'unknown_voice': 'No library voice has the given `base_voice_id`.',
+                     'base_voice_unusable': 'The base voice is deleted or belongs to the other provider.',
+                     'voice_name_invalid': 'A filled-in name is longer than 100 characters.',
+                     'description_too_long': 'A filled-in description is longer than 1,000 characters.',
+                     'sample_text_too_long': 'A filled-in sample text is longer than 1,000 characters.'}},
        cost='none'),
 
     op('PATCH', '/api/voices/drafts/{draft_id}', 'updateVoiceDraft', 'Voices', 'Edit a voice draft',
@@ -464,7 +495,7 @@ OPS: list[Op] = [
        'while a generation is running (the running generation uses the text it started with). Local only.',
        response=VoiceDraft,
        errors={404: _DRAFT_404,
-               409: 'The draft is finished ("This voice draft is already finished.").'},
+               409: {'draft_finished': _CLAIM['draft_finished']}},
        params={'draft_id': 'Draft ID (`vd_…`).'},
        cost='none'),
 
@@ -479,20 +510,28 @@ OPS: list[Op] = [
        '(`count` is ignored), named after the draft name (or "Bardic voice"), using the selected speech model '
        'when it is a design model, else the first design model. `confirm_cost: true` and `book_id` are required; '
        'the request is recorded in that book\'s resource ledger with an unknown cost (never recorded as $0). A '
-       'create that times out or returns an unusable response is never resent and returns 502: the voice may '
-       'exist and be billed, so refresh Gemini voices (`POST /api/voices/gemini/refresh`) and look for it in '
-       '`project_voices`. If the returned sample cannot be stored, the candidate is kept without audio.\n\n'
+       'create that times out or returns an unusable response is never resent and returns 502 '
+       '`provider_outcome_unknown`: the voice may exist and be billed, so refresh Gemini voices '
+       '(`POST /api/voices/gemini/refresh`) and look for it in `project_voices`. If the returned sample cannot be '
+       'stored, the candidate is kept without audio.\n\n'
        'Validation (400s) happens before the draft is claimed. While the request runs, the draft is `busy` and '
        'other generate, discard, abandon and save requests on it get 409.',
        response=VoiceDraft,
-       errors={400: 'The description is shorter than 3 characters; Gemini without `confirm_cost: true` ("Confirm '
-                    'that this creates a billed, stored Gemini voice."), without `book_id`, without a Gemini key, '
-                    'or with an invalid name, language tag or gender; Breeze without sample text or without a '
-                    'server URL; or the draft was finished by a concurrent request.',
-               404: _DRAFT_404 + ' Also "Book not found" for an unknown `book_id`.',
-               409: _CLAIM_409,
-               502: 'The provider request failed, or a billed Gemini create may or may not have happened (see '
-                    'description). Breeze also returns 502 when the preview audio cannot be converted locally.'},
+       errors={400: {'description_too_short': 'The draft description has fewer than 3 characters.',
+                     'cost_not_confirmed': 'Gemini: `confirm_cost` is not true.',
+                     'book_id_required': 'Gemini: no `book_id` was given.',
+                     'unknown_book': 'No book has the given `book_id`.',
+                     'voice_design_invalid': 'Gemini: the draft name, language tag or gender is not accepted.',
+                     'sample_text_missing': 'Breeze: the draft has no sample text.',
+                     **_GEMINI_KEY, **_BREEZE_URL},
+               404: _DRAFT_404,
+               409: {**_CLAIM, 'draft_finished': _CLAIM['draft_finished'] + ' Also when a concurrent request '
+                                                                            'finished it during generation.'},
+               502: {'provider_error': _PROVIDER['provider_error'] + ' Breeze also returns it when the preview '
+                                                                     'audio cannot be converted locally.',
+                     'provider_outcome_unknown': 'Gemini: a billed create timed out or returned an unusable '
+                                                 'response, so the voice may exist and be billed (see '
+                                                 'description).'}},
        params={'draft_id': 'Draft ID (`vd_…`).'},
        cost='may_charge'),
 
@@ -501,8 +540,9 @@ OPS: list[Op] = [
        'Bardic\'s retained copy of a candidate\'s audio (24 kHz mono WAV). Available for discarded candidates '
        'and finished drafts too. Local only.',
        media='audio/wav', ranges=True,
-       errors={404: _DRAFT_404 + ' Also "Preview audio not found" when the candidate does not exist or has no '
-                    'retained audio.'},
+       errors={404: {**_DRAFT_404,
+                     'candidate_not_found': 'The draft has no candidate with this ID.',
+                     'audio_not_found': 'The candidate has no retained audio.'}},
        params={'draft_id': 'Draft ID (`vd_…`).', 'candidate_id': 'Candidate ID within the draft (`c1`, `c2`, …).'},
        cost='none'),
 
@@ -513,11 +553,10 @@ OPS: list[Op] = [
        'the server by itself. Discarding an already-discarded candidate succeeds without contacting a provider. '
        'Returns the updated draft.',
        response=VoiceDraft,
-       errors={400: 'A Gemini candidate needs deleting and no Gemini key is loaded.',
-               404: _DRAFT_404 + ' Also "Candidate not found".',
-               409: _CLAIM_409 + ' Also a Gemini candidate made with a different Google API key ("This candidate '
-                    'was made with a different Google API key.").',
-               502: 'The Gemini delete failed; the candidate stays undiscarded.'},
+       errors={400: _GEMINI_KEY,
+               404: {**_DRAFT_404, 'candidate_not_found': 'The draft has no candidate with this ID.'},
+               409: {**_CLAIM, **_OTHER_PROJECT},
+               502: {'provider_error': 'The Gemini delete failed; the candidate stays undiscarded.'}},
        params={'draft_id': 'Draft ID (`vd_…`).', 'candidate_id': 'Candidate ID within the draft (`c1`, `c2`, …).'},
        cost='network'),
 
@@ -526,11 +565,11 @@ OPS: list[Op] = [
        'candidate discarded and the draft `abandoned`. Breeze previews are only marked. If any deletion fails, '
        'the draft stays open (some voices may already be deleted; retrying is safe). Returns the abandoned draft.',
        response=VoiceDraft,
-       errors={400: 'Gemini candidates need deleting and no Gemini key is loaded.',
+       errors={400: _GEMINI_KEY,
                404: _DRAFT_404,
-               409: _CLAIM_409 + ' Also when some undiscarded Gemini candidates were made with a different Google '
-                    'API key ("Switch back to that key to delete them before abandoning this draft.").',
-               502: '"Some stored Gemini candidates could not be deleted: …" (the first failure).'},
+               409: {**_CLAIM, **_OTHER_PROJECT},
+               502: {'provider_error': 'Some stored Gemini candidates could not be deleted (the detail names the '
+                                       'first failure); the draft stays open.'}},
        params={'draft_id': 'Draft ID (`vd_…`).'},
        cost='network'),
 
@@ -548,17 +587,25 @@ OPS: list[Op] = [
        '`assignment_error` and never rolled back. `mode: "version"` re-voices every follower of the base voice, '
        'and `make_default` re-voices characters on Default, so both are refused with 409 while narration runs '
        'for affected books.\n\n'
-       '**Not atomic:** a Breeze server voice is uploaded before the library record is written. If the record '
-       'then fails (for example a whitespace-only name, or a base voice deleted meanwhile), the request fails and '
-       'the uploaded server voice is left on the server without a library voice.',
+       '**Validated before upload.** Every check below runs before a Breeze server voice is uploaded. If the '
+       'library record still cannot be written after the upload (for example the base voice was deleted in the '
+       'meantime), the uploaded server voice is deleted again, best effort, and the error detail says whether '
+       'that worked. The same happens when the server keeps the upload but its read-back fails. The draft stays '
+       'open, so the save can be retried.',
        response=VoiceDraftSaved,
-       errors={400: 'The candidate does not exist or is discarded ("Choose a candidate that has not been '
-                    'discarded."); `mode: "version"` without a base voice; `make_default` for Gemini ("Only Breeze '
-                    'has a default voice."); no Breeze server URL or no Gemini key; or a whitespace-only `name` '
-                    '(after the Breeze upload; see description).',
-               404: _DRAFT_404 + ' Also "Voice not found" when the base voice was deleted before a version save.',
-               409: _CLAIM_409 + ' Also a Gemini candidate made with a different Google API key, or ' + _NARRATION_409,
-               502: 'The Breeze upload or its read-back failed (Bardic\'s own message).'},
+       errors={400: {'unknown_candidate': 'The draft has no candidate with the given `candidate_id`.',
+                     'candidate_discarded': 'The candidate was discarded.',
+                     'voice_name_invalid': '`name` is only whitespace.',
+                     'draft_has_no_base_voice': '`mode: "version"` for a draft not started from a base voice.',
+                     'default_breeze_only': '`make_default` for a Gemini draft.',
+                     **_BREEZE_URL, **_GEMINI_KEY},
+               404: _DRAFT_404,
+               409: {**_CLAIM, **_OTHER_PROJECT, **_NARRATION,
+                     'base_voice_deleted': '`mode: "version"` and the draft\'s base voice is deleted, including '
+                                           'when it was deleted during the save.',
+                     'candidate_audio_missing': 'Breeze: the candidate\'s retained audio file is missing, so it '
+                                                'cannot be uploaded.'},
+               502: {'provider_error': 'The Breeze upload or its read-back failed.'}},
        params={'draft_id': 'Draft ID (`vd_…`).'},
        cost='network'),
 
@@ -570,16 +617,21 @@ OPS: list[Op] = [
        'voice records that character as its `source` and is assigned to it like a cast edit; a failed assignment '
        'is reported in `assignment_error`, never rolled back. With only one of the two, both are ignored. The '
        'Breeze server accepts recordings of 1–30 seconds (5–15 seconds of clean speech works best).\n\n'
-       '**Not atomic:** the server voice is created before the book and character are looked up, so an unknown '
-       'book or character returns 404 after the server voice exists, and no library voice is created for it.',
+       '**Validated before upload.** The form, the book and the character are checked before the server voice '
+       'is created. If the library record still cannot be written afterwards, or the server keeps the upload but '
+       'its read-back fails, the server voice is deleted again, best effort, and the error detail says whether '
+       'that worked.',
        response=BreezeVoiceCloned,
-       errors={400: '`consent` is not exactly `true` ("Confirm that you have the speaker\'s consent to clone this '
-                    'voice."); a blank name or transcript; an empty recording or one over 20 MB ("Upload a '
-                    'recording of at most 20 MB."); or no Breeze server URL.',
-               404: '"Book not found" or "Character not found in this book" (after the server voice was created; '
-                    'see description).',
-               502: 'The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length '
-                    'audio, or a bad API key), or was unreachable.'},
+       errors={400: {'consent_required': '`consent` is not exactly `true`.',
+                     'voice_name_invalid': '`name` is blank.',
+                     'reference_text_missing': '`reference_text` is blank.',
+                     'recording_empty': 'The recording is empty.',
+                     'unknown_book': 'No book has the given `book_id`.',
+                     'unknown_character': 'The book has no character with the given `character_id`.',
+                     **_BREEZE_URL},
+               413: {'recording_too_large': 'The recording is larger than 20 MB.'},
+               502: {'provider_error': 'The Breeze server refused or failed the clone (for example unreadable, '
+                                       'silent or wrong-length audio, or a bad API key), or was unreachable.'}},
        cost='network'),
 ]
 

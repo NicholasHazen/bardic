@@ -25,7 +25,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [DATA-MODEL.md](DATA-MODEL.md): SQLite/files, source coordinates, evidence, current projections, immutable artifacts, identities and reuse rules.
 - [API.md](API.md): cross-cutting API concepts: transport and security, conventions, errors, jobs and cost.
 - [API-WORKFLOW.md](API-WORKFLOW.md): how every API change updates the checked-in contract, and what the tests enforce.
-- [API-KNOWN-ISSUES.md](API-KNOWN-ISSUES.md): defects and inconsistencies found while writing the contract, each needing a keep-or-fix decision.
+- [API-KNOWN-ISSUES.md](API-KNOWN-ISSUES.md): issues found in the contract and the keep-or-fix decision for each (all of issue #17 resolved in contract 0.2.0).
 - [contract/](../contract/): the normative `openapi.json`, its generated [readable reference](../contract/API-REFERENCE.md) and the [contract changelog](../contract/CHANGELOG.md).
 - [DEVELOPMENT.md](DEVELOPMENT.md): reproducible setup, isolated development, test map, extension workflows and frontend contracts.
 - [OPERATIONS.md](OPERATIONS.md): keys/configuration, backups, recovery, troubleshooting and resource accounting limits.

@@ -12,6 +12,7 @@ import math
 import re
 from uuid import uuid4
 
+from .errors import Invalid
 from .store import now
 
 
@@ -65,12 +66,15 @@ def _details(fields, source):
 class DiagnosticRepository:
     def __init__(self, store):
         self.store = store
+        if getattr(store, '_diagnostics_schema', False):
+            return  # Created once per library (the app does it at startup).
         with store.lock, store.connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS diagnostic_events (
                 id TEXT PRIMARY KEY, created_at TEXT NOT NULL, source TEXT NOT NULL,
                 event TEXT NOT NULL, book_id TEXT, body TEXT NOT NULL)''')
             conn.execute('CREATE INDEX IF NOT EXISTS diagnostic_events_book ON diagnostic_events(book_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS diagnostic_events_time ON diagnostic_events(source,created_at)')
+        store._diagnostics_schema = True
 
     def record(self, event, *, source='client', **fields):
         if source not in {'client', 'server'} or event not in (CLIENT_EVENTS if source == 'client' else SERVER_EVENTS):
@@ -102,10 +106,10 @@ class DiagnosticRepository:
         return {'recorded': True, 'id': identifier}
 
     def events(self, *, book_id=None, limit=100):
-        if book_id is not None:
-            _details({'book_id': book_id}, 'client')
-        if type(limit) is not int or not 1 <= limit <= RETENTION_LIMIT:
-            raise ValueError('Choose a diagnostic limit from 1 to 5000.')
+        """Newest first. ``limit`` is clamped to 1..RETENTION_LIMIT, like other paging."""
+        if book_id is not None and (not isinstance(book_id, str) or re.fullmatch(IDENTIFIERS['book_id'], book_id) is None):
+            raise Invalid('book_id_invalid', 'The book_id filter is not a book ID.')
+        limit = min(max(int(limit), 1), RETENTION_LIMIT)
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('SELECT id,created_at,source,event,body FROM diagnostic_events'
                                 + (' WHERE book_id=?' if book_id else '') + ' ORDER BY rowid DESC LIMIT ?',

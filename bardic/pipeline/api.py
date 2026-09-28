@@ -15,14 +15,18 @@ Book:    GET  /api/books/{id}/analysis-pipeline           per-step state, active
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import re
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..analysis import PIPELINE_LLM_LABELS, PROVIDER_LABELS
+from ..artifacts import MAX_OFFSET
+from ..errors import Conflict, Invalid, NotFound, Unavailable
+from ..series import require_active_book
 from ..local_services import SERVICES
 from ..model_catalog import local_llm_catalog
 from ..preprocessing import eligible_chapters
@@ -70,7 +74,7 @@ class PlanRequest(Strict):
 
 
 class RunRequest(PlanRequest):
-    mode: Literal['serial', 'parallel'] = 'serial'
+    scheduling: Literal['serial', 'parallel'] = 'serial'
     gates: dict[str, Literal['auto', 'review']] | None = None
     concurrency: int = Field(default=2, ge=1, le=4)
     limits: Limits = Field(default_factory=Limits)
@@ -109,18 +113,27 @@ def _validate_config(step, config):
     provider, model = config.get('provider'), config.get('model')
     if step.method == 'plain':
         if provider != 'local' or model:
-            raise HTTPException(400, f'{step.label} runs locally without a model.')
+            raise Invalid('step_config_invalid', f'{step.label} runs locally: its provider is "local", with no model.')
         return {'provider': 'local', 'model': None}
     allowed = step.allowed_providers()
     if provider not in allowed:
-        raise HTTPException(400, f'Choose {", ".join(LABELS[p] for p in allowed)} for {step.label}.')
+        raise Invalid('step_config_invalid', f'{step.label} accepts only these providers: {", ".join(allowed)}.')
     if provider in SERVICE_PROVIDERS:
         if model:
-            raise HTTPException(400, f'{LABELS[provider]} runs on your server without a model choice.')
+            raise Invalid('step_config_invalid', f'{LABELS[provider]} is a self-hosted service and takes no model.')
         return {'provider': provider, 'model': None}
     if not isinstance(model, str) or not MODEL_ID.fullmatch(model):
-        raise HTTPException(400, f'Choose a valid model ID for {step.label}.')
+        raise Invalid('step_config_invalid', f'{step.label} needs a valid model ID for {LABELS[provider]}.')
     return {'provider': provider, 'model': model}
+
+
+def _runnable_config(step, config):
+    """Revalidate a saved or default configuration before it is planned or run."""
+    config = {'provider': config['provider'], 'model': config['model']}
+    if step.method != 'plain' and config['provider'] not in SERVICE_PROVIDERS and not config['model']:
+        raise Invalid('step_model_missing', f'No model is configured for {step.label} with {LABELS[config["provider"]]}. '
+                                            'Save one for the step, or send one in `configs`.')
+    return _validate_config(step, config)
 
 
 def provider_views(runtime):
@@ -131,8 +144,8 @@ def provider_views(runtime):
         self_hosted = provider not in PROVIDER_LABELS
         view = {'id': provider, 'label': LABELS[provider], 'kind': 'service' if provider in SERVICE_PROVIDERS else 'model',
                 'self_hosted': self_hosted, 'needs': 'url' if self_hosted else 'api_key',
-                # A key or URL is set; it does not prove the server answers. has_api_key is the older name.
-                'configured': bool(credentials.get(provider)), 'has_api_key': bool(credentials.get(provider))}
+                # A key or URL is set; it does not prove the server answers.
+                'configured': bool(credentials.get(provider))}
         if provider == 'local_llm':
             view['models'] = local_llm_catalog(credentials.get(provider))['models']
         views.append(view)
@@ -144,14 +157,15 @@ def step_settings(runtime, registry):
     result = {}
     for step in registry:
         value = saved.get(step.id) or {}
-        config = _default_config(runtime, step)
+        config, from_saved, saved_invalid = _default_config(runtime, step), False, False
         if value.get('provider'):
             try:
-                config = _validate_config(step, value)
-            except HTTPException:
-                pass
+                config, from_saved = _validate_config(step, value), True
+            except Invalid:
+                # For example a provider the step no longer offers: report it instead of pretending it applies.
+                saved_invalid = True
         gate = value.get('gate') if value.get('gate') in {'auto', 'review'} else step.default_gate
-        result[step.id] = {**config, 'gate': gate, 'saved': bool(value)}
+        result[step.id] = {**config, 'gate': gate, 'saved': from_saved, 'saved_invalid': saved_invalid}
     return result
 
 
@@ -192,6 +206,11 @@ def _versions_view(repository, registry, conn, book_id, step, step_runs):
                                                    'unchanged_scopes', 'incomplete_scopes')},
                       'scope_count': len(scopes), 'accepted_scopes': len(accepted), 'state': state})
     return items
+
+
+def _public_step_run(run):
+    """A stored step run without storage-only fields (``conflicts`` is always empty; preview reports conflicts)."""
+    return None if run is None else {k: v for k, v in run.items() if k != 'conflicts'}
 
 
 def unmet_message(registry, step_id, inputs):
@@ -237,10 +256,19 @@ def build_router(registry: Registry):
         return request.app.state.runtime
 
     def step_of(step_id):
-        try:
-            return registry.get(step_id)
-        except KeyError as exc:
-            raise HTTPException(404, str(exc).strip("'")) from exc
+        """A step named in the path: 404 ``step_not_found`` when unknown."""
+        return registry.get(step_id)
+
+    def body_steps(body):
+        """Steps a request body names: 400 ``unknown_step`` when ``steps``, ``configs`` or ``gates`` names an unknown one.
+
+        Entries of ``configs`` and ``gates`` for known steps that are not requested are ignored.
+        """
+        named = [*body.steps, *(body.configs or {}), *(getattr(body, 'gates', None) or {})]
+        unknown = sorted({s for s in named if s not in registry})
+        if unknown:
+            raise Invalid('unknown_step', f'Unknown pipeline step: {", ".join(unknown)}.')
+        return [registry.get(s) for s in body.steps]
 
     @router.get('/api/analysis-pipeline')
     def definitions(request: Request):
@@ -268,11 +296,13 @@ def build_router(registry: Registry):
         settings = step_settings(runtime, registry)
         with store.lock:
             book = store.book(book_id)
-            # Commit outside-change capture before other connections read the history.
-            with store.connect() as conn:
-                projection.sync(repository, registry, conn, book)
             eligible = {c['id'] for c in eligible_chapters(book)}
-            with store.connect() as conn:
+            # A GET records nothing. Outside changes are captured in a transaction that is rolled back,
+            # so accepted counts match what the next plan, run, preview or accept records. Version
+            # history is read from other connections and lists only recorded versions.
+            conn = store.connect()
+            try:
+                projection.sync(repository, registry, conn, book)
                 stale = projection.stale_scopes(repository, registry, conn, book_id)
                 steps = []
                 for step in registry:
@@ -290,6 +320,9 @@ def build_router(registry: Registry):
                                   'stale_scopes': stale.get(step.id, []),
                                   'pending_versions': sum(v['state'] == 'candidate' for v in versions),
                                   'latest': versions[0] if versions else None})
+            finally:
+                conn.rollback()
+                conn.close()
         runs = repository.runs(book_id, 5)
         active = next((r for r in runs if r['status'] in ACTIVE), None)
         return {'book_id': book_id, 'revision': book.get('revision', 0), 'steps': steps, 'active_run': active,
@@ -302,21 +335,25 @@ def build_router(registry: Registry):
         for step in steps:
             override = (body.configs or {}).get(step.id)
             configs[step.id] = _validate_config(step, override.model_dump()) if override else \
-                {'provider': settings[step.id]['provider'], 'model': settings[step.id]['model']}
+                _runnable_config(step, settings[step.id])
         return configs
 
     def chapters_for(book, body):
         if body.chapter_ids is None:
             return None
+        if not body.chapter_ids:
+            raise Invalid('chapter_ids_empty', '`chapter_ids` is an empty list; send null for every eligible chapter.')
         known = {c['id'] for c in book['chapters']}
-        if not body.chapter_ids or any(c not in known for c in body.chapter_ids):
-            raise HTTPException(400, 'Choose chapters in this book.')
+        unknown = sorted(set(body.chapter_ids) - known)
+        if unknown:
+            raise Invalid('unknown_chapter', f'The book has no chapter with ID {unknown[0]}.')
         return sorted(set(body.chapter_ids))
 
     @router.post('/api/books/{book_id}/analysis-pipeline/plan')
     def plan_run(book_id: str, body: PlanRequest, request: Request):
         runtime = runtime_of(request)
-        steps = [step_of(s) for s in body.steps]
+        steps = body_steps(body)
+        runtime.store.book(book_id)  # An unknown book is 404 before its configs are validated.
         configs = configs_for(runtime, body, steps)
         # Read and sync under one lock: a stale snapshot would be recorded as an outside change.
         with runtime.store.lock:
@@ -329,8 +366,11 @@ def build_router(registry: Registry):
     @router.post('/api/books/{book_id}/analysis-pipeline/runs')
     def start_run(book_id: str, body: RunRequest, request: Request):
         runtime = runtime_of(request)
-        steps = [step_of(s) for s in body.steps]
+        steps = body_steps(body)
         with runtime.store.lock:
+            if runtime.stopping.is_set():
+                raise Unavailable('shutting_down', 'The local worker is stopping and accepts no new runs.')
+            require_active_book(runtime.store, book_id)
             runtime.require_idle(book_id)
             book = runtime.store.book(book_id)
             chapter_ids = chapters_for(book, body)
@@ -340,30 +380,32 @@ def build_router(registry: Registry):
             credentials = runtime.analysis_credentials()
             missing = [p for p in sorted(providers_needed) if not credentials.get(p)]
             if missing:
-                raise HTTPException(400, 'Add in Settings first: ' + ', '.join(
-                    f"the {LABELS[p]} server URL" if p not in PROVIDER_LABELS else f"an {LABELS[p]} API key" for p in missing))
+                cloud = [p for p in missing if p in PROVIDER_LABELS]
+                raise Invalid('api_key_missing' if cloud else 'server_url_missing', 'Not configured: ' + ', '.join(
+                    f"the {LABELS[p]} server URL" if p not in PROVIDER_LABELS else f"an {LABELS[p]} API key" for p in missing) + '.')
             repository = PipelineRepository(runtime.store)
             with runtime.store.connect() as conn:
                 projection.sync(repository, registry, conn, book)
                 unmet = registry.missing_inputs(lambda step_id: repository.heads(conn, book_id, step_id), [s.id for s in steps])
             if unmet:
-                raise HTTPException(400, ' '.join(unmet_message(registry, step_id, inputs) for step_id, inputs in unmet.items()))
+                raise Invalid('step_inputs_missing',
+                              ' '.join(unmet_message(registry, step_id, inputs) for step_id, inputs in unmet.items()))
             if not body.expected_fingerprint and all(v is None for v in body.limits.model_dump().values()):
-                raise HTTPException(400, 'Preview the run and confirm it (send expected_fingerprint), or set limits.')
+                raise Invalid('run_unconfirmed', 'The run is not authorized: send `expected_fingerprint` from a plan, or set a limit.')
             if body.expected_fingerprint:
                 current = plan(runtime.store, registry, book_id, [s.id for s in steps], configs, chapter_ids=chapter_ids,
                                fresh=body.fresh)
                 if current['fingerprint'] != body.expected_fingerprint:
-                    raise HTTPException(409, 'The plan changed since the preview. Review the new estimate before running.')
+                    raise Conflict('plan_stale', 'The plan changed since the preview. Nothing was queued.')
             settings = step_settings(runtime, registry)
             gates = {s.id: (body.gates or {}).get(s.id) or settings[s.id]['gate'] for s in steps}
             # Snapshot provider credentials and server URLs now; a later settings change must not alter queued work.
             secrets = {p: credentials[p] for p in providers_needed}
             job = runtime.store.create_job(book_id, 'pipeline')
             run = repository.create_run(book_id, job_id=job['id'], steps=[s.id for s in registry.closure(body.steps)],
-                                        mode=body.mode, chapter_ids=chapter_ids, configs=configs, gates=gates,
+                                        scheduling=body.scheduling, chapter_ids=chapter_ids, configs=configs, gates=gates,
                                         concurrency=body.concurrency, fresh=body.fresh, limits=body.limits.model_dump())
-            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], mode=body.mode,
+            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], scheduling=body.scheduling,
                                            message='Waiting for the local worker')
 
             def accept(step, versions, step_run_id):
@@ -388,17 +430,36 @@ def build_router(registry: Registry):
                         repository.update_run(run['id'], status=final if final not in ACTIVE else 'interrupted',
                                               error=None if final == 'completed' else 'The job ended before this run finished.')
 
-            runtime.pool.submit(execute)
-            return {'job': job, 'run': run}
+            # The worker mutates `run` while it records step versions: answer with a copy taken now.
+            snapshot = {'job': deepcopy(job), 'run': deepcopy(run)}
+            try:
+                runtime.pool.submit(execute)
+            except RuntimeError:
+                # Submission fails only when the pool is shutting down. Nothing ran; release the book.
+                runtime.store.update_job(job['id'], status='interrupted', message='The local worker is stopping.')
+                repository.update_run(run['id'], status='interrupted', error='The local worker is stopping.')
+                raise Unavailable('shutting_down', 'The local worker is stopping and accepts no new runs.') from None
+            return snapshot
 
-    def version_scopes(runtime, book_id, step, version_id):
+    def version_scopes(runtime, book_id, step, version_id, *, in_path=True):
+        """``{scope: artifact}`` and the step run of a version (none for ``accepted``).
+
+        An unknown version named in the path is 404 ``step_version_not_found``; one named in the
+        query (``compare``) is 400 ``unknown_version``.
+        """
         repository = PipelineRepository(runtime.store)
+        runtime.store.book(book_id)
         if version_id == 'accepted':
             with runtime.store.lock, runtime.store.connect() as conn:
                 return repository.heads(conn, book_id, step.id), None
-        run = repository.step_run(book_id, version_id)
-        if run['step_id'] != step.id:
-            raise HTTPException(404, 'Step version not found')
+        try:
+            run = repository.step_run(book_id, version_id)
+            if run['step_id'] != step.id:
+                raise NotFound('step_version_not_found', 'This step has no version with this ID in this book.')
+        except NotFound:
+            if in_path:
+                raise NotFound('step_version_not_found', 'This step has no version with this ID in this book.') from None
+            raise Invalid('unknown_version', 'This step has no version with the `compare` ID in this book.') from None
         return dict(run.get('scopes', {})), run
 
     def accept_versions(runtime, book_id, step, versions, step_run_id, *, mode, expected_revision=None):
@@ -411,25 +472,27 @@ def build_router(registry: Registry):
             if step.method == 'llm' and run and run.get('origin') == 'run':
                 # The reader and Cast summarize who produced the current analysis.
                 work['analysis'] = {'provider': run['provider'], 'model': run['model'], 'status': 'partial',
-                                    'phase': step.id, 'notes': f'{step.label} accepted in the Analysis tab.'}
+                                    'phase': step.id, 'notes': f'{step.label} accepted from a pipeline run.'}
         return projection.accept(runtime.store, repository, registry, book_id, step, versions,
                                  mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime),
                                  prepare=prepare, expected_revision=expected_revision)
 
     def require_decidable(runtime, book_id):
-        runtime.store.require_active(book_id)
+        require_active_book(runtime.store, book_id)
         for job in runtime.store.jobs(book_id):
             if job['status'] in ACTIVE and job['kind'] != 'pipeline':
-                raise HTTPException(409, 'Another job is changing this book. Let it finish before accepting a version.')
+                raise Conflict('job_active', 'Another job (not a pipeline run) is changing this book.')
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', []) for j in runtime.store.jobs(limit=None)):
-            raise HTTPException(409, 'This book is reserved by an active series run.')
+            raise Conflict('series_run_active', 'An active series run reserves this book.')
 
     def selected(scopes, body):
         if body.scopes is None:
             return scopes
-        unknown = set(body.scopes) - set(scopes)
-        if unknown or not body.scopes:
-            raise HTTPException(400, 'Choose scopes that this version contains.')
+        if not body.scopes:
+            raise Invalid('scopes_empty', '`scopes` is an empty list; send null for every scope of the version.')
+        unknown = sorted(set(body.scopes) - set(scopes))
+        if unknown:
+            raise Invalid('unknown_scope', f'This version has no result for scope {unknown[0]}.')
         return {s: scopes[s] for s in body.scopes}
 
     @router.get('/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions')
@@ -449,13 +512,13 @@ def build_router(registry: Registry):
                 scope: str | None = None, changed_only: bool = False, offset: int = 0, limit: int = 200):
         runtime = runtime_of(request)
         step = step_of(step_id)
-        if offset < 0 or not 1 <= limit <= ROW_LIMIT:
-            raise HTTPException(400, f'Choose a nonnegative offset and a page size of 1–{ROW_LIMIT}.')
+        # Out-of-range paging is clamped, never an error; the response echoes the values used.
+        offset, limit = max(0, min(MAX_OFFSET, offset)), max(1, min(ROW_LIMIT, limit))
         repository = PipelineRepository(runtime.store)
         scopes, run = version_scopes(runtime, book_id, step, version_id)
         other = {}
         if compare != 'none' and compare != version_id:
-            other, _ = version_scopes(runtime, book_id, step, compare)
+            other, _ = version_scopes(runtime, book_id, step, compare, in_path=False)
         with runtime.store.lock:
             book = runtime.store.book(book_id)
             with runtime.store.connect() as conn:
@@ -488,7 +551,7 @@ def build_router(registry: Registry):
         heads = {}
         with runtime.store.lock, runtime.store.connect() as conn:
             heads = repository.heads(conn, book_id, step.id)
-        return {'step_id': step.id, 'version_id': version_id, 'run': run, 'stats': table['stats'], 'columns': table['columns'],
+        return {'step_id': step.id, 'version_id': version_id, 'run': _public_step_run(run), 'stats': table['stats'], 'columns': table['columns'],
                 'diff': diff, 'total_rows': len(rows), 'offset': offset, 'limit': limit, 'rows': rows[offset:offset + limit],
                 'scopes': [{'scope': s, 'artifact_id': i, 'accepted': heads.get(s) == i} for s, i in scopes.items()],
                 'revision': book.get('revision', 0)}
@@ -516,30 +579,31 @@ def build_router(registry: Registry):
         step = step_of(step_id)
         scopes, run = version_scopes(runtime, book_id, step, version_id)
         if run and run['status'] in ACTIVE:
-            raise HTTPException(409, 'This version is still running.')
+            raise Conflict('version_running', 'This version is still running.')
         chosen = selected(scopes, body)
         if not chosen:
-            raise HTTPException(400, 'This version has no results to accept.')
+            raise Invalid('version_empty', 'This version has no results.')
         with runtime.store.lock:
             require_decidable(runtime, book_id)
             try:
                 return accept_versions(runtime, book_id, step, chosen, run['id'] if run else None, mode='user',
                                        expected_revision=body.expected_revision)
             except projection.RevisionConflict as exc:
-                raise HTTPException(409, str(exc)) from exc
+                raise Conflict('plan_stale', str(exc)) from None
 
     @router.post('/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject')
     def reject(book_id: str, step_id: str, version_id: str, body: DecisionRequest, request: Request):
         runtime = runtime_of(request)
         step = step_of(step_id)
+        require_active_book(runtime.store, book_id)
         if version_id == 'accepted':
-            raise HTTPException(400, 'Accept another version to replace the accepted one.')
+            raise Conflict('version_accepted', 'The accepted version cannot be rejected; accept another version to replace it.')
         scopes, run = version_scopes(runtime, book_id, step, version_id)
         if run['status'] in ACTIVE:
-            raise HTTPException(409, 'This version is still running.')
+            raise Conflict('version_running', 'This version is still running.')
         chosen = selected(scopes, body)
         if not chosen:
-            raise HTTPException(400, 'This version has no results to reject.')
+            raise Invalid('version_empty', 'This version has no results.')
         return projection.reject(runtime.store, PipelineRepository(runtime.store), book_id, step, chosen, step_run_id=run['id'])
 
     return router

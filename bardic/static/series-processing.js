@@ -11,13 +11,18 @@
   const labels = {queued:'Queued',running:'Running',completed:'Complete',failed:'Failed',cancelled:'Cancelled',
     interrupted:'Interrupted',budget_limited:'Allowance reached',scan:'Character discovery',profiles:'Character profiles',direct:'Scene direction',full:'Full analysis'};
   const label = value => labels[value] || String(value || 'Unknown').replaceAll('_',' ');
+  // Server details describe the condition; where to fix it is the UI's business, keyed on the error code.
+  const HINTS = {api_key_missing:'Add one in Settings.', series_archived:'Restore it from Removed items in the library.'};
 
   async function request(url, body) {
     const response = await fetch(url, body === undefined ? {headers:{Accept:'application/json'}} :
       {method:'POST',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify(body)});
     let value;
     try { value = await response.json(); } catch { value = null; }
-    if (!response.ok) throw new Error(typeof value?.detail === 'string' ? value.detail : `Could not process the series request (${response.status}).`);
+    if (!response.ok) {
+      const hint = HINTS[value?.code] ? ` ${HINTS[value.code]}` : '';
+      throw new Error(typeof value?.detail === 'string' ? value.detail + hint : `Could not process the series request (${response.status}).`);
+    }
     if (!value || typeof value !== 'object') throw new Error('The server returned an unreadable series response. Try again.');
     return value;
   }

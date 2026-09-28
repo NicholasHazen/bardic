@@ -3,22 +3,20 @@
 Enhanced (cast) narration, simple single-narrator listening (passages and
 Gemini chapters), saved performances and voice previews.
 
-Audio objects carrying a playback ``url`` are built in several places with
-different shapes; each shape has its own view here:
+Every audio object carrying a playback ``url`` subclasses ``AudioRef``
+(``media.py``) and is built by ``bardic.audio_refs.audio_ref``:
 
 - ``ListeningPassageAudio``: a retained single-passage simple take
-  (``url`` under ``/listen/audio/``, ``mode: "simple"``).
+  (``url`` under ``/listen/audio/``).
 - ``ListeningChunkClipAudio``: one passage's estimated clip inside a shared
-  chunk WAV (``chunk_id``, ``clip_start``, ``clip_end``, ``mode: "simple"``).
-- ``PerformancePassageAudio`` / ``PerformanceChunkClipAudio``: the same two
-  shapes relabelled ``mode: "performance"`` with ``performance_id``.
+  chunk WAV (``chunk_id``, ``clip_start``, ``clip_end``).
 - ``PerformanceCastAudio``: a cast performance take (``url`` under
-  ``/audio-assets/``).
+  ``/audio-assets/``). Simple performances list the two listening shapes.
 - ``VoicePreviewAudio``: an audition take (``url`` under
-  ``/voice-preview/audio/``, ``mode: "preview"``).
+  ``/voice-preview/audio/``).
 
 The enhanced Studio take on a book passage (``/api/audio/...``) belongs to the
-book document and is described by the Books family.
+book document (``BookTake`` in the Books family).
 """
 from __future__ import annotations
 
@@ -26,25 +24,36 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import Discriminator, Field, Tag
 
-from .base import Op, View, internal, op
+from .base import Op, View, op
 from .common import Job
-from .media import (Provider, ListeningPassageAudio, ListeningChunkClipAudio, ListeningAudio, ChapterListenChunkPlan, ChapterListenChunking, ChapterListenCalibration, ChapterListenLimits, ChapterListenQuota, VoicePreview, VoicePreviewAudio)
+from .media import (AudioRef, Provider, ListeningPassageAudio, ListeningChunkClipAudio, ListeningAudio, ChapterListenChunkPlan,
+                    ChapterListenChunking, ChapterListenCalibration, ChapterListenLimits, ChapterListenQuota, VoicePreview,
+                    VoicePreviewAudio)
 
 
 _BOOK_ID = 'Book ID.'
-_NOT_FOUND_BOOK = '`Book not found`.'
-_ARCHIVED = 'The book is archived (removed): restore it before processing.'
-_BUSY = ('Another job is queued or running for this book, or an active series run reserves it '
-         '(`A job is already working on this book…` / `This book is reserved by an active series run…`).')
-_STOPPING = ('The server is shutting down (`The local worker is stopping…`), or the narration worker refused '
-             'the job (`The local narration worker could not accept this request. No narration was started.`; '
-             'the job record is created and marked `failed`). Nothing was sent to a provider.')
-_NARRATOR_400 = ('the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or '
-                 'wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or '
-                 'not usable), the model does not match the provider (device uses `macos-say`, Breeze uses '
-                 '`breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice)')
-_PROVIDER_400 = ('the provider is unavailable: Gemini without an API key, device narration without macOS `say` '
-                 'and `ffmpeg`, or Breeze without a configured server URL')
+
+# Error codes shared by the operations below (see bardic/errors.py). Each operation lists exactly the codes it returns.
+_BOOK_404 = {'book_not_found': 'No book has this ID.'}
+_ARCHIVED = {'book_archived': 'The book is archived: restore it first.'}
+_BUSY = {'job_active': 'A job is queued or running for this book.',
+         'series_run_active': 'An active series run reserves this book.'}
+_STOPPING = {'shutting_down': 'The server is shutting down, or its narration worker refused the job (that job record is '
+                              'kept and marked `failed`). Nothing was sent to a provider.'}
+_NARRATOR = {'narrator_voice_invalid': 'The narrator voice cannot be used: a `library:` voice for device narration, a '
+                                       'deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice '
+                                       'not in the last voice check or not usable, or a custom voice with a model that '
+                                       'needs a prebuilt voice (Gemini 3.1).',
+             'model_unsupported': 'The model does not match the provider: device narration uses `macos-say`, Breeze '
+                                  'uses `breeze-tts-2`, and Gemini needs a supported TTS model.'}
+_PROVIDER = {'gemini_key_missing': 'Gemini narration with no Gemini API key configured.',
+             'device_narration_unavailable': 'Device narration on a server without macOS `say` and `ffmpeg`.',
+             'breeze_url_missing': 'Breeze narration with no Breeze server URL configured.'}
+_UNKNOWN_PASSAGE = {'unknown_passage': 'The body names a passage (`segment_id`) that is not in this book.'}
+_SOURCE = {'passage_source_mismatch': 'The passage text no longer matches its source coordinates.'}
+_PERFORMANCE_404 = {'book_not_found': 'No book has this ID.', 'performance_not_found': 'The book has no performance with this ID.'}
+_PROBLEMS = {**_PROVIDER, 'narrator_voice_invalid': 'The simple narrator voice cannot be used (see `previewPerformance` problems).',
+             'narrator_voice_missing': 'A cast performance whose narrator has no usable voice for the provider.'}
 
 
 # ------------------------------------------------------------ shared take pieces
@@ -125,36 +134,24 @@ class ChapterListenStarted(View):
 
 # ------------------------------------------------------------ performances
 
-class PerformancePassageAudio(ListeningPassageAudio):
-    """A simple performance's single-passage take (the `/listen/takes` object relabelled)."""
-    mode: Literal['performance'] = Field(description='Always `performance` here.')
-    performance_id: str = Field(description='ID of the performance (`pf_…`) this audio is listed for.')
+class PerformanceCastAudio(AudioRef):
+    """A cast performance's retained passage take.
 
-
-class PerformanceChunkClipAudio(ListeningChunkClipAudio):
-    """A simple performance's chunk clip (the `/listen/takes` object relabelled)."""
-    mode: Literal['performance'] = Field(description='Always `performance` here.')
-    performance_id: str = Field(description='ID of the performance (`pf_…`) this audio is listed for.')
-
-
-class PerformanceCastAudio(View):
-    """A cast performance's retained passage take."""
-    mode: Literal['performance'] = Field(description='Always `performance` here.')
-    performance_id: str = Field(description='ID of the performance (`pf_…`) this take belongs to.')
-    available: Literal[True] = Field(description='Always true.')
-    url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{asset_id}`.')
-    asset_id: str = Field(description='Content hash of the WAV (hex). For reused legacy Studio takes it can be a recipe fingerprint.')
-    duration: float | None = Field(description='Audio length in seconds.')
-    fingerprint: str | None = internal('Hash of the speech recipe that produced the bytes.')
+    Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+    """
+    url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{id}`.')
+    asset_id: str | None = Field(description='SHA-256 hex of the WAV (content address), or null for a reused Studio take '
+                                             'recorded before content addressing (its URL then names the file by recipe).')
+    duration: float | None = Field(description='Audio length in seconds, or null when the retained record lacks it.')
     provider: str | None = Field(description='Narration provider that produced the take (`system`, `gemini` or `breeze`); '
                                              'null when the retained take metadata does not record it.')
     model: str | None = Field(description='Speech model that produced the take (for example `macos-say`, `breeze-tts-2` or a '
                                           'Gemini TTS model); null when the retained take metadata does not record it.')
-    voice: str | None = Field(description='Provider voice that performed the take.')
+    voice: str | None = Field(description='Provider voice that performed the take, or null when not recorded.')
+    created_at: str | None = Field(description='ISO 8601 UTC time the take was retained for this performance.')
     speaker_id: str | None = Field(description="The passage's speaker (a character ID, `narrator` or `unassigned`).")
     character_id: str | None = Field(description='Character whose voice was used (`narrator` when falling back).')
     fallback: bool = Field(description='True when the speaker had no usable voice and the narrator voice was used.')
-    created_at: str | None = Field(description='ISO 8601 UTC time the take was retained for this performance.')
 
 
 def _performance_audio_kind(value: Any) -> str:
@@ -163,8 +160,8 @@ def _performance_audio_kind(value: Any) -> str:
     return 'cast' if isinstance(value, dict) and 'speaker_id' in value else 'passage'
 
 
-PerformanceAudio = Annotated[Union[Annotated[PerformancePassageAudio, Tag('passage')],
-                                   Annotated[PerformanceChunkClipAudio, Tag('clip')],
+PerformanceAudio = Annotated[Union[Annotated[ListeningPassageAudio, Tag('passage')],
+                                   Annotated[ListeningChunkClipAudio, Tag('clip')],
                                    Annotated[PerformanceCastAudio, Tag('cast')]],
                              Discriminator(_performance_audio_kind)]
 
@@ -175,18 +172,6 @@ class PerformanceCastMember(View):
     name: str = Field(description='Character name from the snapshot, or the ID.')
     voice_label: str = Field(description='Display label of the voice used (library voice name, provider voice ID, `Kore` or `Default voice`).')
     fallback: bool = Field(description='True when the speaker has no usable voice and uses the narrator.')
-
-
-class PerformanceJobSummary(View):
-    """The latest performance job, abbreviated."""
-    id: str = Field(description='Job ID (32-character hex) of the latest `performance` job; the full job is listed by `GET /api/jobs?book_id=…`.')
-    status: str = Field(description='Job status (see the Job object).')
-    progress: int = Field(description='Passages finished so far (for Gemini simple performances, advances only when a chapter\'s child job settles).')
-    total: int = Field(description='Passages the job has to prepare (those missing when it started).')
-    message: str = Field(description='Human-readable progress line, for example `Chapter 2 of 5 · passage 14 of 40`. Display only.')
-    error: str | None = Field(description='Human-readable failure reason when the job failed, else null.')
-    resume_after: str | None = Field(description='ISO 8601 UTC time after which a `quota_limited` job can be resumed, else null.')
-    child_job_id: str | None = Field(description='The `listen_chapter` child job running now (Gemini simple), else null.')
 
 
 class PerformanceChapterProgress(View):
@@ -232,7 +217,7 @@ class Performance(View):
     archived: bool = Field(description='True when hidden from the default list (listed only with `archived=true`). Its audio is kept.')
     job_id: str | None = Field(description='Latest job ID, or null if no job was ever needed.')
     cast: list[PerformanceCastMember] | None = Field(None, description='Cast only: the narrator and each speaker in the chosen chapters.')
-    job: PerformanceJobSummary | None = Field(description='Summary of the latest job, or null.')
+    job: Job | None = Field(description='The latest `performance` job (a full `Job`), or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
 
@@ -256,7 +241,9 @@ class PerformanceStarted(View):
 class PerformanceAudioMap(View):
     """Playable audio of a performance."""
     performance_id: str = Field(description='ID of the performance (`pf_…`).')
-    audio: dict[str, PerformanceAudio] = Field(description='Keyed by passage (segment) ID; only passages ready against their current source.')
+    audio: dict[str, PerformanceAudio] = Field(description='Keyed by passage (segment) ID; only passages ready against their '
+                                                          'current source. Simple performances give the `/listen/takes` '
+                                                          'objects; cast performances give `PerformanceCastAudio`.')
 
 
 class PerformanceQuota(View):
@@ -266,6 +253,15 @@ class PerformanceQuota(View):
                                             'provider usage may be higher.')
     rpd: int = Field(description='Configured requests per day.')
     resets_at: str = Field(description='ISO 8601 UTC time of the next midnight Pacific reset.')
+
+
+class PerformanceProblem(View):
+    """One blocking condition of a performance plan."""
+    code: str = Field(description='Stable error code of the condition, the same code `createPerformance` refuses with '
+                                  'when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, '
+                                  '`device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or '
+                                  '`narrator_voice_missing` (cast mode). Key a fix-it hint on it.')
+    detail: str = Field(description='A sentence that states the condition, for people.')
 
 
 class PerformancePlan(View):
@@ -280,7 +276,10 @@ class PerformancePlan(View):
     requests_estimate: int = Field(description='Gemini simple: planned full-size chunk requests; otherwise passages to generate.')
     expected_seconds: float = Field(description='Missing text at 14 code points per second plus ready durations.')
     chapters: list[PerformanceChapterProgress] = Field(description='Readiness per requested chapter, in book order.')
-    problems: list[str] = Field(description='Blocking conditions; create refuses (400) while any exist.')
+    problems: list[PerformanceProblem] = Field(description='Blocking conditions, each with a stable `code` and a '
+                                                           '`detail` sentence; empty when nothing blocks. Create '
+                                                           'refuses (400, with the first problem\'s code) while any '
+                                                           'exist.')
     notes: list[str] = Field(description='Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book\'s current ones or predate them.')
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
@@ -324,19 +323,23 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound record whose `reuse` points at the original take; the
-   original producer `fingerprint` is kept and the new `recipe`/`source_anchor` describe the new binding.
-   A cache hit records a cached resource operation (stage `simple_listen`).
+   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate
+   whose copy fails its integrity check (for example this book already holds a damaged file under that
+   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit
+   records a cached resource operation (stage `simple_listen`); it may also add the take to the
+   equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
    request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.
-3. **Queue.** Otherwise requires an idle book (409), a running worker (503) and an available provider
-   (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
+3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an
+   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
 
-Poll the job: when completed, its `audio` is the take (`mode: "simple"`, `url`, duration,
-provider/model/voice, asset and recipe identity). Failure and cancellation are job outcomes; audio
-finished during a Stop is still retained and can be found in `/listen/takes`. There is no narration
-budget or dollar cap. Do not automatically repeat this POST after an uncertain network response;
-retry only read-only polling.
+Poll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when
+chapter listening finished the passage meanwhile). The job worker checks the cache again before
+synthesis, so equivalent audio retained while the job waited is reused without a provider request; the
+job does not report whether that happened (its resource operation is marked `cached`). Failure and
+cancellation are job outcomes; audio finished during a Stop is still retained and can be found in
+`/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
+after an uncertain network response; retry only read-only polling.
 
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
@@ -360,14 +363,22 @@ the passage, `scope_start_segment_id` extends backwards when needed, `joins` inc
 request for a passage with no audio and no request in flight increments `ramp_restart` (the job
 restarts its ramp). Joining never checks the key or quota and never starts a second job.
 
-**Refusals (409).** The active chapter job belongs to a saved performance (`parent_id`); it is for a
-different chapter or narrator; it is closing (retry shortly); or other work holds the book.
+**Refusals (409).** The active chapter job belongs to a saved performance (`performance_active`); it is
+for a different chapter or narrator (`chapter_listen_active`); it is closing (`chapter_job_closing`,
+retry shortly); or other work holds the book.
 
-**Start.** Otherwise requires a Gemini key (400) and a running worker (503). While a daily-quota block
-holds for the model it returns 429 without sending anything. The block is set in this process after a
-daily-quota 429 from Gemini or after a chapter job stops at the configured requests per day, and lasts
-until midnight Pacific or until limits are saved in Settings. A library already over its configured
-requests per day with no block recorded yet is accepted and the job ends promptly as `quota_limited`.
+**Start.** Otherwise requires a Gemini key (400) and a server that is not shutting down (503). It then
+refuses with 429 `daily_quota_reached`, without queueing or sending anything, when either:
+
+- a daily-quota block holds for the model in this process (set after a daily-quota 429 from Gemini or
+  after a chapter job stopped at the configured requests per day; it lasts until midnight Pacific or
+  until limits are saved in Settings); or
+- this library's recorded Gemini speech requests for the model since midnight Pacific (the
+  `quota.requests_today` of the chapter preview, counting every narration path) have reached the
+  configured requests per day (`limits.rpd`).
+
+The 429 response carries a `Retry-After` header: whole seconds until the block lifts or the quota day
+resets at midnight Pacific.
 
 The job paces requests with the shared per-minute limiter (`waiting_seconds` while waiting), recounts
 this library's daily requests before every send, keeps up to `concurrency` requests in flight (1 until a
@@ -378,9 +389,10 @@ passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `ex
 `realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
-`limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
-the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks
-are kept on every outcome; start the chapter again to resume."""
+`speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
+the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
+other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
+start the chapter again to resume."""
 
 _VOICE_PREVIEW_DESCRIPTION = """\
 Audition a voice on a short, exact excerpt of the book (or the fixed demo text). `voice` accepts the
@@ -406,10 +418,11 @@ Reuse is book-scoped and covers source and the effective performance recipe (a c
 reuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled
 `voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after
 the busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its
-`preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is
-checked before synthesis; a take finished in flight is still retained after Stop. There is no retry of
-this POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which
-keeps reported usage and records an unknown cost as unknown, not zero).
+`preview` and, when completed, `audio` (a `VoicePreviewAudio`). The worker checks the cache again
+before synthesis. Credentials are snapshotted at queue time and cancellation is checked before
+synthesis; a take finished in flight is still retained after Stop. There is no retry of this POST and
+no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which keeps reported
+usage and records an unknown cost as unknown, not zero).
 
 Book pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`
 of the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the
@@ -465,11 +478,14 @@ word-perfect speech.
 
 Returns the queued job; poll it. Progress counts passages; the message reports reused passages. For
 Breeze and Gemini every selected speaker must have a usable voice, otherwise 400 before queueing.
-Unlike the listening routes, this route does not check for server shutdown.""",
+Refused with 503 while the server is shutting down.""",
        response=Job, response_description='The queued `render` job.',
-       errors={400: f'{_ARCHIVED} Or: provider is not `system`, `gemini` or `breeze`; {_PROVIDER_400}; '
-                    '`No passages selected`; or a selected speaker has no usable Breeze/Gemini voice (`Fix the … voice for …`).',
-               404: _NOT_FOUND_BOOK, 409: _BUSY},
+       errors={400: {'provider_unsupported': '`provider` is not `system`, `gemini` or `breeze`.', **_PROVIDER,
+                     **_UNKNOWN_PASSAGE, 'unknown_scene': 'The body names a scene (`scene_id`) that is not in this book.',
+                     'no_passages_selected': 'The named passage is not in the named scene.',
+                     'cast_voice_unusable': 'A selected speaker has no usable Breeze or Gemini voice; the detail '
+                                            'names up to five speakers.'},
+               404: _BOOK_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
     op('GET', '/api/audio/{book_id}/{segment_id}', 'getPassageAudio', 'Narration',
        "Download a passage's current enhanced take",
@@ -479,7 +495,8 @@ must still match the passage, speaker and scene with the current resolved cast, 
 The book document gives valid takes a URL of this form with a `?v=` cache-busting query, which the
 server ignores. Local read.""",
        media='audio/wav', ranges=True, response_description='Mono 24 kHz 16-bit PCM WAV.',
-       errors={404: f'{_NOT_FOUND_BOOK} Or `This passage needs audio generation`: unknown passage, no take, or the take is stale or missing.'},
+       errors={404: {**_BOOK_404, 'passage_not_found': 'The book has no passage with this ID.',
+                     'audio_not_found': 'The passage has no take, or its take is stale or its file is missing.'}},
        params={'book_id': _BOOK_ID, 'segment_id': 'Passage (segment) ID.'}),
     op('GET', '/api/books/{book_id}/audio-assets/{asset_id}', 'getRetainedAudioAsset', 'Narration',
        'Download a retained enhanced audio asset',
@@ -488,7 +505,7 @@ Bytes of any retained enhanced audio asset of the book, current or historical, i
 performance takes (their `url` points here). The asset is identified by its content hash (older takes
 by recipe fingerprint). The file is served as stored; its integrity is not re-verified. Local read.""",
        media='audio/wav', ranges=True, response_description='Mono 24 kHz 16-bit PCM WAV.',
-       errors={404: f'{_NOT_FOUND_BOOK} Or `Audio asset not found`: malformed ID (32-128 lower-case hex) or no such file.'},
+       errors={404: {**_BOOK_404, 'audio_not_found': 'Malformed ID (32-128 lower-case hex) or no such file.'}},
        params={'book_id': _BOOK_ID, 'asset_id': 'Asset ID: 32-128 lower-case hex characters.'}),
 
     # -------------------------------------------------------------- Listening
@@ -496,10 +513,10 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
        'Get or queue simple narration for one passage', _LISTEN_DESCRIPTION,
        response=Union[ListenCached, ListenQueued],
        response_description='`cached: true` with `audio`, or `cached: false` with a new or joined `listen` job.',
-       errors={400: f'{_ARCHIVED} Or: {_NARRATOR_400}; the passage no longer matches its source text; or (only when '
-                    f'synthesis is needed) {_PROVIDER_400}.',
-               404: f'{_NOT_FOUND_BOOK} Or `Passage not found in this book`.',
-               409: f'Only when synthesis is needed: {_BUSY}',
+       errors={400: {**_UNKNOWN_PASSAGE, **_SOURCE, **_NARRATOR,
+                     **{code: f'Only when synthesis is needed: {text}' for code, text in _PROVIDER.items()}},
+               404: _BOOK_404,
+               409: {**_ARCHIVED, **{code: f'Only when synthesis is needed: {text}' for code, text in _BUSY.items()}},
                503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
     op('GET', '/api/books/{book_id}/listen/takes', 'listListeningTakes', 'Listening',
@@ -509,9 +526,9 @@ Saved simple audio for the session, one entry per passage in book order: a chunk
 applies, otherwise the newest single-passage take whose source recipe still matches the passage.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
-No generation. Works for archived books.""",
+No generation and no stored change. Works for archived books.""",
        response=ListeningTakes,
-       errors={404: f'{_NOT_FOUND_BOOK} Or `Listening session not found`.'},
+       errors={404: {**_BOOK_404, 'listening_session_not_found': 'The book has no listening session with this `session_id`.'}},
        params={'book_id': _BOOK_ID, 'session_id': 'Listening session ID from a `session` object.'}),
     op('GET', '/api/books/{book_id}/listen/audio/{asset_id}', 'getListeningAudio', 'Listening',
        'Download a simple-listening WAV',
@@ -520,7 +537,7 @@ A retained simple-listening WAV (single-passage take or shared chunk), scoped to
 it. The file must be recorded for this book and exist; it is served without re-verifying its hash.
 For a chunk clip, play from `clip_start` to `clip_end`. Local read.""",
        media='audio/wav', ranges=True, response_description='Mono 24 kHz 16-bit PCM WAV.',
-       errors={404: f'{_NOT_FOUND_BOOK} Or `Listening audio not found`: malformed ID (64 lower-case hex), not retained for this book, or file missing.'},
+       errors={404: {**_BOOK_404, 'audio_not_found': 'Malformed ID (64 lower-case hex), not retained for this book, or file missing.'}},
        params={'book_id': _BOOK_ID, 'asset_id': 'Asset ID: 64 lower-case hex characters (SHA-256 of the WAV).'}),
     op('POST', '/api/books/{book_id}/listen/chapter/preview', 'previewChapterListening', 'Listening',
        'Plan chapter listening from a passage',
@@ -530,20 +547,24 @@ needed, expected audio, ready passages and seconds, effective chunk options, cal
 limits and this library's daily request count for the model. Takes the same body as
 `POST /listen/chapter` (`intent: "queue"` without explicit ramp steps plans full-size chunks only).
 Creates the deterministic narrator session row only; no job, no provider request, no key required, and
-it works while the book is busy.""",
+it works while the book is busy. When `quota.requests_today` has reached `limits.rpd`, starting the
+chapter is refused with 429.""",
        response=ChapterListenPlan,
-       errors={400: f'{_ARCHIVED} Or: {_NARRATOR_400}.',
-               404: f'{_NOT_FOUND_BOOK} Or `Passage not found in this book`.'},
+       errors={400: {**_UNKNOWN_PASSAGE, **_NARRATOR}, 404: _BOOK_404, 409: _ARCHIVED},
        params={'book_id': _BOOK_ID}),
     op('POST', '/api/books/{book_id}/listen/chapter', 'startChapterListening', 'Listening',
        'Start or join Gemini chapter preparation', _CHAPTER_DESCRIPTION,
        response=ChapterListenStarted,
-       errors={400: f'{_ARCHIVED} Or: {_NARRATOR_400}; or no Gemini API key (only when starting).',
-               404: f'{_NOT_FOUND_BOOK} Or `Passage not found in this book`.',
-               409: 'A saved performance is preparing this book; another chapter or narrator is being prepared; '
-                    f'the chapter job is closing (retry shortly); or {_BUSY}',
-               429: 'A daily-quota block holds for this model in this process (`The daily Gemini request quota for this '
-                    'model is used up. It resets at midnight Pacific time, in about N h.`). Nothing was sent.',
+       errors={400: {**_UNKNOWN_PASSAGE, **_NARRATOR,
+                     'gemini_key_missing': 'Only when starting: no Gemini API key is configured.'},
+               404: _BOOK_404,
+               409: {**_ARCHIVED, **_BUSY,
+                     'performance_active': 'A saved performance\'s chapter job is preparing this book.',
+                     'chapter_listen_active': 'A chapter job for another chapter or narrator is active.',
+                     'chapter_job_closing': 'The matching chapter job is finishing; retry shortly.'},
+               429: {'daily_quota_reached': 'Only when starting: a daily-quota block holds for the model, or this '
+                                            'library\'s requests today have reached the configured requests per day. '
+                                            'Nothing was queued or sent; `Retry-After` gives the seconds to wait.'},
                503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
 
@@ -551,9 +572,10 @@ it works while the book is busy.""",
     op('GET', '/api/books/{book_id}/performances', 'listPerformances', 'Performances',
        'List saved performances',
        'Performances of the book, newest first, each with its latest job summary and readiness. Archived '
-       'records are included only with `archived=true`. Local read; readiness uses file existence, not WAV validation.',
+       'records are included only with `archived=true`. Local read with no stored change; readiness uses file '
+       'existence, not WAV validation.',
        response=PerformanceList,
-       errors={404: _NOT_FOUND_BOOK},
+       errors={404: _BOOK_404},
        params={'book_id': _BOOK_ID, 'archived': 'Include archived performances (default false).'}),
     op('POST', '/api/books/{book_id}/performances/preview', 'previewPerformance', 'Performances',
        'Estimate a performance without starting it',
@@ -562,11 +584,12 @@ Local plan: readiness, passages to generate, request estimate, expected audio, b
 advisory `notes`, and for Gemini this library's daily request count. No provider calls and no job;
 creating the deterministic listening session row is allowed. Narrator and provider conditions the user
 can fix (missing key, unusable voice, narrator without a voice for a cast) are returned in `problems`
-rather than as errors.""",
+rather than as errors; `createPerformance` refuses them with the codes it lists.""",
        response=PerformancePlan,
-       errors={400: f'{_ARCHIVED} Or: a chapter ID is not in this book (`Choose chapters from this book.`); the '
-                    'Gemini model is not supported; or the model does not match the device/Breeze fixed model.',
-               404: _NOT_FOUND_BOOK},
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
+                     'model_unsupported': 'The Gemini model is not supported, or the model does not match the '
+                                          'device or Breeze fixed model.'},
+               404: _BOOK_404, 409: _ARCHIVED},
        params={'book_id': _BOOK_ID}),
     op('POST', '/api/books/{book_id}/performances', 'createPerformance', 'Performances',
        'Create a performance and start preparing it',
@@ -574,31 +597,32 @@ rather than as errors.""",
 Validate, record and start a performance. Simple performances pin a listening session (takes made
 earlier by live listening with the same narrator count as ready); cast performances snapshot the
 resolved cast now. Returns `{{performance, job}}`; `job` is null when every passage is already ready.
-The record is saved before the job starts.
+The record is saved before the job starts. When the preview would report `problems`, the request is
+refused with 400: the code is the first problem's, and the detail joins every problem's sentence.
 
 {_PERFORMANCE_JOB}""",
        response=PerformanceStarted,
-       errors={400: f'{_ARCHIVED} Or: any preview `problems` (joined into one message), unknown chapters, or an '
-                    'unsupported/mismatched model.',
-               404: _NOT_FOUND_BOOK, 409: _BUSY, 503: _STOPPING},
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
+                     'model_unsupported': 'The Gemini model is not supported, or the model does not match the '
+                                          'device or Breeze fixed model.', **_PROBLEMS},
+               404: _BOOK_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
     op('GET', '/api/books/{book_id}/performances/{performance_id}', 'getPerformance', 'Performances',
        'Get a performance',
-       'The performance with its latest job summary and readiness. Local read. The book itself is not '
-       'checked first: an unknown book also gives `Performance not found`.',
+       'The performance with its latest job summary and readiness. Local read with no stored change.',
        response=PerformanceEnvelope,
-       errors={404: '`Performance not found` (no such performance in this book).'},
+       errors={404: _PERFORMANCE_404},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
     op('GET', '/api/books/{book_id}/performances/{performance_id}/audio', 'getPerformanceAudio', 'Performances',
        "List a performance's playable audio",
        """\
 Audio for each selected passage that is ready against its current source, as JSON (not bytes); play
-each `url`. Every object has `mode: "performance"` and `performance_id`. Simple performances return the
-`/listen/takes` objects (single-passage takes or chunk clips with `clip_start`/`clip_end`); cast
-performances return the newest retained take per passage, served from `/audio-assets/`. Local read;
-file existence is checked but WAVs are not re-validated.""",
+each `url`. Simple performances return the `/listen/takes` objects (single-passage takes or chunk clips
+with `clip_start`/`clip_end`); cast performances return the newest retained take per passage
+(`PerformanceCastAudio`, with `speaker_id`), served from `/audio-assets/`. Local read with no stored
+change; file existence is checked but WAVs are not re-validated.""",
        response=PerformanceAudioMap,
-       errors={404: '`Performance not found`.'},
+       errors={404: _PERFORMANCE_404},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
     op('POST', '/api/books/{book_id}/performances/{performance_id}/prepare', 'preparePerformance', 'Performances',
        'Resume preparing a performance',
@@ -608,23 +632,25 @@ creation do not apply, except that current credentials, limits and chunk options
 resume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes
 match the damaged one's content address is refused rather than overwritten (possible with
 deterministic device voices). Chapters removed from the book are skipped. Returns `{{performance, job}}`
-with `job` null when nothing is missing.
+with `job` null when nothing is missing. Blocking problems are refused with 400 as for
+`createPerformance`.
 
 {_PERFORMANCE_JOB}""",
        response=PerformanceStarted,
-       errors={400: f'{_ARCHIVED} Or: {_PROVIDER_400}; or a planning problem such as the cast narrator having no usable voice.',
-               404: f'`Performance not found`, or {_NOT_FOUND_BOOK}',
-               409: _BUSY, 503: _STOPPING},
+       errors={400: {**_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing']},
+               404: _PERFORMANCE_404,
+               409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
     op('PATCH', '/api/books/{book_id}/performances/{performance_id}', 'updatePerformance', 'Performances',
        'Rename or archive a performance',
        'Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is '
-       'allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned '
-       'as is (and `updated_at` is not touched).',
+       'allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while '
+       'the book is archived. Omitted or null fields are unchanged; with no fields the record is returned '
+       'as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails '
+       'request validation (422).',
        response=PerformanceEnvelope,
-       errors={400: '`A performance name is required.`: `name` is only whitespace.',
-               404: '`Performance not found`.',
-               422: 'Request validation failed, including an empty `name` string or one over 200 characters.'},
+       errors={400: {'performance_name_required': '`name` is only whitespace.'},
+               404: _PERFORMANCE_404, 409: _ARCHIVED},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
 
     # -------------------------------------------------------------- Voice previews
@@ -632,11 +658,14 @@ with `job` null when nothing is missing.
        'Get or queue a short voice audition', _VOICE_PREVIEW_DESCRIPTION,
        response=Union[VoicePreviewCached, VoicePreviewQueued],
        response_description='`cached: true` with `audio`, or `cached: false` with a new or joined `voice_preview` job.',
-       errors={400: f'{_ARCHIVED} Or: {_NARRATOR_400}; `direction` without `character_id`; `segment_direction` '
-                    'without both a passage and a character; the passage no longer matches its source; or (only '
-                    f'when synthesis is needed) {_PROVIDER_400}.',
-               404: f'{_NOT_FOUND_BOOK} Or `Passage not found in this book` / `Character not found in this book`.',
-               409: f'Only when synthesis is needed: {_BUSY}',
+       errors={400: {**_UNKNOWN_PASSAGE, 'unknown_character': 'The body names a character (`character_id`) that is not in this book.',
+                     **_SOURCE, **_NARRATOR,
+                     'direction_requires_character': '`direction` without `character_id`.',
+                     'segment_direction_requires_passage': '`segment_direction` without both a passage and a character.',
+                     'pronunciation_invalid': 'The `pronunciation` entry is not valid.',
+                     **{code: f'Only when synthesis is needed: {text}' for code, text in _PROVIDER.items()}},
+               404: _BOOK_404,
+               409: {**_ARCHIVED, **{code: f'Only when synthesis is needed: {text}' for code, text in _BUSY.items()}},
                503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
     op('GET', '/api/books/{book_id}/voice-preview/audio/{asset_id}', 'getVoicePreviewAudio', 'Voice previews',
@@ -644,8 +673,8 @@ with `job` null when nothing is missing.
        'A retained audition WAV, scoped to its owning book. Every request verifies the content hash and '
        'WAV format before serving. Local read.',
        media='audio/wav', ranges=True, response_description='Mono 24 kHz 16-bit PCM WAV.',
-       errors={404: f'{_NOT_FOUND_BOOK} Or `Voice preview audio not found` (malformed ID or not retained for '
-                    'this book) / `Voice preview audio is missing or damaged`.'},
+       errors={404: {**_BOOK_404, 'audio_not_found': 'Malformed ID, not retained for this book, or the file is '
+                                                     'missing or damaged.'}},
        params={'book_id': _BOOK_ID, 'asset_id': 'Asset ID: 64 lower-case hex characters (SHA-256 of the WAV).'}),
 ]
 

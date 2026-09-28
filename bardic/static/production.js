@@ -20,7 +20,9 @@
     if (!response.ok) {
       let detail = data?.detail;
       if (Array.isArray(detail)) detail = detail.map(item => item.msg || 'Invalid value').join('; ');
-      throw new Error(typeof detail === 'string' ? detail : `Request failed (${response.status}). Try again.`);
+      const hint = globalThis.BardicErrorHints?.[data?.code];
+      const text = typeof detail === 'string' ? (hint ? `${detail} ${hint}` : detail) : `Request failed (${response.status}). Try again.`;
+      throw Object.assign(new Error(text), {code:data?.code ?? null, status:response.status});
     }
     return data;
   }

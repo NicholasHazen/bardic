@@ -107,7 +107,7 @@ def test_analysis_export_needs_no_audio_and_contains_history_and_transitive_cros
                 'references.json', 'series.json', 'analysis-attempts.json', 'pipeline-events.jsonl', 'README.txt'} <= names
         assert not any(name.endswith(('.wav', '.mp3', '.m4b')) for name in names)
         manifest = json.loads(archive.read('manifest.json'))
-        assert manifest['schema_version'] == 1 and manifest['format'] == 'spintails-analysis'
+        assert manifest['schema_version'] == 2 and manifest['format'] == 'spintails-analysis'
         assert manifest['source_text_included'] is True and manifest['audio_files_included'] is False
         assert manifest['word_alignment'] is False
         assert set(manifest['external_book_dependencies']) == {previous['id'], earliest['id']}
@@ -164,10 +164,10 @@ def test_artifact_metadata_is_paginated_filtered_book_scoped_and_payload_is_insp
 
 
 @pytest.mark.parametrize('params,status', [
-    ({'limit': 0}, 400), ({'limit': 201}, 400), ({'offset': -1}, 400),
     ({'limit': 'not-a-number'}, 422), ({'offset': 'not-a-number'}, 422), ({'current': 'not-a-boolean'}, 422),
 ])
 def test_invalid_artifact_pagination_is_rejected(client, params, status):
+    # Out-of-range numbers are clamped (tests/test_inspection_api.py); only malformed values are rejected.
     book = import_book(client)
     response = client.get(f"/api/books/{book['id']}/artifacts", params=params)
     assert response.status_code == status, response.text
@@ -344,9 +344,9 @@ def test_views_and_search_preserve_source_and_do_not_queue_processing(client):
     assert response.status_code == 200, response.text
     search = response.json()
     assert search['available'] is True and search['scope'] == 'book' and search['query'] == 'Mara'
-    assert search['results']
+    assert search['items']
     by_chapter = {chapter['id']: chapter for chapter in before['chapters']}
-    for result in search['results']:
+    for result in search['items']:
         assert result['book_id'] == book['id']
         assert by_chapter[result['chapter_id']]['text'][result['start']:result['end']] == result['text']
         assert isinstance(result['rank'], (int, float))
@@ -372,7 +372,7 @@ def test_search_api_earlier_series_scope_includes_current_and_prior_but_not_futu
     assert response.status_code == 200
     data = response.json()
     assert data['query'] == 'Mara' and data['scope'] == 'earlier'
-    assert {item['book_id'] for item in data['results']} == {books[0]['id'], books[1]['id']}
+    assert {item['book_id'] for item in data['items']} == {books[0]['id'], books[1]['id']}
     assert client.get('/api/jobs').json() == []
 
 

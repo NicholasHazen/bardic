@@ -46,7 +46,12 @@ class Error(View):
     """Error body for every non-2xx JSON response."""
     detail: str | list[ValidationIssue] = Field(
         description='A human-readable English sentence, or for 422 request validation a list of issues. '
-                    'Display it; do not parse it. Machine-readable error codes are not yet provided.')
+                    'Display it; do not parse it.')
+    code: str = Field(
+        description='Stable, machine-readable error code in lower snake_case, for example `book_not_found` or '
+                    '`job_active`. Each operation lists the codes it returns for each status; every operation can '
+                    'also return the global codes listed in the contract introduction. Branch on `code`, not on '
+                    '`detail`. Treat an unknown code like any other failure with the same status.')
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,12 @@ class Op:
     parameters by name. ``cost`` says whether the call can reach a provider.
     ``ranges`` marks a binary response served from a file, which honors HTTP
     ``Range`` requests (206 Partial Content, 416 Range Not Satisfiable).
+    ``conditional`` marks a response with a strong ``ETag`` that honors
+    ``If-None-Match`` (304 Not Modified, empty body).
+
+    Each ``errors`` value maps every error code returned with that status to
+    when it is returned; see :mod:`bardic.errors`. The test suite fails on a
+    response whose code is not listed (global codes excepted).
     """
     method: Method
     path: str
@@ -71,10 +82,11 @@ class Op:
     response: Any = None
     media: str | None = None
     response_description: str = ''
-    errors: dict[int, str] = field(default_factory=dict)
+    errors: dict[int, dict[str, str]] = field(default_factory=dict)
     params: dict[str, str] = field(default_factory=dict)
     cost: Cost = 'none'
     ranges: bool = False
+    conditional: bool = False
 
     def __post_init__(self):
         if (self.response is None) == (self.media is None):
@@ -85,6 +97,12 @@ class Op:
             raise ValueError(f'{self.method} {self.path}: summary and description are required')
         if self.ranges and not self.media:
             raise ValueError(f'{self.method} {self.path}: only binary responses can honor Range requests')
+        for status, documented in self.errors.items():
+            if not isinstance(documented, dict):
+                raise ValueError(f'{self.method} {self.path}: {status} must map error codes to when they occur')
+            bad = [code for code in documented if not re.fullmatch(r'[a-z][a-z0-9]*(?:_[a-z0-9]+)*', code)]
+            if bad or not documented or not all(documented.values()):
+                raise ValueError(f'{self.method} {self.path}: {status} needs described snake_case codes: {bad}')
 
 
 @dataclass(frozen=True)

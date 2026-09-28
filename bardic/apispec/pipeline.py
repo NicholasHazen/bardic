@@ -11,7 +11,7 @@ from typing import Any, Literal, Union
 
 from pydantic import Field
 
-from .base import Op, View, internal, op
+from .base import Op, View, op
 from .common import Job
 
 TAG = 'Analysis pipeline'
@@ -36,13 +36,17 @@ class PipelineStepSettingsView(View):
     """The effective provider, model and gate for one step: the saved choice, or a default."""
     provider: str = Field(description='Provider ID: `local` for plain (local) steps, otherwise one of the step\'s `providers`.')
     model: str | None = Field(description='Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) '
-                                          'and an LLM step whose default provider has no configured model. A run with a '
-                                          'null model for an LLM provider is not refused here; configure one first.')
-    gate: Gate = Field(description='`auto` accepts a completed run of this step immediately; `review` waits for a person.')
-    saved: bool = Field(description='True when the owner saved settings for this step. False means these are computed '
-                                    'defaults (the preferred analysis provider and its configured analysis or scan model). '
-                                    'A saved choice that no longer validates is silently replaced by the defaults '
-                                    '(but `saved` stays true).')
+                                          'and an LLM step whose default provider has no configured model. Planning or '
+                                          'running an LLM step with a null model is refused (400 `step_model_missing`) '
+                                          'unless the request sends a model in `configs`.')
+    gate: Gate = Field(description='`auto` accepts a completed run of this step immediately; `review` waits for a person. '
+                                   'A saved gate applies even when `saved_invalid` is true.')
+    saved: bool = Field(description='True when `provider` and `model` are the owner\'s saved choice for this step. False '
+                                    'means they are computed defaults (the preferred analysis provider and its configured '
+                                    'analysis or scan model).')
+    saved_invalid: bool = Field(description='True when a saved provider/model choice exists but no longer validates (for '
+                                            'example, the step no longer offers that provider). It is ignored: `saved` is '
+                                            'false and the defaults apply. Saving new settings replaces it.')
 
 
 class PipelineStepDefinition(View):
@@ -102,7 +106,6 @@ class PipelineProvider(View):
     self_hosted: bool = Field(description='True for a server on the owner\'s network (`local_llm`, `booknlp`, `novel_analyzer`).')
     needs: Literal['api_key', 'url'] = Field(description='What must be configured in Settings: an API key (cloud) or a server URL.')
     configured: bool = Field(description='A key or URL is set. It does not prove the server answers or the key works.')
-    has_api_key: bool = Field(description='Older name for `configured` (also true when a URL is set). Same value.')
     models: list[PipelineProviderModel] | None = Field(
         None, description='Present only for `local_llm`: curated models for the self-hosted server.')
 
@@ -149,7 +152,6 @@ class PipelineStepRun(View):
     unchanged_scopes: list[str] = Field(description='Scopes whose result is identical to the version already accepted '
                                                     'when this run finished (content-addressed: same artifact ID).')
     units: PipelineUnitCounts
-    conflicts: list[Any] = internal('Always an empty list today; conflicts are reported by preview and accept instead.')
     error: str | None = Field(description='Human-readable failure text (secrets redacted), or null. Display only.')
     created_at: str = Field(description='ISO 8601 UTC creation time.')
     updated_at: str = Field(description='ISO 8601 UTC time of the last change.')
@@ -255,7 +257,7 @@ class PipelineRun(View):
                                           'before the run settled). If the job ended before work began, the run takes '
                                           'the job\'s final status (so `quota_limited` is theoretically possible).')
     steps: list[StepId] = Field(description='Requested steps, deduplicated, in pipeline order.')
-    mode: Literal['serial', 'parallel'] = Field(description='`serial`: steps run one after another in pipeline order. '
+    scheduling: Literal['serial', 'parallel'] = Field(description='`serial`: steps run one after another in pipeline order. '
                                                             '`parallel`: each step starts as soon as the in-run inputs '
                                                             'it reads have finished, so independent steps overlap.')
     chapter_ids: list[str] | None = Field(description='Sorted chapter selection, or null for all eligible chapters.')
@@ -276,7 +278,7 @@ class PipelineRun(View):
 
 class PipelineRunStarted(View):
     """The queued job and the run record. A queued job is not a result: poll the job."""
-    job: Job = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `mode` added).')
+    job: Job = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added).')
     run: PipelineRun = Field(description='The run as created (`status: queued`, empty `step_run_ids`).')
 
 
@@ -501,8 +503,8 @@ class PipelineVersionDetail(View):
     columns: list[PipelineResultColumn] = Field(description='Columns to display, in order.')
     diff: PipelineVersionDiff
     total_rows: int = Field(description='Rows after the `scope` and `changed_only` filters, before paging.')
-    offset: int = Field(description='Echo of the `offset` query parameter: rows skipped.')
-    limit: int = Field(description='Echo of the `limit` query parameter: the page size.')
+    offset: int = Field(description='Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1).')
+    limit: int = Field(description='The page size used: the `limit` query parameter clamped to 1–1000.')
     rows: list[PipelineResultRowAny] = Field(
         description='The requested page of rows. Most cell values reflect the book\'s current names and passages; census rows use the names stored in the result and structure rows use the version\'s own titles. The row '
                     'shape depends on the step (one variant per step); every row has `id` and `scope`.')
@@ -547,12 +549,28 @@ class PipelineVersionHistory(View):
 # ------------------------------------------------------------------ operations
 
 BOOK = 'Book ID.'
-STEP = f'Step ID: one of {STEP_IDS}. An unknown ID returns 404.'
+STEP = f'Step ID: one of {STEP_IDS}. An unknown ID returns 404 `step_not_found`.'
 VERSION = ('A step version ID from the version history, or `accepted` to address the currently accepted version of '
            'every scope.')
-NO_BOOK = 'The book does not exist (`Book not found`).'
-NO_STEP = 'The step ID is unknown (`Unknown pipeline step: …`).'
-NO_VERSION = ('The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step.')
+
+NO_BOOK = {'book_not_found': 'No book has this ID.'}
+NO_STEP = {'step_not_found': 'The step ID in the path is unknown.'}
+NO_VERSION = {**NO_BOOK, **NO_STEP,
+              'step_version_not_found': 'The version does not exist, or belongs to another book or another step.'}
+UNKNOWN_STEP = {'unknown_step': '`steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server '
+                                 'does not know.'}
+CONFIG = {'step_config_invalid': 'A `configs` entry does not fit its step: a local step was given a provider other '
+                                 'than `local` or a model, the provider is not one of the step\'s `providers`, a '
+                                 'service provider was given a model, or the model ID is missing or malformed.',
+          'step_model_missing': 'A step without a `configs` entry uses its saved or default settings, and they name '
+                                'no model for an LLM provider. Save a model for the step, or send one in `configs`.'}
+CHAPTERS = {'chapter_ids_empty': '`chapter_ids` is an empty list (send null for every eligible chapter).',
+            'unknown_chapter': '`chapter_ids` names a chapter that is not in this book.'}
+SCOPES = {'scopes_empty': '`scopes` is an empty list (send null for every scope of the version).',
+          'unknown_scope': '`scopes` names a scope this version does not contain.'}
+BOOK_BUSY = {'book_archived': 'The book is removed (archived). Restore it first.',
+             'series_run_active': 'An active series run reserves this book.'}
+RUNNING = {'version_running': 'The version is still running.'}
 
 SYNC_NOTE = (
     'Before answering, the server records outside changes (`projection.sync`): when the capturable content of the '
@@ -568,9 +586,9 @@ OPS: list[Op] = [
     op('GET', '/api/analysis-pipeline', 'getAnalysisPipeline', TAG,
        'List pipeline steps, providers and saved step settings',
        'Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` '
-       '(`{provider, model, gate, saved}`), and every provider with `kind` (`model` or `service`), `self_hosted`, '
-       '`needs` (`api_key` or `url`) and `configured`/`has_api_key` (a key or URL is set; not a reachability check). '
-       'The Local LLM entry lists curated `models`. Service providers take `model: null`.\n\n'
+       '(`{provider, model, gate, saved, saved_invalid}`), and every provider with `kind` (`model` or `service`), '
+       '`self_hosted`, `needs` (`api_key` or `url`) and `configured` (a key or URL is set; not a reachability '
+       'check). The Local LLM entry lists curated `models`. Service providers take `model: null`.\n\n'
        'Read-only; contacts no server.',
        response=PipelineDefinitions),
     op('PUT', '/api/analysis-pipeline/steps/{step_id}/settings', 'saveAnalysisPipelineStepSettings', TAG,
@@ -579,15 +597,19 @@ OPS: list[Op] = [
        f'previous choice. {VALIDATE_CONFIG} An omitted or null `gate` saves the step\'s `default_gate`. Idempotent. '
        'Never starts work and contacts no server. Returns the effective settings for the step.',
        response=PipelineStepSettingsView,
-       errors={400: 'The provider is not allowed for this step, a local step was given a model or another provider, '
-                    'a service provider was given a model, or the model ID is missing or malformed.',
+       errors={400: {'step_config_invalid': 'The provider is not allowed for this step, a local step was given a '
+                                            'model or another provider, a service provider was given a model, or '
+                                            'the model ID is missing or malformed.'},
                404: NO_STEP},
        params={'step_id': STEP}),
     op('GET', '/api/books/{book_id}/analysis-pipeline', 'getBookAnalysisPipeline', TAG,
        'Get the pipeline state of a book',
        'Per-step accepted and total scopes, `has_accepted` (any accepted version), accepted origins, stale scopes, '
        'pending candidates and the latest version; the active run and the 5 most recent runs; and the chapter list.\n\n'
-       f'**This GET writes.** {SYNC_NOTE} Contacts no server.',
+       'Read-only: it records nothing and contacts no server. When the book changed outside the pipeline since the '
+       'pipeline last recorded it, the accepted counts, origins and stale scopes already reflect those changes as '
+       'the next plan, run, preview or accept will record them (as `baseline`/`external` versions). Those capture '
+       'versions are not listed in `latest` or the version history until they are recorded.',
        response=PipelineBookOverview,
        errors={404: NO_BOOK},
        params={'book_id': BOOK}),
@@ -600,16 +622,18 @@ OPS: list[Op] = [
        'calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same '
        'request is estimated from the input\'s current accepted result.\n\n'
        'Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` '
-       'entries use the saved step settings.\n\n'
+       'entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings '
+       'name no model is refused. A removed book can be planned. Checks, in order: every step ID in `steps` and '
+       '`configs` must be known (400 `unknown_step`), the book must exist (404), then `configs` and `chapter_ids` '
+       'are validated (400).\n\n'
        'The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step\'s version, '
-       'provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or '
+       'provider, model and exact unit identities. It does not cover `scheduling`, `gates`, `concurrency`, `limits` or '
        'which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because '
        'they are part of the fingerprint.\n\n'
        f'Not purely read-only: {SYNC_NOTE} Building units may also store free local census caches.',
        response=PipelinePlan,
-       errors={400: 'A `configs` entry is invalid for its step, `chapter_ids` is empty or names a chapter not in this '
-                    'book, or a step could not plan its units.',
-               404: 'The book does not exist, or `steps` names an unknown step (an unknown step ID in the body is a 404, not a 400).'},
+       errors={400: {**UNKNOWN_STEP, **CONFIG, **CHAPTERS},
+               404: NO_BOOK},
        params={'book_id': BOOK}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/runs', 'startBookAnalysisPipelineRun', TAG,
        'Queue a pipeline run',
@@ -617,13 +641,17 @@ OPS: list[Op] = [
        'the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book\'s '
        'pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is '
        '`auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step '
-       'left for review, failed or without an accepted result are skipped.\n\n'
-       'Checks, in order: every step ID must be known (404 otherwise, before anything else); the book must exist, not be removed, and have no active job (and not be reserved by an '
-       'active series run); `chapter_ids` and `configs` must be valid; every provider the run contacts must have an '
-       'API key or server URL configured (local steps and `offline_providers` need none); every step\'s required '
-       'inputs must have an accepted result or be in the same run; and the run must be authorized by either '
-       '`expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is '
-       'sent, the plan is recomputed and must match.\n\n'
+       'left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken '
+       'when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.\n\n'
+       'Checks, in order: every step ID in `steps`, `configs` and `gates` must be known (400 `unknown_step`, before '
+       'anything else); the worker must '
+       'not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active '
+       'series run; `chapter_ids` and `configs` must be valid, and each step\'s saved or default settings must name '
+       'a model when its provider needs one; every provider the run contacts must have an API key or server URL '
+       'configured (local steps and `offline_providers` need none); every step\'s required inputs must have an '
+       'accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a '
+       'confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed '
+       'and must match.\n\n'
        'Provider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings '
        'changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the '
        'authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP '
@@ -632,22 +660,28 @@ OPS: list[Op] = [
        f'{SYNC_NOTE}',
        response=PipelineRunStarted,
        response_description='The queued job and run. Not a result: poll the job until it is terminal.',
-       errors={400: 'The book is removed (restore it first); `chapter_ids` is empty or names a chapter not in this book; '
-                    'a `configs` entry is invalid; a needed API key or server URL is missing (`Add in Settings first: …`); '
-                    'a step\'s required input has no accepted result and is not in this run; or neither '
-                    '`expected_fingerprint` nor any limit was sent.',
-               404: 'The book does not exist, or `steps` names an unknown step.',
-               409: 'A job is already working on this book, the book is reserved by an active series run, or the plan '
-                    'changed since the preview (`expected_fingerprint` does not match; preview again).'},
+       errors={400: {**UNKNOWN_STEP, **CONFIG, **CHAPTERS,
+                     'api_key_missing': 'A cloud provider the run contacts has no API key configured (the detail '
+                                        'lists every missing key and server URL).',
+                     'server_url_missing': 'Only self-hosted providers are missing: a server URL the run contacts is '
+                                           'not configured.',
+                     'step_inputs_missing': 'A step\'s required input has no accepted result and is not in this run.',
+                     'run_unconfirmed': 'Neither `expected_fingerprint` nor any limit was sent.'},
+               404: NO_BOOK,
+               409: {**BOOK_BUSY,
+                     'job_active': 'A job is already working on this book.',
+                     'plan_stale': 'The plan changed since the preview (`expected_fingerprint` does not match). '
+                                   'Preview again; nothing was queued.'},
+               503: {'shutting_down': 'The local worker is stopping and accepts no new runs.'}},
        params={'book_id': BOOK},
        cost='may_charge'),
     op('GET', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions', 'listAnalysisPipelineStepVersions', TAG,
        'List a step\'s versions and decisions',
        'Version history, newest first, with each version\'s review `state` (`candidate`, `accepted`, '
        '`partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent '
-       'decisions. Includes `baseline`/`external` captures. Read-only (does not record outside changes).',
+       'decisions. Includes recorded `baseline`/`external` captures. Read-only (does not record outside changes).',
        response=PipelineVersionHistory,
-       errors={404: 'The book does not exist, or the step ID is unknown.'},
+       errors={404: {**NO_BOOK, **NO_STEP}},
        params={'book_id': BOOK, 'step_id': STEP,
                'limit': 'Maximum versions to return. Default 50; values are clamped to 1–200 (never an error).'}),
     op('GET', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}',
@@ -662,16 +696,17 @@ OPS: list[Op] = [
        'equals `{version_id}`, or resolves to no results (for example `accepted` when nothing is accepted); then '
        '`diff.compared_with` is null and rows carry no diff fields.\n\n'
        'Rows are summarized against the book\'s current state (current names and passage text). A version still '
-       'running has no scopes yet and returns an empty table. Read-only.',
+       'running has no scopes yet and returns an empty table. Paging is clamped, never an error. Read-only.',
        response=PipelineVersionDetail,
-       errors={400: 'The offset is negative or the page size is outside 1–1000.',
-               404: NO_VERSION + ' Also when `compare` names a version that does not exist or belongs to another step.'},
+       errors={400: {'unknown_version': '`compare` names a version that does not exist, or belongs to another book '
+                                        'or another step.'},
+               404: NO_VERSION},
        params={'book_id': BOOK, 'step_id': STEP, 'version_id': VERSION,
                'compare': 'What to diff against: `accepted` (default), another step version ID of this step, or `none`.',
                'scope': 'Return only rows of this scope (a chapter ID, character ID or `book`). Filters rows, not `diff` counts.',
                'changed_only': 'When true, return only rows whose `_diff` is `changed` or `added` (none without a comparison). Default false.',
-               'offset': 'Rows to skip (default 0, must be nonnegative).',
-               'limit': 'Page size, 1–1000 (default 200).'}),
+               'offset': 'Rows to skip (default 0), clamped to 0–9007199254740991 (2^53 − 1).',
+               'limit': 'Page size (default 200), clamped to 1–1000.'}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/preview',
        'previewAnalysisPipelineStepVersion', TAG,
        'Preview what accepting a version would change',
@@ -683,8 +718,9 @@ OPS: list[Op] = [
        'empty) and on a removed book.\n\n'
        f'Not purely read-only: {SYNC_NOTE}',
        response=PipelineAcceptImpact,
-       errors={400: '`scopes` is empty or names a scope this version does not contain, or a selected result does not '
-                    'fit the book (for example a structure version for different chapters).',
+       errors={400: {**SCOPES,
+                     'version_incompatible': 'A selected result does not fit the book (for example a structure '
+                                             'version for different chapters).'},
                404: NO_VERSION},
        params={'book_id': BOOK, 'step_id': STEP, 'version_id': VERSION}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/accept',
@@ -701,29 +737,36 @@ OPS: list[Op] = [
        'Send `expected_revision` (from preview) to refuse the accept when the book changed after the preview. A '
        'running `pipeline` job on the book does not block accepting; other active jobs do.',
        response=PipelineAcceptResult,
-       errors={400: 'The book is removed (restore it first); the version has no results; `scopes` is empty or names a '
-                    'scope this version does not contain; or a selected result does not fit the book.',
+       errors={400: {**SCOPES,
+                     'version_empty': 'The version has no results.',
+                     'version_incompatible': 'A selected result does not fit the book.'},
                404: NO_VERSION,
-               409: 'The version is still running; another (non-pipeline) job is changing this book; the book is '
-                    'reserved by an active series run; or the book revision differs from `expected_revision` '
-                    '(review the impact again).'},
+               409: {**RUNNING, **BOOK_BUSY,
+                     'job_active': 'Another job (not a pipeline run) is changing this book.',
+                     'plan_stale': 'The book revision differs from `expected_revision`: the book changed after the '
+                                   'preview. Preview again.'}},
        params={'book_id': BOOK, 'step_id': STEP, 'version_id': VERSION}),
     op('POST', '/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject',
        'rejectAnalysisPipelineStepVersion', TAG,
        'Reject a candidate version',
-       '`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, accepted '
-       'versions and retained results are unchanged, and the version remains inspectable. An accepted version '
-       'cannot be rejected; accept another version to replace it. Because identical results share one artifact, a '
-       'candidate whose selected scopes equal the accepted content (`same_as_accepted`) cannot be rejected either. '
-       'Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs '
-       'run or when the book is removed; the book\'s existence is not checked separately.',
+       '`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, the accepted '
+       'versions and retained results are unchanged, and the version remains inspectable (its state becomes '
+       '`rejected`). The book must exist and not be removed. Omitted `scopes` means every scope of the version; '
+       '`expected_revision` is ignored. Not refused while jobs run.\n\n'
+       'Acceptance is a decision, not content equality: a version that was accepted and is still current for a '
+       'selected scope cannot be rejected (accept another version to replace it), but a never-accepted version whose '
+       'results equal the accepted content (`same_as_accepted`) can be. Rejecting it declines that run; the '
+       'identical accepted content stays accepted through the version that was accepted.',
        response=PipelineDecision,
-       errors={400: '`{version_id}` is `accepted`; the version has no results; `scopes` is empty or names a scope '
-                    'this version does not contain; or a selected scope is the currently accepted version.',
-               404: 'The step is unknown, or the version does not exist, belongs to another book or belongs to another step.',
-               409: 'The version is still running.'},
+       errors={400: {**SCOPES, 'version_empty': 'The version has no results.'},
+               404: NO_VERSION,
+               409: {**RUNNING,
+                     'book_archived': 'The book is removed (archived). Restore it first.',
+                     'version_accepted': '`{version_id}` is `accepted`, or this version was accepted and is still the '
+                                         'accepted version of a selected scope.'}},
        params={'book_id': BOOK, 'step_id': STEP, 'version_id': VERSION}),
 ]
+
 
 REQUEST_DOCS: dict[str, dict[str, str]] = {
     'StepConfig': {
@@ -751,34 +794,37 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
     'PlanRequest': {
         '__doc__': 'Which steps to estimate, over which chapters, with which providers.',
         'steps': 'Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are '
-                 'ignored. An unknown ID returns 404.',
+                 'ignored. An unknown ID is refused (400 `unknown_step`).',
         'chapter_ids': 'Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). '
-                       'Omit or null for every eligible (story) chapter. An empty list is refused.',
-        'configs': '`{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not '
-                   'requested are ignored.',
+                       'Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`).',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model for this request. An unknown step ID is '
+                   'refused (400 `unknown_step`); entries for known steps that are not requested are ignored.',
         'fresh': 'When true, cached validated units are not reused: new samples are requested (for comparing a model '
                  'with itself). Part of the plan fingerprint. Default false.',
     },
     'RunRequest': {
         '__doc__': 'A run to queue. Send the same `steps`, `chapter_ids`, `configs` and `fresh` as the confirmed plan.',
-        'steps': 'Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID returns 404.',
+        'steps': 'Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused '
+                 '(400 `unknown_step`).',
         'chapter_ids': 'Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every '
-                       'eligible chapter. An empty list is refused.',
-        'configs': '`{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored.',
+                       'eligible chapter. An empty list is refused (400 `chapter_ids_empty`).',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model. An unknown step ID is refused (400 '
+                   '`unknown_step`); entries for known steps that are not requested are ignored.',
         'fresh': 'Request new samples instead of reusing cached validated units (default false). Part of the fingerprint.',
-        'mode': '`serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose '
+        'scheduling': '`serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose '
                 'in-run inputs have finished, so independent steps overlap.',
-        'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run.',
+        'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run. An unknown step ID is refused '
+                 '(400 `unknown_step`); entries for known steps that are not requested are ignored.',
         'concurrency': 'Maximum model requests in flight across the run, 1–4 (default 2). Each step also has its own `parallel` cap.',
         'limits': 'Optional caps; see Limits. Uncapped when omitted.',
         'expected_fingerprint': 'The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the '
-                                'plan is recomputed and a mismatch returns 409. Required unless a limit is set.',
+                                'plan is recomputed and a mismatch returns 409 `plan_stale`. Required unless a limit is set.',
     },
     'DecisionRequest': {
         '__doc__': 'Which scopes of a version to preview, accept or reject.',
         'scopes': 'Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An '
-                  'empty list, or a scope the version does not contain, is refused (400).',
-        'expected_revision': 'Accept only: the `revision` returned by preview. The accept is refused (409) when the book '
+                  'empty list (400 `scopes_empty`), or a scope the version does not contain (400 `unknown_scope`), is refused.',
+        'expected_revision': 'Accept only: the `revision` returned by preview. The accept is refused (409 `plan_stale`) when the book '
                              'revision differs. Ignored by preview and reject.',
     },
 }

@@ -17,6 +17,7 @@ from copy import deepcopy
 
 from ... import analysis as a
 from ... import local_services as ls
+from ...errors import Invalid
 from ...progressive import direction_specs
 from ...staged_analysis import _split_chapter
 from ..contract import LLM_PROVIDERS, Conflict, LLMRequest, ServiceRequest, Step, Unit, locked
@@ -364,7 +365,7 @@ class DirectingStep(Step):
             proposed = payload['scenes']
             covered = [i for scene in proposed for i in scene['segment_ids']]
             if sorted(covered) != sorted(segments):
-                raise ValueError('A scene map version does not cover exactly this chapter\'s passages.')
+                raise Invalid('version_incompatible', 'A scene map version does not cover exactly this chapter\'s passages.')
             proposed_ids = {s['id'] for s in proposed}
             # A legacy whole-scene edit, or an edited scene the version would drop, keeps today's scene breaks.
             keep_partition = [s for s in current if (s.get('edited') and not isinstance(s.get('edited_fields'), list))

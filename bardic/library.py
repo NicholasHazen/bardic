@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 
 from .store import now
+from .errors import Conflict, Invalid, NotFound
+from .series import SERIES_ARCHIVED
 
 
 def initialize_schema(conn):
@@ -51,7 +53,7 @@ def persist_cover(conn, book):
             width, height = image.size
             image.verify()
     except Exception as exc:
-        raise ValueError('The cover thumbnail could not be read safely.') from exc
+        raise Invalid('cover_unreadable', 'The cover image could not be read safely.') from exc
     digest = hashlib.sha256(data).hexdigest()
     conn.execute('INSERT OR REPLACE INTO book_covers VALUES (?,?,?,?,?,?)',
                  (book['id'], 'image/jpeg', width, height, digest, data))
@@ -61,16 +63,16 @@ def persist_cover(conn, book):
 
 def _position(value):
     if type(value) not in {int, float} or not math.isfinite(value) or not 0 <= value <= 1_000_000:
-        raise ValueError('Set a finite reading order between 0 and 1,000,000; decimals allow side stories.')
+        raise Invalid('position_invalid', 'A reading order must be a finite number from 0 through 1,000,000.')
     return float(value)
 
 
 def _label(value, name, *, required=False, maximum=500):
     if not isinstance(value, str) or len(value) > maximum or any(ord(c) < 32 and c not in '\t\r\n' for c in value):
-        raise ValueError(f'Choose a {name} of at most {maximum} characters.')
+        raise Invalid('text_invalid', f'A {name} must have at most {maximum} characters and no control characters.')
     value = ' '.join(value.split())
     if required and not value:
-        raise ValueError(f'Enter a {name}.')
+        raise Invalid('text_invalid', f'A {name} cannot be blank.')
     return value
 
 
@@ -112,19 +114,26 @@ def _payload_bytes(conn, book_id):
 
 
 class LibraryRepository:
-    def __init__(self, store):
+    def __init__(self, store, playable=None):
+        """``playable(book)`` counts the book's current, playable enhanced takes.
+
+        Only the runtime can validate a take (it resolves voices), so HTTP
+        callers pass ``Runtime.playable_count``. Without it, ``audio_count``
+        falls back to stored selected takes, which may be stale.
+        """
         self.store = store
+        self.playable = playable
 
     def _idle(self, book_id):
         if any(j['status'] in {'queued', 'running'} for j in self.store.jobs(book_id, limit=None)):
-            raise ValueError('Wait for this book’s processing to finish or cancel it before changing the library.')
+            raise Conflict('job_active', 'A job is working on this book.')
 
     def require_active_series(self, series_id):
         with self.store.lock, self.store.connect() as conn:
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
-                raise KeyError('Series not found')
+                raise NotFound('series_not_found', 'Series not found')
             if is_archived(conn, 'series', series_id):
-                raise ValueError('Restore this series from Removed items before processing or editing it.')
+                raise Conflict('series_archived', SERIES_ARCHIVED)
 
     def summary(self, book_id):
         from .series import _membership
@@ -145,8 +154,9 @@ class LibraryRepository:
                           word_count=sum(len(c.get('text', '').split()) for c in chapters),
                           character_count=max(0, len(book.get('characters', [])) - 2),
                           text_character_count=sum(len(c.get('text', '')) for c in chapters),
-                          segment_count=len(segments), passage_count=len(segments), scene_count=len(book.get('scenes', [])),
-                          audio_count=sum(bool(s.get('audio')) for s in segments), membership=membership,
+                          segment_count=len(segments), scene_count=len(book.get('scenes', [])),
+                          audio_count=self.playable(book) if self.playable else sum(bool(s.get('audio')) for s in segments),
+                          membership=membership,
                           cover={'width': cover[0], 'height': cover[1], 'sha256': cover[2],
                                  'url': f'/api/books/{book_id}/cover?v={cover[2]}'} if cover else None,
                           storage={'original_bytes': original, 'audio_bytes': audio,
@@ -172,13 +182,24 @@ class LibraryRepository:
                                 'note': 'The SQLite database is shared by all books. Per-book payload sizes are not separate disk allocations. Removed items retain their files and data.'}}
 
     def update_book(self, book_id, title, author):
+        for name, value in (('title', title), ('author', author)):
+            if not isinstance(value, str) or len(value) > 500 or any(ord(c) < 32 and c not in '\t\r\n' for c in value):
+                raise Invalid('metadata_invalid', f'The {name} is longer than 500 characters or contains control characters.')
+        if not title.split():
+            raise Invalid('metadata_invalid', 'The title is empty after whitespace normalization.')
         title, author = _label(title, 'title', required=True), _label(author, 'author')
         with self.store.lock:
             self._idle(book_id)
             self.store.require_active(book_id)
             book = self.store.book(book_id)
-            book.update(title=title, author=author, metadata_edited={'title': True, 'author': True}, revision=book.get('revision', 0) + 1)
-            self.store.save_book(book)
+            # Lock only the fields this edit changes; earlier locks (including the
+            # old shape that marked both fields) are kept.
+            changed = {key: value for key, value in (('title', title), ('author', author)) if book.get(key) != value}
+            if changed:
+                edited = dict(book.get('metadata_edited') or {})
+                edited.update(dict.fromkeys(changed, True))
+                book.update(changed, metadata_edited=edited, revision=book.get('revision', 0) + 1)
+                self.store.save_book(book)
         return self.summary(book_id)
 
     def refresh_metadata(self, book_id):
@@ -190,10 +211,13 @@ class LibraryRepository:
             suffix = Path(book.get('source_name', '')).suffix.lower()
             path = self.store.root / 'originals' / book_id / ('source' + suffix)
             if suffix not in {'.epub', '.txt'} or path.is_symlink() or not path.resolve().is_relative_to(self.store.root) or not path.is_file():
-                raise ValueError('The saved original EPUB or text file is unavailable.')
+                raise Invalid('original_unavailable', 'The saved original EPUB or text file is unavailable.')
             if path.stat().st_size > MAX_UPLOAD:
-                raise ValueError('The saved original exceeds the import size limit.')
-            parsed = parse_book(book['source_name'], path.read_bytes())
+                raise Invalid('original_too_large', 'The saved original exceeds the import size limit.')
+            try:
+                parsed = parse_book(book['source_name'], path.read_bytes())
+            except ValueError as exc:
+                raise Invalid('original_unreadable', str(exc)) from exc
             for key in ('title', 'author'):
                 if not book.get('metadata_edited', {}).get(key):
                     book[key] = parsed[key]
@@ -206,10 +230,10 @@ class LibraryRepository:
     def cover(self, book_id):
         with self.store.lock, self.store.connect() as conn:
             if not conn.execute('SELECT 1 FROM books WHERE id=?', (book_id,)).fetchone():
-                raise KeyError('Book not found')
+                raise NotFound('book_not_found', 'Book not found')
             row = conn.execute('SELECT body,media_type,sha256 FROM book_covers WHERE book_id=?', (book_id,)).fetchone()
             if not row:
-                raise KeyError('Cover not found')
+                raise NotFound('cover_not_found', 'Cover not found')
             return bytes(row[0]), row[1], row[2]
 
     def _archive(self, kind, identifier, archived):
@@ -219,7 +243,10 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             table = 'books' if kind == 'book' else 'series'
             if not conn.execute(f'SELECT 1 FROM {table} WHERE id=?', (identifier,)).fetchone():
-                raise KeyError('Book not found' if kind == 'book' else 'Series not found')
+                raise NotFound(f'{kind}_not_found', 'Book not found' if kind == 'book' else 'Series not found')
+            if is_archived(conn, kind, identifier) == archived:
+                # Idempotent: already in the requested state; nothing changes or is recorded.
+                return {'id': identifier, 'archived': archived, 'retained': True}
             ids = [identifier] if kind == 'book' else [r[0] for r in conn.execute('SELECT book_id FROM series_books WHERE series_id=?', (identifier,))]
             for book_id in ids:
                 self._idle(book_id)
@@ -244,9 +271,9 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             self.require_active_series(series_id)
             if not conn.execute('SELECT 1 FROM series WHERE id=?', (series_id,)).fetchone():
-                raise KeyError('Series not found')
+                raise NotFound('series_not_found', 'Series not found')
             if any(row[0].casefold() == name.casefold() for row in conn.execute('SELECT name FROM series WHERE id!=?', (series_id,))):
-                raise ValueError('A series with that name already exists.')
+                raise Invalid('series_name_taken', 'Another series already has this name (names are compared ignoring case).')
             ids = [r[0] for r in conn.execute('SELECT book_id FROM series_books WHERE series_id=?', (series_id,))]
             for book_id in ids:
                 self._idle(book_id)
@@ -263,7 +290,7 @@ class LibraryRepository:
         with self.store.lock, self.store.connect() as conn:
             self.require_active_series(series_id)
             if conn.execute('SELECT 1 FROM series_books WHERE series_id=? AND position=?', (series_id, position)).fetchone():
-                raise ValueError('A book already occupies that reading order, including removed books.')
+                raise Invalid('position_taken', 'A supplied book (possibly a removed one) already has this reading order.')
             conn.execute('''INSERT INTO series_volume_slots VALUES (?,?,?,?,?) ON CONFLICT(series_id,position)
                 DO UPDATE SET title=excluded.title,status=excluded.status''', (series_id, position, title, status, now()))
         return {'series_id': series_id, 'position': position, 'title': title, 'status': status, 'book_id': None}

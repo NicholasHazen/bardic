@@ -32,11 +32,7 @@
     return id ? findVoice(library, id) : null;
   }
   function encodeSelection(provider, character) {
-    let selection = character?.voices?.[provider];
-    if (selection === undefined) {
-      const legacy = provider === 'gemini' ? character?.voice : provider === 'system' ? character?.system_voice : undefined;
-      if (typeof legacy === 'string' && legacy) selection = {id:legacy};
-    }
+    const selection = character?.voices?.[provider];
     if (!selection || typeof selection !== 'object') return '';
     if (typeof selection.library === 'string' && selection.library) return LIB + selection.library;
     if (typeof selection.id === 'string' && selection.id) return DIRECT + selection.id;
@@ -166,10 +162,20 @@
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
       const detail = data?.detail;
-      throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(item => item.msg || String(item)).join('; ') : `Voice request failed (${response.status}).`);
+      const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(item => item.msg || String(item)).join('; ') : `Voice request failed (${response.status}).`;
+      const hint = ERROR_HINTS[data?.code];
+      const error = new Error(hint ? `${message} ${hint}` : message);
+      error.code = data?.code;
+      throw error;
     }
     return data;
   }
+  // The server's details describe the condition; where to fix it is the UI's to say.
+  const ERROR_HINTS = {
+    gemini_key_missing:'Add a Gemini API key in Settings first.',
+    breeze_url_missing:'Add the Breeze server URL in Settings first.',
+    narration_active:'Stop that narration before changing which voice characters follow.',
+  };
 
   const drafts = panel => panel.options.library?.drafts || [];
   const activeDraft = panel => drafts(panel).find(draft => draft.id === panel.draftId) || null;
@@ -211,14 +217,14 @@
       const isCurrent = version.version === voice.current_version;
       const state = SERVER_STATES[version.server_state] ? `<span class="voice-state">${escape(SERVER_STATES[version.server_state])}</span>` : '';
       const recipe = version.recipe?.description ? `<span class="voice-recipe">“${escape(version.recipe.description)}”</span>` : '';
-      return `<li class="${isCurrent ? 'current' : ''}"><span class="voice-version-label">v${escape(version.version)}${isCurrent ? ' · current' : ''}</span><span class="voice-muted">${escape(ORIGINS[version.made] || version.made || '')}${fmtDate(version.created_at) ? ` · ${escape(fmtDate(version.created_at))}` : ''}${version.expires_at ? ` · expires ${escape(fmtDate(version.expires_at))}` : ''}</span>${state}${recipe}<span class="voice-version-actions">${playButton(panel, `${voice.id}:${version.version}`, version.audition_url)}${isCurrent ? '' : `<button type="button" class="button text-button" data-voices-action="make-current" data-id="${escape(voice.id)}" data-version="${escape(version.version)}">Make current</button>`}</span>${confirmRow(panel, 'current', `${voice.id}:${version.version}`, `<p>Characters using “${escape(voice.name)}” switch to version ${escape(version.version)}. Their current takes become out of date (kept in history) until you narrate again.</p>`, `Use version ${version.version}`)}</li>`;
+      return `<li class="${isCurrent ? 'current' : ''}"><span class="voice-version-label">v${escape(version.version)}${isCurrent ? ' · current' : ''}</span><span class="voice-muted">${escape(ORIGINS[version.made] || version.made || '')}${fmtDate(version.created_at) ? ` · ${escape(fmtDate(version.created_at))}` : ''}${version.expires_at ? ` · expires ${escape(fmtDate(version.expires_at))}` : ''}</span>${state}${recipe}<span class="voice-version-actions">${playButton(panel, `${voice.id}:${version.version}`, version.audition?.url)}${isCurrent ? '' : `<button type="button" class="button text-button" data-voices-action="make-current" data-id="${escape(voice.id)}" data-version="${escape(version.version)}">Make current</button>`}</span>${confirmRow(panel, 'current', `${voice.id}:${version.version}`, `<p>Characters using “${escape(voice.name)}” switch to version ${escape(version.version)}. Their current takes become out of date (kept in history) until you narrate again.</p>`, `Use version ${version.version}`)}</li>`;
     }).join('');
     return `<article class="voice-card${voice.is_default ? ' is-default' : ''}" data-voice-card="${escape(voice.id)}">
       <div class="voice-card-top"><div><h3>${escape(voice.name)}</h3><div class="voice-meta">${escape(LABELS[voice.provider] || voice.provider)} · ${escape(ORIGINS[voice.origin] || voice.origin || 'Voice')} · v${escape(voice.current_version)}${voice.versions?.length > 1 ? ` of ${voice.versions.length}` : ''}</div></div>${voice.is_default ? '<span class="voice-badge">Default</span>' : ''}</div>
       ${editing ? `<form class="voice-edit" data-voice-edit="${escape(voice.id)}"><label class="field-label" for="voice-name-${escape(voice.id)}">Name</label><input id="voice-name-${escape(voice.id)}" name="name" maxlength="100" required value="${escape(voice.name)}"><label class="field-label" for="voice-description-${escape(voice.id)}">Description</label><textarea id="voice-description-${escape(voice.id)}" name="description" maxlength="1000" rows="3">${escape(voice.description || '')}</textarea><p class="field-help">Renaming never changes how the voice sounds.</p><div class="voice-confirm-actions"><button type="submit" class="button primary">Save</button><button type="button" class="button subtle" data-voices-action="cancel-edit">Cancel</button></div></form>`
         : `${voice.description ? `<p class="voice-description">${escape(voice.description)}</p>` : ''}`}
       ${warnings.length ? `<ul class="voice-warnings">${warnings.map(text => `<li>${escape(text)}</li>`).join('')}</ul>` : ''}
-      <div class="voice-current">${playButton(panel, `${voice.id}:${current?.version ?? voice.current_version}`, current?.audition_url, 'Listen to current')}${voice.source?.character_name ? `<span class="voice-muted">Made for ${escape(voice.source.character_name)}</span>` : ''}</div>
+      <div class="voice-current">${playButton(panel, `${voice.id}:${current?.version ?? voice.current_version}`, current?.audition?.url, 'Listen to current')}${voice.source?.character_name ? `<span class="voice-muted">Made for ${escape(voice.source.character_name)}</span>` : ''}</div>
       <details class="voice-versions"${panel.openVersions.has(voice.id) ? ' open' : ''} data-voice-versions="${escape(voice.id)}"><summary>Versions (${escape(voice.versions?.length || 0)})</summary><ol>${versions}</ol></details>
       <p class="voice-usage">${usageText(voice)}</p>
       <div class="voice-actions">
@@ -270,7 +276,7 @@
       const label = candidate.kind === 'gemini_voice' ? `Voice ${candidate.id}` : `Preview ${candidate.id}${candidate.seed !== null && candidate.seed !== undefined ? ` · seed ${candidate.seed}` : ''}`;
       if (candidate.discarded) return `<li class="discarded"><span>${escape(label)}</span><span class="voice-muted">Discarded</span></li>`;
       const stored = candidate.kind === 'gemini_voice' && candidate.provider_voice_id;
-      return `<li class="${candidate.id === chosen ? 'chosen' : ''}"><label class="candidate-choice"><input type="radio" name="candidate-${escape(draft.id)}" data-voices-field="candidate" value="${escape(candidate.id)}" ${candidate.id === chosen ? 'checked' : ''}> ${escape(label)}</label><span class="voice-muted">${escape(fmtSeconds(candidate.duration))}${candidate.expires_at ? ` · server copy until ${escape(fmtDate(candidate.expires_at))}` : ''}</span>${candidate.description ? `<p class="candidate-description">${escape(candidate.description)}</p>` : ''}<span class="candidate-actions">${playButton(panel, `${draft.id}:${candidate.id}`, candidate.audio_url)}<button type="button" class="button text-button" data-voices-action="discard" data-id="${escape(candidate.id)}" ${busy ? 'disabled' : ''}>Discard</button></span>${confirmRow(panel, 'discard', candidate.id, `<p>${stored ? 'Delete this stored voice from your Google project?' : 'Discard this preview?'}</p>`, stored ? 'Delete from project' : 'Discard')}</li>`;
+      return `<li class="${candidate.id === chosen ? 'chosen' : ''}"><label class="candidate-choice"><input type="radio" name="candidate-${escape(draft.id)}" data-voices-field="candidate" value="${escape(candidate.id)}" ${candidate.id === chosen ? 'checked' : ''}> ${escape(label)}</label><span class="voice-muted">${escape(fmtSeconds(candidate.duration))}${candidate.expires_at ? ` · server copy until ${escape(fmtDate(candidate.expires_at))}` : ''}</span>${candidate.description ? `<p class="candidate-description">${escape(candidate.description)}</p>` : ''}<span class="candidate-actions">${playButton(panel, `${draft.id}:${candidate.id}`, candidate.audio?.url)}<button type="button" class="button text-button" data-voices-action="discard" data-id="${escape(candidate.id)}" ${busy ? 'disabled' : ''}>Discard</button></span>${confirmRow(panel, 'discard', candidate.id, `<p>${stored ? 'Delete this stored voice from your Google project?' : 'Discard this preview?'}</p>`, stored ? 'Delete from project' : 'Discard')}</li>`;
     }).join('')}</ol>` : `<p class="voice-muted designer-empty">No candidates yet. ${draft.provider === 'breeze' ? 'Generate previews, listen, then adjust the description and generate again.' : 'Create a voice, listen to its sample, and keep or discard it.'}</p>`;
     const saveArea = live.length ? `<div class="designer-save">
         ${base ? `<fieldset class="designer-mode"><legend class="field-label">Save as</legend><label class="voice-check"><input type="radio" name="mode-${escape(draft.id)}" data-voices-field="mode" value="version" ${mode === 'version' ? 'checked' : ''}> Version ${escape(nextVersion)} of “${escape(base.name)}” (becomes current)</label><label class="voice-check"><input type="radio" name="mode-${escape(draft.id)}" data-voices-field="mode" value="new" ${mode === 'new' ? 'checked' : ''}> A new voice</label></fieldset>` : ''}
@@ -343,6 +349,10 @@
       return result;
     } catch (error) {
       panel.error = error.message;
+      // A failed Gemini refresh or a partly failed deletion is recorded; reload so the library shows it.
+      if (refresh && error.code === 'provider_error') {
+        try { await panel.options.onChange?.(); } catch { /* keep the original error */ }
+      }
       return null;
     } finally {
       panel.pending = null;

@@ -64,7 +64,8 @@ def _split_chapter(book, chapter_id, boundaries):
     book["scenes"] = result
 
 
-def _references(book, units, provider, model, previous):
+def _references(book, units, provider, model, previous, only=None):
+    """Source references of the cast (or only of the character IDs in ``only``)."""
     chapters = {c["id"]: c for c in book["chapters"]}
     characters = {c["id"]: c for c in book["characters"] if c["id"] not in {"narrator", "unassigned"}}
     segments = {cid: [s for s in book["segments"] if s["chapter_id"] == cid] for cid in chapters}
@@ -76,7 +77,7 @@ def _references(book, units, provider, model, previous):
 
     def add(cid, chapter_id, start, end, kind, **extra):
         chapter = chapters[chapter_id]
-        if cid not in characters or not 0 <= start < end <= len(chapter["text"]):
+        if cid not in characters or (only is not None and cid not in only) or not 0 <= start < end <= len(chapter["text"]):
             return
         segment = next((s for s in segments[chapter_id] if s["start"] < end and s["end"] > start), None)
         record = {"id": _hash([cid, chapter_id, start, end, kind]), "character_id": cid,
@@ -110,6 +111,8 @@ def _references(book, units, provider, model, previous):
         if len(ids) != 1 or not name:
             continue
         cid = next(iter(ids))
+        if only is not None and cid not in only:
+            continue
         actual = next(n for n in [characters[cid]["name"], *characters[cid].get("aliases", [])] if a._name_key(n) == name)
         pattern = re.compile(r"(?<!\w)" + re.escape(actual) + r"(?!\w)")
         for chapter in chapters.values():
@@ -120,9 +123,16 @@ def _references(book, units, provider, model, previous):
     for s in book["segments"]:
         if s["kind"] == "dialogue" and s["speaker_id"] in characters:
             old = old_dialogue.get((s["speaker_id"], s["chapter_id"], s["start"], s["end"]), {})
+            # A person reviewed the attribution when the speaker is edit-locked (older items: any edit). Before
+            # per-field locks recorded confirmations, confirming an unchanged speaker set only `edited` and
+            # confidence 1.0; that marker still counts.
+            edited = s.get("edited_fields")
+            reviewed = ("*" in edited or "speaker_id" in edited) if isinstance(edited, list) else bool(s.get("edited"))
+            confidence = s.get("confidence")
+            reviewed = reviewed or bool(s.get("edited")) and isinstance(confidence, (int, float)) and confidence >= 1.0
             add(s["speaker_id"], s["chapter_id"], s["start"], s["end"], "dialogue",
-                confidence=s.get("confidence"), provider="reviewed" if s.get("edited") else s.get("analysis_provider", old.get("provider")),
-                model=None if s.get("edited") else s.get("analysis_model", old.get("model")))
+                confidence=s.get("confidence"), provider="reviewed" if reviewed else s.get("analysis_provider", old.get("provider")),
+                model=None if reviewed else s.get("analysis_model", old.get("model")))
     # A longer alias and its suffix at the same location are one mention.
     occupied = {}
     for ref in sorted((r for r in refs.values() if r["kind"] == "mention"),
@@ -133,6 +143,19 @@ def _references(book, units, provider, model, previous):
         else:
             occupied[group] = ref["end"]
     return list(refs.values())
+
+
+def current_references(book, stored, character_id):
+    """One character's references in the current book, in reading order. Read-only.
+
+    Dialogue and name mentions are derived from the current passages and cast,
+    so every writer of the book (manual edits, pipeline acceptance, analysis)
+    is reflected at once. Discovery evidence cannot be derived; it comes from
+    the stored references and is kept while its quote still matches the text.
+    """
+    order = {chapter["id"]: index for index, chapter in enumerate(book["chapters"])}
+    refs = _references(book, {}, None, None, stored, only={character_id})
+    return sorted(refs, key=lambda r: (order[r["chapter_id"]], r["start"], r["end"], r["kind"]))
 
 
 def analyze_staged(book, provider, api_key, model, progress, cancelled, *, store, chapter_id=None, resume=True, prepare=None):

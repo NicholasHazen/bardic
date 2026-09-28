@@ -55,22 +55,22 @@ def test_cover_headers_and_visibility_edge_cases_are_as_documented(client):
     summary = client.get('/api/books').json()[0]
     response = client.get(summary['cover']['url'])
     assert response.status_code == 200 and response.headers['content-type'] == 'image/jpeg'
-    # The ETag is the unquoted hex digest; the /api middleware replaces the route's Cache-Control.
-    assert response.headers['etag'] == summary['cover']['sha256']
-    assert response.headers['cache-control'] == 'no-store'
-    assert client.get(summary['cover']['url'], headers={'If-None-Match': summary['cover']['sha256']}).status_code == 200
+    # The ETag is the quoted digest; the content-addressed URL may be cached, and a match is 304.
+    assert response.headers['etag'] == '"' + summary['cover']['sha256'] + '"'
+    assert response.headers['cache-control'] == 'private, max-age=31536000, immutable'
+    assert client.get(summary['cover']['url'], headers={'If-None-Match': response.headers['etag']}).status_code == 304
 
-    # Restoring a book that is not removed succeeds; removing twice is refused.
+    # Archiving and restoring are idempotent.
     assert client.post(f"/api/books/{book['id']}/restore").json() == {'id': book['id'], 'archived': False, 'retained': True}
     assert client.post(f"/api/books/{book['id']}/archive").json() == {'id': book['id'], 'archived': True, 'retained': True}
-    assert client.post(f"/api/books/{book['id']}/archive").status_code == 400
+    assert client.post(f"/api/books/{book['id']}/archive").json() == {'id': book['id'], 'archived': True, 'retained': True}
     assert client.get(summary['cover']['url']).status_code == 200
 
 
 def test_demo_has_no_original_to_refresh(client):
     demo = client.post('/api/demo').json()
     response = client.post(f"/api/books/{demo['id']}/refresh-metadata")
-    assert response.status_code == 400
+    assert response.status_code == 400 and response.json()['code'] == 'original_unavailable'
     summary = client.get('/api/books').json()[0]
     assert summary['storage']['original_bytes'] == 0 and summary['cover'] is None
     assert summary['source_name'] == 'The Last Light.txt' and summary['analysis']['provider'] == 'local'

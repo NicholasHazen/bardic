@@ -64,12 +64,14 @@ def test_import_preserves_unicode_text_and_presented_gaps(client):
 
 
 def test_key_is_never_returned_or_saved(client):
-    response = client.post('/api/settings', json={'api_key': 'secret-example-key'})
+    def gemini_key(status):
+        return next(p for p in status['analysis_providers'] if p['id'] == 'gemini')['has_api_key']
+    response = client.post('/api/settings', json={'api_keys': {'gemini': 'secret-example-key'}})
     assert response.status_code == 200
-    assert response.json()['has_api_key']
+    assert gemini_key(response.json())
     assert 'secret-example-key' not in response.text
     assert 'secret-example-key' not in json.dumps(client.app.state.runtime.store.settings())
-    assert client.post('/api/settings', json={'api_key': ''}).json()['has_api_key'] is False
+    assert gemini_key(client.post('/api/settings', json={'api_keys': {'gemini': ''}}).json()) is False
 
 
 def test_cloud_requires_key_and_unknown_fields_rejected(client):
@@ -90,7 +92,7 @@ def test_reject_foreign_origins_and_dns_rebinding(client):
 
 def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     calls = fake_audio(monkeypatch)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     first = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
@@ -105,12 +107,9 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     assert len(calls) == len(book['segments']), 'completed takes should be reused'
     export = client.get(f'{url}/export')
     assert export.status_code == 200
+    # The export is a GET: it records no resource operation.
     operations = client.get(f'{url}/resources').json()['operations']
-    measured_export = next(row for row in operations if row['stage'] == 'audio_export')
-    assert measured_export['status'] == 'completed'
-    assert measured_export['output_bytes'] == len(export.content)
-    assert measured_export['elapsed_seconds'] >= 0
-    assert measured_export['request_count'] == 0
+    assert not any(row['stage'] == 'audio_export' for row in operations)
     with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
         manifest = json.loads(archive.read('timeline.json'))
         assert manifest['complete'] is True
@@ -123,7 +122,8 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     assert edited['segments'][0]['audio'] is None
     assert all(s['audio'] for s in edited['segments'][1:])
     assert client.get(audio_url).status_code == 404
-    assert edited['segments'][0]['edited'] is True
+    assert 'edited' not in edited['segments'][0]  # edit locks are stored, not presented
+    assert client.app.state.runtime.store.book(book['id'])['segments'][0]['edited'] is True
 
 
 def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):
@@ -135,7 +135,7 @@ def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):
             raise ValueError('Simulated provider timeout')
         return original(*args)
     monkeypatch.setattr(module, 'synthesize', fail_second)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
@@ -189,7 +189,7 @@ def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, mon
         assert release.wait(3)
         return original(*args)
     monkeypatch.setattr(module, 'synthesize', delayed)
-    client.post('/api/settings', json={'api_key': 'test-only'})
+    client.post('/api/settings', json={'api_keys': {'gemini': 'test-only'}})
     book = import_text(client)
     url = f"/api/books/{book['id']}"
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
