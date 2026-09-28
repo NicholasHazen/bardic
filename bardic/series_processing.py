@@ -87,7 +87,7 @@ def start(runtime, series_id, *, provider=None, phase='scan', concurrency=2, lim
             children.append(child)
         parent = runtime.store.update_job(parent['id'], series_id=series_id, phase=phase, provider=preview['provider'],
             model=preview['model'], scan_model=preview['scan_model'], concurrency=preview['concurrency'],
-            child_job_ids=[j['id'] for j in children], book_ids=book_ids, limits=limits, plan_fingerprint=preview['plan_fingerprint'],
+            child_job_ids=[j['id'] for j in children], book_ids=book_ids, analysis_limits=limits, plan_fingerprint=preview['plan_fingerprint'],
             message='Series queued; missing volumes will be skipped')
         key = runtime.api_keys[preview['provider']]
         _record_run(runtime.store, series_id, book_ids, parent)

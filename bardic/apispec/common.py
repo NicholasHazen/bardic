@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import View, internal
+from .base import View
 from .media import (ChapterListenCalibration, ChapterListenChunking, ChapterListenChunkPlan, ChapterListenLimits,
                     ChapterListenQuota, ListeningAudio, VoicePreview, VoicePreviewAudio)
 
@@ -74,13 +74,14 @@ class Job(View):
     - `quota_limited`: the daily Gemini speech request quota was reached;
       `resume_after` says when it resets.
 
-    Treat the first terminal status you observe as final. The server may still
-    rewrite `message` afterwards (a job cancelled while queued is settled
-    again when its worker slot comes up, and in a shutdown race that can turn
-    `cancelled` into `interrupted`). Resuming work uses the original start
-    route and creates a new job; old job IDs are never revived. A series
-    child that finished discovery and waits for earlier volumes stays
-    `running` without doing work.
+    **A terminal status is final.** Once a job reaches a terminal status,
+    its `status`, `message`, `error` and `resume_after` never change again,
+    whatever happens later (a worker slot coming up for a job cancelled while
+    queued, or the server shutting down). Other fields may still be updated
+    as bookkeeping. Resuming work uses the original start route and creates a
+    new job; old job IDs are never revived. A series child that finished
+    discovery and waits for earlier volumes stays `running` without doing
+    work.
 
     **Kinds and their extra fields** (a field not listed for a kind is absent):
 
@@ -88,10 +89,10 @@ class Job(View):
     | --- | --- | --- |
     | `render` | enhanced narration | none |
     | `analyze` | classic analysis, or a series run (one per book) | `provider`, `model`, `scan_model`, `phase`; standalone: `chapter_id`; series child: `series_id`, `series_run_id`, `position` |
-    | `pipeline` | analysis pipeline run | `run_id`, `steps`, `mode` |
-    | `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `limits` (analysis), `plan_fingerprint`, `finished_at` |
+    | `pipeline` | analysis pipeline run | `run_id`, `steps`, `scheduling` |
+    | `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `analysis_limits`, `finished_at` |
     | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
-    | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `limits` (speech), `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
+    | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
     | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
     | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |
 
@@ -100,7 +101,9 @@ class Job(View):
     **Progress.** `progress` and `total` are counts in kind-specific units, not
     a percentage, and `total` may change while running: passages for
     `render`, `performance` and `listen_chapter` (passages ready from the
-    scope start to the chapter end); 0/1 for `listen` and `voice_preview`;
+    scope start to the chapter end; a Gemini simple `performance` advances
+    only when each chapter's child job settles); 0/1 for `listen` and
+    `voice_preview`;
     analyzer work units for `analyze` and `pipeline`; books for `series`.
     """
     id: str = Field(description='Job ID (32 hex characters).')
@@ -135,9 +138,8 @@ class Job(View):
         None, description='`analyze`/`series`: the classic analysis phase (a series child switches to `scan` during '
                           'discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, '
                           '`voice_preview`, `performance`.')
-    mode: Literal['serial', 'parallel', 'simple', 'cast'] | None = Field(
-        None, description='`pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or '
-                          '`cast` (character voices).')
+    mode: Literal['simple', 'cast'] | None = Field(
+        None, description='`performance` only: `simple` (one narrator) or `cast` (character voices).')
     chapter_id: str | None = Field(
         None, description='`analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter.')
     segment_id: str | None = Field(
@@ -153,6 +155,9 @@ class Job(View):
     # pipeline
     run_id: str | None = Field(None, description='`pipeline`: the pipeline run this job executes.')
     steps: list[str] | None = Field(None, description='`pipeline`: step IDs in the run, including required upstream steps.')
+    scheduling: Literal['serial', 'parallel'] | None = Field(
+        None, description='`pipeline` only: `serial` (one step at a time) or `parallel` (independent steps together), '
+                          'as requested by the run\'s `mode` field.')
 
     # series parent and children
     series_id: str | None = Field(None, description='`series` parent and its `analyze` children: the series.')
@@ -163,10 +168,8 @@ class Job(View):
         None, description='`series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` '
                           'jobs started so far (Gemini simple performances only; empty otherwise).')
     concurrency: int | None = Field(None, description='`series`: parallel discovery workers (1–2; 1 for phases without discovery).')
-    limits: SeriesJobLimits | ChapterListenLimits | None = Field(
-        None, description='`series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits '
-                          'snapshotted for the model (ChapterListenLimits).')
-    plan_fingerprint: str | None = internal('`series`: fingerprint of the previewed plan this run was confirmed against.', default=None)
+    analysis_limits: SeriesJobLimits | None = Field(
+        None, description='`series` only: the analysis allowance the run was started with, applied to each book.')
     finished_at: str | None = Field(
         None, description='`series`: when the collection run ended (set on completion, cancellation after start, or a '
                           'start failure), as ' + TIME)
@@ -194,6 +197,8 @@ class Job(View):
     focus_segment_id: str | None = Field(
         None, description='`listen_chapter`: the passage the listener is at; generation proceeds from here first.')
     chunking: ChapterListenChunking | None = Field(None, description='`listen_chapter`: the chunk settings in use.')
+    speech_limits: ChapterListenLimits | None = Field(
+        None, description='`listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued.')
     ramp_restart: int | None = Field(
         None, description='`listen_chapter`: times a `play` join restarted the short first-request ramp.')
     joins: int | None = Field(None, description='`listen_chapter`: times another request joined this job instead of starting one.')

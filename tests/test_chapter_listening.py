@@ -500,7 +500,7 @@ def test_cancel_retains_in_flight_chunk_and_starts_nothing_more(client, monkeypa
 
 def test_settings_validate_limits_and_chunking(client):
     bad = client.post('/api/settings', json={'tts_limits': {DEFAULT_TTS_MODEL: {'rpm': 0}}})
-    assert bad.status_code == 400
+    assert bad.status_code == 422
     assert client.post('/api/settings', json={'tts_limits': {'unknown-model': {'rpm': 5}}}).status_code == 400
     assert client.post('/api/settings', json={'listen_chunking': {'target_seconds': 900}}).status_code == 422
     saved = client.post('/api/settings', json={'listen_chunking': {'ramp_seconds': [20, 45, 90], 'concurrency': 3}}).json()

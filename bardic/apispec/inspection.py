@@ -241,21 +241,6 @@ class PipelineStage(View):
     note: str = Field(description='Interpretation text. Display only.')
 
 
-class PipelineJobSummary(View):
-    """A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`."""
-    id: str = Field(description='Job ID.')
-    kind: str = Field(description='Job kind, e.g. `analyze`, `pipeline`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`.')
-    status: str = Field(description='Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, '
-                                    '`budget_limited`, `quota_limited`.')
-    phase: str | None = Field(default=None, description='Classic analysis phase, present on `analyze` jobs.')
-    progress: int = Field(description='Units completed so far, in kind-specific units (see `Job`); not a percentage.')
-    total: int = Field(description='Units planned, in the same units; 0 when not yet known. May grow while running.')
-    message: str = Field(description='Progress or outcome text. Display only.')
-    error: str | None = Field(description='Failure text, or null. Display only.')
-    created_at: str = Field(description='ISO 8601 UTC.')
-    updated_at: str = Field(description='ISO 8601 UTC.')
-
-
 class PipelineAttempt(View):
     """One recorded analysis HTTP attempt (classic or step pipeline), newest 100 for the book.
 
@@ -322,7 +307,7 @@ class PipelineInspector(View):
     schema_version: int = Field(description='Envelope version (currently 1).')
     book_id: str = Field(description='Book ID of the inspected book.')
     stages: list[PipelineStage] = Field(description='Stage cards in pipeline order.')
-    jobs: list[PipelineJobSummary] = Field(description='The book\'s newest 100 jobs, newest first.')
+    jobs: list[Job] = Field(description='The book\'s newest 100 jobs, newest first, as full `Job` objects (the same as `GET /api/jobs?book_id=…`).')
     usage: AnalysisUsage
     attempts: list[PipelineAttempt] = Field(description='The newest 100 analysis attempts, oldest first.')
     events: list[PipelineEvent] = Field(description='The newest 100 analysis events, newest first.')

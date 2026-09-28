@@ -32,7 +32,7 @@ function environment({book = story(), jobs, takes = () => [], preview, chapterPo
       }
       else if (url.endsWith('/listen/chapter')) {
         const job = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',chunks:[],projection:[],
-          chunking:{concurrency:2},limits:{rpm:10},quota:{requests_today:35,rpd:100},calibration:{chars_per_second:14,realtime_factor:2}};
+          chunking:{concurrency:2},speech_limits:{rpm:10},quota:{requests_today:35,rpd:100},calibration:{chars_per_second:14,realtime_factor:2}};
         state.jobs = [job];
         data = {session:{id:'session-g'},job,joined:false};
       } else if (url.startsWith('/api/jobs?')) data = jobsGet ? await jobsGet(state) : state.jobs;
@@ -60,7 +60,7 @@ test('estimate: measured ready time, safe pace, catch-up warning and quota block
   const segments = book.segments.slice(0,6);
   const ready = new Map([['p0',{duration:30}],['p1',{duration:30}]]);
   const now = 1000;
-  const running = {status:'running',chunking:{concurrency:1},limits:{rpm:10},quota:{requests_today:10,rpd:100},
+  const running = {status:'running',chunking:{concurrency:1},speech_limits:{rpm:10},quota:{requests_today:10,rpd:100},
     calibration:{chars_per_second:1,realtime_factor:1},
     chunks:[{status:'requesting',first_segment_id:'p2',last_segment_id:'p3',started_at:new Date((now-10)*1000).toISOString(),expected_latency:40}],
     projection:[{first_segment_id:'p4',last_segment_id:'p5',expected_seconds:56}]};
@@ -229,7 +229,7 @@ test('rejected Play clears the warmup; device voices get no chunk marks; onJob r
 test('status polling re-renders only on change, stops on book switch and never overwrites a newer job', async () => {
   let renders = 0, hold = null;
   const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
-    chunks:[{status:'requesting',first_segment_id:'p0',last_segment_id:'p3'}],projection:[],chunking:{concurrency:2},limits:{rpm:10},quota:{requests_today:1,rpd:100}};
+    chunks:[{status:'requesting',first_segment_id:'p0',last_segment_id:'p3'}],projection:[],chunking:{concurrency:2},speech_limits:{rpm:10},quota:{requests_today:1,rpd:100}};
   const env = environment({jobs:[running],
     chapterPost:() => ({session:{id:'session-g'},joined:false,job:{...running,id:'job-2',chunks:[]}}),
     jobsGet:state => {

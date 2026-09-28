@@ -78,9 +78,10 @@ def test_client_events_obey_existing_origin_guard_and_read_limits(client):
     forbidden = client.post('/api/diagnostics', json={'event': 'buffer_failed'},
                             headers={'origin': 'https://outside.invalid'})
     assert forbidden.status_code == 403
-    for limit in (-1, 0, 5001):
-        assert client.get('/api/diagnostics', params={'limit': limit}).status_code == 400
-    assert client.get('/api/diagnostics', params={'book_id': 'not-a-book-id'}).status_code == 400
+    for limit in (-1, 0, 5001):  # Paging is clamped to 1..5000, never refused.
+        assert client.get('/api/diagnostics', params={'limit': limit}).status_code == 200
+    invalid = client.get('/api/diagnostics', params={'book_id': 'not-a-book-id'})
+    assert invalid.status_code == 400 and invalid.json()['code'] == 'book_id_invalid'
     assert client.get('/api/diagnostics').json()['events'] == []
 
 

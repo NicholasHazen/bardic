@@ -95,7 +95,7 @@ class ChapterCoordinator:
         blocked = {segment['id'] for segment in segments if segment['id'] in clips}
         takes = self.repository.takes(job['book_id'], session_id)['takes']
         covered = {take['segment_id'] for take in takes if take['segment_id'] in position}
-        options, limits, model = job['chunking'], job['limits'], job['model']
+        options, limits, model = job['chunking'], job['speech_limits'], job['model']
         self.model = model
         # Learned speech rate and truncation ceilings carry over from earlier jobs.
         calibration = Calibration(job.get('calibration'))

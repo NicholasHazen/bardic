@@ -34,14 +34,17 @@
             }
           },
           "400": {
-            "description": "The provider is not gemini, openai or anthropic (\"Choose gemini, openai, or anthropic\").",
+            "description": "- `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "cloud_provider_unknown"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -54,14 +57,18 @@
             }
           },
           "409": {
-            "description": "A check for this provider is already running, or the key or model changed in Settings while the check was running (its result is discarded; check again).",
+            "description": "- `account_check_running`: A check for this provider is already running.\n- `settings_changed`: The key or analysis model changed while the check was running; its result was discarded. Check again.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "account_check_running",
+              "settings_changed"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -74,7 +81,7 @@
             }
           }
         },
-        "description": "Sends one tiny text-generation request (at most 128 output tokens, no book content, never retried) to the selected analysis model of `provider` with the loaded key, and returns the classified result. **This can incur a small charge.** It is not a balance check: providers do not expose a balance through an inference key, so `balance` is always null; open `billing_url` instead.\n\nAn identical check (same key and model) from the last 30 seconds is returned with `cached: true` and no request. Without a key it returns `missing_key` without a request. The result is remembered in memory for the current key and model and appears in `GET /api/status` under `account_checks`. Provider error text is never returned.",
+        "description": "Sends one tiny text-generation request (at most 128 output tokens, no book content, never retried) to the selected analysis model of `provider` with the loaded key, and returns the classified result. **This can incur a small charge.** It is not a balance check: providers do not expose a balance through an inference key, so `balance` is always null; open `billing_url` instead.\n\nThe provider's answer, including a refusal (`invalid_key`, `billing_blocked`, `rate_limited`, …) or an unreachable provider (`network_error`), is the result of the check: it is returned in `state` with HTTP 200, never as an HTTP error. An identical check (same key and model) from the last 30 seconds is returned with `cached: true` and no request. Without a key it returns `missing_key` without a request. The result is remembered in memory for the current key and model and appears in `GET /api/status` under `account_checks`. Provider error text is never returned.",
         "tags": [
           "System"
         ],
@@ -2590,7 +2597,7 @@
             }
           }
         },
-        "description": "Start, or join, the Gemini `listen_chapter` job that prepares a chapter in large chunk requests from the\nselected passage onward. Chunks are exact chapter slices (whole consecutive passages); each finished\nchunk is retained with estimated per-passage clips, which then appear in `/listen/takes` and in\n`POST /listen` cache hits.\n\n`intent` is `play` (the listener is waiting: early requests follow the short `ramp_seconds` steps) or\n`queue` (default). `queue` without explicit `chunking.ramp_seconds` uses full-size chunks only.\n`chunking` overrides the saved `listen_chunking` preference field by field.\n\n**Join.** If a non-cancelled `listen_chapter` job is active for the book with the same session and\nchapter, the request joins it and returns `{session, job, joined: true}`: `focus_segment_id` moves to\nthe passage, `scope_start_segment_id` extends backwards when needed, `joins` increments, and a `play`\nrequest for a passage with no audio and no request in flight increments `ramp_restart` (the job\nrestarts its ramp). Joining never checks the key or quota and never starts a second job.\n\n**Refusals (409).** The active chapter job belongs to a saved performance (`parent_id`); it is for a\ndifferent chapter or narrator; it is closing (retry shortly); or other work holds the book.\n\n**Start.** Otherwise requires a Gemini key (400) and a running worker (503). While a daily-quota block\nholds for the model it returns 429 without sending anything. The block is set in this process after a\ndaily-quota 429 from Gemini or after a chapter job stops at the configured requests per day, and lasts\nuntil midnight Pacific or until limits are saved in Settings. A library already over its configured\nrequests per day with no block recorded yet is accepted and the job ends promptly as `quota_limited`.\n\nThe job paces requests with the shared per-minute limiter (`waiting_seconds` while waiting), recounts\nthis library's daily requests before every send, keeps up to `concurrency` requests in flight (1 until a\nfull-size chunk has been measured), retries a per-minute 429 up to 5 consecutive times, re-plans smaller\nafter a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It\nreports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last\npassage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,\n`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,\n`started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,\n`matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,\n`limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: \"this library\"`), `waiting_seconds` and\nthe selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks\nare kept on every outcome; start the chapter again to resume.",
+        "description": "Start, or join, the Gemini `listen_chapter` job that prepares a chapter in large chunk requests from the\nselected passage onward. Chunks are exact chapter slices (whole consecutive passages); each finished\nchunk is retained with estimated per-passage clips, which then appear in `/listen/takes` and in\n`POST /listen` cache hits.\n\n`intent` is `play` (the listener is waiting: early requests follow the short `ramp_seconds` steps) or\n`queue` (default). `queue` without explicit `chunking.ramp_seconds` uses full-size chunks only.\n`chunking` overrides the saved `listen_chunking` preference field by field.\n\n**Join.** If a non-cancelled `listen_chapter` job is active for the book with the same session and\nchapter, the request joins it and returns `{session, job, joined: true}`: `focus_segment_id` moves to\nthe passage, `scope_start_segment_id` extends backwards when needed, `joins` increments, and a `play`\nrequest for a passage with no audio and no request in flight increments `ramp_restart` (the job\nrestarts its ramp). Joining never checks the key or quota and never starts a second job.\n\n**Refusals (409).** The active chapter job belongs to a saved performance (`parent_id`); it is for a\ndifferent chapter or narrator; it is closing (retry shortly); or other work holds the book.\n\n**Start.** Otherwise requires a Gemini key (400) and a running worker (503). While a daily-quota block\nholds for the model it returns 429 without sending anything. The block is set in this process after a\ndaily-quota 429 from Gemini or after a chapter job stops at the configured requests per day, and lasts\nuntil midnight Pacific or until limits are saved in Settings. A library already over its configured\nrequests per day with no block recorded yet is accepted and the job ends promptly as `quota_limited`.\n\nThe job paces requests with the shared per-minute limiter (`waiting_seconds` while waiting), recounts\nthis library's daily requests before every send, keeps up to `concurrency` requests in flight (1 until a\nfull-size chunk has been measured), retries a per-minute 429 up to 5 consecutive times, re-plans smaller\nafter a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It\nreports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last\npassage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,\n`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,\n`started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,\n`matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,\n`speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: \"this library\"`), `waiting_seconds` and\nthe selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks\nare kept on every outcome; start the chapter again to resume.",
         "tags": [
           "Listening"
         ],
@@ -5262,17 +5269,20 @@
             }
           },
           "422": {
-            "description": "The request failed validation. For this path the body is always `{\"detail\": \"Invalid diagnostic event fields.\"}` (a string, not a list): rejected input is never echoed.",
+            "description": "- `validation_error`: The body failed validation: an unknown or free-form field, a malformed identifier, a number out of range or of the wrong JSON type, or `segment_id`, `session_id` or `job_id` without `book_id`. For this operation the body is always `{\"detail\": \"Invalid diagnostic event fields.\", \"code\": \"validation_error\"}` (a string, not a list): rejected input is never echoed.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
           }
         },
-        "description": "Stores one best-effort operational event for troubleshooting playback. It sends no model requests. The body is a strict allowlist: free-form messages, stacks, URLs, source text, credentials and unknown fields are refused with 422, and the rejected input is never echoed.\n\nUse real IDs from API responses; identifiers are format-checked. `segment_id`, `session_id` and `job_id` require `book_id`; without it the event is dropped with `recorded: false, reason: \"unavailable\"` (HTTP 200). Numeric fields are strict JSON numbers (no strings or booleans).\n\nAn identical event within 2 seconds is coalesced (`reason: \"duplicate\"`, with the earlier `id`). At most 120 client events are accepted per rolling minute across the server (`reason: \"rate_limited\"`). Storage failure returns `reason: \"unavailable\"`. Each accepted event keeps only the newest 5,000 events. A missing record does not mean playback succeeded; never retry paid work because of it. (The browser client additionally suppresses identical reports for ten seconds before sending.)\n\nClients cannot set the event `source` or the server-only fields (`status`, `provider`, and the `worker` and `submit` operations); those appear only on events recorded by job workers.",
+        "description": "Stores one best-effort operational event for troubleshooting playback. It sends no model requests. The body is a strict allowlist: free-form messages, stacks, URLs, source text, credentials and unknown fields are refused with 422, and the rejected input is never echoed.\n\nUse real IDs from API responses; identifiers are format-checked. `segment_id`, `session_id` and `job_id` belong to a book and require `book_id` (422 without it). Numeric fields are strict JSON numbers (no strings or booleans).\n\nAn identical event within 2 seconds is coalesced (`reason: \"duplicate\"`, with the earlier `id`). At most 120 client events are accepted per rolling minute across the server (`reason: \"rate_limited\"`). Storage failure returns `reason: \"unavailable\"`. Each accepted event keeps only the newest 5,000 events. A missing record does not mean playback succeeded; never retry paid work because of it. (The browser client additionally suppresses identical reports for ten seconds before sending.)\n\nClients cannot set the event `source` or the server-only fields (`status`, `provider`, and the `worker` and `submit` operations); those appear only on events recorded by job workers.",
         "tags": [
           "Diagnostics"
         ],
@@ -5308,7 +5318,7 @@
               "default": 100,
               "title": "Limit"
             },
-            "description": "Maximum events to return, 1–5000. Default 100."
+            "description": "Maximum events to return. Default 100; values below 1 are treated as 1 and values above 5000 as 5000."
           }
         ],
         "responses": {
@@ -5323,17 +5333,20 @@
             }
           },
           "400": {
-            "description": "Malformed `book_id` (\"Invalid diagnostic identifier.\") or `limit` outside 1–5000 (\"Choose a diagnostic limit from 1 to 5000.\").",
+            "description": "- `book_id_invalid`: `book_id` is not a book UUID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "book_id_invalid"
+            ]
           },
           "422": {
-            "description": "`limit` is not an integer. For this path the body is always `{\"detail\": \"Invalid diagnostic event fields.\"}` (a string, not a list): rejected input is never echoed.",
+            "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5343,7 +5356,7 @@
             }
           }
         },
-        "description": "Newest stored events first (client and server), with the retention limit. The Settings screen downloads `?limit=5000` as `bardic-diagnostics.json`.\n\nEvents contain only allowlisted fields. An empty result does not establish that playback had no errors: logging is best effort, older events are pruned, and unrecorded events cannot be recovered. This rotating log is separate from analysis provenance and resource accounting. Server events for listen and voice-preview worker failures, stops and submission failures carry the `job_id` (and book, passage and session IDs) so they can be correlated with the saved job; they never copy its error text.",
+        "description": "Newest stored events first (client and server), with the retention limit. Read-only. The Settings screen downloads `?limit=5000` as `bardic-diagnostics.json`.\n\nEvents contain only allowlisted fields. An empty result does not establish that playback had no errors: logging is best effort, older events are pruned, and unrecorded events cannot be recovered. This rotating log is separate from analysis provenance and resource accounting. Server events for listen and voice-preview worker failures, stops and submission failures carry the `job_id` (and book, passage and session IDs) so they can be correlated with the saved job; they never copy its error text.",
         "tags": [
           "Diagnostics"
         ],
@@ -5409,7 +5422,7 @@
             }
           }
         },
-        "description": "Returns jobs newest first, as a bare JSON array.\n\nWithout `active`, at most the 100 most recent jobs are returned (after the `book_id` filter). With `active=true`, every `queued` or `running` job is returned, with no bound. There is no paging and no single-job GET: select a job from the list by `id` (or use the series runs route for series jobs).\n\nPoll this route to follow queued work until the job reaches a terminal status. Failures, cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` calls `GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape and on `kind` and `status`.",
+        "description": "Returns jobs newest first, as a bare JSON array of full `Job` objects. Read-only.\n\nWithout `active`, at most the 100 most recent jobs are returned (after the `book_id` filter). With `active=true`, every `queued` or `running` job is returned, with no bound. There is no paging and no single-job GET: select a job from the list by `id` (or use the series runs route for series jobs).\n\nPoll this route to follow queued work until the job reaches a terminal status, which is final. Failures, cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` calls `GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape and on `kind` and `status`.",
         "tags": [
           "Jobs"
         ],
@@ -5454,14 +5467,17 @@
             }
           },
           "404": {
-            "description": "No job has this ID (\"Job not found\").",
+            "description": "- `job_not_found`: No job has this ID.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "job_not_found"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -5474,7 +5490,7 @@
             }
           }
         },
-        "description": "Requests cancellation and returns the updated job. The body is ignored (send `{}` or nothing).\n\n- A job that is already terminal is returned unchanged (idempotent).\n- A `queued` job becomes `cancelled` immediately.\n- A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; validated outputs and finished audio are kept.\n- Cancelling a `series` parent also cancels its queued child `analyze` jobs and flags running ones.\n- Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.\n\nCancelled work is resumed through the original start route, which creates a new job.",
+        "description": "Requests cancellation and returns the updated job. The body is ignored (send `{}` or nothing).\n\n- A job that is already terminal is returned unchanged (idempotent).\n- A `queued` job becomes `cancelled` immediately, and stays `cancelled`: its worker never starts it, and a later server shutdown does not turn it into `interrupted`.\n- A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; validated outputs and finished audio are kept.\n- Cancelling a `series` parent also cancels its queued child `analyze` jobs and flags running ones.\n- Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.\n\nCancelled work is resumed through the original start route, which creates a new job.",
         "tags": [
           "Jobs"
         ],
@@ -5555,14 +5571,17 @@
             }
           },
           "400": {
-            "description": "The provider is not gemini, openai or anthropic (\"Choose gemini, openai, or anthropic\").",
+            "description": "- `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "cloud_provider_unknown"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -5575,14 +5594,17 @@
             }
           },
           "409": {
-            "description": "The key changed in Settings during the refresh (\"The key changed during the refresh…\"); refresh again.",
+            "description": "- `settings_changed`: The key changed during the refresh; its result was discarded. Refresh again.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "settings_changed"
+            ]
           },
           "422": {
             "description": "The request failed validation: a missing, extra or out-of-range field or parameter.",
@@ -5595,7 +5617,7 @@
             }
           }
         },
-        "description": "Asks the provider which models the loaded key can see (a model-listing request; no text is generated and no credit is established) and merges the result with the curated list. Failures are reported in `state` and `message` with HTTP 200, and the curated choices remain usable.\n\nResults are cached in memory per key: a successful listing is reused for an hour and a failed one for 30 seconds (`cached: true`). Without a key, or with a key containing whitespace or non-ASCII characters, no request is sent. A second concurrent refresh returns `state: refreshing`. The latest result appears in `GET /api/status` under `model_catalogs`.",
+        "description": "Asks the provider which models the loaded key can see (a model-listing request; no text is generated and no credit is established) and merges the result with the curated list. A failed or refused listing is reported in `state` and `message` with HTTP 200, never as an HTTP error: the response is still the usable (curated) catalog.\n\nResults are cached in memory per key: a successful listing is reused for an hour and a failed one for 30 seconds (`cached: true`). Without a key, or with a key containing whitespace or non-ASCII characters, no request is sent. A second concurrent refresh returns `state: refreshing`. The latest result appears in `GET /api/status` under `model_catalogs`.",
         "tags": [
           "System"
         ],
@@ -5618,14 +5640,17 @@
             }
           },
           "400": {
-            "description": "No Breeze server URL is configured (\"Add the Breeze server URL in Settings first.\").",
+            "description": "- `breeze_url_missing`: No Breeze server URL is configured (neither saved nor from the server's environment).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "breeze_url_missing"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -5638,17 +5663,21 @@
             }
           },
           "409": {
-            "description": "Another Breeze check is running, or the Breeze URL or key changed during the check (\"Breeze settings changed during the check…\"); check again.",
+            "description": "- `breeze_check_running`: Another Breeze check is running.\n- `settings_changed`: The Breeze URL or key changed during the check; its result was discarded. Check again.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "breeze_check_running",
+              "settings_changed"
+            ]
           }
         },
-        "description": "Explicitly checks the configured Breeze server: its health, its voice list and the reference clip of each cloned voice, pinning each voice's revision. It never generates speech. The result is saved (it survives restarts, so pinned voices and cached audio resolve while the server is offline) and returned as the `breeze` status object.\n\nCheck failures are reported as `state` and `message` with HTTP 200, not as errors; a failed check keeps the previously saved voices for the same URL.\n\nAfter a `ready` check, every usable server voice that no library voice version uses yet (including voices behind deleted library voices, which are not re-imported) is imported as a library voice, with its reference clip as the audition when it can be downloaded. If no Breeze default library voice exists, one is set: the server's default voice when it is in the library, otherwise the first Breeze library voice. The import is skipped when another import is already running.",
+        "description": "Explicitly checks the configured Breeze server: its health, its voice list and the reference clip of each cloned voice, pinning each voice's revision. It never generates speech. The result is saved (it survives restarts, so pinned voices and cached audio resolve while the server is offline) and returned as the `breeze` status object.\n\nAn unreachable or failing server is the result of the check: it is reported as `state` and `message` with HTTP 200, not as an HTTP error, and a failed check keeps the previously saved voices for the same URL.\n\nAfter a `ready` check, every usable server voice that no library voice version uses yet (including voices behind deleted library voices, which are not re-imported) is imported as a library voice, with its reference clip as the audition when it can be downloaded. If no Breeze default library voice exists, one is set: the server's default voice when it is in the library, otherwise the first Breeze library voice. The import is skipped when another import is already running.",
         "tags": [
           "System"
         ],
@@ -6644,14 +6673,25 @@
             }
           },
           "400": {
-            "description": "A value is invalid: conflicting alias and map values (\"Conflicting Gemini API key fields\", \"Conflicting Gemini analysis model fields\"), a provider key other than gemini/openai/anthropic in a map (\"Unknown cloud analysis provider\"), a malformed model ID, an unknown `analysis_provider`, an unsupported `tts_model` or `tts_limits` model, a speech limit outside its range, an invalid Breeze or self-hosted server URL, or an unknown self-hosted service ID.",
+            "description": "- `gemini_key_conflict`: `api_key` and `api_keys.gemini` are both sent with different values.\n- `gemini_model_conflict`: `analysis_model` and `analysis_models_by_provider.gemini` are both sent with different values.\n- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
               }
-            }
+            },
+            "x-bardic-error-codes": [
+              "gemini_key_conflict",
+              "gemini_model_conflict",
+              "cloud_provider_unknown",
+              "model_id_invalid",
+              "analysis_provider_unknown",
+              "tts_model_unsupported",
+              "breeze_url_invalid",
+              "local_service_unknown",
+              "service_url_invalid"
+            ]
           },
           "403": {
             "description": "A browser write from another origin was rejected by the write guard (see Transport and security).",
@@ -6674,7 +6714,7 @@
             }
           }
         },
-        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status.\n\n**Side effects.** Every successful call re-applies the speech limits, which also lifts any daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`). Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
+        "description": "Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.\n\n**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.\n\n**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).\n\n**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.",
         "tags": [
           "System"
         ],
@@ -6697,7 +6737,7 @@
             }
           }
         },
-        "description": "Runtime preferences, narration and analysis provider availability, whether keys are loaded (never their values), model catalogs, the last account-check state per provider, the last Breeze check, installed macOS voices, Gemini speech models and live rate-limiter state.\n\nRead-only and local: it never contacts a provider or the Breeze server. Prefer the lists it returns over assuming fixed model or voice lists.",
+        "description": "Runtime preferences, narration and analysis provider availability, whether keys are loaded (never their values), model catalogs, the last account-check state per provider, the last Breeze check, installed macOS voices, Gemini speech models and live rate-limiter state.\n\nRead-only and local: it never contacts a provider or the Breeze server, and never writes. Prefer the lists it returns over assuming fixed model or voice lists; the analysis model choices per provider are in `model_catalogs`.",
         "tags": [
           "System"
         ],
@@ -12347,7 +12387,7 @@
                 "type": "null"
               }
             ],
-            "description": "Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed, or the fields broke a rule checked after validation, such as a passage ID without a book ID)."
+            "description": "Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed)."
           }
         },
         "required": [
@@ -12398,7 +12438,7 @@
                 "type": "null"
               }
             ],
-            "description": "Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters."
+            "description": "Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters. Requires `book_id`."
           },
           "session_id": {
             "anyOf": [
@@ -12411,7 +12451,7 @@
                 "type": "null"
               }
             ],
-            "description": "Listening session ID: 64 lowercase hex characters."
+            "description": "Listening session ID: 64 lowercase hex characters. Requires `book_id`."
           },
           "job_id": {
             "anyOf": [
@@ -12424,7 +12464,7 @@
                 "type": "null"
               }
             ],
-            "description": "Job ID: 32 lowercase hex characters."
+            "description": "Job ID: 32 lowercase hex characters. Requires `book_id`."
           },
           "playback_rate": {
             "anyOf": [
@@ -12492,8 +12532,19 @@
         "required": [
           "event"
         ],
+        "dependentRequired": {
+          "job_id": [
+            "book_id"
+          ],
+          "segment_id": [
+            "book_id"
+          ],
+          "session_id": [
+            "book_id"
+          ]
+        },
         "title": "DiagnosticRequest",
-        "description": "One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422)."
+        "description": "One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422). `segment_id`, `session_id` and `job_id` each require `book_id` (`dependentRequired`)."
       },
       "DraftCreate": {
         "properties": {
@@ -12729,7 +12780,7 @@
         "description": "Multipart form data for `importBook`."
       },
       "Job": {
-        "description": "A durable background job, as stored and returned by the server.\n\n**Lifecycle.** A job starts `queued`, becomes `running` when a worker picks\nit up, and ends in exactly one terminal status:\n\n- `completed`: the work finished.\n- `failed`: an error stopped it; `error` holds the reason. Validated work\n  and finished audio are kept.\n- `cancelled`: stopped by a cancel request (or never started).\n- `interrupted`: the server stopped or restarted while the job was queued\n  or running, or (series) the collection run stopped before this book.\n- `budget_limited`: an analysis request allowance or dollar budget was\n  reached; saved work is kept.\n- `quota_limited`: the daily Gemini speech request quota was reached;\n  `resume_after` says when it resets.\n\nTreat the first terminal status you observe as final. The server may still\nrewrite `message` afterwards (a job cancelled while queued is settled\nagain when its worker slot comes up, and in a shutdown race that can turn\n`cancelled` into `interrupted`). Resuming work uses the original start\nroute and creates a new job; old job IDs are never revived. A series\nchild that finished discovery and waits for earlier volumes stays\n`running` without doing work.\n\n**Kinds and their extra fields** (a field not listed for a kind is absent):\n\n| kind | started by | extra fields |\n| --- | --- | --- |\n| `render` | enhanced narration | none |\n| `analyze` | classic analysis, or a series run (one per book) | `provider`, `model`, `scan_model`, `phase`; standalone: `chapter_id`; series child: `series_id`, `series_run_id`, `position` |\n| `pipeline` | analysis pipeline run | `run_id`, `steps`, `mode` |\n| `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `limits` (analysis), `plan_fingerprint`, `finished_at` |\n| `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |\n| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `limits` (speech), `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |\n| `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |\n| `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |\n\n`resume_after` appears on any job that ended `quota_limited`.\n\n**Progress.** `progress` and `total` are counts in kind-specific units, not\na percentage, and `total` may change while running: passages for\n`render`, `performance` and `listen_chapter` (passages ready from the\nscope start to the chapter end); 0/1 for `listen` and `voice_preview`;\nanalyzer work units for `analyze` and `pipeline`; books for `series`.",
+        "description": "A durable background job, as stored and returned by the server.\n\n**Lifecycle.** A job starts `queued`, becomes `running` when a worker picks\nit up, and ends in exactly one terminal status:\n\n- `completed`: the work finished.\n- `failed`: an error stopped it; `error` holds the reason. Validated work\n  and finished audio are kept.\n- `cancelled`: stopped by a cancel request (or never started).\n- `interrupted`: the server stopped or restarted while the job was queued\n  or running, or (series) the collection run stopped before this book.\n- `budget_limited`: an analysis request allowance or dollar budget was\n  reached; saved work is kept.\n- `quota_limited`: the daily Gemini speech request quota was reached;\n  `resume_after` says when it resets.\n\n**A terminal status is final.** Once a job reaches a terminal status,\nits `status`, `message`, `error` and `resume_after` never change again,\nwhatever happens later (a worker slot coming up for a job cancelled while\nqueued, or the server shutting down). Other fields may still be updated\nas bookkeeping. Resuming work uses the original start route and creates a\nnew job; old job IDs are never revived. A series child that finished\ndiscovery and waits for earlier volumes stays `running` without doing\nwork.\n\n**Kinds and their extra fields** (a field not listed for a kind is absent):\n\n| kind | started by | extra fields |\n| --- | --- | --- |\n| `render` | enhanced narration | none |\n| `analyze` | classic analysis, or a series run (one per book) | `provider`, `model`, `scan_model`, `phase`; standalone: `chapter_id`; series child: `series_id`, `series_run_id`, `position` |\n| `pipeline` | analysis pipeline run | `run_id`, `steps`, `scheduling` |\n| `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `analysis_limits`, `finished_at` |\n| `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |\n| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |\n| `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |\n| `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |\n\n`resume_after` appears on any job that ended `quota_limited`.\n\n**Progress.** `progress` and `total` are counts in kind-specific units, not\na percentage, and `total` may change while running: passages for\n`render`, `performance` and `listen_chapter` (passages ready from the\nscope start to the chapter end; a Gemini simple `performance` advances\nonly when each chapter's child job settles); 0/1 for `listen` and\n`voice_preview`;\nanalyzer work units for `analyze` and `pipeline`; books for `series`.",
         "properties": {
           "id": {
             "description": "Job ID (32 hex characters).",
@@ -12868,8 +12919,6 @@
             "anyOf": [
               {
                 "enum": [
-                  "serial",
-                  "parallel",
                   "simple",
                   "cast"
                 ],
@@ -12879,7 +12928,7 @@
                 "type": "null"
               }
             ],
-            "description": "`pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices)."
+            "description": "`performance` only: `simple` (one narrator) or `cast` (character voices)."
           },
           "chapter_id": {
             "anyOf": [
@@ -12971,6 +13020,21 @@
             ],
             "description": "`pipeline`: step IDs in the run, including required upstream steps."
           },
+          "scheduling": {
+            "anyOf": [
+              {
+                "enum": [
+                  "serial",
+                  "parallel"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`pipeline` only: `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `mode` field."
+          },
           "series_id": {
             "anyOf": [
               {
@@ -13043,31 +13107,16 @@
             ],
             "description": "`series`: parallel discovery workers (1–2; 1 for phases without discovery)."
           },
-          "limits": {
+          "analysis_limits": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SeriesJobLimits"
               },
               {
-                "$ref": "#/components/schemas/ChapterListenLimits"
-              },
-              {
                 "type": "null"
               }
             ],
-            "description": "`series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits)."
-          },
-          "plan_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against.",
-            "x-bardic-internal": true
+            "description": "`series` only: the analysis allowance the run was started with, applied to each book."
           },
           "finished_at": {
             "anyOf": [
@@ -13193,6 +13242,17 @@
               }
             ],
             "description": "`listen_chapter`: the chunk settings in use."
+          },
+          "speech_limits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChapterListenLimits"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued."
           },
           "ramp_restart": {
             "anyOf": [
@@ -15149,13 +15209,13 @@
           "job": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PerformanceJobSummary"
+                "$ref": "#/components/schemas/Job"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Summary of the latest job, or null."
+            "description": "The latest `performance` job (a full `Job`), or null when no job was ever needed."
           },
           "progress": {
             "$ref": "#/components/schemas/PerformanceProgress"
@@ -15573,76 +15633,6 @@
           "performance"
         ],
         "title": "PerformanceEnvelope",
-        "type": "object"
-      },
-      "PerformanceJobSummary": {
-        "description": "The latest performance job, abbreviated.",
-        "properties": {
-          "id": {
-            "description": "Job ID (32-character hex) of the latest `performance` job; the full job is listed by `GET /api/jobs?book_id=…`.",
-            "type": "string"
-          },
-          "status": {
-            "description": "Job status (see the Job object).",
-            "type": "string"
-          },
-          "progress": {
-            "description": "Passages finished so far (for Gemini simple performances, advances only when a chapter's child job settles).",
-            "type": "integer"
-          },
-          "total": {
-            "description": "Passages the job has to prepare (those missing when it started).",
-            "type": "integer"
-          },
-          "message": {
-            "description": "Human-readable progress line, for example `Chapter 2 of 5 · passage 14 of 40`. Display only.",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Human-readable failure reason when the job failed, else null."
-          },
-          "resume_after": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "ISO 8601 UTC time after which a `quota_limited` job can be resumed, else null."
-          },
-          "child_job_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The `listen_chapter` child job running now (Gemini simple), else null."
-          }
-        },
-        "required": [
-          "id",
-          "status",
-          "progress",
-          "total",
-          "message",
-          "error",
-          "resume_after",
-          "child_job_id"
-        ],
-        "title": "PerformanceJobSummary",
         "type": "object"
       },
       "PerformanceList": {
@@ -17154,9 +17144,9 @@
             "type": "array"
           },
           "jobs": {
-            "description": "The book's newest 100 jobs, newest first.",
+            "description": "The book's newest 100 jobs, newest first, as full `Job` objects (the same as `GET /api/jobs?book_id=…`).",
             "items": {
-              "$ref": "#/components/schemas/PipelineJobSummary"
+              "$ref": "#/components/schemas/Job"
             },
             "type": "array"
           },
@@ -17212,78 +17202,6 @@
           "notes"
         ],
         "title": "PipelineInspector",
-        "type": "object"
-      },
-      "PipelineJobSummary": {
-        "description": "A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`.",
-        "properties": {
-          "id": {
-            "description": "Job ID.",
-            "type": "string"
-          },
-          "kind": {
-            "description": "Job kind, e.g. `analyze`, `pipeline`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`.",
-            "type": "string"
-          },
-          "status": {
-            "description": "Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, `quota_limited`.",
-            "type": "string"
-          },
-          "phase": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Classic analysis phase, present on `analyze` jobs."
-          },
-          "progress": {
-            "description": "Units completed so far, in kind-specific units (see `Job`); not a percentage.",
-            "type": "integer"
-          },
-          "total": {
-            "description": "Units planned, in the same units; 0 when not yet known. May grow while running.",
-            "type": "integer"
-          },
-          "message": {
-            "description": "Progress or outcome text. Display only.",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Failure text, or null. Display only."
-          },
-          "created_at": {
-            "description": "ISO 8601 UTC.",
-            "type": "string"
-          },
-          "updated_at": {
-            "description": "ISO 8601 UTC.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "status",
-          "progress",
-          "total",
-          "message",
-          "error",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "PipelineJobSummary",
         "type": "object"
       },
       "PipelinePlan": {
@@ -18161,7 +18079,7 @@
         "properties": {
           "job": {
             "$ref": "#/components/schemas/Job",
-            "description": "The job of kind `pipeline` (with `run_id`, `steps` and `mode` added)."
+            "description": "The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added)."
           },
           "run": {
             "$ref": "#/components/schemas/PipelineRun",
@@ -22031,8 +21949,6 @@
             "anyOf": [
               {
                 "enum": [
-                  "serial",
-                  "parallel",
                   "simple",
                   "cast"
                 ],
@@ -22042,7 +21958,7 @@
                 "type": "null"
               }
             ],
-            "description": "`pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices)."
+            "description": "`performance` only: `simple` (one narrator) or `cast` (character voices)."
           },
           "chapter_id": {
             "anyOf": [
@@ -22134,6 +22050,21 @@
             ],
             "description": "`pipeline`: step IDs in the run, including required upstream steps."
           },
+          "scheduling": {
+            "anyOf": [
+              {
+                "enum": [
+                  "serial",
+                  "parallel"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`pipeline` only: `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `mode` field."
+          },
           "series_id": {
             "anyOf": [
               {
@@ -22206,31 +22137,16 @@
             ],
             "description": "`series`: parallel discovery workers (1–2; 1 for phases without discovery)."
           },
-          "limits": {
+          "analysis_limits": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SeriesJobLimits"
               },
               {
-                "$ref": "#/components/schemas/ChapterListenLimits"
-              },
-              {
                 "type": "null"
               }
             ],
-            "description": "`series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits)."
-          },
-          "plan_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against.",
-            "x-bardic-internal": true
+            "description": "`series` only: the analysis allowance the run was started with, applied to each book."
           },
           "finished_at": {
             "anyOf": [
@@ -22356,6 +22272,17 @@
               }
             ],
             "description": "`listen_chapter`: the chunk settings in use."
+          },
+          "speech_limits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChapterListenLimits"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued."
           },
           "ramp_restart": {
             "anyOf": [
@@ -22679,7 +22606,7 @@
                 "type": "null"
               }
             ],
-            "description": "Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key."
+            "description": "Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key. A different Gemini key lifts every daily quota block."
           },
           "analysis_models_by_provider": {
             "anyOf": [
@@ -22724,10 +22651,7 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "additionalProperties": {
-                    "type": "integer"
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/TtsLimitsUpdate"
                 },
                 "type": "object"
               },
@@ -22735,7 +22659,7 @@
                 "type": "null"
               }
             ],
-            "description": "Gemini speech limits by TTS model: `{model: {rpm, tpm, rpd}}`. Each given model's limits are replaced as a whole: a limit left out of the object is reset to its default (rpm 10, tpm 10,000, rpd 100), not kept. Whole numbers: rpm 1–10,000, tpm 1–100,000,000, rpd 1–10,000,000. Models not included keep their limits. Saved."
+            "description": "Gemini speech limits by TTS model (each a key of `tts_models`): `{model: {rpm, tpm, rpd}}`. Each limit given replaces that limit; a limit left out (or null) keeps its current value. Models not included keep their limits. Changing a model's limits lifts its daily quota block. Saved."
           },
           "listen_chunking": {
             "anyOf": [
@@ -22758,7 +22682,7 @@
                 "type": "null"
               }
             ],
-            "description": "Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. An empty string clears it. Saved. The saved Breeze check stays valid only for the URL it was made with."
+            "description": "Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. Saved. An empty string clears the saved URL, so the server's `BREEZE_TTS_URL` environment variable applies again (if set). The saved Breeze check stays valid only for the URL it was made with."
           },
           "breeze_api_key": {
             "anyOf": [
@@ -22858,7 +22782,7 @@
             "description": "Default chapter-listening chunk settings."
           },
           "breeze_url": {
-            "description": "Configured Breeze server root, or an empty string. When never set in Settings it comes from the `BREEZE_TTS_URL` environment variable (and is then saved with the next settings change).",
+            "description": "The Breeze server root in use, or an empty string: the URL saved by `POST /api/settings` when it is not empty, otherwise the server's `BREEZE_TTS_URL` environment variable. The environment value is never saved.",
             "type": "string"
           },
           "local_service_urls": {
@@ -22943,24 +22867,12 @@
             },
             "type": "array"
           },
-          "analysis_models": {
-            "description": "Curated Gemini analysis model IDs (compatibility; see `model_catalogs`).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "tts_rate": {
             "additionalProperties": {
               "$ref": "#/components/schemas/TtsRateState"
             },
             "description": "Live rate-limiter state per Gemini speech model.",
             "type": "object"
-          },
-          "data_directory": {
-            "description": "Internal; do not rely on it. Absolute path of the server library directory.",
-            "type": "string",
-            "x-bardic-internal": true
           },
           "timing_kind": {
             "const": "segment",
@@ -22988,9 +22900,7 @@
           "model_catalogs",
           "system_voices",
           "tts_models",
-          "analysis_models",
           "tts_rate",
-          "data_directory",
           "timing_kind"
         ],
         "title": "Status",
@@ -23694,6 +23604,53 @@
         "title": "StoryMapSourceAnchor",
         "type": "object"
       },
+      "TtsLimitsUpdate": {
+        "properties": {
+          "rpm": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Requests per minute, 1–10,000. Default 10."
+          },
+          "tpm": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100000000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Estimated input tokens per minute, 1–100,000,000. Default 10,000."
+          },
+          "rpd": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Requests per day (quota day ends at midnight Pacific time), 1–10,000,000. Default 100."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TtsLimitsUpdate",
+        "description": "Gemini speech limits for one model. Each limit is optional: omitted or null keeps the current value. Whole JSON numbers only (strict: no strings or booleans); unknown names are refused (422)."
+      },
       "TtsRateState": {
         "description": "Live state of this server's Gemini speech rate limiter for one model (memory only).",
         "properties": {
@@ -23710,7 +23667,7 @@
             "type": "number"
           },
           "daily_block_seconds": {
-            "description": "Seconds until the daily quota block lifts (midnight Pacific time); 0 when not blocked. Saving settings lifts it early.",
+            "description": "Seconds until the daily quota block lifts (midnight Pacific time); 0 when not blocked. A settings change to this model's limits, or to the Gemini key, lifts it early; other settings changes keep it.",
             "type": "number"
           }
         },

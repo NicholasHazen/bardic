@@ -112,8 +112,8 @@ Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.
 | Table | Key and columns | Contract |
 | --- | --- | --- |
 | `books` | PK `id`; `body` | Current domain projection. |
-| `jobs` | PK `id`; `book_id`, `body` | Durable job status/progress/cancellation fields. Series parent jobs use a synthetic `series:<series_id>` scope and hold child IDs/book reservations. |
-| `settings` | PK `id`; `body` | Saved preferences; excludes API keys. |
+| `jobs` | PK `id`; `book_id`, `body` | Durable job status/progress/cancellation fields. Series parent jobs use a synthetic `series:<series_id>` scope and hold child IDs/book reservations. Once `status` is terminal, `status`, `message`, `error` and `resume_after` are never rewritten (`Store.update_job` drops them). Documents written before contract 0.2.0 use `mode` (pipeline), `limits` (series, listen_chapter); they are read as `scheduling`, `analysis_limits` and `speech_limits`, and rewritten with the new names on their next update. The series `plan_fingerprint` is stored but not returned by the API. |
+| `settings` | PK `id`; `body` | Saved preferences; excludes API keys and server URLs that come only from the environment (`breeze_url` is the URL saved in Settings, `""` when none). |
 | `takes` | PK `(book_id, segment_id)`; `body` | Currently selected enhanced take metadata. Replacing a selection does not delete archived audio. |
 | `analysis_checkpoints` | PK `book_id`; `fingerprint`, `body` | Current working book, stage/chapter completion and references, with compatibility unit state. One current checkpoint per book. |
 | `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current published references, indexed by book/character and book/chapter. |

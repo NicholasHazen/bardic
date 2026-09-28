@@ -921,7 +921,7 @@
     const active = job && !CHAPTER_TERMINAL.has(job.status);
     let quotaBlocked = false, requestsLeft = null;
     if (active) {
-      const concurrency = job.chunking?.concurrency || 2, rpm = job.limits?.rpm || 10;
+      const concurrency = job.chunking?.concurrency || 2, rpm = job.speech_limits?.rpm || 10;
       const sends = (job.chunks || []).map(entry => Date.parse(entry.started_at)/1000).filter(Number.isFinite);
       const running = (job.chunks || []).filter(entry => entry.status === 'requesting');
       const slots = running.map(entry => Math.max(now+1,Date.parse(entry.started_at)/1000 + (entry.expected_latency || latency(entry.expected_seconds))));

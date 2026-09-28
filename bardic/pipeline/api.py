@@ -363,7 +363,7 @@ def build_router(registry: Registry):
             run = repository.create_run(book_id, job_id=job['id'], steps=[s.id for s in registry.closure(body.steps)],
                                         mode=body.mode, chapter_ids=chapter_ids, configs=configs, gates=gates,
                                         concurrency=body.concurrency, fresh=body.fresh, limits=body.limits.model_dump())
-            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], mode=body.mode,
+            job = runtime.store.update_job(job['id'], run_id=run['id'], steps=run['steps'], scheduling=body.mode,
                                            message='Waiting for the local worker')
 
             def accept(step, versions, step_run_id):

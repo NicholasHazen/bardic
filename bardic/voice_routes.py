@@ -215,7 +215,7 @@ def register(app, rt, edit):
         """Keep the saved Breeze check in step with voices Bardic itself creates or deletes."""
         with runtime.store.lock:
             catalog = runtime.preferences.get("breeze_catalog")
-            if not catalog or catalog.get("base_url") != runtime.preferences["breeze_url"]:
+            if not catalog or catalog.get("base_url") != runtime.breeze_url():
                 return
             preferences = copy.deepcopy(runtime.preferences)
             voices = [voice for voice in preferences["breeze_catalog"].get("voices", [])
@@ -319,7 +319,7 @@ def register(app, rt, edit):
             voice = runtime.voices.update(voice_id, name=body.name, description=body.description)
         except KeyError:
             raise HTTPException(404, "Voice not found") from None
-        if voice["provider"] == "breeze" and runtime.preferences["breeze_url"]:
+        if voice["provider"] == "breeze" and runtime.breeze_url():
             # Names and descriptions do not change the pinned revision.
             config = breeze_config(runtime)
             for provider_voice_id in {version["provider_voice_id"] for version in voice["versions"]}:
