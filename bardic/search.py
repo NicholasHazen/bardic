@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 
+from .errors import Invalid
 from .processing import digest, source_hash
 
 
@@ -20,14 +21,31 @@ def _anchored_passages(book):
             yield segment
 
 
+def _schema(store, conn):
+    """Create the index tables once per store (server process); False when SQLite has no FTS5."""
+    ready = getattr(store, '_search_schema', None)
+    if ready is None:
+        conn.execute('CREATE TABLE IF NOT EXISTS search_books(book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)')
+        try:
+            conn.execute('CREATE VIRTUAL TABLE IF NOT EXISTS passage_search USING fts5(book_id UNINDEXED, chapter_id UNINDEXED, passage_id UNINDEXED, text, tokenize="unicode61")')
+            ready = True
+        except sqlite3.OperationalError as exc:
+            if 'no such module' not in str(exc).lower():
+                raise
+            ready = False
+        store._search_schema = ready
+    return ready
+
+
 def ensure_index(store, book, conn):
-    conn.execute('CREATE TABLE IF NOT EXISTS search_books(book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)')
-    try:
-        conn.execute('CREATE VIRTUAL TABLE IF NOT EXISTS passage_search USING fts5(book_id UNINDEXED, chapter_id UNINDEXED, passage_id UNINDEXED, text, tokenize="unicode61")')
-    except sqlite3.OperationalError as exc:
-        if 'no such module' in str(exc).lower():
-            return False
-        raise
+    """Bring one book's rows of the index up to date.
+
+    The index (``search_books`` and ``passage_search``) is a disposable derived
+    cache of saved passage text: deleting it loses nothing, and a book's rows are
+    rebuilt whenever its fingerprint is missing or stale.
+    """
+    if not _schema(store, conn):
+        return False
     fingerprint = digest({'version': 2, 'source_hash': source_hash(book),
                           'passages': [(s['id'], s.get('chapter_id'), s.get('start'), s.get('end'), s['text'])
                                        for s in book.get('segments', [])]})
@@ -43,9 +61,9 @@ def ensure_index(store, book, conn):
 
 def search(store, book_id, query, *, scope='book', limit=20):
     if scope not in {'book', 'earlier'}:
-        raise ValueError('Search this book or this book plus earlier series volumes.')
+        raise Invalid('search_scope_invalid', 'The search scope must be book or earlier.')
     if not isinstance(query, str) or not query.strip() or len(query) > 300:
-        raise ValueError('Enter search text between 1 and 300 characters.')
+        raise Invalid('search_query_invalid', 'The search text must have 1 to 300 characters and not be only whitespace.')
     words = re.findall(r'\w+', query, re.UNICODE)
     if not words:
         return {'items': [], 'available': True, 'note': 'Enter one or more words.'}

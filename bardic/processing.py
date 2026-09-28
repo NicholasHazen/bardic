@@ -77,11 +77,13 @@ class ProcessingStore:
             row = conn.execute('SELECT body FROM book_preprocessing WHERE book_id=? AND fingerprint=?', (book_id, fingerprint)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def save_preprocessing(self, book_id, fingerprint, value):
+    def save_preprocessing(self, book_id, fingerprint, value, *, retain=True):
+        """Cache a census; ``retain`` also records it as the current ``census`` artifact."""
         from .artifacts import record
         with self.store.lock, self.store.connect() as conn:
             conn.execute('INSERT OR REPLACE INTO book_preprocessing VALUES (?,?,?)', (book_id, fingerprint, json.dumps(value, ensure_ascii=False)))
-            record(conn, book_id, 'census', 'book', value, label='Whole-book local census', stage='census', provider='local')
+            if retain:
+                record(conn, book_id, 'census', 'book', value, label='Whole-book local census', stage='census', provider='local')
 
     def event(self, book_id, run_id, stage, unit_key, event, **details):
         value = {'id': uuid4().hex, 'book_id': book_id, 'run_id': run_id, 'stage': stage, 'unit_key': unit_key,

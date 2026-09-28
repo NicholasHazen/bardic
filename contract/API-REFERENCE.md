@@ -1147,7 +1147,7 @@ The older phase-based story analysis, its plan preview and local preprocessing.
 
 Checkpoint summary of the classic analysis engine, including per-chapter progress. Returns `status: "not_started"` (with one pending row per chapter) when no checkpoint exists.
 
-The checkpoint belongs to the latest run that saved progress and survives failures, cancellation and restarts (a server restart marks a running checkpoint `interrupted`). Follow a running analysis through its job (`GET /api/jobs`); use this for per-chapter detail. The step pipeline (`/analysis-pipeline`) does not write this checkpoint.
+The checkpoint belongs to the latest run that saved progress and survives failures, cancellation and restarts (a server restart marks a running checkpoint `interrupted`). Follow a running analysis through its job (`GET /api/jobs`); use this for per-chapter detail. The step pipeline (`/analysis-pipeline`) does not write this checkpoint. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 The classic engine may be retired in favor of the step pipeline.
 
@@ -1158,7 +1158,7 @@ The classic engine may be retired in favor of the step pipeline.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [AnalysisStatus](#schema-analysisstatus) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="previewclassicanalysis"></a>
@@ -1168,7 +1168,9 @@ The classic engine may be retired in favor of the step pipeline.
 
 Previews the work `POST /api/books/{book_id}/analyze` would do for the same `AnalysisRequest`, without provider inference. Returns the requested phase, provider and configured models, pending requests, cached units, token and cost estimates, requests by stage, coverage, notes, and the supplied `limits` (with defaults applied; the preview does not enforce them).
 
-The estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works on archived books and while a job is running. It has the same local side effects as `GET /api/books/{book_id}/preprocessing` (census cache and retained artifacts) and never changes the book.
+The estimate covers currently known work before retries and evidence repairs; `full` can discover more work. Cost is approximate (null when a model has no known price); the run's request guard reserves more conservatively. Unlike `analyze`, the preview works on archived books and while a job is running.
+
+Side effects, all local and none of them changing the book: it caches and retains the census (a `census` artifact, and a `census` resource operation when computed fresh), imports validated discovery found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` artifacts for linked earlier volumes.
 
 The request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from
 runtime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for
@@ -1202,9 +1204,9 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [AnalysisPlan](#schema-analysisplan) | Success. |
-| 400 | [Error](#schema-error) | `chapter_id` is not a chapter of this book, or the provider is not `local`, `gemini`, `openai` or `anthropic`. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: The body's `chapter_id` is not a chapter of this book. - `unknown_provider`: The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="startclassicanalysis"></a>
@@ -1241,7 +1243,7 @@ such a section. The main UI uses whole-book scan/profiles and selected-chapter d
 
 The provider and configured models are snapshotted when the job is queued; the job carries `provider`, `model`, `scan_model`, `phase` and `chapter_id`.
 
-Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published.
+Resuming (`resume: true`, the default) reuses validated saved units instead of requesting them again. Every HTTP attempt, including retries and evidence repairs, is reserved against `limits` before it is sent. Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is never replaced by model output. Whole-book scan coverage and profile freshness are separate (see `GET /api/books/{book_id}/preprocessing`). The book is updated (new revision) as each chapter stage is published. The run retains the census and any validated discovery imported from an older checkpoint as artifacts.
 
 The classic engine may be retired in favor of the step pipeline.
 
@@ -1254,11 +1256,12 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued `analyze` job. |
-| 400 | [Error](#schema-error) | The book is archived (restore it first); `chapter_id` is not a chapter of this book; the provider is not `local`, `gemini`, `openai` or `anthropic`; or the cloud provider has no API key configured. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: The body's `chapter_id` is not a chapter of this book. - `unknown_provider`: The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`. - `gemini_key_missing`: The provider is `gemini` and no Gemini API key is configured. - `api_key_missing`: The provider is `openai` or `anthropic` and no API key is configured for it. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is already queued or running for this book, or an active series run has reserved it. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived. Restore it first. - `job_active`: A job is already queued or running for this book. - `series_run_active`: An active series run has reserved this book. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down and accepts no new work. No job was started. |
 
 <a id="getanalysispreprocessing"></a>
 ### `GET /api/books/{book_id}/preprocessing`
@@ -1267,7 +1270,7 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 
 Free local census (names, speech tags, dialogue counts and heuristic priority per character; words and token estimates per chapter), semantic source coverage from validated cloud discovery, tracked analysis usage, and profile freshness/provisional state. No provider is contacted.
 
-Not purely a read: it computes and caches the census when the book changed (retained as a `census` artifact and measured as a `census` resource operation), may import validated discovery from an older checkpoint into the unit cache, and may retain `series_context` artifacts for linked earlier volumes. None of this changes the book.
+This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. It may write one disposable derived cache: the census is computed and cached when the book's text, structure, cast or attributions changed since it was last cached. The cache can be deleted without loss and is rebuilt on demand. Validated discovery found only in an older checkpoint counts toward coverage but is not imported here, and the census is not retained as an artifact here; analysis runs and `POST /api/books/{book_id}/analysis-plan` do both.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1276,7 +1279,7 @@ Not purely a read: it computes and caches the census when the book changed (reta
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [AnalysisCoverage](#schema-analysiscoverage) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Analysis pipeline
@@ -1532,14 +1535,14 @@ Contents:
 | `series.json` | `{membership, links, series_characters}` for the book's series (nulls/empty when none). |
 | `observations.json` | Retained character observations of the book. |
 | `references.json` | Saved character references (as in the story map). |
-| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, as stored. |
+| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, oldest first, each in the `PipelineAttempt` shape of `GET /api/books/{book_id}/pipeline` (the same field allowlist, with `validation_state`). |
 | `artifacts.jsonl` | One artifact per line, as `GET …/artifacts/{artifact_id}` returns it (metadata, `dependency_links`, `payload`), oldest first. |
 | `pipeline-events.jsonl` | Every analysis event of the book, one per line, oldest first. |
 | `resource-operations.json`, `listening-sessions.json`, `listening-takes.json`, `listening-chunks.json` | The book's saved rows, when those tables exist (possibly empty arrays). |
 
 The ZIP includes all retained versions belonging to the selected book and the transitive artifact dependencies needed by them, which can include source excerpts and observations from earlier books. Take metadata identifies separately stored audio assets; the ZIP excludes all audio binaries (enhanced takes, simple-listening WAVs and voice-preview audio), API keys and settings credentials. Voice-preview records are not included. Some legacy outputs lack original prompts or exact attempt provenance; the export marks that absence (`legacy_provenance`) rather than reconstructing it.
 
-Retains legacy data as artifacts on first use in a server process and records an `analysis_export` resource operation. No provider is contacted. For audio, use the audiobook export (`GET /api/books/{book_id}/export`).
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. For audio, use the audiobook export (`GET /api/books/{book_id}/export`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1549,7 +1552,7 @@ Retains legacy data as artifacts on first use in a server process and records an
 | --- | --- | --- |
 | 200 | `application/zip` | The analysis bundle as a ZIP attachment. |
 | 206 | `application/zip` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -1560,7 +1563,7 @@ Retains legacy data as artifacts on first use in a server process and records an
 
 `{items, total, offset, limit}` page of artifact metadata owned by the book, newest first. Payloads are not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge.
 
-The first artifact request for a book in a server process retains legacy data as artifacts (marked `legacy_provenance`). No provider is contacted.
+`limit` and `offset` are clamped (to 1–200 and at least 0); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1568,14 +1571,13 @@ The first artifact request for a book in a server process retains legacy data as
 | `kind` | query | string \| null |  | Only this artifact kind (exact match). Optional. |
 | `stage` | query | string \| null |  | Only this artifact stage (exact match). Optional. |
 | `current` | query | boolean \| null |  | `true` for current selections only, `false` for non-current versions only; omit for all versions. |
-| `limit` | query | integer |  | Page size; default 30, must be 1–200. (default `30`) |
-| `offset` | query | integer |  | Versions to skip; default 0, must be nonnegative. (default `0`) |
+| `limit` | query | integer |  | Page size; default 30, clamped to 1–200. (default `30`) |
+| `offset` | query | integer |  | Versions to skip; default 0, negative values become 0. (default `0`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ArtifactPage](#schema-artifactpage) | Success. |
-| 400 | [Error](#schema-error) | `limit` is outside 1–200 or `offset` is negative. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getbookartifact"></a>
@@ -1583,7 +1585,7 @@ The first artifact request for a book in a server process retains legacy data as
 
 **Get one artifact version with its payload** · operation `getBookArtifact` · cost `none`
 
-Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id, book_id}]`. An artifact owned by another book returns 404 under this book's path: follow the recorded owner in `dependency_links` to inspect earlier-book inputs. Has the same one-time legacy retention as the list. No provider is contacted.
+Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id, book_id}]`. An artifact owned by another book returns 404 under this book's path: follow the recorded owner in `dependency_links` to inspect earlier-book inputs. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1593,7 +1595,7 @@ Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ArtifactDetail](#schema-artifactdetail) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID, or this book owns no artifact with this ID (including artifacts owned by another book). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `artifact_not_found`: This book owns no artifact with this ID (including an artifact owned by another book). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getpipelineinspector"></a>
@@ -1605,7 +1607,7 @@ Versioned envelope with stage IDs, status, counts and dependencies; retained art
 
 The pipeline is an inspector, not a generic dependency scheduler. Its stage counts have different units and must not be summed into a global completion percentage. An HTTP 200 attempt does not mean its output passed validation: use `validation_state`.
 
-No provider is contacted, but the first inspection of a book in a server process retains legacy data as artifacts (marked `legacy_provenance`), and it has the local side effects of `GET /api/books/{book_id}/preprocessing`. It never changes the book.
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Like `GET /api/books/{book_id}/preprocessing`, it may write the disposable census cache. Legacy data from versions before artifacts existed is retained as artifacts (marked `legacy_provenance`) once, when the server starts, not by this request.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1614,7 +1616,7 @@ No provider is contacted, but the first inspection of a book in a server process
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineInspector](#schema-pipelineinspector) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getbookresourceusage"></a>
@@ -1624,9 +1626,9 @@ No provider is contacted, but the first inspection of a book in a server process
 
 Recorded work for the book: analysis HTTP attempts (the analysis ledger), local and narration operations (which supplement it without double-counting), and cache reuse. Returns `schema_version`, the book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, `total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source URLs and interpretation notes.
 
-`limit` and `offset` are clamped (to 1–200 and at least 0), unlike the artifact endpoint's strict out-of-range rejection. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
+`limit` and `offset` are clamped (to 1–200 and at least 0), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
 
-Operations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Never contacts a provider or backfills guessed usage.
+Operations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts a provider or backfills guessed usage. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1638,7 +1640,7 @@ Operations distinguish request count, reported tokens and cache tokens, retained
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ResourceSummary](#schema-resourcesummary) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="searchbookpassages"></a>
@@ -1646,11 +1648,11 @@ Operations distinguish request count, reported tokens and cache tokens, retained
 
 **Search passages by words** · operation `searchBookPassages` · cost `none`
 
-`{available, query, scope, results, note, items}`. Each result identifies book, chapter and passage, the exact source text, range and chapter hash, and lexical rank. `items` remains as an alias of `results` in the current response.
+`{available, query, scope, items, note}`. Each item identifies book, chapter and passage, the exact source text, range and chapter hash, and lexical rank.
 
 Search words (runs of letters, digits and underscores) are combined with AND; this is not an exact-phrase or operator query language, or semantic embedding search. A query with no words returns no matches with a note. If SQLite lacks FTS5, `available: false` explains that limitation; it does not start a fallback model call. Lower lexical rank means a stronger text match, not identity or speaker confidence. Only passages whose text matches their source offsets are searchable.
 
-Builds or refreshes a local full-text index for each searched book when its passages changed, and records a `source_search` resource operation. No provider is contacted.
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. It may write one disposable derived cache: a local full-text index of each searched book's passages, refreshed when the passages changed. The index can be deleted without loss and is rebuilt on demand.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1662,8 +1664,8 @@ Builds or refreshes a local full-text index for each searched book when its pass
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PassageSearchResult](#schema-passagesearchresult) | Success. |
-| 400 | [Error](#schema-error) | `q` is empty, whitespace-only or longer than 300 characters, or `scope` is not `book` or `earlier`. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 400 | [Error](#schema-error) | - `search_query_invalid`: `q` is empty, whitespace-only or longer than 300 characters. - `search_scope_invalid`: `scope` is not `book` or `earlier`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getstorymap"></a>
@@ -1671,9 +1673,9 @@ Builds or refreshes a local full-text index for each searched book when its pass
 
 **Get the story map graph** · operation `getStoryMap` · cost `none`
 
-Versioned typed nodes and edges, chapters/scenes/passages, character IDs, source references and counts, and notes about interpretation. Node identities include the owning book. Verified source anchors refer to retained source artifacts; unavailable or unverified anchors remain null. Scene characters are attributed speakers, not verified physical presence; mentions and profile evidence remain separate references; scene boundaries may be local drafts.
+Versioned typed nodes and edges, chapters/scenes/passages, character IDs, source references and counts, and notes about interpretation. Node identities include the owning book, and every edge ends at a node. Verified source anchors refer to retained source artifacts; unavailable or unverified anchors remain null. Scene characters are attributed speakers, not verified physical presence; mentions and profile evidence remain separate references; scene boundaries may be local drafts. A dialogue passage whose speaker ID is no longer in the cast has no `attributed_speaker` edge and adds no scene character.
 
-The response is unpaginated and grows with the book (every passage is a node). Has the same one-time legacy retention as the artifact list. No provider is contacted.
+The response is unpaginated and grows with the book (every passage is a node). No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1682,7 +1684,7 @@ The response is unpaginated and grows with the book (every passage is a node). H
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [StoryMap](#schema-storymap) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 ## Narration
@@ -2656,13 +2658,11 @@ prices for standard text requests, not a bill.
 ### AnalysisCensus
 
 Free, rules-based whole-book census. Cached per book input; recomputed when the text, structure, cast or
-attributions change. Retained as a `census` artifact.
+attributions change. Analysis runs and plan previews also retain it as a `census` artifact.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `version` | integer | yes | Census algorithm version (currently 1). |
-| `fingerprint` | string | yes | Internal; do not rely on it. Cache key of the census inputs. |
-| `source_hash` | string | yes | Internal; do not rely on it. Hash of the chapter IDs and texts the census used. |
 | `local_complete` | boolean | yes | Always true: the local census covers every chapter. |
 | `local_chapters_scanned` | integer | yes | Chapters scanned (all chapters, including front/back matter). |
 | `eligible_chapter_ids` | list of string | yes | Chapters eligible for cloud discovery and direction, in book order. |
@@ -2833,7 +2833,6 @@ Source text and model responses are never included.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `fingerprint` | string \| null |  | Internal; do not rely on it. Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). Absent when no checkpoint exists. |
 | `provider` | string \| null | yes | Analysis provider of the checkpoint: `local`, `gemini`, `openai` or `anthropic`; null when not started. |
 | `model` | string \| null | yes | Detailed-analysis model ID used, or null (local drafts and not started). |
 | `status` | `"not_started"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"budget_limited"` | yes | Overall state. `interrupted` covers cancellation and server restarts; `budget_limited` means a request/token/dollar allowance stopped the run. Validated work is kept in every case. |
@@ -2918,8 +2917,8 @@ One page of artifact metadata, newest first.
 | --- | --- | --- | --- |
 | `items` | list of [ArtifactSummary](#schema-artifactsummary) | yes | This page of artifact versions matching the filters, newest first (by creation time). Empty past the end. |
 | `total` | integer | yes | Versions matching the filters. |
-| `offset` | integer | yes | The `offset` parameter as applied (versions skipped). |
-| `limit` | integer | yes | The `limit` parameter as applied (maximum page size, 1–200). |
+| `offset` | integer | yes | Effective offset after clamping to >= 0 (versions skipped). |
+| `limit` | integer | yes | Effective page size after clamping to 1–200. |
 
 <a id="schema-artifactsummary"></a>
 ### ArtifactSummary
@@ -4292,8 +4291,7 @@ Literal word search over saved passages.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `items` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Matches, strongest first. Same list as `results`. |
-| `results` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Alias of `items` (the documented name). |
+| `items` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Matches, strongest first. |
 | `available` | boolean | yes | False when this SQLite build lacks FTS5; then there are no results. |
 | `query` | string | yes | The `q` parameter as sent. |
 | `scope` | `"book"` \| `"earlier"` | yes | The effective scope. |
@@ -4589,10 +4587,13 @@ The applied impact and the decision recorded.
 <a id="schema-pipelineattempt"></a>
 ### PipelineAttempt
 
-One recorded analysis HTTP attempt (classic or step pipeline), newest 100 for the book.
+One recorded analysis HTTP attempt (classic or step pipeline).
 
-Fields come from the stored attempt and may be absent on records from
-older versions. Prompts, responses and credentials are never included.
+The pipeline inspector lists the newest 100 for the book; the analysis
+export's `analysis-attempts.json` lists all of them in this same shape.
+Fields come from the stored attempt through a fixed allowlist and may be
+absent on records from older versions. Prompts, responses, credentials,
+price rates and server process IDs are never included.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4600,6 +4601,7 @@ older versions. Prompts, responses and credentials are never included.
 | `run_id` | string \| null |  | Job ID of the run that sent it. |
 | `stage` | string \| null |  | Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID. |
 | `unit_key` | string \| null |  | Opaque cache key of the unit of work. |
+| `chapter_id` | string \| null |  | Chapter the request was about, when recorded. |
 | `provider` | string \| null |  | Provider ID. |
 | `model` | string \| null |  | Model ID. |
 | `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"interrupted_unknown"` \| null |  | `reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not active, so the outcome is unknown. |
@@ -4608,9 +4610,15 @@ older versions. Prompts, responses and credentials are never included.
 | `http_status` | integer \| null |  | Provider HTTP status code. A 200 does not mean the output passed validation. |
 | `input_tokens` | integer \| null |  | Reported input tokens; null when not reported. |
 | `output_tokens` | integer \| null |  | Reported output tokens; null when not reported. |
+| `cached_input_tokens` | integer \| null |  | Reported cached input tokens; null when not reported. |
+| `cache_write_input_tokens` | integer \| null |  | Reported cache-write input tokens; null when not reported. |
 | `reserved_input_tokens` | integer \| null |  | Input allowance reserved before sending (conservative). |
 | `reserved_output_tokens` | integer \| null |  | Output allowance reserved before sending. |
 | `charged_estimate_usd` | number \| null |  | Conservative USD estimate for this attempt; null when unknown. |
+| `cost_basis` | string \| null |  | How `charged_estimate_usd` was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent` or `unknown`. |
+| `price_as_of` | string \| null |  | Date of the price table used for the estimate, or null. |
+| `price_source` | string \| null |  | URL of the price source used, or null. |
+| `elapsed_seconds` | number \| null |  | Measured wall time of the request in seconds; null when unknown. |
 | `input_artifact_id` | string \| null |  | Artifact ID of the retained request recipe (`analysis_input`). |
 | `validation_state` | `"accepted"` \| `"rejected"` \| `"unknown"` | yes | From retained events: `accepted` or `rejected` by output validation; `unknown` when no event links it. |
 
@@ -5025,7 +5033,7 @@ One stage card of the pipeline inspector. Counts have stage-specific units; neve
 | --- | --- | --- | --- |
 | `id` | `"import"` \| `"structure"` \| `"census"` \| `"series"` \| `"discovery"` \| `"profiles"` \| `"directing"` \| `"voices"` \| `"narration"` \| `"alignment"` \| `"export"` | yes | Stage ID, in pipeline order. |
 | `label` | string | yes | Display name. |
-| `status` | `"complete"` \| `"partial"` \| `"pending"` \| `"available"` \| `"not_started"` \| `"provisional"` \| `"planned"` \| `"ready"` \| `"queued"` \| `"running"` \| `"failed"` \| `"interrupted"` \| `"cancelled"` \| `"budget_limited"` | yes | `complete`/`partial`/`pending` from the counts. Fixed states: `series` is `available` (book is in a series) or `not_started`; `profiles` is `provisional` while whole-book discovery is incomplete and some profiles are current; `alignment` is `planned`; `export` is `ready`. An active `analyze` job whose checkpoint stage is this stage shows the job status (`queued`/`running`); likewise an active `render` job for `narration`. With no active job, a failed/interrupted/budget-limited checkpoint shows that status on its stage. |
+| `status` | `"complete"` \| `"partial"` \| `"pending"` \| `"available"` \| `"not_started"` \| `"provisional"` \| `"planned"` \| `"ready"` \| `"queued"` \| `"running"` \| `"failed"` \| `"interrupted"` \| `"cancelled"` \| `"budget_limited"` | yes | `complete`/`partial`/`pending` from the counts. Fixed states: `series` is `available` (book is in a series) or `not_started`; `profiles` is `provisional` while whole-book discovery is incomplete and some profiles are current; `alignment` is `planned`; `export` is `ready`. An active `analyze` job whose checkpoint stage is this stage shows the job status (`queued`/`running`); likewise an active `render` job for `narration`. With no active job, a `failed`, `interrupted` or `budget_limited` classic checkpoint shows that status on its stage, and `cancelled` instead of `interrupted` when the job that wrote the checkpoint was cancelled. Checkpoints written before contract 0.2.0 do not name their job, so they show `interrupted` for a cancellation too. |
 | `completed` | integer \| null | yes | Units done, or null where not counted (`series`, `export`). |
 | `total` | integer \| null | yes | Units in scope, or null where not counted. |
 | `unit_label` | string | yes | What the counts measure, e.g. `sections`, `eligible sections`, `profiles`, `passages`. |
@@ -5392,8 +5400,8 @@ ledger. Absent or null measurements are unknown, not zero.
 | --- | --- | --- | --- |
 | `id` | string | yes | Row ID (32 hex characters): the analysis attempt ID for `analysis_request`, the cache-hit event ID for `cache_reuse`, otherwise the resource-ledger operation ID. Unique within the response. |
 | `book_id` | string | yes | Book ID the work was recorded for. |
-| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports, searches, exports). |
-| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID. |
+| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports). |
+| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `audio_export`, or a pipeline step ID. `source_search` and `analysis_export` rows were recorded by versions before contract 0.2.0 and remain. |
 | `unit_key` | string \| null |  | Opaque unit key (cache key, passage ID, preview ID or census fingerprint). |
 | `chapter_id` | string \| null |  | Chapter the work belongs to, when recorded. |
 | `provider` | string \| null |  | Provider ID (`local` for local work). |
@@ -5401,7 +5409,6 @@ ledger. Absent or null measurements are unknown, not zero.
 | `kind` | string | yes | `analysis_request`, `cache_reuse`, or a resource-ledger kind: `local`, `assembly`, `validation`, `narration`. |
 | `cached` | boolean | yes | True when saved output was reused without a provider request. |
 | `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"unknown"` | yes | Analysis requests: attempt status (`reserved`, `received`, `uncertain`, `not_sent`), `failed` when the HTTP status was >= 400 or a failure event names it, `unknown` for legacy rows. Other rows: `running`, `completed`, `failed`, `interrupted`. Rows left `running`/`reserved` by an earlier server process or a finished job are reported `interrupted`. |
-| `process_id` | string \| null |  | Internal; do not rely on it. Server process that recorded the row. |
 | `created_at` | string \| null |  | ISO 8601 UTC start time. |
 | `completed_at` | string \| null |  | ISO 8601 UTC end time; absent while running. |
 | `request_count` | integer \| null |  | Provider requests made: 1 for analysis requests, 0 for local/cached work, null when unknown (e.g. a cloud narration that failed early). |
@@ -6127,8 +6134,8 @@ A typed graph edge.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `from` | string | yes | Source node ID. |
-| `to` | string | yes | Target node ID. An `attributed_speaker` target may name a character node that is absent when the passage names a speaker no longer in the cast. |
-| `type` | `"contains"` \| `"next"` \| `"attributed_speaker"` | yes | `contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence). |
+| `to` | string | yes | Target node ID. Every edge ends at a node in `nodes`. |
+| `type` | `"contains"` \| `"next"` \| `"attributed_speaker"` | yes | `contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence); omitted when the passage names a speaker that is no longer in the cast. |
 | `order` | integer \| null |  | `contains` edges: zero-based position within the parent. |
 | `confidence` | number \| null |  | `attributed_speaker` edges: attribution confidence 0–1, or null. |
 
@@ -6208,7 +6215,7 @@ A scene with its passages and attributed speakers.
 | `start` | integer \| null | yes | Smallest passage start offset, or null when no passage has offsets. |
 | `end` | integer \| null | yes | Largest passage end offset, or null. |
 | `passage_ids` | list of string | yes | Passages in the scene, in order. |
-| `character_ids` | list of string | yes | Attributed dialogue speakers (excluding narrator/unassigned), sorted. Not proof of physical presence. |
+| `character_ids` | list of string | yes | Attributed dialogue speakers that are cast members (excluding narrator/unassigned), sorted. Not proof of physical presence. |
 
 <a id="schema-storymapsourceanchor"></a>
 ### StoryMapSourceAnchor

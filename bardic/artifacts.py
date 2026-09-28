@@ -9,10 +9,14 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 from .errors import NotFound
 
 
 SCHEMA_VERSION = 1
+# Version of the legacy retention in ArtifactRepository.backfill. A library
+# retains each book's legacy data once per version, at startup.
+BACKFILL_VERSION = 1
 _TIMESTAMPS = {'created_at', 'updated_at', 'recorded_at', 'checked_at', 'completed_at', 'exported_at'}
 _PROJECTION_KINDS = {'source', 'structure', 'scene_map', 'character_profile', 'voice_assignment', 'audio_take'}
 
@@ -57,6 +61,9 @@ def initialize_schema(conn):
         dependency_id TEXT NOT NULL REFERENCES artifact_versions(id),
         PRIMARY KEY(artifact_id,dependency_id))''')
     conn.execute('CREATE INDEX IF NOT EXISTS artifact_dependencies_input ON artifact_dependencies(dependency_id)')
+    # Which books have had their legacy data retained (see backfill_library).
+    conn.execute('CREATE TABLE IF NOT EXISTS artifact_backfills '
+                 '(book_id TEXT PRIMARY KEY, version INTEGER NOT NULL, completed_at TEXT NOT NULL)')
     # Immutability is an invariant even if a later caller bypasses record().
     for table in ('artifact_versions', 'artifact_dependencies'):
         for operation in ('UPDATE', 'DELETE'):
@@ -298,9 +305,8 @@ def _metadata(row):
 
 class ArtifactRepository:
     def __init__(self, store):
+        # Store construction initializes the schema; constructing a repository writes nothing.
         self.store = store
-        with store.lock, store.connect() as conn:
-            initialize_schema(conn)
 
     record = staticmethod(record)
     capture_book = staticmethod(capture_book)
@@ -310,8 +316,10 @@ class ArtifactRepository:
             return output_head(conn, book_id, kind, logical_key)
 
     def list(self, book_id, kind=None, stage=None, limit=30, offset=0, current=None):
-        if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
-            raise ValueError('Choose an artifact page size of 1–200 and a nonnegative offset.')
+        """A page of metadata, newest first. ``limit`` is clamped to 1–200 and ``offset`` to at least 0."""
+        if type(limit) is not int or type(offset) is not int:
+            raise ValueError('Artifact page size and offset must be integers.')
+        limit, offset = max(1, min(200, limit)), max(0, offset)
         if current is not None and type(current) is not bool:
             raise ValueError('Current must be true, false or null.')
         filters, args = ['v.book_id=?'], [book_id]
@@ -412,3 +420,31 @@ class ArtifactRepository:
                 capture_series(conn, book_id, legacy_provenance=True, only_missing=True)
             after = conn.execute('SELECT COUNT(*) FROM artifact_versions WHERE book_id=?', (book_id,)).fetchone()[0]
         return {'book_id': book_id, 'added': after - before, **self.counts(book_id)}
+
+
+def backfill_library(store):
+    """Retain legacy data as artifacts for every book not yet backfilled at this version.
+
+    Runs once at app startup, so that read-only views never create artifacts.
+    It only appends immutable versions and fills missing current selections
+    (see :meth:`ArtifactRepository.backfill`); books saved by this version are
+    captured on every write already. A book that fails is logged and retried at
+    the next startup. Returns the IDs of the books backfilled now.
+    """
+    repository = ArtifactRepository(store)
+    with store.lock, store.connect() as conn:
+        pending = [row[0] for row in conn.execute(
+            'SELECT id FROM books WHERE NOT EXISTS(SELECT 1 FROM artifact_backfills a '
+            'WHERE a.book_id=books.id AND a.version>=?) ORDER BY rowid', (BACKFILL_VERSION,))]
+    done = []
+    for book_id in pending:
+        try:
+            with store.lock:
+                repository.backfill(book_id)
+                with store.connect() as conn:
+                    conn.execute('INSERT OR REPLACE INTO artifact_backfills VALUES (?,?,?)',
+                                 (book_id, BACKFILL_VERSION, _now()))
+            done.append(book_id)
+        except Exception:  # One unreadable legacy book must not stop the server; it is retried next startup.
+            logging.getLogger(__name__).exception('Could not retain legacy artifacts for book %s', book_id)
+    return done

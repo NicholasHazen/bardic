@@ -131,10 +131,16 @@ def test_paginated_metadata_filters_include_current_history_and_stage(repository
                                         'stages': {'discovery': 3, 'profiles': 1}, 'total': 4, 'current': 3}
 
 
-@pytest.mark.parametrize('kwargs', [{'limit': 0}, {'limit': 201}, {'limit': True}, {'offset': -1}, {'offset': True}, {'current': 'yes'}])
+@pytest.mark.parametrize('kwargs', [{'limit': True}, {'offset': True}, {'current': 'yes'}])
 def test_invalid_history_pages_are_rejected(repository, kwargs):
     with pytest.raises(ValueError):
         repository.list('book', **kwargs)
+
+
+@pytest.mark.parametrize('kwargs,limit,offset', [({'limit': 0}, 1, 0), ({'limit': 201}, 200, 0), ({'offset': -1}, 30, 0)])
+def test_out_of_range_history_pages_are_clamped(repository, kwargs, limit, offset):
+    page = repository.list('book', **kwargs)
+    assert (page['limit'], page['offset']) == (limit, offset)
 
 
 def test_capture_keeps_exact_source_and_portable_passage_scene_edges(repository):

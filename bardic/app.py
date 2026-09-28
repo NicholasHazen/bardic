@@ -265,6 +265,9 @@ class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
         self.store = Store(root)
+        # Legacy data becomes artifacts here, once per book, so that GET views never create artifacts.
+        from .artifacts import backfill_library
+        backfill_library(self.store)
         PipelineRepository(self.store).recover_interrupted()
         self.voices = VoiceLibrary(self.store)
         # Voice drafts with a generation request in flight (a per-draft lock).
@@ -576,13 +579,14 @@ class Runtime:
                     character.setdefault("voices", {})["system"] = {"id": choices[index % len(choices)]}
 
     def require_idle(self, book_id):
+        from .errors import Conflict
         self.store.require_active(book_id)
         # Every active job counts: a long run can have more than 100 newer child jobs.
         if any(j["status"] in ACTIVE for j in self.store.jobs(book_id, limit=None, active=True)):
-            raise HTTPException(409, "A job is already working on this book. Let it finish or cancel it before editing.")
+            raise Conflict("job_active", "A job is already queued or running for this book.")
         if any(j['kind'] == 'series' and j['status'] in ACTIVE and book_id in j.get('book_ids', [])
                for j in self.store.jobs(limit=None)):
-            raise HTTPException(409, 'This book is reserved by an active series run. Stop the series run before editing.')
+            raise Conflict('series_run_active', 'An active series run has reserved this book.')
 
     def audio_path(self, book_id, audio_id):
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", book_id) or not re.fullmatch(r"[a-f0-9]{32,128}", audio_id):
@@ -858,17 +862,24 @@ class Runtime:
             return job
 
     def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
+        from .errors import Conflict, Invalid, Unavailable
         with self.store.lock:
-            self.require_idle(book_id)
             book = self.store.book(book_id)
+            if self.store.is_archived(book_id):
+                raise Conflict("book_archived", "The book is archived. Restore it before analyzing it.")
+            self.require_idle(book_id)
             if chapter_id is not None and chapter_id not in {c["id"] for c in book["chapters"]}:
-                raise HTTPException(400, "Choose a chapter in this book")
+                raise Invalid("unknown_chapter", "The book has no chapter with this ID.")
             provider = provider or self.preferences["analysis_provider"]
             if provider not in ANALYSIS_LABELS:
-                raise HTTPException(400, "Choose local, gemini, openai, or anthropic analysis")
+                raise Invalid("unknown_provider", "The analysis provider must be local, gemini, openai or anthropic.")
             key = self.api_keys.get(provider, "")
+            if provider == "gemini" and not key:
+                raise Invalid("gemini_key_missing", "No Gemini API key is configured.")
             if provider != "local" and not key:
-                raise HTTPException(400, f"Add an {ANALYSIS_LABELS[provider]} API key in Settings first" if provider in {"openai", "anthropic"} else "Add a Gemini API key in Settings first")
+                raise Invalid("api_key_missing", f"No {ANALYSIS_LABELS[provider]} API key is configured.")
+            if self.stopping.is_set():
+                raise Unavailable("shutting_down", "The server is shutting down and cannot start new work.")
             model = self.preferences["analysis_models_by_provider"].get(provider)
             scan_model = self.preferences["preprocess_models_by_provider"].get(provider)
             job = self.store.create_job(book_id, "analyze")
@@ -901,7 +912,11 @@ class Runtime:
                     if s.get("audio") and not self.valid_audio(updated, s, cast):
                         s["audio"] = None
                 self.store.save_book(updated)
-            self.pool.submit(self.run, job, work, (key,))
+            try:
+                self.pool.submit(self.run, job, work, (key,))
+            except RuntimeError:  # The pool stopped between the check above and this submission.
+                self.store.update_job(job["id"], status="interrupted", message="The server was shutting down. No analysis was started.")
+                raise Unavailable("shutting_down", "The server is shutting down and cannot start new work.") from None
             return job
 
 
@@ -1251,7 +1266,11 @@ def create_app(data_dir: Path | None = None):
     def get_analysis(book_id: str, request: Request):
         runtime = rt(request)
         book = runtime.store.book(book_id)
-        return runtime.store.analysis_status(book_id) or {
+        status = runtime.store.analysis_status(book_id)
+        if status:
+            status.pop("fingerprint", None)  # Checkpoint cache key; internal.
+            return status
+        return {
             "status": "not_started", "stage": "discovery", "provider": None, "model": None,
             "completed_units": 0, "total_units": 0, "current_chapter_id": None,
             "chapters": [{"id": c["id"], "title": c["title"], "stage": "discovery", "status": "pending",
@@ -1438,22 +1457,24 @@ def create_app(data_dir: Path | None = None):
         runtime = rt(request)
         with runtime.store.lock:
             book = runtime.store.book(book_id)
-            accepted = discoveries(book, runtime.store, ProcessingStore(runtime.store))
-            result = coverage(book, runtime.store)
-            result.update(profile_status(book, runtime.store, accepted, result))
+            # Read-only: nothing is imported or retained; only the disposable census cache may be written.
+            accepted = discoveries(book, runtime.store, ProcessingStore(runtime.store), persist=False)
+            result = coverage(book, runtime.store, retain=False, units=accepted)
+            result.update(profile_status(book, runtime.store, accepted, result, persist=False))
             return result
 
     @app.post("/api/books/{book_id}/analysis-plan")
     def analysis_plan(book_id: str, body: AnalysisRequest, request: Request):
+        from .errors import Invalid
         from .progressive import plan
         runtime = rt(request)
         with runtime.store.lock:
             book = runtime.store.book(book_id)
             if body.chapter_id and body.chapter_id not in {c['id'] for c in book['chapters']}:
-                raise HTTPException(400, "Choose a chapter in this book")
+                raise Invalid('unknown_chapter', 'The book has no chapter with this ID.')
             provider = body.provider or runtime.preferences['analysis_provider']
             if provider not in ANALYSIS_LABELS:
-                raise HTTPException(400, "Choose a valid analysis provider")
+                raise Invalid('unknown_provider', 'The analysis provider must be local, gemini, openai or anthropic.')
             result = plan(book, runtime.store, provider, runtime.preferences['analysis_models_by_provider'].get(provider),
                           runtime.preferences['preprocess_models_by_provider'].get(provider), body.phase, body.chapter_id, body.resume)
             result['limits'] = body.limits.model_dump()
@@ -2054,25 +2075,22 @@ def create_app(data_dir: Path | None = None):
     @app.get("/api/books/{book_id}/search")
     def passage_search(book_id: str, request: Request, q: str, scope: str = 'book', limit: int = 20):
         from .search import search
-        from .resources import ResourceLedger
         store = rt(request).store
         store.book(book_id)
-        with ResourceLedger(store).operation(book_id, 'source_search', measure_cpu=True):
-            result = search(store, book_id, q, scope=scope, limit=limit)
-        return {**result, 'results': result['items'], 'query': q, 'scope': scope}
+        # A read: the full-text index is a disposable derived cache, and no resource row is recorded.
+        result = search(store, book_id, q, scope=scope, limit=limit)
+        return {**result, 'query': q, 'scope': scope}
 
     @app.get("/api/books/{book_id}/analysis-export")
     def analysis_export(book_id: str, request: Request):
         from .pipeline_view import write_analysis_export
-        from .resources import ResourceLedger
         store = rt(request).store
         book = store.book(book_id)
         temp = Path(tempfile.mkdtemp(prefix='bardic-analysis-'))
         try:
             path = temp / 'analysis.zip'
-            with ResourceLedger(store).operation(book_id, 'analysis_export', measure_cpu=True) as metrics:
-                write_analysis_export(store, book_id, path)
-                metrics['output_bytes'] = path.stat().st_size
+            # A read: only the temporary ZIP is written; no resource row is recorded.
+            write_analysis_export(store, book_id, path)
             name = re.sub(r'[^\w .-]', '', book['title'])[:80] or 'book'
             return FileResponse(path, media_type='application/zip', filename=f'{name}-analysis.zip',
                                 background=BackgroundTask(shutil.rmtree, temp))
