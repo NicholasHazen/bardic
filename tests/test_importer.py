@@ -72,6 +72,26 @@ def test_epub_uses_spine_not_archive_order_and_extracts_metadata():
     assert_full_prose_coverage(book)
 
 
+@pytest.mark.parametrize(("metadata", "expected"), [
+    ("<dc:language>en-GB</dc:language>", "en-GB"),
+    ("<dc:language> fr </dc:language><dc:language>de</dc:language>", "fr"),
+    ("<dc:language>pt_BR</dc:language>", "pt-BR"),
+    ("<dc:language>not a language!</dc:language>", None),
+    ("", None),
+])
+def test_epub_language_is_metadata_only(metadata, expected):
+    plain = parse_book("lang.epub", epub_file())
+    book = parse_book("lang.epub", epub_file(metadata=metadata))
+    assert book["language"] == expected
+    # Language never changes the canonical text or its passage coordinates.
+    assert [c["text"] for c in book["chapters"]] == [c["text"] for c in plain["chapters"]]
+    assert [(s["start"], s["end"], s["text"]) for s in book["segments"]] == [(s["start"], s["end"], s["text"]) for s in plain["segments"]]
+
+
+def test_txt_has_no_language():
+    assert parse_book("story.txt", "Chapter One\n\nWords.\n".encode())["language"] is None
+
+
 def test_epub_hr_preserves_inline_words_and_starts_scene():
     book = parse_book("inline.epub", epub_file(chapters={"one": "<p>She <em>really</em> meant it.</p><hr/><p>Later, <strong>at sea</strong>.</p>"}))
     assert len(book["scenes"]) == 2

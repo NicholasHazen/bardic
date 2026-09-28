@@ -7,7 +7,7 @@ from pydantic import Field
 
 from .base import Op, View, op
 from .common import TIME, Job
-from .media import ChapterListenChunking, ChapterListenLimits
+from .media import ChapterListenChunking, ChapterListenLimits, ChapterListenQuota
 from .voices import VoiceLibraryBreezeStatus, VoiceLibraryDefaults, VoiceLibrarySystemVoice
 
 CloudProvider = Literal['gemini', 'openai', 'anthropic']
@@ -185,6 +185,27 @@ class LocalServiceUrls(View):
     novel_analyzer: str = Field(description='Novel Analyzer chapter-script server.')
 
 
+class StepPresetConfigView(View):
+    """The step settings a saved set captures (version 1)."""
+    provider: str = Field(description='Provider ID the step runs with (`local` for local steps).')
+    model: str | None = Field(description='Model ID, or null for local and service providers.')
+    custom_model: bool = Field(description='True when the model ID was typed by hand rather than chosen from the catalog.')
+    gate: Literal['auto', 'review'] = Field(description="`auto` accepts a run's results; `review` holds them for review.")
+    concurrency: int = Field(description='Requests at once, 1–4.')
+    fresh: bool = Field(description='True to request fresh samples instead of reusing validated cached results.')
+    chapter_id: str | None = Field(description='One story section to process, or null for all. Always null for steps '
+                                               'that are not section-scoped.')
+
+
+class StepPresetView(View):
+    """An owner-authored saved step setting."""
+    id: str = Field(description='Client-chosen ID, `[A-Za-z0-9_-]{1,40}`.')
+    name: str = Field(description='Display name, 1–60 characters, whitespace collapsed. Unique per step, ignoring case.')
+    step: str = Field(description='Analysis pipeline step ID the setting applies to.')
+    config: StepPresetConfigView = Field(description='The captured step settings.')
+    version: Literal[1] = Field(description='Saved-setting format version.')
+
+
 class Status(View):
     """Runtime status and preferences. Never contains key values and never contacts a provider.
 
@@ -193,7 +214,8 @@ class Status(View):
     """
     # Saved preferences
     tts_model: str = Field(description='Selected Gemini speech model; one of `tts_models`.')
-    analysis_provider: AnalysisProviderId = Field(description='Default provider for classic analysis.')
+    analysis_provider: AnalysisProviderId = Field(description='Default provider for model-based analysis steps without saved '
+                                                              'step settings. `local` means none: the first cloud provider with a key is used.')
     analysis_models_by_provider: dict[CloudProvider, str] = Field(
         description='Selected analysis model per cloud provider (always all three).')
     preprocess_models_by_provider: dict[CloudProvider, str] = Field(
@@ -222,6 +244,13 @@ class Status(View):
     system_voices: list[VoiceLibrarySystemVoice] = Field(description='Installed macOS voices; empty when unavailable.')
     tts_models: list[str] = Field(description='Supported Gemini speech models.')
     tts_rate: dict[str, TtsRateState] = Field(description='Live rate-limiter state per Gemini speech model.')
+    analysis_step_presets: list[StepPresetView] = Field(
+        description='Saved step settings for the Analyze tab, in saved order; empty when none. Applying one never '
+                    'starts work.')
+    tts_quota: dict[str, ChapterListenQuota] = Field(
+        description='This library\'s daily Gemini speech request count for the selected speech model: one entry '
+                    'keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before '
+                    'any usage is recorded.')
     timing_kind: Literal['segment'] = Field(description='Granularity of read-along timing: per passage (segment).')
 
 
@@ -320,7 +349,11 @@ OPS: list[Op] = [
            'breeze_url_invalid': '`breeze_url` is not an http(s) server root without path, query or credentials.',
            'local_service_unknown': 'A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.',
            'service_url_invalid': 'A self-hosted server URL is not an http(s) server root without path, query or '
-                                  'credentials.'}}),
+                                  'credentials.',
+           'unknown_step': 'An `analysis_step_presets` entry names a step that is not registered.',
+           'step_config_invalid': 'An `analysis_step_presets` entry has a provider or model its step does not take.',
+           'step_preset_invalid': 'An `analysis_step_presets` entry has an empty name, repeats another entry\'s `id`, '
+                                  'or repeats a name already used for the same step (ignoring case).'}}),
     op('POST', '/api/account-checks/{provider}', 'checkProviderAccount', 'System', 'Check a cloud analysis account',
        'Sends one tiny text-generation request (at most 128 output tokens, no book content, never retried) to the '
        'selected analysis model of `provider` with the loaded key, and returns the classified result. **This can '
@@ -419,7 +452,7 @@ OPS: list[Op] = [
        '- A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe '
        'boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; '
        'validated outputs and finished audio are kept.\n'
-       '- Cancelling a `series` parent also cancels its queued child `analyze` jobs and flags running ones.\n'
+       '- Cancelling a `series` parent also cancels its queued child jobs and flags a running one.\n'
        '- Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.\n\n'
        'Cancelled work is resumed through the original start route, which creates a new job.',
        response=Job, cost='none',
@@ -432,6 +465,10 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         '__doc__': 'A partial settings update. Every field is optional; omitted fields stay unchanged. Unknown '
                    'fields are refused (422).',
         'tts_model': 'Gemini speech model; must be one of `tts_models` from status. Saved.',
+        'analysis_step_presets': 'Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` '
+                                 'clears it. Validated as a whole: an unknown step, a provider or model the step does '
+                                 'not take, a duplicate `id`, or a duplicate name for one step is refused (400) and '
+                                 'nothing is saved. Saved.',
         'api_keys': 'Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. '
                     'Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; '
                     'providers not included keep their key. A different Gemini key lifts every daily quota block.',
@@ -439,7 +476,8 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                                        '1–200 characters of letters, digits, `.`, `_`, `:` or `-`, starting with a '
                                        'letter or digit; they need not be in the curated list. Saved.',
         'preprocess_models_by_provider': 'Preprocessing (scan) model per cloud provider, same ID rules. Saved.',
-        'analysis_provider': 'Default classic-analysis provider: `local`, `gemini`, `openai` or `anthropic`. Saved.',
+        'analysis_provider': 'Default provider for model-based analysis steps without saved step settings: `local` (none), '
+                             '`gemini`, `openai` or `anthropic`. Saved.',
         'tts_limits': 'Gemini speech limits by TTS model (each a key of `tts_models`): `{model: {rpm, tpm, rpd}}`. '
                       'Each limit given replaces that limit; a limit left out (or null) keeps its current value. '
                       'Models not included keep their limits. Changing a model\'s limits lifts its daily quota block. '
@@ -456,6 +494,25 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                               'characters. An empty string clears it and also overrides its environment variable. '
                               'Services not included keep their value; a service never set in Settings uses its '
                               'environment variable, which is never saved. Saved.',
+    },
+    'StepPreset': {
+        '__doc__': 'One saved step setting (format version 1).',
+        'id': 'Client-chosen ID, `[A-Za-z0-9_-]{1,40}`; unique within the list.',
+        'name': 'Display name, 1–60 characters; whitespace is collapsed on save. Unique per step, ignoring case.',
+        'step': 'A registered analysis pipeline step ID.',
+        'config': 'The step settings to capture.',
+        'version': 'Format version; must be 1.',
+    },
+    'StepPresetConfig': {
+        '__doc__': 'Step settings a saved set captures. Unknown fields are refused (422).',
+        'provider': 'Provider the step accepts (1–40 characters); validated like the step settings route.',
+        'model': 'Model ID up to 200 characters, or null. Must be null for local and service providers.',
+        'custom_model': 'True when the model ID was typed by hand; forced false when `model` is null.',
+        'gate': '`auto` (default) or `review`.',
+        'concurrency': 'Requests at once, a strict integer 1–4 (default 2).',
+        'fresh': 'Request fresh samples instead of reusing validated results (default false).',
+        'chapter_id': 'One story section (1–200 characters), or null for all; forced null for steps that are not '
+                      'section-scoped.',
     },
     'TtsLimitsUpdate': {
         '__doc__': 'Gemini speech limits for one model. Each limit is optional: omitted or null keeps the current '

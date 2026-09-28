@@ -70,6 +70,8 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Consequences:** A failure/budget stop stops new scheduling; already in-flight calls may finish. Cancellation is cooperative. A fresh preview/resume reuses matching work, rather than restarting all paid stages automatically. This is a local scheduler, not a distributed workflow engine.
 
+**Amended 2026-09-28 (series on the step pipeline):** The owner decided to discard the phase engine and to run series on the step pipeline under the Analysis tab's consent-only policy. A series run now applies the chosen step(s) to one book at a time in reading order; discovery no longer overlaps across books. The confirmed series fingerprint, covering every book's pipeline plan, authorizes the run, and optional limits apply per book. Each book is re-planned and compared with its confirmed fingerprint before it starts. A cancelled or unstarted child is never started later. Pipeline results are not yet shared between volumes; see [series runs](ANALYSIS-PIPELINE.md#series-runs).
+
 **Revisit when:** Real usage demonstrates that provider queues, batch APIs or additional parallelism would help. Preserve durable run identity, provider ownership, dependency order and bounded spending.
 
 ## D08 · Small voice requests and independent simple listening
@@ -104,7 +106,7 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Revisit when:** Narration budget planning, series-wide allowances or invoice reconciliation are implemented with explicit scopes and uncertain-outcome handling.
 
-**Amended 2026-09-28 (Analysis tab):** At the owner's request, step-pipeline runs no longer take a request limit or dollar guard up front. The confirmed plan preview, which shows the estimated requests and cost and says retries can add requests, is the authorization. Attempts are still reserved and recorded before sending, unknown cost stays unknown, and each unit's attempts stay bounded. API callers may still pass limits. Phase controls and series runs keep their allowances.
+**Amended 2026-09-28 (Analysis tab):** At the owner's request, step-pipeline runs no longer take a request limit or dollar guard up front. The confirmed plan preview, which shows the estimated requests and cost and says retries can add requests, is the authorization. Attempts are still reserved and recorded before sending, unknown cost stays unknown, and each unit's attempts stay bounded. API callers may still pass limits. Phase controls keep their allowances. Series runs followed on 2026-09-28 (D07 amendment).
 
 ## D11 · Lexical retrieval first
 

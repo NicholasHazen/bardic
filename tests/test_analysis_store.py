@@ -163,8 +163,9 @@ def test_restart_marks_active_analysis_interrupted_and_preserves_work(tmp_path, 
     assert recovered["working_book"] == progress["working_book"]
     assert recovered["units"] == progress["units"]
     assert recovered["references"] == restored.character_references("book") == progress["references"]
-    assert "Analyze story again" in restored.job(analysis_job["id"])["message"]
-    assert "Generate again" in restored.job(render_job["id"])["message"]
+    # The messages describe the condition, not a button to press.
+    assert restored.job(analysis_job["id"])["message"].startswith("The server restarted before this analysis finished.")
+    assert restored.job(render_job["id"])["message"].startswith("The server restarted before this job finished.")
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "interrupted"])

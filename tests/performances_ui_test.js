@@ -30,7 +30,9 @@ function environment(preview = {}) {
       else if (url.endsWith('/prepare')) data = {performance:listed[0],job:{id:'job-3',status:'queued'}};
       return {ok:true,status:200,json:async () => data};
     }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/performances.js'),'utf8'),scope);
+  vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8'),scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/performances.js'),'utf8'),scope);
   const listen = {getSelection:() => ({provider:'system'}),getPerformance:() => null,
     narratorOptions:(_book, provider) => ({provider,available:true,voice:provider === 'system' ? 'Samantha' : 'Kore',model:provider === 'gemini' ? 'tts-model' : null,
       voices:[{id:'Samantha',name:'Samantha',usable:true},{id:'Kore',name:'Kore',usable:true}]})};
@@ -65,7 +67,7 @@ test('the new-performance form previews locally and creates with the chosen narr
   assert.deepEqual(previews[0].body.chapter_ids,['c1','c2'],'front matter is left out by default');
   assert.equal(previews[0].body.mode,'simple');
   assert.equal(previews[0].body.voice,'Samantha');
-  assert.match(env.container.innerHTML,/2 passages · 0 already saved · 2 to narrate/);
+  assert.match(env.container.innerHTML,/2 passages · 0 already saved · 2 to record/);
   env.click({performanceMode:'cast'});
   env.click({performanceProvider:'gemini'});
   await settle();
@@ -73,13 +75,14 @@ test('the new-performance form previews locally and creates with the chosen narr
   assert.equal(cast.mode,'cast');
   assert.equal(cast.provider,'gemini');
   assert.equal(cast.voice,null,'a cast performance takes voices from the cast');
+  assert.match(env.container.innerHTML,/>Record performance · about 2 paid requests · cost unknown<\/button>/,'a paid record names its requests and unknown cost');
   env.container.listeners.submit({preventDefault(){}});
   await settle();
   const created = env.calls.find(call => call.url === '/api/books/book-q/performances' && call.method === 'POST');
   assert.equal(created.body.mode,'cast');
   assert.deepEqual(created.body.chapter_ids,['c1','c2']);
   assert.equal(env.jobs.at(-1).id,'job-2');
-  assert.match(env.container.innerHTML,/New performance/,'returns to the list after creating');
+  assert.match(env.container.innerHTML,/data-performance-action="new">Create performance/,'returns to the list after creating');
   assert.ok(!env.calls.some(call => call.method === 'POST' && call.url.includes('/listen')),'the panel never requests narration directly');
 });
 
@@ -90,7 +93,7 @@ test('a preview problem shows its detail and the hint keyed on its code, and blo
   await settle();
   env.click({performanceAction:'new'});
   await settle();
-  assert.match(env.container.innerHTML,/No Gemini API key is configured\. Add a Gemini API key in Settings, or choose another narrator\./);
+  assert.match(env.container.innerHTML,/No Gemini API key is configured\. Add a Gemini API key in Providers &amp; settings, or choose another narrator\./);
   assert.match(env.container.innerHTML,/<p class="inline-error">A condition without a hint\.<\/p>/);
   assert.doesNotMatch(env.container.innerHTML,/\[object Object\]/);
   assert.match(env.container.innerHTML,/<button type="submit" class="button primary" disabled/);

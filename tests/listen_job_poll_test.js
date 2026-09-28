@@ -17,7 +17,7 @@ const job = (id,status,kind='listen',time=1) => ({id,book_id:'book-a',status,kin
   created_at:`2026-09-27T00:00:${id === 'second' ? '02' : '01'}Z`,updated_at:`2026-09-27T00:01:${String(time).padStart(2,'0')}Z`});
 function environment(handler) {
   const state = {book:{id:'book-a'},jobs:[],poll:null,selectionVersion:1,referenceCache:new Map(),referenceVersion:0};
-  const calls = [], timers = new Map(), rendered = {jobs:0,reader:0,player:0,analysis:0,books:[],library:0,toasts:[]};
+  const calls = [], timers = new Map(), rendered = {jobs:0,reader:0,player:0,books:[],library:0,toasts:[]};
   let nextTimer = 1;
   const context = {state,Promise,encodeURIComponent,
     busyJob:() => state.jobs.find(item => ['queued','running'].includes(item.status)),
@@ -25,7 +25,7 @@ function environment(handler) {
     setTimeout:(fn,delay) => {const id=nextTimer++;timers.set(id,{fn,delay});return id;},
     clearTimeout:id => timers.delete(id),
     renderJob:() => rendered.jobs++,renderReader:() => rendered.reader++,updatePlayer:() => rendered.player++,
-    renderAnalysisProgress:() => rendered.analysis++,applyBook:book => rendered.books.push(book),
+    applyBook:book => rendered.books.push(book),
     refreshLibrary:async() => rendered.library++, $$:() => [],loadCharacterReferences:() => {},
     toast:message => rendered.toasts.push(message),
   };
@@ -61,7 +61,6 @@ test('stopped simple listening eventually settles the banner with jobs-only poll
   assert.equal(env.state.poll,null);
   assert.equal(env.state.jobPollToken,null);
   assert.equal(env.rendered.reader,1,'Settling jobs refreshes disabled listening controls');
-  assert.equal(env.rendered.analysis,0);
   assert.equal(env.rendered.books.length,0);
   assert.equal(env.rendered.library,0);
 });
@@ -77,18 +76,15 @@ test('a completed chapter callback still clears an older cancelled job that look
   assert.equal(env.rendered.books.length,0);
 });
 
-test('ordinary analysis completion still refreshes analysis, source projection and library',async()=>{
+test('pipeline completion refreshes the source projection and library, with no Classic progress request',async()=>{
   const env=environment(url => {
-    if (url.startsWith('/api/jobs')) return [job('first','completed','analyze',3)];
-    if (url.endsWith('/analysis')) return {status:'completed'};
+    if (url.startsWith('/api/jobs')) return [job('first','completed','pipeline',3)];
     assert.equal(url,'/api/books/book-a');
     return {id:'book-a',revision:2};
   });
-  env.state.jobs=[job('first','running','analyze')];
+  env.state.jobs=[job('first','running','pipeline')];
   await env.api.pollJobs(true);
-  assert.deepEqual(env.calls,['/api/jobs?book_id=book-a','/api/books/book-a/analysis','/api/books/book-a']);
-  assert.equal(env.state.analysisSummary.status,'completed');
-  assert.equal(env.rendered.analysis,1);
+  assert.deepEqual(env.calls,['/api/jobs?book_id=book-a','/api/books/book-a']);
   assert.equal(env.rendered.books[0].revision,2);
   assert.equal(env.rendered.library,1);
   assert.equal(env.timers.size,0);
@@ -96,10 +92,10 @@ test('ordinary analysis completion still refreshes analysis, source projection a
 
 test('initial general polling switches to jobs-only while simple narration remains active',async()=>{
   let checks=0;
-  const env=environment(url => url.endsWith('/analysis') ? {} : [job('first',++checks === 1 ? 'running' : 'completed','listen',checks)]);
+  const env=environment(() => [job('first',++checks === 1 ? 'running' : 'completed','listen',checks)]);
   await env.api.pollJobs(false);
   await env.runNext();
-  assert.deepEqual(env.calls,['/api/jobs?book_id=book-a','/api/books/book-a/analysis','/api/jobs?book_id=book-a']);
+  assert.deepEqual(env.calls,['/api/jobs?book_id=book-a','/api/jobs?book_id=book-a']);
   assert.equal(env.rendered.books.length,0);
 });
 
@@ -153,6 +149,5 @@ test('temporary status errors retry read-only polling without refreshing the boo
   await env.runNext();
   assert.equal(env.state.jobs[0].status,'cancelled');
   assert.equal(env.rendered.books.length,0);
-  assert.equal(env.rendered.analysis,0);
   assert.equal(env.calls.length,2);
 });

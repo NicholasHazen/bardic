@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ... import analysis as a
-from ...progressive import discovery_specs
+from ..prompts import discovery_specs
 from ..contract import Conflict, LLMRequest, RESERVED_CHARACTERS, Step, Unit, locked
 
 

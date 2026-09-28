@@ -58,7 +58,8 @@ test('contiguous clips in one file advance the highlight without reloading or pa
   env.audio.currentTime=3.5;
   env.events.timeupdate();
   assert.equal(env.nodes.get('#elapsed').textContent,'3.5','elapsed time counts earlier passages in the chapter');
-  assert.equal(env.nodes.get('#player-progress').textContent,'39% of chapter · 38% of book');
+  // Chapter and book progress both count source text, so a one-chapter book shows the same figure.
+  assert.equal(env.nodes.get('#player-progress').textContent,'38% of chapter · 38% of book');
   assert.equal(env.calls.positions.at(-1).segmentId,'s2','advancing saves the new passage');
   env.player.saveProgress();
   assert.equal(env.calls.positions.at(-1).currentTime,1.5,'saved progress is passage-relative');
@@ -148,5 +149,5 @@ test('unnarrated passages are estimated from text and a paused seek does not req
   assert.equal(env.state.pendingOffset,0,'an estimated span starts at the passage beginning');
   assert.equal(env.calls.prepares.length,before,'seeking while paused only moves the position');
   assert.equal(env.nodes.get('#elapsed').textContent,'8');
-  assert.equal(env.nodes.get('#player-progress').textContent,'94% of chapter · 75% of book');
+  assert.equal(env.nodes.get('#player-progress').textContent,'75% of chapter · 75% of book','the scrubber is in seconds; the percentages both count text');
 });

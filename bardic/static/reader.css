@@ -50,6 +50,8 @@ body.reader-mode .passage:hover { background:none; }
 body.reader-mode .passage.active:hover { background:var(--reader-highlight); }
 @media (hover:hover) { body.reader-mode .passage:not(.active):hover { background:color-mix(in srgb, var(--reader-highlight) 55%, transparent); } }
 body.reader-mode .passage:focus-visible { outline-color:var(--reader-accent); }
+/* Focus rings follow the reader theme (the plum ring is below 3:1 on dusk and night); light dialogs keep theirs. */
+body.reader-mode :focus-visible:not(dialog, dialog *) { outline-color:var(--reader-accent); }
 body.reader-mode .chapter-navigation { border-top-color:var(--reader-line); }
 body.reader-mode .chapter-navigation .button { color:var(--reader-accent); min-height:44px; font-size:14px; }
 
@@ -123,7 +125,7 @@ body.reader-mode .player {
   padding-bottom:calc(12px + env(safe-area-inset-bottom)); padding-left:max(20px, env(safe-area-inset-left)); padding-right:max(20px, env(safe-area-inset-right));
   background:var(--reader-chrome); color:var(--reader-ink); border-top-color:var(--reader-line);
 }
-body.reader-mode .player-book span, body.reader-mode .player-timeline time, body.reader-mode .player-progress { color:var(--reader-muted); }
+body.reader-mode .player-book #player-subtitle, body.reader-mode .player-timeline time, body.reader-mode .player-progress { color:var(--reader-muted); }
 body.reader-mode .player-settings-link { color:var(--reader-accent); }
 body.reader-mode .player .play-button { background:var(--reader-accent); color:var(--reader-accent-ink); }
 body.reader-mode .player .icon-button { color:var(--reader-ink); }
@@ -157,19 +159,12 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 .listen-sheet-where { margin:14px 0 6px; font-size:14px; color:var(--muted); }
 .listen-sheet-where strong { color:var(--ink); font-weight:600; }
 .listen-sheet-field { margin-top:16px; }
-.listen-sheet-providers { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px; }
-.listen-sheet-providers button {
-  display:grid; gap:2px; text-align:left; padding:10px 12px; min-height:58px; border:1px solid var(--line); border-radius:10px; background:var(--white);
-}
-.listen-sheet-providers button strong { font-size:14px; font-weight:600; }
-.listen-sheet-providers button small { font-size:11px; color:var(--muted); line-height:1.3; }
-.listen-sheet-providers button[aria-checked=true] { border-color:var(--green); box-shadow:inset 0 0 0 1px var(--green); background:var(--green-light); }
+.listen-sheet .choice[data-kind=cards] { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+.listen-sheet .choice[data-kind=chips] > button { min-width:54px; min-height:var(--control-touch); font-variant-numeric:tabular-nums; }
+.listen-sheet .choice[data-kind=segmented] > button { min-height:var(--control-touch); }
 .listen-sheet-voice { display:flex; gap:8px; margin-top:6px; }
 .listen-sheet-voice select { flex:1; min-width:0; min-height:44px; font-size:15px; }
 .listen-sheet-voice .button { min-height:44px; white-space:nowrap; }
-.listen-sheet-speeds { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-.listen-sheet-speeds button { min-width:54px; min-height:44px; border:1px solid var(--line); border-radius:999px; background:var(--white); font-size:13px; font-variant-numeric:tabular-nums; }
-.listen-sheet-speeds button[aria-checked=true] { background:var(--green); border-color:var(--green); color:white; }
 .listen-sheet-toggle { display:flex; align-items:center; gap:10px; margin-top:16px; min-height:44px; font-size:14px; }
 .listen-sheet-toggle input { width:20px; height:20px; accent-color:var(--green); }
 .listen-sheet .field-help { margin-top:8px; }
@@ -186,14 +181,59 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 }
 @keyframes listen-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } .reader-bar { transition:none; } }
+/* Phones: a bottom sheet. The actions stay in view while the choices scroll. */
 @media (max-width:620px) {
-  .listen-sheet-providers { grid-template-columns:1fr; }
-  .listen-sheet-providers button { min-height:48px; grid-template-columns:auto 1fr; align-items:center; gap:10px; }
+  .listen-sheet[open] { width:100%; max-width:100%; margin:auto 0 0; max-height:88dvh; border-radius:var(--radius-2xl) var(--radius-2xl) 0 0; border-bottom:0; padding:16px 16px 0; }
+  .listen-sheet .modal-header h2 { font-size:var(--text-2xl); }
+  .listen-sheet .choice[data-kind=cards] { grid-template-columns:1fr; gap:var(--space-1-5); }
+  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:baseline; gap:var(--space-2); }
+  .listen-sheet-field { margin-top:12px; }
   .listen-sheet-voice { flex-wrap:wrap; }
   .listen-sheet-voice .button { flex:1; }
+  .listen-sheet-toggle { margin-top:8px; }
+  .listen-sheet-actions { position:sticky; bottom:0; z-index:1; margin:12px -16px 0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:var(--color-bg); border-top:1px solid var(--color-border); }
   .listen-sheet-actions .button { flex:1; }
 }
 
 /* Keep the player's narrator link on one line beside the cover. */
 .player-book > div:last-child { min-width:0; }
 .player-settings-link { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* The paid-narration question above the player follows the reader's colours. */
+body.reader-mode .paid-consent { left:16px; background:var(--reader-bg); color:var(--reader-ink); border-color:var(--reader-line); box-shadow:inset 3px 0 var(--reader-accent), var(--shadow-2); }
+body.reader-mode .paid-consent .field-help { color:var(--reader-muted); }
+
+/* Read & listen above the fold: one toolbar row with the chapter, a one-line narrator
+   summary (Change opens the narrator sheet) and the two entry points. */
+.reader-toolbar { gap:var(--space-2) var(--space-3); padding-bottom:var(--space-3); }
+.narrator-line { display:flex; align-items:center; gap:var(--space-2); flex:1 1 220px; min-width:0; color:var(--color-text-muted); font-size:var(--text-xs); }
+.narrator-line > svg { width:18px; height:18px; flex:none; color:var(--color-accent); }
+.narrator-line-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.narrator-line-text.has-error { color:var(--tone-warn-text); font-weight:var(--weight-semibold); }
+.narrator-line .button.text-button.small { min-height:var(--control-sm); padding:0; flex:none; font-size:var(--text-xs); }
+.reader-toolbar-actions { margin-left:0; }
+.reader-type-label { line-height:1; }
+@media (min-width:621px) { .reader-paper { padding-top:var(--space-5); } }
+/* The drawer's controls live in the narrator sheet now, under More options. */
+.sheet-more-options { margin:var(--space-4) 0 0; }
+.sheet-more-options > summary { padding:var(--space-3) var(--space-4); }
+.sheet-more-options > summary .listening-drawer-action { font-size:var(--text-xl); }
+.sheet-more-options[hidden] { display:none; }
+.sheet-more-options[open] > summary .listening-drawer-action { transform:rotate(45deg); }
+@media (max-width:620px) {
+  .reader-toolbar { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; }
+  .reader-toolbar > label { grid-column:1; }
+  .reader-toolbar > select { grid-column:2; max-width:100%; }
+  .reader-toolbar-actions { grid-column:3; grid-row:1; width:auto; }
+  .reader-toolbar-actions #start-listening { display:none; }
+  .reader-toolbar-actions .button { flex:none; padding:0 var(--space-3); }
+  .reader-toolbar-actions #open-reader { gap:0; }
+  /* On a phone the player right below already names the narrator and opens the same sheet. */
+  .narrator-line { display:none; }
+  .reader-toolbar { padding-bottom:var(--space-2); }
+  .reader-toolbar > label, .reader-view-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+  .reader-toolbar > select { grid-column:1 / 3; }
+  /* The chapter picker above already names the chapter. */
+  .reader-paper .reader-top { display:none; }
+  .reader-paper { padding-top:var(--space-3); }
+  .passage.source-chapter-title { margin-top:0; }
+}

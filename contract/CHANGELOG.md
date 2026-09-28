@@ -22,6 +22,70 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.0 — 2026-09-28
+<!-- contract-sha256: c28bd7cd1cef4f73c647f5e94526f74310e9bbc5b69ac47541e8c3b16c4a4448 -->
+
+**BREAKING.** The UI redesign and the removal of the Classic analysis engine, merged onto 0.2.0 as one release. Series runs now run the step pipeline and share its memory across volumes, the Classic engine's routes and schemas are removed, and several fields are added. Earlier drafts of this work were numbered 0.1.3 and 0.2.0–0.4.0 on a branch and never published; this entry replaces them. Every 0.2.0 convention applies to the new and changed operations: each error has a documented `code`, `detail` describes the condition, and GET routes record nothing. Clients must change the following.
+
+### Classic analysis removed (BREAKING)
+
+- **Removed operations.** These paths are no longer served, and their operation IDs are gone. As for any unknown path, a GET gets 404 and a POST gets 405 (`route_not_found`).
+  - `startClassicAnalysis` (`POST /api/books/{book_id}/analyze`). Queue steps with `startBookAnalysisPipelineRun`; preview them with `planBookAnalysisPipelineRun`.
+  - `previewClassicAnalysis` (`POST /api/books/{book_id}/analysis-plan`).
+  - `getAnalysisPreprocessing` (`GET /api/books/{book_id}/preprocessing`). The census is the `census` step's accepted result; tracked usage is `usage` in `getPipelineInspector`.
+  - `getAnalysisStatus` (`GET /api/books/{book_id}/analysis`). Follow runs through their `pipeline` job and `getBookAnalysisPipeline`.
+- **Removed schemas.** `AnalysisRequest`, `AnalysisLimits`, `AnalysisStatus`, `AnalysisChapterProgress`, `AnalysisCoverage`, `AnalysisCensus`, `CensusChapter`, `CensusCharacter`, `ProfileFreshness`, `AnalysisPlan`, `AnalysisPlanStageCounts`, `AnalysisPlanLimits`, `SeriesBookAnalysisPlan` and `SeriesProcessingRequest`. The `Classic analysis` tag is removed. `AnalysisUsage` stays.
+- **`getPipelineInspector` stage cards** (`PipelineStage`) are rebuilt from the step pipeline.
+  - The cards are `import`, `series`, one card per pipeline step in pipeline order (currently `structure`, `census`, `discovery`, `quotes`, `profiles`, `directing`), then `voices`, `narration`, `alignment` and `export`. `id` is now an open string instead of a fixed enumeration. A step card's counts are its accepted and total scopes, as in `getBookAnalysisPipeline`, and its dependencies are the step's declared inputs.
+  - New always-sent fields: `stale_count` and `candidate_count`. They are integers on step cards and null on the others.
+  - `status` gains `stale` and loses `provisional`, `failed`, `interrupted`, `cancelled` and `budget_limited`, which only a Classic checkpoint produced. An active `analyze` job no longer affects any card.
+  - Like `getBookAnalysisPipeline`, the counts take outside changes into account without recording them. The operation no longer computes or caches the census.
+- Retained historical data stays readable, and descriptions say which fields only the removed engine wrote: `analyze` jobs and their `phase`, `BookAnalysisSummary.phase` and `profiles_provisional`, and `BookCharacter.profile_state` and `profile_provisional`. `Status.analysis_provider` is the default provider for model steps without saved step settings.
+
+### Series runs on the step pipeline (BREAKING)
+
+The operation IDs and paths stay the same; the bodies change.
+
+- **`planSeriesProcessing` request.** `SeriesProcessingRequest` is replaced by `SeriesPlanRequest`: `{steps, configs?, fresh?}`, with the same step IDs and `StepConfig` as the book pipeline. `provider`, `phase`, `concurrency`, `limits` and `expected_plan_fingerprint` now get 422, so 400 `provider_not_cloud` is gone from both series routes. An unknown step ID in `steps` or `configs` is 400 `unknown_step`; an invalid or missing step configuration is 400 `step_config_invalid` or `step_model_missing`; a removed series is 409 `series_archived`.
+- **`planSeriesProcessing` response** (`SeriesPlan`).
+  - Removed: `provider`, `model`, `scan_model`, `phase`, `concurrency`, `limits_per_book` and `plan_fingerprint`.
+  - Added: `plan_version` (3), `steps`, `configs` (resolved per step), `fresh`, `skipped_volumes`, the summed `cached_units`, `service_calls`, `estimated_input_tokens` and `output_token_allowance`, `known_cost_usd`, `unknown_cost_books`, `missing_inputs` (`{book: {step: [inputs]}}`), `missing_credentials` (`SeriesMissingCredential`: `{provider, label, needs}`), `context_pending_books`, `up_to` (`SeriesEstimate`) and `fingerprint`.
+  - Each `books[]` entry (`SeriesPlanBook`) has `plan`, now the book pipeline's `PipelinePlan`, plus `fingerprint`, `consent_fingerprint`, `context_pending` (step IDs whose prompts read earlier books of the run), `context_sources` and `up_to` (`SeriesBookEstimate`: every context-pending unit counted as a request). An unknown price stays null, never zero.
+  - `estimated_cost_usd` is null when any book's cost is unknown, and 0 for a series with no active books.
+  - **Consent covers the unit set, not earlier-volume context.** `fingerprint` is built from each book's `consent_fingerprint`: its revision, `fresh`, and each step's version, provider, model and unit set, plus the exact requests of steps that are not context-pending.
+- **`startSeriesProcessing` request** (`SeriesRunRequest`): the plan fields plus `expected_fingerprint`, `scheduling` (`serial` or `parallel`, as in the book pipeline's `RunRequest`), `gates`, `concurrency` (1–4, model requests in flight inside the running book) and optional `limits` (the pipeline's `Limits`, all uncapped by default). Unknown step IDs in `steps`, `configs` or `gates` are 400 `unknown_step`.
+- **`startSeriesProcessing` errors.** 503 `shutting_down`; 409 `series_archived`; 400 `unknown_step`, `step_config_invalid` or `step_model_missing`; 400 `series_empty`; 400 `run_unconfirmed` (neither `expected_fingerprint` nor a limit); 409 `plan_stale`; 400 `step_inputs_missing`; 400 `api_key_missing` or `server_url_missing`; 409 `series_run_active`; 409 `job_active`. Nothing is queued when any check fails.
+- **Execution.** Books run one at a time in reading order. Before each book starts, its `consent_fingerprint` is recomputed; a changed book fails with nothing sent and stops the series. Each book runs as one pipeline run with `series_run_id` set.
+- **Series jobs** (`Job`).
+  - Series children are `pipeline` jobs, not `analyze` jobs. A child carries `series_id`, `series_run_id`, `position`, `title`, `steps`, `consent_fingerprint`, `context_pending`, `context_sources` and `run_id` (null until its book starts). A child that never started ends with `not_started: true`.
+  - The parent carries `steps`, `configs`, `gates`, `scheduling`, `concurrency` (1–4), `fresh`, `analysis_limits` (now `PipelineRunLimits`, every value possibly null), `estimated_cost_usd`, `requests` and `context_pending_books` instead of `phase`, `provider`, `model` and `scan_model`. `Job.scheduling` now also applies to `series` parents; `Job.analysis_limits` is `PipelineRunLimits` or, for runs recorded before this version, `SeriesJobLimits`. Neither job carries `plan_fingerprint`.
+  - `listSeriesRuns` children are `SeriesRunChild`: a job plus `run` (`SeriesChildRun`: `{id, status, outcomes, error}`) once its book has started. A dangling child job ID is skipped.
+  - Series jobs recorded before this version keep their old fields, which stay described as legacy.
+- `PipelineRun.series_run_id` is present on runs started by a series run.
+- Jobs interrupted by a server restart describe the condition ("The server restarted before this analysis finished. …") instead of naming a removed action.
+
+### Series memory (BREAKING)
+
+- **A series run can pause.** When a book completes with a discovery, profiles or directing version waiting for review (a `review` gate) and a later book of the run reads it, the parent `series` job stays `running` with the new `waiting_for_review` (`SeriesReviewWait`: `book_id`, `child_job_id`, `title`, `position`, `steps`, `since`), and nothing runs until the owner resumes it or cancels it. A client that only waits for a terminal status must now offer resume or cancel. While paused, the waiting book accepts version decisions (`acceptAnalysisPipelineStepVersion` does not return `series_run_active` for it); every other reservation holds.
+- New **`resumeSeriesProcessing`** (`POST /api/series/{series_id}/runs/{job_id}/resume`), returning the parent job. Errors: 404 `series_not_found` or `series_run_not_found`; 409 `series_run_not_waiting`, `series_run_not_resumable` (marked paused but its worker state is gone) or `review_pending`; 503 `shutting_down`. A server restart ends a paused run `interrupted` and clears its `waiting_for_review`.
+- **Series context reads accepted evidence** (`getBookSeriesContext`, and profile prompts). Entries are earlier volumes' current character references instead of retained observations, so accepting, rolling back or setting aside a version there changes them. `SeriesContextObservation` gains the always-sent (nullable) fields `step`, `version_id` and `origin`. Entry `id`s of pipeline evidence differ from any earlier observation ID. A row the removed Classic engine wrote counts only while the observation retained with it still exists.
+- New **`listSeriesLinkSuggestions`** (`GET /api/books/{book_id}/series/suggestions`, `BookSeriesSuggestions` with `SeriesLinkSuggestion`, `SeriesLinkCandidate` and `SeriesLinkSource`): proposed identity links for unlinked characters, by exact normalized name or alias match with linked characters of earlier volumes. Nothing is linked until confirmed with `linkSeriesCharacter`; namesakes are marked `ambiguous`. Read-only; 404 `book_not_found`.
+
+### Character references from accepted evidence
+
+- `listCharacterReferences` returns the projection of the accepted analysis-pipeline versions onto the current book: discovery and profile quotations (`profile_evidence`), attributed dialogue and cast-name mentions, in reading order. It is computed from the current book on every call, as the next pipeline write would record it, and records nothing, so manual edits and acceptance show at once. Rows the removed Classic engine wrote are carried until a discovery version is accepted. A book with no accepted evidence step lists its stored rows unchanged.
+- `CharacterReference` gains optional provenance fields on projected rows: `step`, `version_id`, `origin` (`run`, `baseline`, `external`, `manual`, `book` or `cast_names`), `projection` and, for profile quotations, `anchors` (how many locations match). Rows the removed Classic engine wrote omit them.
+- A speaker confirmed before contract 0.2.0 (edited, with confidence 1.0) counts as reviewed (`provider: "reviewed"`).
+
+### Additive
+
+- `Status` gains `tts_quota`: `{<tts_model>: ChapterListenQuota}` with `requests_today`, `rpd`, `resets_at` and `scope`, the same count chapter-listening jobs report. `requests_today` is 0 before any usage is recorded.
+- `Status` gains `analysis_step_presets` (`StepPresetView[]`, empty when none), and `updateSettings` accepts `analysis_step_presets` (`StepPreset` / `StepPresetConfig`): a whole-list replacement of at most 50 owner-authored step settings. New 400 codes on `updateSettings`: `unknown_step`, `step_config_invalid` and `step_preset_invalid` (an empty name, a repeated `id`, or a repeated name for one step).
+- The presented `Book` gains the always-sent `language`: a BCP 47 tag from the EPUB's `dc:language`, or null.
+- Each presented passage (`BookPassage`) gains the always-sent `manual_fields`: the passage fields a person set by hand (`speaker_id`, `direction`, `cues`, `seed`), which analysis never replaces. The lock bookkeeping removed from the book document in 0.2.0 stays unpublished; this is the one public view of it.
+- The `planBookAnalysisPipelineRun`, `startBookAnalysisPipelineRun` and `previewAnalysisPipelineStepVersion` descriptions now say that their sync also rebuilds the book's character references when their inputs changed.
+- `StoryMapReference` (`getStoryMap`) gains the same optional provenance fields as `CharacterReference` (`step`, `version_id`, `origin`, `projection`, `anchors`). The story map lists the stored rows as the last pipeline write recorded them.
+
 ## 0.2.0 — 2026-09-28
 <!-- contract-sha256: 07db8d051e0f51b00e8f34a123ca1a1824a55fe5cc3c3e3e4c5a08630076a1be -->
 

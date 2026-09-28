@@ -3,7 +3,6 @@
 Offline: synthetic prose, tmp_path libraries, fake narration and a fake analysis provider.
 Each test pins one behavior the red-team review found wrong.
 """
-from copy import deepcopy
 import json
 from pathlib import Path
 import sqlite3
@@ -13,11 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.apispec.series import OPS as SERIES_OPS
-from bardic.app import create_app
+from bardic.app import create_app, manual_fields
+from bardic.pipeline.evidence import reviewed_speaker
 from bardic.pipeline.repository import PipelineRepository
 from bardic.pipeline_view import ATTEMPT_FIELDS
-from bardic.staged_analysis import _references
 from test_analysis_pipeline import MODEL, STORY, FakeProvider, import_book, run, wait_job
+import conftest
 from test_app import fake_audio, import_text
 
 
@@ -35,6 +35,9 @@ def client(tmp_path, monkeypatch):
                                                 'analysis_models_by_provider': {'openai': MODEL},
                                                 'preprocess_models_by_provider': {'openai': MODEL}})
         yield test_client
+
+
+ROUTE_GONE = 405  # An unknown POST path reaches the static-file mount, which allows only GET.
 
 
 def store_of(client):
@@ -79,17 +82,19 @@ def test_library_snapshot_audio_count_matches_the_book_list(client, monkeypatch)
 
 # 2. A series plan's writes are the ones its description names -----------------------------------
 
-def test_series_plan_retains_census_records_but_creates_no_jobs(client):
+def test_series_plan_records_what_its_description_names_but_creates_no_jobs(client):
     book = import_text(client)
     series = series_with(client, book)
-    before = count(client, 'artifact_versions', book['id']), count(client, 'resource_operations', book['id'])
-    response = client.post(f"/api/series/{series['id']}/plan", json={'provider': 'openai'})
+    before = count(client, 'artifact_versions', book['id'])
+    response = client.post(f"/api/series/{series['id']}/plan", json={'steps': ['discovery']})
     assert response.status_code == 200, response.text
-    after = count(client, 'artifact_versions', book['id']), count(client, 'resource_operations', book['id'])
-    assert after[0] > before[0] and after[1] > before[1]
+    # Each book's sync records its outside changes (here the first `baseline` versions) as artifacts.
+    assert count(client, 'artifact_versions', book['id']) > before
+    assert [v['origin'] for v in versions(client, book['id'], 'directing')] == ['baseline']
     assert client.get('/api/jobs').json() == []
     description = next(o for o in SERIES_OPS if o.id == 'planSeriesProcessing').description
-    assert 'creates no jobs or records' not in description and 'census' in description
+    assert 'creates no jobs or records' not in description
+    assert 'census' in description and 'records outside changes' in description
 
 
 # 3. PATCH of a pronunciation is partial -----------------------------------------------------------
@@ -142,15 +147,23 @@ def test_unknown_steps_in_gates_or_configs_are_400_and_queue_nothing(client):
     assert ignored.status_code == 200, ignored.text
 
 
-# 6. Classic previews refuse archived books ------------------------------------------------------
+# 6. Classic previews are gone -------------------------------------------------------------------
+# Main (0.2.0) made the Classic preview refuse archived books. The Classic routes were removed in
+# contract 0.3.0, so they are not served at all; nothing is recorded for any book. The book
+# pipeline's plan still accepts a removed book, as its description says.
 
-def test_classic_preview_of_an_archived_book_is_409(client):
+def test_removed_classic_routes_are_not_served_and_record_nothing(client):
     book = import_text(client)
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
     before = count(client, 'artifact_versions', book['id'])
-    response = client.post(f"/api/books/{book['id']}/analysis-plan", json={'provider': 'local'})
-    assert response.status_code == 409 and response.json() == {'detail': 'This book is archived.', 'code': 'book_archived'}
+    for route in ('analysis-plan', 'analyze'):
+        # Sent without the contract check (conftest), which refuses any path the contract does not describe.
+        request = client.build_request('POST', f"/api/books/{book['id']}/{route}", json={'provider': 'local'})
+        response = conftest._send(client, request)
+        assert response.status_code == ROUTE_GONE, (route, response.status_code, response.text)
+        assert response.json()['code'] == 'route_not_found'
     assert count(client, 'artifact_versions', book['id']) == before
+    assert client.get('/api/jobs').json() == []
 
 
 # 7. One name per concept --------------------------------------------------------------------------
@@ -177,10 +190,10 @@ def test_pipeline_runs_use_scheduling_and_old_runs_are_read_with_it(client):
 def test_series_book_plans_have_no_limits_and_character_edits_have_no_voice_aliases(client):
     book = import_text(client)
     series = series_with(client, book)
-    plan = client.post(f"/api/series/{series['id']}/plan", json={'provider': 'openai'}).json()
+    plan = client.post(f"/api/series/{series['id']}/plan", json={'steps': ['discovery']}).json()
     assert 'limits' not in plan['books'][0]['plan']
     schemas = json.loads((Path(__file__).parents[1] / 'contract' / 'openapi.json').read_text())['components']['schemas']
-    assert 'limits' not in schemas['SeriesBookAnalysisPlan']['properties']
+    assert 'SeriesBookAnalysisPlan' not in schemas  # Removed with the Classic engine (contract 0.3.0).
     assert not {'voice', 'system_voice'} & set(schemas['CharacterEdit']['properties'])
     character = book['characters'][-1]['id']
     for alias in ('voice', 'system_voice'):
@@ -218,12 +231,11 @@ def test_archived_details_are_one_sentence_per_code(client):
     assert client.post(f"/api/series/{series['id']}/archive").status_code == 200
     renamed = client.patch(f"/api/series/{series['id']}", json={'name': 'Other'})
     assert renamed.json() == {'detail': 'This series is archived.', 'code': 'series_archived'}
-    planned = client.post(f"/api/series/{series['id']}/plan", json={'provider': 'openai'})
+    planned = client.post(f"/api/series/{series['id']}/plan", json={'steps': ['discovery']})
     assert planned.json() == {'detail': 'This series is archived.', 'code': 'series_archived'}
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
     archived = {'detail': 'This book is archived.', 'code': 'book_archived'}
-    responses = [client.post(f"/api/books/{book['id']}/analyze", json={'provider': 'local'}),
-                 client.patch(f"/api/books/{book['id']}/scenes/{book['scenes'][0]['id']}", json={'title': 'X'}),
+    responses = [client.patch(f"/api/books/{book['id']}/scenes/{book['scenes'][0]['id']}", json={'title': 'X'}),
                  client.patch(f"/api/books/{book['id']}/metadata", json={'title': 'X', 'author': ''}),
                  client.post(f"/api/books/{book['id']}/analysis-pipeline/runs",
                              json={'steps': ['census'], 'limits': {'max_requests': 5}}),
@@ -236,23 +248,11 @@ def test_archived_details_are_one_sentence_per_code(client):
 
 # A. Outside writers record the projection they replace ----------------------------------------------
 
-def test_classic_analysis_records_the_state_it_replaces_as_a_restorable_version(client):
-    book = import_book(client)
-    before = client.get(f"/api/books/{book['id']}").json()
-    # No Analysis tab visit or pipeline request first: the writer itself records what it replaces.
-    response = client.post(f"/api/books/{book['id']}/analyze", json={'provider': 'local', 'phase': 'full'})
-    assert wait_job(client, response.json()['id'])['status'] == 'completed'
-    assert [v['origin'] for v in versions(client, book['id'], 'directing')] == ['baseline']
-    base = f"/api/books/{book['id']}/analysis-pipeline"
-    assert client.post(f'{base}/plan', json={'steps': ['directing']}).status_code == 200
-    items = versions(client, book['id'], 'directing')
-    assert [(v['origin'], v['state']) for v in items] == [('external', 'accepted'), ('baseline', 'superseded')]
-    assert client.post(f"{base}/steps/directing/versions/{items[1]['id']}/accept", json={}).status_code == 200
-    restored = client.get(f"/api/books/{book['id']}").json()
-    assert [s['speaker_id'] for s in restored['segments']] == [s['speaker_id'] for s in before['segments']]
+# Main's Classic-analysis capture test is dropped: the Classic engine is gone. The pipeline's own
+# accept path syncs before it writes, and test_analysis_pipeline covers outside-change capture.
 
 
-def test_manual_edits_structure_repair_and_series_runs_record_the_prior_projection(client, monkeypatch):
+def test_manual_edits_structure_repair_and_series_runs_record_the_prior_projection(client):
     edited = import_book(client)
     title = edited['scenes'][0]['title']
     assert client.patch(f"/api/books/{edited['id']}/scenes/{edited['scenes'][0]['id']}", json={'title': 'Hand-made'}).status_code == 200
@@ -270,10 +270,11 @@ def test_manual_edits_structure_repair_and_series_runs_record_the_prior_projecti
     assert client.post(f"/api/books/{repaired['id']}/repair-structure").status_code == 200
     assert [v['origin'] for v in versions(client, repaired['id'], 'structure')] == ['baseline']
 
+    # Series children are pipeline runs, which sync before they run: the prior projection is a baseline.
     member = import_book(client)
     series = series_with(client, member)
-    monkeypatch.setattr('bardic.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
-    started = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai', 'phase': 'scan'})
+    assert versions(client, member['id'], 'directing') == []
+    started = client.post(f"/api/series/{series['id']}/process", json={'steps': ['census'], 'limits': {'max_requests': 5}})
     assert started.status_code == 200, started.text
     assert wait_job(client, started.json()['id'])['status'] == 'completed'
     assert [v['origin'] for v in versions(client, member['id'], 'directing')] == ['baseline']
@@ -282,15 +283,27 @@ def test_manual_edits_structure_repair_and_series_runs_record_the_prior_projecti
 # B. Main-era confirmations keep their reviewed label ----------------------------------------------
 
 def test_main_era_confirmed_speaker_is_still_reviewed():
-    book = {'id': 'b', 'chapters': [{'id': 'c1', 'text': '“Stay,” Mara said.'}],
-            'characters': [{'id': 'narrator', 'name': 'Narrator'}, {'id': 'mara', 'name': 'Mara'}],
-            'segments': [{'id': 's1', 'chapter_id': 'c1', 'kind': 'dialogue', 'start': 0, 'end': 7, 'speaker_id': 'mara',
-                          'confidence': 1.0, 'edited': True, 'edited_fields': ['direction'],
-                          'analysis_provider': 'openai', 'analysis_model': MODEL}]}
-    dialogue = [r for r in _references(book, {}, 'openai', MODEL, []) if r['kind'] == 'dialogue']
-    assert [r['provider'] for r in dialogue] == ['reviewed']
-    book['segments'][0]['confidence'] = .8
-    assert [r['provider'] for r in _references(book, {}, 'openai', MODEL, []) if r['kind'] == 'dialogue'] == ['openai']
+    segment = {'id': 's1', 'chapter_id': 'c1', 'kind': 'dialogue', 'start': 0, 'end': 7, 'speaker_id': 'mara',
+               'confidence': 1.0, 'edited': True, 'edited_fields': ['direction'],
+               'analysis_provider': 'openai', 'analysis_model': MODEL}
+    assert reviewed_speaker(segment) and 'speaker_id' in manual_fields(segment)
+    segment['confidence'] = .8
+    assert not reviewed_speaker(segment) and manual_fields(segment) == ['direction']
+
+
+def test_main_era_confirmed_speaker_is_reviewed_in_character_references(client):
+    book = import_book(client)
+    job, _ = run(client, book['id'], ['discovery', 'profiles', 'directing'])
+    assert job['status'] == 'completed'
+    store = store_of(client)
+    stored = store.book(book['id'])
+    line = next(s for s in stored['segments'] if s['kind'] == 'dialogue' and s['speaker_id'] not in {'narrator', 'unassigned'})
+    # A confirmation saved before per-field locks recorded it: `edited` with confidence 1.0, no speaker lock.
+    line.update(edited=True, edited_fields=['direction'], confidence=1.0)
+    store.save_book(stored)
+    rows = client.get(f"/api/books/{book['id']}/characters/{line['speaker_id']}/references").json()
+    row = next(r for r in rows if r['kind'] == 'dialogue' and r['segment_id'] == line['id'])
+    assert row['provider'] == 'reviewed' and row['origin'] == 'manual'
 
 
 # C. Attempts keep their pricing provenance ------------------------------------------------------

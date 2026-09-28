@@ -31,9 +31,16 @@ def story():
     return parse_book('story.txt', b'Chapter 1\n\nMara said, "Wait."\n\nChapter 2\n\nThe door opened.')
 
 
+def legacy_units_table(store):
+    """The removed Classic engine's unit cache, as existing libraries still have it (dropped in stage 4)."""
+    with store.connect() as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
+        conn.execute('CREATE INDEX IF NOT EXISTS analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
+
+
 def legacy_unit(store, book_id, key, source, value):
-    """Old databases did not have ProcessingStore's new artifact publication hook."""
-    ProcessingStore(store)
+    """A row the Classic engine wrote; ArtifactRepository.backfill must retain it before stage 4 drops the table."""
+    legacy_units_table(store)
     with store.connect() as conn:
         conn.execute('INSERT INTO analysis_units VALUES (?,?,?,?,?)',
                      (book_id, key, value.get('stage', ''), source, json.dumps(value)))
@@ -230,7 +237,8 @@ def test_backfill_is_idempotent_and_does_not_export_settings_or_change_live_head
     store = repository.store
     store.save_book(book)
     store.save_settings({'api_key': 'must-not-be-exported', 'analysis_model': 'private-preference'})
-    ProcessingStore(store)
+    ProcessingStore(store)  # the shared census cache table
+    legacy_units_table(store)
     chapter = book['chapters'][0]
     unit = {'unit_key': 'discovery-key', 'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0,
             'end': len(chapter['text']), 'provider': 'anthropic', 'model': 'known-model', 'result': {'characters': []}}

@@ -124,7 +124,7 @@ def analyze(client, provider, base_url, body, cancelled, *, wait=_wait) -> dict:
     """
     label = SERVICES[provider]['label']
     if not base_url:
-        raise ServiceError(f'Add the {label} server URL in Settings first.')
+        raise ServiceError(f'No {label} server URL is configured.')
     text = body.get('text') or ''
     if len(text) > MAX_CHARACTERS[provider]:
         raise ServiceError(f'This section has {len(text):,} characters; {label} accepts at most '

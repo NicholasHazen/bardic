@@ -12,7 +12,7 @@ from typing import Any, Literal, Union
 from pydantic import Field
 
 from .base import Op, View, op
-from .common import Job
+from .common import Job, PipelineRunLimits, PipelineStepConfigView
 
 TAG = 'Analysis pipeline'
 
@@ -216,21 +216,6 @@ class PipelineDecision(View):
     created_at: str = Field(description='ISO 8601 UTC.')
 
 
-class PipelineStepConfigView(View):
-    """The provider and model a run snapshotted for one step."""
-    provider: str = Field(description='Provider ID the run uses for this step: `local` for plain steps, otherwise a '
-                                      'pipeline provider ID.')
-    model: str | None = Field(description='Model ID the run sends, or null for plain steps and service providers.')
-
-
-class PipelineRunLimits(View):
-    """Caps a run was started with; null means uncapped."""
-    max_requests: int | None = Field(description='HTTP attempts allowed in this run.')
-    max_input_tokens: int | None = Field(description='Input tokens (reserved or reported) allowed in this run.')
-    max_output_tokens: int | None = Field(description='Output tokens (reserved or reported) allowed in this run.')
-    budget_usd: float | None = Field(description='Cumulative USD guard across every tracked attempt for the book, including earlier runs.')
-
-
 class PipelineRunOutcome(View):
     """How one requested step ended within a run."""
     status: Literal['completed', 'failed', 'budget_limited', 'cancelled', 'skipped'] = Field(
@@ -274,6 +259,9 @@ class PipelineRun(View):
     completed_at: str | None = Field(None, description='ISO 8601 UTC finish time. Absent until the worker finishes.')
     outcomes: dict[StepId, PipelineRunOutcome] | None = Field(
         None, description='Per-step outcome keyed by step ID. Absent until the worker finishes.')
+    series_run_id: str | None = Field(
+        None, description='Present only on a run started by a series run: the parent `series` job ID. Absent on runs '
+                          'started from the book.')
 
 
 class PipelineRunStarted(View):
@@ -576,7 +564,8 @@ SYNC_NOTE = (
     'Before answering, the server records outside changes (`projection.sync`): when the capturable content of the '
     'book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first '
     'time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not '
-    'changed. This is skipped cheaply when a digest of the captured content is unchanged.')
+    'changed, but its character references are rebuilt from the accepted evidence when their inputs changed. This '
+    'is skipped cheaply when a digest of the captured content is unchanged.')
 
 VALIDATE_CONFIG = ('For a local (plain) step only `provider: "local"` with no model is accepted. A service provider '
                    '(`booknlp`, `novel_analyzer`) takes no model. A model provider needs a model ID matching '
@@ -742,6 +731,8 @@ OPS: list[Op] = [
                      'version_incompatible': 'A selected result does not fit the book.'},
                404: NO_VERSION,
                409: {**RUNNING, **BOOK_BUSY,
+                     'series_run_active': 'An active series run reserves this book, unless that run is paused '
+                                          'waiting for review of this book (see `SeriesReviewWait`).',
                      'job_active': 'Another job (not a pipeline run) is changing this book.',
                      'plan_stale': 'The book revision differs from `expected_revision`: the book changed after the '
                                    'preview. Preview again.'}},

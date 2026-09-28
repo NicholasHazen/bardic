@@ -3,9 +3,9 @@ from copy import deepcopy
 
 from bardic import analysis as a
 from bardic.importer import parse_book
-from bardic.processing import ProcessingStore,source_hash
-from bardic.progressive import discoveries,profile_specs
-from bardic.staged_analysis import _references
+from bardic.pipeline import default_registry, evidence
+from bardic.pipeline.prompts import profile_specs
+from bardic.pipeline.repository import PipelineRepository
 from bardic.store import Store
 
 
@@ -66,31 +66,45 @@ def test_reviewed_profile_keeps_identity_aliases_and_voice_but_gets_grounded_evi
     assert mara['evidence']==candidate('anything')['evidence']
 
 
+def accept_discovery(store, book, candidates):
+    """Accept one discovery version for the book's first chapter, as a run would publish it."""
+    chapter = book['chapters'][0]
+    payload = {'ranges': [{'start': 0, 'end': len(chapter['text']), 'unit': 'u1'}],
+               'candidates': [{**c, 'range_start': 0} for c in candidates]}
+    repository, registry = PipelineRepository(store), default_registry()
+    with store.lock, store.connect() as conn:
+        identifier = repository.record_version(conn, book['id'], registry.get('discovery'), chapter['id'], payload,
+                                               origin='run', provider='anthropic', model='claude-haiku-4-5-20251001')
+        repository.decide(conn, book['id'], 'discovery', 'accept', {chapter['id']: identifier}, mode='user')
+        evidence.refresh(repository, conn, store.book(book['id']))
+    return payload
+
+
 def test_alias_resolver_keeps_later_canonical_evidence_in_profiles_and_references(tmp_path):
     book=parse_book('aliases.txt',b'Mara Voss, called Mara, spoke quietly.')
     book['characters'].append(person('mara','Mara'))
     store=Store(tmp_path)
     store.save_book(book)
-    unit={'unit_key':'later-name','provider':'anthropic','model':'claude-haiku-4-5-20251001',
-          'stage':'discovery','chapter_id':book['chapters'][0]['id'],'start':0,'end':len(book['chapters'][0]['text']),
-          'result':{'characters':[candidate('Mara Voss',['Mara'])]}}
-    repository=ProcessingStore(store)
-    repository.save_unit(book['id'],unit['unit_key'],'discovery',source_hash(book),unit)
-    accepted=discoveries(book,store,repository)
-    specs=profile_specs(book,store,accepted)
+    payload=accept_discovery(store,book,[candidate('Mara Voss',['Mara'])])
+    # The Profiles step reads accepted discovery candidates in this shape.
+    observations=[{'chapter_id':book['chapters'][0]['id'],'unit_key':'u1','result':{'characters':payload['candidates']}}]
+    specs=profile_specs(book,store,observations)
     assert len(specs)==1 and specs[0]['name']=='Mara'
     assert 'Mara Voss, called Mara' in specs[0]['prompt']
-    refs=_references(book,{unit['unit_key']:unit},'openai','gpt-6-sol',[])
-    evidence=[r for r in refs if r['kind']=='profile_evidence']
-    assert len(evidence)==1 and evidence[0]['character_id']=='mara'
-    assert evidence[0]['provider']=='anthropic' and evidence[0]['model']=='claude-haiku-4-5-20251001'
+    refs=[r for r in store.character_references(book['id']) if r['kind']=='profile_evidence']
+    assert len(refs)==1 and refs[0]['character_id']=='mara' and refs[0]['step']=='discovery'
+    assert refs[0]['provider']=='anthropic' and refs[0]['model']=='claude-haiku-4-5-20251001'
 
 
-def test_ambiguous_candidate_evidence_is_not_attributed_to_either_shared_alias():
+def test_ambiguous_candidate_evidence_is_not_attributed_to_either_shared_alias(tmp_path):
     book=parse_book('alias.txt',b'The Captain spoke quietly.')
     book['characters'] += [person('mara','Mara',['The Captain']),person('elio','Elio',['The Captain'])]
     record=candidate('The Captain')
     record['evidence']=['The Captain spoke quietly.']
-    unit={'stage':'discovery','chapter_id':book['chapters'][0]['id'],'start':0,'end':len(book['chapters'][0]['text']),
-          'result':{'characters':[record]}}
-    assert _references(book,{'unit':unit},'openai','gpt-6-luna',[])==[]
+    store=Store(tmp_path)
+    store.save_book(book)
+    accept_discovery(store,book,[record])
+    assert [r for r in store.character_references(book['id']) if r['kind']=='profile_evidence']==[]
+    with store.connect() as conn:
+        counts=PipelineRepository(store).state(conn,book['id'])[evidence.STATE_KEY]['counts']
+    assert counts['unresolved']==1

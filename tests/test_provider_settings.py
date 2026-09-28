@@ -46,49 +46,63 @@ def wait_job(client, job_id):
     pytest.fail("analysis worker did not finish")
 
 
-def record_analysis(monkeypatch):
+ADAPTERS = {"gemini": "_request", "openai": "_openai_request", "anthropic": "_anthropic_request"}
+
+
+def record_analysis(monkeypatch, fail=None):
+    """Replace every cloud adapter; a discovery request that finds nobody is a valid result."""
     calls = []
 
-    def analyze(book, provider, key, model, progress, cancelled, **options):
-        calls.append((provider, key, model))
-        result = copy.deepcopy(book)
-        result["analysis"] = {"provider": provider, "model": model, "status": "draft"}
-        progress(1, 1, "Analysis ready")
-        return result
+    def adapter(provider):
+        def request(_client, model, key, prompt, schema, cancelled):
+            calls.append((provider, key, model))
+            if fail:
+                fail(key)
+            return {"characters": []}
+        return request
 
-    monkeypatch.setattr("bardic.app.analyze_book", analyze)
+    for provider, name in ADAPTERS.items():
+        monkeypatch.setattr(f"bardic.analysis.{name}", adapter(provider))
     return calls
 
 
-@pytest.mark.parametrize("provider", ["local", "gemini", "openai", "anthropic"])
+def start_discovery(client, book_id, **body):
+    """Start a Discovery run the way the Analyze tab does: preview, then confirm its fingerprint."""
+    preview = client.post(f"/api/books/{book_id}/analysis-pipeline/plan", json={"steps": ["discovery"], **body})
+    assert preview.status_code == 200, preview.text
+    return client.post(f"/api/books/{book_id}/analysis-pipeline/runs",
+                       json={"steps": ["discovery"], "expected_fingerprint": preview.json()["fingerprint"], **body})
+
+
+def settings(provider, keys=KEYS):
+    return {"analysis_provider": provider, "api_keys": keys, "analysis_models_by_provider": MODELS,
+            "preprocess_models_by_provider": MODELS}
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openai", "anthropic"])
 def test_saved_analysis_provider_routes_only_its_own_key_and_model(client, monkeypatch, provider):
     calls = record_analysis(monkeypatch)
-    saved = client.post("/api/settings", json={
-        "analysis_provider": provider, "api_keys": KEYS, "analysis_models_by_provider": MODELS,
-    })
+    saved = client.post("/api/settings", json=settings(provider))
     assert saved.status_code == 200, saved.text
     book = import_book(client)
-    response = client.post(f"/api/books/{book['id']}/analyze", json={})
+    response = start_discovery(client, book["id"])
     assert response.status_code == 200, response.text
-    job = wait_job(client, response.json()["id"])
+    job = wait_job(client, response.json()["job"]["id"])
     assert job["status"] == "completed", job
-    assert job["provider"] == provider
-    assert job["model"] == MODELS.get(provider)
-    assert calls == [(provider, KEYS.get(provider, ""), MODELS.get(provider))]
-    analyzed = client.get(f"/api/books/{book['id']}").json()
-    assert analyzed["analysis"]["provider"] == provider
-    assert [segment["text"] for segment in analyzed["segments"]] == [segment["text"] for segment in book["segments"]]
+    assert calls and set(calls) == {(provider, KEYS[provider], MODELS[provider])}
     assert not any(key in json.dumps(job) for key in KEYS.values())
+    assert not any(key in json.dumps(response.json()) for key in KEYS.values())
 
 
-def test_explicit_analysis_choice_overrides_saved_choice_without_changing_it(client, monkeypatch):
+def test_explicit_step_config_overrides_saved_choice_without_changing_it(client, monkeypatch):
     calls = record_analysis(monkeypatch)
-    client.post("/api/settings", json={"analysis_provider": "openai", "api_keys": KEYS, "analysis_models_by_provider": MODELS})
+    client.post("/api/settings", json=settings("openai"))
     book = import_book(client)
-    response = client.post(f"/api/books/{book['id']}/analyze", json={"provider": "anthropic"})
+    configs = {"discovery": {"provider": "anthropic", "model": MODELS["anthropic"]}}
+    response = start_discovery(client, book["id"], configs=configs)
     assert response.status_code == 200, response.text
-    assert wait_job(client, response.json()["id"])["status"] == "completed"
-    assert calls == [("anthropic", KEYS["anthropic"], MODELS["anthropic"])]
+    assert wait_job(client, response.json()["job"]["id"])["status"] == "completed"
+    assert calls and set(calls) == {("anthropic", KEYS["anthropic"], MODELS["anthropic"])}
     assert client.get("/api/status").json()["analysis_provider"] == "openai"
 
 
@@ -96,9 +110,11 @@ def test_explicit_analysis_choice_overrides_saved_choice_without_changing_it(cli
 def test_missing_selected_key_never_falls_back_to_another_provider(client, monkeypatch, provider, label):
     calls = record_analysis(monkeypatch)
     other_keys = {name: key for name, key in KEYS.items() if name != provider}
-    client.post("/api/settings", json={"api_keys": other_keys, "analysis_provider": provider})
+    client.post("/api/settings", json=settings(provider, other_keys))
     book = import_book(client)
-    response = client.post(f"/api/books/{book['id']}/analyze", json={})
+    plan = client.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={"steps": ["discovery"]}).json()
+    assert plan["steps"][0]["provider"] == provider
+    response = start_discovery(client, book["id"])
     assert response.status_code == 400
     assert label in response.json()["detail"]
     assert calls == []
@@ -195,7 +211,7 @@ def test_environment_keys_are_separate_and_google_alias_still_works(tmp_path, mo
 
 def test_queued_analysis_retains_provider_key_and_model_when_settings_change(client, monkeypatch):
     calls = record_analysis(monkeypatch)
-    client.post("/api/settings", json={"analysis_provider": "openai", "api_keys": KEYS, "analysis_models_by_provider": MODELS})
+    client.post("/api/settings", json=settings("openai"))
     book = import_book(client)
     started, release = threading.Event(), threading.Event()
 
@@ -206,46 +222,45 @@ def test_queued_analysis_retains_provider_key_and_model_when_settings_change(cli
     client.app.state.runtime.pool.submit(occupy_worker)
     assert started.wait(2)
     try:
-        response = client.post(f"/api/books/{book['id']}/analyze", json={})
+        response = start_discovery(client, book["id"])
         assert response.status_code == 200, response.text
-        assert response.json()["status"] == "queued"
+        assert response.json()["job"]["status"] == "queued"
         changed = client.post("/api/settings", json={
             "analysis_provider": "anthropic", "api_keys": {"openai": "rotated-openai-key"},
             "analysis_models_by_provider": {"openai": "new-openai-model"},
+            "preprocess_models_by_provider": {"openai": "new-openai-model"},
         })
         assert changed.status_code == 200, changed.text
     finally:
         release.set()
-    job = wait_job(client, response.json()["id"])
+    job = wait_job(client, response.json()["job"]["id"])
     assert job["status"] == "completed", job
-    assert (job["provider"], job["model"]) == ("openai", MODELS["openai"])
-    assert calls == [("openai", KEYS["openai"], MODELS["openai"])]
+    assert calls and set(calls) == {("openai", KEYS["openai"], MODELS["openai"])}
 
 
 def test_analysis_failure_after_key_rotation_redacts_old_and_current_keys(client, monkeypatch):
     started, release = threading.Event(), threading.Event()
     rotated = "rotated-openai-secret"
 
-    def fail(book, provider, key, model, progress, cancelled, **options):
+    def fail(key):
         started.set()
         assert release.wait(5)
         raise ValueError(f"Provider failed: {key}, {rotated}, {KEYS['anthropic']}")
 
-    monkeypatch.setattr("bardic.app.analyze_book", fail)
-    client.post("/api/settings", json={"analysis_provider": "openai", "api_keys": KEYS})
+    record_analysis(monkeypatch, fail)
+    client.post("/api/settings", json=settings("openai"))
     book = import_book(client)
-    response = client.post(f"/api/books/{book['id']}/analyze", json={})
+    response = start_discovery(client, book["id"])
     assert response.status_code == 200, response.text
     try:
         assert started.wait(2)
         client.post("/api/settings", json={"api_keys": {"openai": rotated}})
     finally:
         release.set()
-    job = wait_job(client, response.json()["id"])
+    job = wait_job(client, response.json()["job"]["id"])
     assert job["status"] == "failed"
-    assert job["error"] == "Provider failed: [redacted], [redacted], [redacted]"
+    assert "Provider failed: [redacted], [redacted], [redacted]" in job["error"]
     assert not any(key in json.dumps(job) for key in (*KEYS.values(), rotated))
-    assert client.get(f"/api/books/{book['id']}").json() == book
 
 
 def test_gemini_narration_uses_its_own_key_and_model_with_anthropic_analysis_selected(client, monkeypatch):

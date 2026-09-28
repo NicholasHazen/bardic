@@ -25,10 +25,10 @@ Describing every route for contract 0.1.0 surfaced 28 defects and six groups of 
 | Library | `audio_count` counted takes that were no longer current. | Counts current, playable takes, on every route. |
 | Library | The cover `ETag`, `If-None-Match` and caching were broken. | Quoted strong `ETag`, 304, and `immutable` at the content-addressed URL. |
 | Library | The 413 check ran after the whole upload, and a failed save left an orphaned original. | Refused before reading, and cleaned up on any failure. |
-| Books | Any edit, even an empty one, marked the item edited and bumped `revision`. | A no-op edit saves nothing, and a real edit marks only the changed fields. The Classic engine still treats any edited item as reviewed (see Kept). |
+| Books | Any edit, even an empty one, marked the item edited and bumped `revision`. | A no-op edit saves nothing, and a real edit marks only the changed fields. |
 | Books | Blank voice IDs and `seed` behaved differently per provider, and a passage seed could not be cleared. | One rule for every provider: blank clears the choice, an inapplicable `seed` is 400, and `seed: null` clears it. |
 | Books | `addCharacter` never assigned a device voice. | Assigned the same way import does. |
-| Books | Character references went stale after manual edits and pipeline acceptance. | Derived from the current book on every read. |
+| Books | Character references went stale after manual edits and pipeline acceptance. | The projection of accepted evidence (contract 0.3.0), computed from the current book on every read without recording anything. |
 | Books | A dangling stored reference answered 404. | 500 `internal_error`. Only a resource named by the request can be 404. |
 | Series | A removed series answered 404, and archiving was not idempotent. | 409 `series_archived` for changes, reads still work, and archive and restore are idempotent. |
 | Series | Series characters and restore ignored removal and active runs. | 409 `series_archived` or `series_run_active`. |
@@ -36,7 +36,7 @@ Describing every route for contract 0.1.0 surfaced 28 defects and six groups of 
 | Pipeline | Reject skipped the book check, and a `same_as_accepted` candidate could not be rejected. | Both are checked, and rejecting that candidate declines it. |
 | Pipeline | The returned `run` was the object the worker mutates. | A snapshot is returned. |
 | Jobs | A job cancelled while queued was settled again, and could become `interrupted`. | A terminal status is final at the storage level. |
-| Inspection | Cancelled stages showed `interrupted`, and story-map edges could dangle. | Cancelled Classic runs show `cancelled`, and edges always end at a node. |
+| Inspection | Cancelled stages showed `interrupted`, and story-map edges could dangle. | Edges always end at a node. Since contract 0.3.0 the inspector's stage cards come from the step pipeline and no longer read a Classic checkpoint. |
 | Inspection | The analysis export dumped raw attempt rows. | One allowlist for the inspector and the export (export `schema_version: 2`). |
 
 ### Inconsistencies
@@ -52,9 +52,9 @@ Describing every route for contract 0.1.0 surfaced 28 defects and six groups of 
 
 ## Kept, by decision
 
-- **Classic analysis treats an edited item as wholly reviewed.** A real manual edit still stops the Classic engine from changing that item, even though `edited_fields` now names the changed fields. The owner decided to remove the Classic engine (2026-09-28), so per-field locking is not built for it. The step pipeline uses its own review state.
+- **Classic analysis treated an edited item as wholly reviewed.** The owner removed the Classic engine instead of building per-field locking for it (contract 0.3.0). The step pipeline uses per-field locks.
 - **Provider-state checks return 200.** Account checks, model refresh and Breeze refresh report a provider's failure inside a 200 body, because reporting that state is their purpose.
-- **Pipeline history is captured at write time, not by viewing.** Before 0.2.0, opening the Analysis tab (a GET) recorded the current projection as a pipeline version. Now every outside writer (Classic analysis, series runs, structure repair and manual edits) records the projection it replaces before it writes. States within a single run, between its chapter stages, are not captured.
+- **Pipeline history is captured at write time, not by viewing.** Before 0.2.0, opening the Analysis tab (a GET) recorded the current projection as a pipeline version. Now every outside writer (structure repair and manual edits; Classic analysis and Classic series runs until they were removed in contract 0.3.0) records the projection it replaces before it writes. Series runs are pipeline runs since contract 0.3.0.
 
 ## Open
 

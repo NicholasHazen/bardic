@@ -5,7 +5,7 @@
   'use strict';
   const panels = new WeakMap();
   const PROVIDERS = [['breeze', 'Breeze'], ['gemini', 'Gemini'], ['system', 'Device']];
-  const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
+  const escape = value => window.BardicUI.esc(value);
   const path = value => encodeURIComponent(value);
   const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
@@ -58,7 +58,7 @@
   function providerFields(entry, open) {
     const overrides = entry?.providers || {};
     const count = Object.keys(overrides).length;
-    return `<details class="pronunciation-providers"${open || count ? ' open' : ''}><summary>Different spelling for one narrator${count ? ` · ${count}` : ''}</summary><p class="pronunciation-help">Only if a narrator still says it wrong. Leave blank to use the spelling above; type the original word to let that narrator read it unchanged.</p><div class="pronunciation-provider-grid">${PROVIDERS.map(([provider, label]) => `<label>${label}<input name="provider_${provider}" maxlength="120" value="${escape(overrides[provider] || '')}" autocomplete="off" spellcheck="false"></label>`).join('')}</div></details>`;
+    return `<details class="pronunciation-providers"${open || count ? ' open' : ''}><summary>Different spelling for one narrator${count ? ` · ${count}` : ''}</summary><p class="field-help pronunciation-note">Only if a narrator still says it wrong. Leave blank to use the spelling above; type the original word to let that narrator read it unchanged.</p><div class="pronunciation-provider-grid">${PROVIDERS.map(([provider, label]) => `<label>${label}<input name="provider_${provider}" maxlength="120" value="${escape(overrides[provider] || '')}" autocomplete="off" spellcheck="false"></label>`).join('')}</div></details>`;
   }
 
   function rowMarkup(entry) {
@@ -84,17 +84,17 @@
   function markup(panel) {
     const names = suggestions(panel);
     const draft = panel.draft || {};
-    const list = panel.entries === null ? '<p class="pronunciation-help">Loading pronunciations…</p>' :
+    const list = panel.entries === null ? '<p class="field-help pronunciation-note">Loading pronunciations…</p>' :
       panel.entries.length ? panel.entries.map(rowMarkup).join('') :
-        '<p class="pronunciation-help">No pronunciations yet.</p>';
-    return `<p class="pronunciation-help">Narrators guess unusual names. Write how a word should sound as an ordinary-looking word (<em>Kaylor</em> for Cthaelor), then hear it in the narrator’s voice for the provider chosen above. Only the words sent to the narrator change; the book’s text stays as written. Saving retires recorded takes that contain the word; they are re-recorded the next time you narrate.</p>${names.length ? `<div class="pronunciation-suggestions" role="group" aria-label="Names from your cast"><span>From your cast:</span>${names.map(name => `<button type="button" class="chip" data-pronunciation-suggest="${escape(name)}">${escape(name)}</button>`).join('')}</div>` : ''}<form class="pronunciation-row pronunciation-new" data-pronunciation-new><div class="pronunciation-fields"><label>Word<input name="term" required maxlength="80" value="${escape(draft.term || '')}" placeholder="Cthaelor" autocomplete="off" spellcheck="false"></label><span class="pronunciation-arrow" aria-hidden="true">→</span><label>Say it as<input name="respelling" required maxlength="120" value="${escape(draft.respelling || '')}" placeholder="Kaylor" autocomplete="off" spellcheck="false"></label><label class="pronunciation-case"><input type="checkbox" name="match_case"${draft.match_case === false ? '' : ' checked'}> Match capitals</label></div><div class="pronunciation-actions"><button type="button" class="button subtle" data-pronunciation-hear>Hear it</button><button type="submit" class="button primary">Add</button></div></form><div class="pronunciation-list">${list}</div><p class="pronunciation-status" data-pronunciation-status role="status"></p>`;
+        '<p class="field-help pronunciation-note">No pronunciations yet.</p>';
+    return `<p class="field-help pronunciation-note">Narrators guess unusual names. Write how a word should sound as an ordinary-looking word (<em>Kaylor</em> for Cthaelor), then hear it in the narrator’s voice for the provider chosen above. Only the words sent to the narrator change; the book’s text stays as written. Saving retires recorded takes that contain the word; they are re-recorded the next time you narrate.</p>${names.length ? `<div class="pronunciation-suggestions" role="group" aria-label="Names from your cast"><span>From your cast:</span>${names.map(name => `<button type="button" class="chip" data-pronunciation-suggest="${escape(name)}">${escape(name)}</button>`).join('')}</div>` : ''}<form class="pronunciation-row pronunciation-new" data-pronunciation-new><div class="pronunciation-fields"><label>Word<input name="term" required maxlength="80" value="${escape(draft.term || '')}" placeholder="Cthaelor" autocomplete="off" spellcheck="false"></label><span class="pronunciation-arrow" aria-hidden="true">→</span><label>Say it as<input name="respelling" required maxlength="120" value="${escape(draft.respelling || '')}" placeholder="Kaylor" autocomplete="off" spellcheck="false"></label><label class="pronunciation-case"><input type="checkbox" name="match_case"${draft.match_case === false ? '' : ' checked'}> Match capitals</label></div><div class="pronunciation-actions"><button type="button" class="button subtle" data-pronunciation-hear>Hear it</button><button type="submit" class="button primary">Add</button></div></form><div class="pronunciation-list">${list}</div><p class="message pronunciation-status" data-pronunciation-status role="status"></p>`;
   }
 
   function status(panel, message, error = false) {
     const node = panel.container.querySelector('[data-pronunciation-status]');
     if (!node) return;
     node.textContent = message;
-    node.classList.toggle('pronunciation-error', error);
+    node.setAttribute('data-tone', error ? 'bad' : 'neutral');
     node.setAttribute('role', error ? 'alert' : 'status');
   }
 

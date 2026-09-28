@@ -55,8 +55,8 @@ export const partialJob: Schemas['Job'] = { book_id: 'b', kind: 'render' };
 export type Jobs = operations['listJobs']['responses'][200]['content']['application/json'];
 export const firstId = (jobs: Jobs): string | undefined => jobs[0]?.id;
 export const bookPath: paths['/api/books/{book_id}']['get']['parameters']['path'] = { book_id: 'b' };
-export type AnalyzeBody = NonNullable<operations['startClassicAnalysis']['requestBody']>['content']['application/json'];
-export const analyze: AnalyzeBody = { phase: 'scan' };
+export type RunBody = NonNullable<operations['startBookAnalysisPipelineRun']['requestBody']>['content']['application/json'];
+export const run: RunBody = { steps: ['census'], expected_fingerprint: 'plan' };
 
 // Transport-level statuses are part of the contract.
 export type WriteGuard = operations['createDemoBook']['responses'][403];

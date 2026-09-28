@@ -11,12 +11,13 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 | Understand the implementation | [Architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md) |
 | Make a change as a human | [Contributing](../CONTRIBUTING.md), [development](DEVELOPMENT.md) |
 | Make a change as an agent | [AGENTS.md](../AGENTS.md), then the same architecture/development references |
+| Build or restyle browser UI | [UI guide](UI-GUIDE.md), `/static/kitchen-sink.html` |
 | Call an endpoint or build a client | [API guide](API.md) for concepts, the [API reference](../contract/API-REFERENCE.md) and the normative [contract/openapi.json](../contract/openapi.json) |
 | Change an endpoint | [API workflow](API-WORKFLOW.md): describe it in `bardic/apispec/`, regenerate `contract/`, record it in the [contract changelog](../contract/CHANGELOG.md) |
 | Plan the next work | [Roadmap](ROADMAP.md), [decisions](DECISIONS.md) |
 | Inspect provenance and reusable outputs | [Data model](DATA-MODEL.md), [artifacts and storage](ARTIFACTS-AND-STORAGE.md) |
 | Understand series, library controls and simple listening | [Library, listening and resources](LIBRARY-LISTENING-RESOURCES.md) |
-| Diagnose a stopped job or unexpected cost | [Operations](OPERATIONS.md), [progressive analysis](PROGRESSIVE-ANALYSIS-PLAN.md) |
+| Diagnose a stopped job or unexpected cost | [Operations](OPERATIONS.md), [analysis pipeline](ANALYSIS-PIPELINE.md#cost-caching-and-provenance) |
 | Assess what has actually been verified | [Validation record](VALIDATION.md) |
 
 ## Current implementation references
@@ -28,6 +29,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [API-KNOWN-ISSUES.md](API-KNOWN-ISSUES.md): issues found in the contract and the keep-or-fix decision for each (all of issue #17 resolved in contract 0.2.0).
 - [contract/](../contract/): the normative `openapi.json`, its generated [readable reference](../contract/API-REFERENCE.md) and the [contract changelog](../contract/CHANGELOG.md).
 - [DEVELOPMENT.md](DEVELOPMENT.md): reproducible setup, isolated development, test map, extension workflows and frontend contracts.
+- [UI-GUIDE.md](UI-GUIDE.md): design tokens, the UI primitives in `ui.js`/`components.css`, when to use each, and the heading, type and consent rules. Copy from `/static/kitchen-sink.html`.
 - [OPERATIONS.md](OPERATIONS.md): keys/configuration, backups, recovery, troubleshooting and resource accounting limits.
 - [ROADMAP.md](ROADMAP.md): implemented capabilities, partial features, discussed follow-ups, acceptance criteria and undecided choices.
 - [DECISIONS.md](DECISIONS.md): the rationale and consequences of the current design.
@@ -35,7 +37,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [ARTIFACTS-AND-STORAGE.md](ARTIFACTS-AND-STORAGE.md): retained outputs, dependency graphs, exports and retrieval choices.
 - [STRUCTURE.md](STRUCTURE.md): EPUB labels/anchors, section kinds and non-destructive structure repair.
 - [ANALYSIS-PIPELINE.md](ANALYSIS-PIPELINE.md): the step contract, versions, acceptance/rollback, edit locks, API, how to add/remove steps, and the planned steps.
-- [CHAPTER-ANALYSIS.md](CHAPTER-ANALYSIS.md): staged evidence validation, checkpoints and reference persistence.
+- [CHAPTER-ANALYSIS.md](CHAPTER-ANALYSIS.md): historical; the removed Classic engine's staged evidence validation, checkpoints and reference persistence.
 - [ANALYSIS-PROVIDERS.md](ANALYSIS-PROVIDERS.md): the text analysis adapter contracts.
 - [ACCOUNT-CHECKS.md](ACCOUNT-CHECKS.md): explicit provider access checks and why balances remain unknown.
 - [VALIDATION.md](VALIDATION.md): dated test/browser/live-provider results and limits. Historical successes do not guarantee current account access.
@@ -43,7 +45,9 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 ## Design history and research
 
 - [PLAN.md](PLAN.md) records the original product scope and now points to the current implementation references.
-- [PROGRESSIVE-ANALYSIS-PLAN.md](PROGRESSIVE-ANALYSIS-PLAN.md) records the progressive analysis design, original defects, implementation sequence and milestone evidence. Its opening findings describe the pre-update system.
+- [CLASSIC-REMOVAL.md](CLASSIC-REMOVAL.md) is the staged plan and exact inventory for removing the legacy phase analysis engine and its data (stages 1–3 done; stage 4 waits for the owner's go).
+- [SERIES-MEMORY-PLAN.md](SERIES-MEMORY-PLAN.md) proposes carrying accepted evidence between series volumes on the step pipeline (a planned follow-up).
+- [PROGRESSIVE-ANALYSIS-PLAN.md](PROGRESSIVE-ANALYSIS-PLAN.md) records the progressive analysis design, original defects, implementation sequence and milestone evidence. It is historical: the engine it describes was removed in Classic removal stage 3.
 - [RESEARCH-PIPELINE.md](RESEARCH-PIPELINE.md) records source parsing, analysis and alignment research.
 - [RESEARCH-VOICE.md](RESEARCH-VOICE.md) records dated narration API, voice design and pricing research. Recheck official sources before relying on a rate or adding a provider capability.
 - [CLIENT-SERVER-CONTRACT.md](CLIENT-SERVER-CONTRACT.md) reviews UI/API coupling and proposes a generated interface contract and a gated path to separate client and server repositories. Not implemented.

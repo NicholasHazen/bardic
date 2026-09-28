@@ -1,4 +1,10 @@
-"""Durable analysis units and conservative, per-attempt spending guards."""
+"""Shared request infrastructure: conservative per-attempt spending guards,
+attempt and event records, the census cache, and content digests.
+
+The step pipeline, series runs and performances use this module. It neither
+creates nor reads the removed Classic engine's unit cache table, which existing
+libraries keep until the stage 4 migration (docs/CLASSIC-REMOVAL.md).
+"""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -36,9 +42,11 @@ def price_for(provider, model, *, input_tokens=None):
 
 
 def initialize_schema(conn):
-    """Create the processing tables. The Store runs this once when it opens a library."""
-    conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
-    conn.execute('CREATE INDEX IF NOT EXISTS analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
+    """Create the processing tables. The Store runs this once when it opens a library.
+
+    The removed Classic engine's ``analysis_units`` table is not created here: existing
+    libraries keep it until the stage 4 migration, and a new library never has it.
+    """
     conn.execute('CREATE TABLE IF NOT EXISTS analysis_attempts (id TEXT PRIMARY KEY, book_id TEXT, run_id TEXT, body TEXT NOT NULL)')
     conn.execute('CREATE INDEX IF NOT EXISTS analysis_attempts_book ON analysis_attempts(book_id,run_id)')
     conn.execute('CREATE TABLE IF NOT EXISTS book_preprocessing (book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL)')
@@ -47,34 +55,11 @@ def initialize_schema(conn):
 
 
 class ProcessingStore:
+    """Request attempts, pipeline events and the census cache for one library."""
+
     def __init__(self, store):
         # Tables are created once by Store.__init__ (initialize_schema), not per construction.
         self.store = store
-
-    def unit(self, book_id, key):
-        with self.store.lock, self.store.connect() as conn:
-            row = conn.execute('SELECT body FROM analysis_units WHERE book_id=? AND unit_key=?', (book_id, key)).fetchone()
-        return json.loads(row[0]) if row else None
-
-    def save_unit(self, book_id, key, stage, source, value):
-        from .artifacts import record
-        with self.store.lock, self.store.connect() as conn:
-            dependencies = value.get('dependency_artifact_ids', [])
-            recipe = value.get('input_recipe')
-            if recipe:
-                recipe_id = record(conn, book_id, 'analysis_input', key, recipe, label=f'{stage} request recipe', stage=stage,
-                                   provider=value.get('provider'), model=value.get('model'), dependencies=dependencies)
-                dependencies = [recipe_id]
-            payload = {k: v for k, v in value.items() if k not in {'input_recipe', 'dependency_artifact_ids'}}
-            artifact_id = record(conn, book_id, 'analysis_output', key, payload, label=f'{stage} accepted result', stage=stage,
-                                 provider=value.get('provider'), model=value.get('model'), dependencies=dependencies,
-                                 legacy_provenance=not bool(recipe))
-            conn.execute('INSERT OR REPLACE INTO analysis_units VALUES (?,?,?,?,?)', (book_id, key, stage, source, json.dumps(value, ensure_ascii=False)))
-        return artifact_id
-
-    def units(self, book_id, stage, source):
-        with self.store.lock, self.store.connect() as conn:
-            return [json.loads(r[0]) for r in conn.execute('SELECT body FROM analysis_units WHERE book_id=? AND stage=? AND source_hash=? ORDER BY rowid', (book_id, stage, source))]
 
     def preprocessing(self, book_id, fingerprint):
         with self.store.lock, self.store.connect() as conn:

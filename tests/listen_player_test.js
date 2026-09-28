@@ -8,10 +8,11 @@ function between(start,end){ const a=source.indexOf(start),b=source.indexOf(end,
 const functions=[
   between('function saveProgress(', 'function stopAudio('),
   between('function stopAudio(', 'function renderLibrary('),
+  between('function renderBookStatus(', 'function renderReader('),
   between('function renderReader(', 'function castVoiceBlock('),
   between('function setTab(', 'function updateHighlight('),
   between('async function startSegment(', 'function updateProviderHint('),
-  between("$('#cast-grid').addEventListener('click'", "$('#analysis-progress').addEventListener"),
+  between("$('#cast-grid').addEventListener('click'", "$('#scene-list').addEventListener('click'"),
   between("audio.addEventListener('loadedmetadata'", "window.addEventListener('pagehide'"),
   between("\n$('#playback-speed').value = String(audio.playbackRate);", "audio.addEventListener('loadedmetadata'")
 ].join('\n');
@@ -49,9 +50,13 @@ function environment(ensure,previewRequest){
     escapeHTML:value=>String(value??''),toast:(message,error)=>{calls.toasts.push(message);calls.toastErrors.push(Boolean(error));},
     updateHighlight:()=>{},renderStudio:()=>{},renderJob:()=>{},pollJobs:()=>{}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voice-preview.js'),'utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8'),context);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen-status.js'),'utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/player.js'),'utf8'),context);
   vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false,mediaBuffering=false; const listeningPreloads=new Map();\n${between('audio.preload =', 'let toastTimer;')}\n${helpers}\n${functions}\n`+
-    'setupVoicePreviews(); globalThis.player={startSegment,togglePlayback,stopAudio,renderReader,updatePlayer,moveSegment,simpleActive,setPlaybackRate,beginVoicePreview,playVoicePreview,finishVoicePreview,auditionCharacter,auditionPassage,startVoicePreview,get preparing(){return preparingListen;},get preview(){return previewEnhanced;},get buffering(){return mediaBuffering;}};',context);
+    'setupVoicePreviews(); window.BardicPlayer.attach({$,audio,timeline:chapterTimeline,position:chapterPosition,seek:seekChapter,playing:narrationPlaying,statusInput:()=>({mode:"simple",available:true}),pause:()=>{},setInterval:()=>0});'+
+    'globalThis.player={startSegment,togglePlayback,stopAudio,renderReader,updatePlayer,moveSegment,simpleActive,setPlaybackRate,beginVoicePreview,playVoicePreview,finishVoicePreview,auditionCharacter,auditionPassage,startVoicePreview,get preparing(){return preparingListen;},get preview(){return previewEnhanced;},get buffering(){return mediaBuffering;}};',context);
   return {state,audio,calls,nodes,events,player:context.player,takes,storage,listen,voicePreview:context.window.BardicVoicePreview,setSimple:value=>{simple=value;},get hooks(){return readerHooks;}};
 }
 (async()=>{
@@ -261,7 +266,7 @@ function environment(ensure,previewRequest){
   enhancedError.audio.error={code:4};
   enhancedError.events.error();
   assert.deepEqual(enhancedError.calls.forgotten,[]);
-  assert.match(enhancedError.calls.toasts.at(-1),/regenerating it in the studio/);
+  assert.match(enhancedError.calls.toasts.at(-1),/Record it again in Script & record/);
   assert.equal(enhancedError.calls.diagnostics.at(-1).media_error_code,4);
 
   // Real waiting/stalled/playing event handlers describe a resumable stall.
@@ -270,7 +275,7 @@ function environment(ensure,previewRequest){
   await stalled.player.startSegment('s1');
   stalled.events.waiting();
   assert.equal(stalled.player.buffering,true);
-  assert.match(stalled.nodes.get('#player-subtitle').textContent,/Buffering/);
+  assert.equal(stalled.nodes.get('#player-status-label').textContent,'Preparing audio','A stall shows in the status pill, not the subtitle');
   assert.equal(stalled.calls.diagnostics.at(-1).event,'playback_waiting');
   stalled.events.playing();
   assert.equal(stalled.player.buffering,false);

@@ -25,6 +25,20 @@ def imported(client, *, filename='story.txt', content=b'Chapter 1\n\nMara spoke 
     return response.json()
 
 
+def test_imported_epub_language_is_presented_and_txt_has_none(client):
+    from test_importer import epub_file
+    book = imported(client, filename='lang.epub', content=epub_file(metadata='<dc:language>es-MX</dc:language>'))
+    assert book['language'] == 'es-MX'
+    assert client.get(f"/api/books/{book['id']}").json()['language'] == 'es-MX'
+    assert client.get(f"/api/books/{imported(client)['id']}").json()['language'] is None
+    # A book stored before the field existed presents it as unknown.
+    store = client.app.state.runtime.store
+    older = store.book(book['id'])
+    older.pop('language')
+    store.save_book(older)
+    assert client.get(f"/api/books/{book['id']}").json()['language'] is None
+
+
 def test_metadata_api_preserves_source_ids_takes_and_checkpoint(client):
     book = imported(client)
     store = client.app.state.runtime.store
@@ -88,7 +102,8 @@ def test_book_archive_restore_keeps_files_takes_history_and_direct_access(client
     assert len(removed) == 1 and removed[0]['archived'] is True
     assert client.get(f'/api/books/{book_id}').status_code == 200
     assert store.book(book_id) == before and source.read_bytes() == original_bytes
-    assert client.post(f'/api/books/{book_id}/analyze', json={'provider': 'local'}).status_code == 409
+    refused = client.post(f'/api/books/{book_id}/analysis-pipeline/runs', json={'steps': ['census'], 'limits': {'max_requests': 1}})
+    assert refused.status_code == 409 and refused.json()['code'] == 'book_archived'
     blocked = client.patch(f'/api/books/{book_id}/metadata', json={'title': 'Blocked'})
     assert blocked.status_code == 409 and blocked.json()['code'] == 'book_archived'
     assert client.post(f'/api/books/{book_id}/restore').status_code == 200

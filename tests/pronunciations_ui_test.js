@@ -10,7 +10,7 @@ class Container {
     this.innerHTML = '';
     this.listeners = {};
     this.attributes = {};
-    this.status = {textContent:'', classes:new Set(), classList:{toggle:(name, on) => on ? this.status.classes.add(name) : this.status.classes.delete(name)}, setAttribute(){}};
+    this.status = {textContent:'', classes:new Set(), classList:{toggle:(name, on) => on ? this.status.classes.add(name) : this.status.classes.delete(name)}, attributes:{}, setAttribute(name, value) { this.attributes[name] = value; }};
     this.newForm = null;
   }
   addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -44,6 +44,7 @@ function environment(handler) {
     const result = await handler(call);
     return {ok:result.ok !== false, status:result.status || 200, json:async () => result.data};
   }};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/ui.js'), 'utf8'), scope);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/pronunciations.js'), 'utf8'), scope);
   return {api:scope.window.BardicPronunciations, calls};
 }
@@ -109,7 +110,7 @@ test('editing patches by id and removing deletes; errors are shown, not thrown',
   await settle();
   assert.equal(env.calls[2].method, 'DELETE');
   assert.equal(container.status.textContent, 'A job is already working on this book.');
-  assert.ok(container.status.classes.has('pronunciation-error'));
+  assert.equal(container.status.attributes['data-tone'], 'bad');
 });
 
 test('hearing sends the unsaved draft to the audition hook and never saves', async () => {

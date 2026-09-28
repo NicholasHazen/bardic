@@ -85,12 +85,17 @@ def context_for(store, repository, step, book, conn, *, chapter_ids=None, provid
                        provider=provider, model=model, cancelled=cancelled)
 
 
-def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh=False):
-    """Known work and conservative estimates. Read-only apart from free census caches."""
+def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh=False, consent=False):
+    """Known work and conservative estimates. Read-only apart from free census caches.
+
+    ``consent`` (series runs) adds ``consent_parts``: per step ``[id, version,
+    provider, model, cache keys, unit locators]``, for a consent fingerprint that
+    can leave out what a unit's prompt says. Not part of the book plan response.
+    """
     repository = PipelineRepository(store)
     steps = registry.closure(step_ids)
     requested = {s.id for s in steps}
-    result, fingerprint_parts = [], []
+    result, fingerprint_parts, consent_parts = [], [], []
     with store.lock:
         book = store.book(book_id)
         with store.connect() as conn:
@@ -140,9 +145,11 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
                 item['note'] = ('Estimated from the currently accepted ' + ', '.join(item['inputs_pending']) +
                                 '. This run may change those inputs and therefore this work.')
             fingerprint_parts.append([step.id, step.version, config['provider'], config.get('model'), keys])
+            consent_parts.append([step.id, step.version, config['provider'], config.get('model'), keys, [u.key for u in units]])
             result.append(item)
     costs = [s['estimated_cost_usd'] for s in result]
-    return {'book_id': book_id, 'steps': result, 'chapter_ids': sorted(chapter_ids) if chapter_ids else None,
+    extra = {'consent_parts': consent_parts, 'revision': book.get('revision', 0)} if consent else {}
+    return {**extra, 'book_id': book_id, 'steps': result, 'chapter_ids': sorted(chapter_ids) if chapter_ids else None,
             'requests': sum(s['requests'] for s in result), 'cached_units': sum(s['cached_units'] for s in result),
             'service_calls': sum(s['service_calls'] for s in result),
             'estimated_input_tokens': sum(s['estimated_input_tokens'] for s in result),
@@ -361,10 +368,15 @@ class RunExecutor:
                     if identifier:
                         unit_outputs.setdefault(unit.scope, []).append(identifier)
             flat_inputs = [i for scopes in ctx.input_heads.values() for i in scopes.values()]
+            # Earlier series volumes' accepted evidence each scope's units could read (staleness).
+            series_inputs = {}
+            for unit, _ in complete:
+                series_inputs.setdefault(unit.scope, {}).update(unit.series_inputs)
             for scope, payload in payloads.items():
                 identifier = self.repository.record_version(
                     conn, self.book_id, step, scope, payload, origin='run', provider=provider if step.method != 'plain' else 'local',
                     model=model if step.method != 'plain' else None, inputs=ctx.input_heads,
+                    series_inputs=series_inputs.get(scope),
                     dependencies=[*flat_inputs, *unit_outputs.get(scope, [])])
                 versions[scope] = identifier
                 if self.repository.head(conn, self.book_id, step.id, scope) == identifier:

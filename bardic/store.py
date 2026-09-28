@@ -22,7 +22,7 @@ JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "resume_after"})
 INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint"})
 # Job fields renamed in contract 0.2.0, by kind: stored documents from older
 # versions are translated when read, and new documents use the new names.
-LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "analysis_limits"},
+LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "analysis_limits", "mode": "scheduling"},
                      "listen_chapter": {"limits": "speech_limits"}}
 
 
@@ -86,10 +86,12 @@ class Store:
             initialize_processing(conn)
         for job in self.jobs(limit=None):
             if job["status"] in {"running", "queued"}:
-                message = ("Server restarted. Analyze story again to resume from saved chapter analysis."
-                           if job["kind"] in {"analyze", "pipeline"} else
-                           "Server restarted. Generate again to resume from saved takes.")
-                self.update_job(job["id"], status="interrupted", message=message)
+                # Describe the condition; validated work is kept and a new run reuses it.
+                message = ("The server restarted before this analysis finished. Validated work is saved and reused."
+                           if job["kind"] in {"analyze", "pipeline", "series"} else
+                           "The server restarted before this job finished. Finished audio is saved and reused.")
+                extra = {"waiting_for_review": None} if job.get("waiting_for_review") else {}
+                self.update_job(job["id"], status="interrupted", message=message, **extra)
         # Runtime acquires InstanceLock before constructing Store, so a second
         # server cannot mistake another worker's in-flight analysis for a restart.
         with self.lock, self.connect() as conn:

@@ -31,13 +31,14 @@ function environment(respond) {
     {id:'two', title:'Winter road', author:'Hannah Snow', chapters:[{id:'c2', title:'Second'}], segments:[], characters:[]},
   ];
   const state = {book:books[0], books, chapterId:'c1', segmentId:'s1', tab:'read', libraryView:false, selectionVersion:0, loading:false, referenceCache:new Map(), referenceVersion:0};
-  const tabs = ['read','cast','voices','studio','analysis'].map(name => { const tab = node(`#${name}-tab`); tab.dataset.tab = name; tab.setAttribute('aria-current', 'false'); return tab; });
+  const tabs = ['read','analysis','cast','studio','details'].map(name => { const tab = node(`#${name}-tab`); tab.dataset.tab = name; tab.setAttribute('aria-current', 'false'); return tab; });
   const libraryItems = books.map(book => { const item = node(`[data-book="${book.id}"]`); item.dataset.book = book.id; return item; });
   const calls = {requests:0, stops:0, saves:0};
   const media = {plays:0, generations:0, paused:true, pause(){ this.paused = true; }, async play(){ this.plays++; }};
+  const sheet = {opened:0};
   const context = {state, document:{title:''}, window:{scrollTo(){}, BardicListen:{isSimple:() => false, resolve:() => null, stop(){}, prepare(){ media.generations++; }}}, $:node,
     $$:selector => selector === '.tab' ? tabs : selector === '.library-item' ? libraryItems : [],
-    icon:() => '', clearTimeout,
+    icon:() => '', clearTimeout, openListenSheet:() => { sheet.opened++; },
     request:async url => { calls.requests++; if (respond) return respond(url); throw new Error('Navigation should not request content'); },
     stopAudio:() => calls.stops++, saveProgress:() => calls.saves++,
     safeRead:(_key, fallback) => fallback, progressKey:() => 'synthetic-progress', pollJobs:async() => {},
@@ -60,10 +61,9 @@ function environment(respond) {
     between('async function startSegment(', 'async function togglePlayback('),
     between('function openSettings(', 'function openImport('),
     between('// Navigation and delegated editor actions.', "$('#previous-chapter').addEventListener"),
-    source.split('\n').find(line => line.startsWith("$('#analyze-button').addEventListener")),
     'globalThis.workspace = {renderLibrary,renderBook,selectBook,setTab,showLibrary,navigateTabs,openListeningSettings,openSettings,startSegment};',
   ].join('\n'), context);
-  return {state, node, calls, media, tabs, libraryItems, workspace:context.workspace, document:context.document};
+  return {state, node, calls, media, sheet, tabs, libraryItems, workspace:context.workspace, document:context.document};
 }
 
 test('library search matches titles and authors, escapes content, and explains no matches', () => {
@@ -212,9 +212,9 @@ test('workspace tabs use one tab stop and Arrow, Home, End select and focus pane
     return prevented;
   };
   assert.equal(key(0, 'ArrowLeft'), true);
-  assert.equal(state.tab, 'analysis', 'ArrowLeft from the first tab wraps to the last');
+  assert.equal(state.tab, 'details', 'ArrowLeft from the first tab wraps to the last');
   assert.equal(tabs[4].focused, true);
-  assert.equal(node('#analysis-view').hidden, false);
+  assert.equal(node('#details-view').hidden, false);
   assert.equal(node('#read-view').hidden, true);
   assert.equal(node('#studio-view').hidden, true);
   assert.deepEqual(tabs.map(tab => tab.tabIndex), [-1,-1,-1,-1,0]);
@@ -224,30 +224,48 @@ test('workspace tabs use one tab stop and Arrow, Home, End select and focus pane
   assert.equal(state.tab, 'studio');
   assert.equal(key(4, 'ArrowRight'), true);
   assert.equal(state.tab, 'read');
+  assert.equal(key(0, 'ArrowRight'), true);
+  assert.equal(state.tab, 'analysis', 'Analyze follows Read & listen: analysis produces the cast');
   assert.equal(key(1, 'ArrowRight'), true);
-  assert.equal(state.tab, 'voices', 'Voices sits between Cast and Studio');
-  assert.equal(node('#voices-view').hidden, false);
-  key(0, 'End'); assert.equal(state.tab, 'analysis');
+  assert.equal(state.tab, 'cast');
+  assert.equal(node('#cast-view').hidden, false);
+  key(0, 'End'); assert.equal(state.tab, 'details');
   key(4, 'Home'); assert.equal(state.tab, 'read');
   assert.equal(key(0, 'Tab'), false);
 });
 
-test('listening and Studio shortcuts open their destination without starting work', () => {
-  const {workspace, state, node, calls} = environment();
-  const details = {open:false};
-  node('#simple-listen').details = details;
+test('Voices is an app-level page: it opens without a book and a book returns to its last tab', async () => {
+  const {workspace, state, node, tabs, calls} = environment();
+  workspace.setTab('cast');
+  workspace.setTab('voices', {focus:true});
+  assert.equal(node('#voices-view').hidden, false);
+  assert.equal(node('#book-workspace').hidden, true, 'the book tabs step aside');
+  assert.equal(node('#welcome').hidden, true);
+  assert.equal(node('#sidebar-voices').attributes.get('aria-current'), 'page');
+  assert.equal(node('#voices-heading').focused, true);
+  assert.equal(tabs.some(tab => tab.attributes.get('aria-selected') === 'true'), false, 'no book tab claims the page');
+  await workspace.selectBook('one');
+  assert.equal(state.tab, 'cast', 'the book opens on the tab you left');
+  assert.equal(node('#voices-view').hidden, true);
+  assert.equal(node('#book-workspace').hidden, false);
+  state.book = null; state.books = [];
+  workspace.showLibrary();
+  workspace.setTab('voices');
+  assert.equal(state.libraryView, false);
+  assert.equal(node('#voices-view').hidden, false, 'no book is needed');
+  assert.equal(node('#player').hidden, true);
+  assert.deepEqual(calls, {requests:0, stops:0, saves:0});
+});
+
+test('listening and Script & record shortcuts open their destination without starting work', () => {
+  const {workspace, state, node, calls, sheet} = environment();
   workspace.showLibrary();
   node('#reader-listen-setup').listeners.click();
+  assert.equal(sheet.opened, 1, 'the narrator sheet is the one listening surface');
+  node('#go-studio').listeners.click();
+  assert.equal(state.tab, 'studio');
   assert.equal(state.libraryView, false);
-  assert.equal(state.tab, 'read');
-  assert.equal(details.open, true);
-  assert.equal(node('#simple-listen [data-listen-field="voice"]').focused, true);
-  node('#studio-cast-link').listeners.click();
-  assert.equal(state.tab, 'cast');
-  assert.equal(node('#cast-tab').focused, true);
-  node('#studio-script-link').listeners.click();
-  assert.equal(node('#script-heading').scrolled, true);
-  assert.equal(node('#script-heading').focused, true);
+  assert.equal(node('#studio-tab').focused, true);
   assert.deepEqual(calls, {requests:0, stops:0, saves:0});
 });
 
@@ -262,31 +280,12 @@ test('provider setup reveals the requested provider before focusing its key', ()
   assert.equal(calls.requests, 0);
 });
 
-test('Plan analysis opens the budgeting disclosure before scrolling and focusing its controls', () => {
-  const {node, calls, media} = environment();
-  const disclosure = {open:false};
-  const panel = node('#progressive-production');
-  panel.details = disclosure;
-  panel.scrollIntoView = () => { assert.equal(disclosure.open, true); panel.scrolled = true; };
-  const control = node('#progressive-production select');
-  control.focus = () => { assert.equal(disclosure.open, true); control.focused = true; };
-  node('#analyze-button').listeners.click();
-  assert.equal(panel.rendered, true);
-  assert.equal(panel.scrolled, true);
-  assert.equal(control.focused, true);
-  assert.equal(calls.requests, 0);
-  assert.equal(media.generations, 0);
-});
-
-test('playing an unnarrated passage opens narrator setup without generating audio', async () => {
-  const {workspace, state, node, calls, media} = environment();
+test('playing an unnarrated passage opens the narrator sheet without generating audio', async () => {
+  const {workspace, state, node, calls, media, sheet} = environment();
   state.book.segments = [{id:'s1', chapter_id:'c1', text:'An original short line.'}];
-  const details = {open:false};
-  node('#simple-listen').details = details;
   await workspace.startSegment('s1');
-  assert.equal(details.open, true);
-  assert.equal(node('#simple-listen [data-listen-field="voice"]').focused, true);
-  assert.match(node('#toast').textContent, /Choose a narrator in Listening settings/);
+  assert.equal(sheet.opened, 1);
+  assert.match(node('#toast').textContent, /Choose a narrator to start listening/);
   assert.equal(media.generations, 0);
   assert.equal(media.plays, 0);
   assert.equal(calls.requests, 0);
@@ -294,13 +293,11 @@ test('playing an unnarrated passage opens narrator setup without generating audi
 
 test('passive unnarrated selection keeps setup closed', async () => {
   // The server presents an out-of-date take as null audio, so no staleness flag is read here.
-  const {workspace, state, node, media} = environment();
+  const {workspace, state, media, sheet} = environment();
   const segment = {id:'s1', chapter_id:'c1', text:'An original short line.'};
   state.book.segments = [segment];
-  const details = {open:false};
-  node('#simple-listen').details = details;
   await workspace.startSegment('s1', {autoplay:false});
-  assert.equal(details.open, false);
+  assert.equal(sheet.opened, 0);
   assert.equal(media.generations, 0);
   assert.equal(media.plays, 0);
 });

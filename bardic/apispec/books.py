@@ -19,8 +19,7 @@ _EDIT_LOCKS = (
     'A manual edit locks each field whose value it actually changes, so generated analysis never overwrites it '
     '(editors may resend a whole form; unchanged values are not locked). Confirming a passage\'s current speaker '
     '(sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 '
-    'and locks the speaker. The older phase-based analysis (Classic analysis) treats an item with any locked field '
-    'as wholly reviewed. Lock state is server bookkeeping and is not part of the book document.\n\n'
+    'and locks the speaker. Lock state is server bookkeeping and is not part of the book document.\n\n'
     'A request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current '
     'ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.')
 
@@ -75,8 +74,7 @@ class BookAnalysisSummary(View):
     """The current overall analysis summary for the book.
 
     Only a short label of who produced the current projection. Detailed,
-    resumable progress is in `GET /api/books/{book_id}/analysis` and the
-    analysis pipeline routes.
+    resumable progress is in the analysis pipeline routes.
     """
     provider: str = Field(
         description='Who produced the current annotations: `local` (free heuristic draft, also at import), '
@@ -84,7 +82,8 @@ class BookAnalysisSummary(View):
                     '`booknlp`) accepted through the analysis pipeline. Open set.')
     model: str | None = Field(default=None, description='Model ID used, or null/absent for local or service analysis.')
     status: Literal['draft', 'partial'] = Field(
-        description='`draft`: a complete draft awaiting review (import, local or completed classic analysis). '
+        description='`draft`: a complete draft awaiting review (import, the local draft, or a completed run of the removed '
+                    'Classic engine). '
                     '`partial`: staged work in progress or a pipeline step accepted; other parts may be missing '
                     'or older.')
     notes: str | None = Field(
@@ -93,12 +92,12 @@ class BookAnalysisSummary(View):
                     'with every summary; treat an absent value as empty.')
     phase: str | None = Field(
         default=None,
-        description='Classic analysis phase that published this state (`scan`, `profiles`, `direct`, `full`) '
-                    'or the pipeline step ID that was accepted (for example `discovery`, `profiles`, '
-                    '`directing`). Absent for import and local drafts.')
+        description='The pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`), or, '
+                    'on books last analyzed by the removed Classic engine, its phase (`scan`, `profiles`, `direct`, '
+                    '`full`). Absent for import and local drafts.')
     profiles_provisional: bool | None = Field(
         default=None,
-        description='Classic progressive analysis only: true while character profiles still need whole-book '
+        description='Written only by the removed Classic engine: true while character profiles still needed whole-book '
                     'discovery or refinement against current evidence.')
 
 
@@ -254,6 +253,11 @@ class BookPassage(View):
     leading_text: str = Field(
         description='Presented only: chapter text between the previous passage (or the chapter start) and this '
                     'passage, usually whitespace or a replaced scene-break ornament.')
+    manual_fields: list[Literal['speaker_id', 'direction', 'cues', 'seed']] = Field(
+        description='Presented only: the passage fields a person set by hand (with `editPassage`), which analysis '
+                    'never replaces, in alphabetical order; empty when none. A passage edited before per-field '
+                    'tracking lists every field, and so does a speaker confirmed before contract 0.2.0. The '
+                    'server\'s lock bookkeeping itself is not published.')
 
 
 class BookBreezeSettings(View):
@@ -310,9 +314,9 @@ class BookCharacter(View):
         default=None, description='Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`.')
     profile_state: Literal['reviewed', 'current', 'stale', 'draft'] | None = Field(
         default=None,
-        description='Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current '
+        description='Written only by the removed Classic engine: `reviewed` (edited by hand), `current` (refined against current '
                     'evidence), `stale` (refined, evidence changed since), `draft` (not refined).')
-    profile_provisional: bool | None = Field(default=None, description='Classic progressive analysis: true while the profile may still change.')
+    profile_provisional: bool | None = Field(default=None, description='Written only by the removed Classic engine: true while the profile could still change.')
 
 
 # ------------------------------------------------------------------ pronunciations
@@ -366,6 +370,10 @@ class Book(View):
     id: str = Field(description='Book UUID.')
     title: str = Field(description='Display title.')
     author: str = Field(description='Display author(s), comma-separated; may be empty.')
+    language: str | None = Field(
+        description='BCP 47 language tag from the EPUB\'s first usable `dc:language` (at most 35 characters, `_` read '
+                    'as `-`), or null for TXT files, EPUBs without one, the demo book and books imported before the '
+                    'field existed. Metadata only; it never changes text or spans.')
     source_name: str = Field(description='File name of the imported original (without directories), for example `story.epub`.')
     created_at: str = Field(description='ISO 8601 UTC import time.')
     revision: int = Field(description='Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change.')
@@ -452,6 +460,22 @@ class CharacterReference(View):
     model: str | None = Field(default=None, description='Model that produced it, or null.')
     profile_description: str | None = Field(default=None, description='`profile_evidence` only: the description proposed with this evidence.')
     profile_direction: str | None = Field(default=None, description='`profile_evidence` only: the direction proposed with this evidence.')
+    step: Literal['discovery', 'profiles', 'directing'] | None = Field(
+        default=None, description='Analysis step whose accepted version supplied this row; absent or null for '
+                                  'mentions and for rows written by the removed Classic engine.')
+    version_id: str | None = Field(
+        default=None, description='Accepted step-output artifact the row was projected from; absent or null when '
+                                  'there is none (mentions, manual attributions, older rows).')
+    origin: str | None = Field(
+        default=None, description='How the source result came to be: `run`, `baseline` or `external` (from the '
+                                  'step version), `manual` (a hand-edited attribution), `book` (dialogue with no '
+                                  'accepted directing version), `cast_names` (mentions); null when unknown.')
+    projection: int | None = Field(
+        default=None, description='Version of the evidence projection that wrote the row (1). Absent on rows '
+                                  'written by the removed Classic engine.')
+    anchors: int | None = Field(
+        default=None, description='Profiles evidence only: how many exact locations the quotation matched within '
+                                  'the discovery evidence it came from. Every location is listed; none is chosen.')
 
 
 # ------------------------------------------------------------------ operations
@@ -553,13 +577,14 @@ OPS: list[Op] = [
     op('GET', '/api/books/{book_id}/characters/{character_id}/references', 'listCharacterReferences', 'Books',
        'List source references to a character',
        'Returns every source reference to this current cast member, unpaginated, in reading order (chapter, then '
-       'offset): dialogue passages currently attributed to it, mentions of its name or aliases, and discovery '
-       'evidence quotations, each with a source anchor. Dialogue and mentions are derived from the current book '
-       'on every call, so manual edits, pipeline acceptance and analysis are all reflected at once. A name or '
-       'alias that another cast member shares is not counted as a mention. Discovery evidence comes from the '
-       'latest Classic analysis (including series runs) and is listed while its quote still matches the chapter '
-       'text; other analyses record none. `narrator` and `unassigned` have no references. Read-only; nothing is '
-       'written. Works for archived books.',
+       'offset): dialogue passages currently attributed to it, mentions of its name or aliases, and evidence '
+       'quotations, each with a source anchor. The references are the projection of the accepted analysis-pipeline '
+       'versions (discovery, profiles, directing) onto the current book, computed on every call as the next pipeline '
+       'write would record it, so manual edits and acceptance show at once. A name or alias that another cast member '
+       'shares is not counted as a mention. Rows retained from the removed Classic engine are carried until a '
+       'discovery version is accepted. A book with no accepted discovery, profiles or directing version (and none that '
+       'the current book implies) lists its stored rows unchanged, which may be empty. `narrator` and `unassigned` '
+       'have no references. Read-only; nothing is recorded. Works for archived books.',
        response=list[CharacterReference], params={'book_id': 'Book ID.', 'character_id': 'Book-local character ID.'},
        errors={404: {**_BOOK_NOT_FOUND, 'character_not_found': 'No character in the book\'s current cast has this ID.'}}),
     op('GET', '/api/books/{book_id}/pronunciations', 'listPronunciations', 'Pronunciations', "List the book's pronunciations",

@@ -2,7 +2,8 @@
 
 A series groups supplied books in a reading order (``position``), adds
 placeholders for volumes the library does not have, holds explicit
-cross-book character identities, and runs staged analysis over its books.
+cross-book character identities, and runs the step pipeline over its books
+in reading order.
 
 The library snapshot's ``series`` entries are built by the same server code
 as ``Series`` here (the library family describes them separately).
@@ -14,8 +15,8 @@ from typing import Annotated, Literal, Union
 from pydantic import Field
 
 from .base import Op, View, op
-from .common import Job
-from .inspection import AnalysisPlanBase, AnalysisPlanLimits
+from .common import Job, PipelineStepConfigView
+from .pipeline import PipelinePlan, PipelineProviderId, PipelineRunOutcome, RunStatus, StepId
 
 TAG = 'Series'
 
@@ -169,12 +170,18 @@ class SeriesContextSeries(View):
 
 
 class SeriesContextObservation(View):
-    """One source-validated observation of a linked character from an earlier volume.
+    """One piece of accepted evidence for a linked character from an earlier volume.
 
-    Its quote was rechecked against the earlier book's current chapter text at
-    `start`/`end` (zero-based Unicode code-point offsets, exclusive end).
+    It is one of that book's current character references (its accepted
+    evidence). Its quote was rechecked against the earlier book's current chapter
+    text at `start`/`end` (zero-based Unicode code-point offsets, exclusive end),
+    and a row whose chapter text changed since it was produced is left out. A row
+    the removed Classic engine wrote counts only while the observation that engine
+    retained with it (same content hash, so the same chapter text) still exists.
     """
-    id: str = Field(description='Stable observation ID (content hash).')
+    id: str = Field(description='Stable observation ID: a content hash of the evidence, its location, reading and '
+                                'producer. A reference the removed Classic engine wrote keeps the ID of the observation '
+                                'it retained.')
     book_id: str = Field(description='Earlier book the evidence comes from.')
     character_id: str = Field(description="Character ID local to that earlier book.")
     chapter_id: str = Field(description='Chapter ID in the earlier book.')
@@ -190,6 +197,15 @@ class SeriesContextObservation(View):
     provider: str | None = Field(description='Provider that produced the observation (`local` for local rules), or null.')
     model: str | None = Field(description='Model that produced the observation, or null.')
     confidence: float | None = Field(description='Attribution confidence from 0 to 1 when recorded, else null.')
+    step: Literal['discovery', 'profiles', 'directing'] | None = Field(
+        description='Step whose accepted version produced the evidence; null for rows the removed Classic engine wrote '
+                    'and for dialogue attributed by hand or outside any accepted directing version.')
+    version_id: str | None = Field(description='The accepted `step_output` version (artifact ID) the evidence came from, '
+                                               'or null when `step` is null.')
+    origin: Literal['run', 'baseline', 'external', 'manual', 'book'] | None = Field(
+        description='How that version or row came about: `run` (a pipeline run), `baseline`/`external` (recorded from '
+                    'existing work; producer unknown), `manual` (a speaker chosen by hand), `book` (attributed outside '
+                    'any accepted version); null for rows the removed Classic engine wrote.')
     book_title: str = Field(description='Title of the earlier book.')
     position: float = Field(description="The earlier book's reading order.")
     chapter_title: str = Field(description='Title of the chapter in the earlier book.')
@@ -228,57 +244,175 @@ class BookSeriesContext(View):
                     'use timestamps.')
 
 
-class SeriesBookAnalysisPlan(AnalysisPlanBase):
-    """The per-book analysis preview inside a series plan.
+class SeriesBookEstimate(View):
+    """An "up to" estimate: the work of context-pending steps counted as all new."""
+    requests: int = Field(description='Model requests, before retries or evidence repairs. Every unit of a '
+                                      'context-pending step counts, even when a saved result exists now.')
+    estimated_input_tokens: int = Field(description='Estimated input tokens, from the prompts as they are now. '
+                                                    'Context-pending prompts can grow while the run is going.')
+    output_token_allowance: int = Field(description='Sum of the output token caps.')
+    estimated_cost_usd: float | None = Field(
+        description='Estimated USD at current prompt sizes, rounded to 6 decimals; null when a price is unknown (never '
+                    'counted as zero). Approximate; the cost of a context-pending step can be higher.')
 
-    Same fields as the classic per-book plan (`AnalysisPlan`) except `limits`: a series plan states its limits
-    once, in `limits_per_book`.
-    """
+
+class SeriesEstimate(SeriesBookEstimate):
+    """The series total of the books' `up_to` estimates."""
+    known_cost_usd: float = Field(description="Sum of the books' known `up_to.estimated_cost_usd`, rounded to 6 "
+                                              "decimals. A lower bound when a book's cost is unknown.")
 
 
 class SeriesPlanBook(View):
-    """One supplied book in a series plan."""
+    """One supplied, active book in a series plan, with its own step-pipeline plan."""
     book_id: str = Field(description='Book ID.')
-    title: str = Field(description='Book title.')
+    title: str = Field(description='Book title ("Untitled" when the book has none).')
     position: float = Field(description=POSITION)
-    plan: SeriesBookAnalysisPlan = Field(description='The per-book analysis preview for this book, computed with '
-                                                     '`resume` true and no chapter scope.')
+    fingerprint: str = Field(description="This book's plan `fingerprint` (the same as `plan.fingerprint`). It covers "
+                                         'what every unit sends, including earlier-volume context.')
+    consent_fingerprint: str = Field(
+        description="What the run's consent covers for this book (SHA-256 hex): its revision, `fresh`, and each "
+                    "step's ID, version, provider, model and unit set, plus the exact requests of steps that are not "
+                    'context-pending. The series worker recomputes it before the book starts and does not run the '
+                    'book when it differs. Earlier books accepting new results during the run do not change it.')
+    context_pending: list[StepId] = Field(
+        description='Requested steps whose prompts read earlier books of this run (today: `profiles`, when a linked '
+                    'character of this book has a confirmed link in an earlier supplied book). Their units are '
+                    'fixed; what the prompts say is only known when this book starts. Empty for the first book and '
+                    'for books without such links.')
+    context_sources: list[str] = Field(
+        description='Earlier books of this run that `context_pending` steps read, sorted by ID. With a review gate '
+                    'the series pauses after such a book while its results wait for review.')
+    up_to: SeriesBookEstimate = Field(
+        description='This book\'s "up to" estimate. Equal to the `plan` figures when `context_pending` is empty.')
+    plan: PipelinePlan = Field(description="The book's step-pipeline plan for the requested steps, `configs` and "
+                                           '`fresh`, over every eligible chapter: exactly what '
+                                           '`planBookAnalysisPipelineRun` returns for that book.')
+
+
+class SeriesMissingCredential(View):
+    """A provider the planned steps would contact that has no API key or server URL configured."""
+    provider: PipelineProviderId = Field(description='Pipeline provider ID.')
+    label: str = Field(description='Display name of the provider.')
+    needs: Literal['api_key', 'url'] = Field(description='What to add in Settings: an API key (cloud provider) or a server '
+                                                         'URL (self-hosted provider).')
 
 
 class SeriesPlan(View):
-    """A preview of staged analysis over a series' supplied, active books."""
+    """A read-only preview of a series run: each supplied, active book's step-pipeline plan in reading order,
+    the summed estimate and the fingerprint that confirms it."""
     series_id: str = Field(description='Series ID.')
     name: str = Field(description='Series name.')
-    provider: Literal['gemini', 'openai', 'anthropic'] = Field(description='Cloud analysis provider that would run.')
-    model: str = Field(description='Analysis model for profiles and direction, from runtime settings.')
-    scan_model: str = Field(description='Discovery (scan) model, from runtime settings.')
-    phase: Literal['scan', 'profiles', 'direct', 'full'] = Field(description='Requested phase.')
-    concurrency: int = Field(description='Discovery workers that would run (1 or 2). Always 1 for `profiles` and '
-                                         '`direct`, which run in reading order.')
-    books: list[SeriesPlanBook] = Field(description='Supplied, active books in reading order. May be empty.')
+    plan_version: int = Field(description='Version of the series plan format, part of the fingerprint. Currently 3.')
+    steps: list[StepId] = Field(description='Requested step IDs, deduplicated, in pipeline order.')
+    configs: dict[StepId, PipelineStepConfigView] = Field(
+        description="`{step ID: {provider, model}}` resolved for every requested step: the request's `configs` entry, "
+                    'otherwise the saved step setting. The same configuration applies to every book.')
+    fresh: bool = Field(description="Echo of the request's `fresh`. Part of the fingerprint.")
+    books: list[SeriesPlanBook] = Field(
+        description='Supplied, active books in reading order (position, then book ID). Empty when the series has none; '
+                    'starting it is then refused.')
     volumes: list[SeriesVolume] = Field(description="The series' volume slots, as in `Series.volumes`.")
-    limits_per_book: AnalysisPlanLimits = Field(
-        description='Limits applied separately to each book; total possible spend scales with the number of books.')
-    requests: int = Field(description='Sum of known pending requests across books (excludes retries, evidence '
-                                      'repairs and work discovered during a full run).')
+    skipped_volumes: list[SeriesVolume] = Field(
+        description='The slots that will not run: missing and planned placeholders and removed (archived) supplied '
+                    'books, in reading order. Nothing is inferred about them.')
+    requests: int = Field(description="Sum of the books' `requests`: model requests to send, before retries or evidence "
+                                      'repairs.')
+    cached_units: int = Field(description="Sum of the books' `cached_units`.")
+    service_calls: int = Field(description="Sum of the books' `service_calls` (free calls to self-hosted services).")
+    estimated_input_tokens: int = Field(description="Sum of the books' `estimated_input_tokens`.")
+    output_token_allowance: int = Field(description="Sum of the books' `output_token_allowance` (output token caps).")
     estimated_cost_usd: float | None = Field(
-        description='Sum of per-book estimates in USD, or null when any book estimate is unknown. Approximate; not '
-                    'an invoice.')
+        description="Sum of the books' `estimated_cost_usd` in USD, rounded to 6 decimals; null when any book's cost is "
+                    'unknown (an unknown price is never counted as zero); 0 when `books` is empty. Approximate; not an '
+                    'invoice.')
+    known_cost_usd: float = Field(description="Sum of the books' known `estimated_cost_usd` in USD, rounded to 6 "
+                                              'decimals. A lower bound when `unknown_cost_books` is not empty.')
+    unknown_cost_books: list[str] = Field(description='Book IDs whose estimate is unknown (null), in reading order.')
+    context_pending_books: list[str] = Field(
+        description='Book IDs, in reading order, with a `context_pending` step. When not empty, present the `up_to` '
+                    "estimate: later books read earlier books' accepted results, so their prompts (and cost) can "
+                    'grow during the run.')
+    up_to: SeriesEstimate = Field(description="Sum of the books' `up_to` estimates; equal to the plan totals when "
+                                              '`context_pending_books` is empty. An unknown price stays unknown.')
+    missing_inputs: dict[str, dict[StepId, list[StepId]]] = Field(
+        description="`{book ID: {step: [required inputs]}}` for the books whose plan reports `missing_inputs`; books "
+                    'without any are omitted. Starting the run is refused (400) while this is not empty.')
+    missing_credentials: list[SeriesMissingCredential] = Field(
+        description='Providers the requested steps would contact that have no API key or server URL configured, sorted '
+                    'by provider ID. Local steps and offline providers need none. Starting the run is refused (400) '
+                    'while this is not empty.')
     notes: list[str] = Field(description='Human-readable caveats. Display only.')
-    plan_fingerprint: str = Field(
-        description='SHA-256 hex digest over the plan and each book\'s revision, source hash and series-context '
-                    'fingerprint. Send it as `expected_plan_fingerprint` to start exactly this scope.')
+    fingerprint: str = Field(
+        description='Opaque series plan identity (SHA-256 hex) over the plan version, series, steps, resolved `configs`, '
+                    "`fresh` and every book's ID, position and `consent_fingerprint`. Send it as `expected_fingerprint` "
+                    'to start exactly this plan.')
+
+
+class SeriesChildRun(View):
+    """A summary of the pipeline run a series child executes."""
+    id: str = Field(description='Pipeline run ID (the child job\'s `run_id`).')
+    status: RunStatus = Field(description='The run status, as in `PipelineRun.status`.')
+    outcomes: dict[StepId, PipelineRunOutcome] | None = Field(
+        description='Per-step outcome keyed by step ID, or null until the run finishes.')
+    error: str | None = Field(description='Human-readable failure text, or null. Display only.')
+
+
+class SeriesRunChild(Job):
+    """A child job of a series run, with a summary of its book's pipeline run."""
+    run: SeriesChildRun | None = Field(
+        None, description='Present once the child has a `run_id`: the run\'s `{id, status, outcomes, error}`, or null '
+                          'when that run record no longer exists. Absent while the book has not started, and on '
+                          'children that never started.')
 
 
 class SeriesRun(Job):
-    """A series parent job with its child book jobs."""
-    children: list[Job] = Field(
-        description='The child `analyze` jobs, one per supplied book, in reading order. They use real book IDs.')
+    """A series parent job with its child jobs."""
+    children: list[SeriesRunChild] = Field(
+        description='The child jobs, one per supplied book, in reading order (`pipeline` jobs; `analyze` jobs in runs '
+                    'recorded before contract 0.2.0). They use real book IDs.')
 
 
 class SeriesRuns(View):
     """Recent series runs."""
     runs: list[SeriesRun] = Field(description='Up to 20 parent runs, newest first.')
+
+
+class SeriesLinkSource(View):
+    """An earlier-volume character whose confirmed link supports a suggestion."""
+    book_id: str = Field(description='Earlier book ID.')
+    title: str = Field(description='Earlier book title.')
+    position: float = Field(description="Earlier book's reading order.")
+    character_id: str = Field(description='Character ID local to that earlier book.')
+    character_name: str = Field(description="That character's current name.")
+
+
+class SeriesLinkCandidate(View):
+    """One series identity a character might be."""
+    series_character_id: str = Field(description='Series identity ID. Confirm with `linkSeriesCharacter`.')
+    name: str = Field(description='Series identity name.')
+    matched_names: list[str] = Field(description="This book's spellings (the character's name or aliases) that matched.")
+    sources: list[SeriesLinkSource] = Field(description='Linked earlier-volume characters with a matching name or alias, '
+                                                        'in reading order.')
+
+
+class SeriesLinkSuggestion(View):
+    """A proposed identity link for one unlinked character. Nothing is linked until the owner confirms."""
+    character_id: str = Field(description='Book-local character ID.')
+    character_name: str = Field(description="The character's current name.")
+    candidates: list[SeriesLinkCandidate] = Field(description='Matching series identities, by name then ID. More than '
+                                                              'one means namesakes: choose, or create a separate identity.')
+    ambiguous: bool = Field(description='True when there are several candidates, or when one candidate is also '
+                                        'proposed for another character of this book. Offer an explicit choice; never '
+                                        'preselect one.')
+
+
+class BookSeriesSuggestions(View):
+    """Proposed identity links for a book's unlinked characters."""
+    book_id: str = Field(description='Book ID.')
+    series_id: str | None = Field(description="The book's active series, or null when it is in none (then there are "
+                                              'no suggestions).')
+    suggestions: list[SeriesLinkSuggestion] = Field(description='One entry per unlinked character with at least one '
+                                                                'candidate, by name then ID.')
 
 
 class SeriesMap(View):
@@ -294,6 +428,9 @@ SERIES_ID = 'Series ID.'
 BOOK_ID = 'Book ID.'
 
 NO_SERIES = {'series_not_found': 'No series has this ID.'}
+STEP_ERRORS = {'unknown_step': '`steps`, `configs` or `gates` names a step that is not registered.',
+               'step_config_invalid': 'A `configs` entry names a provider or model its step does not take.',
+               'step_model_missing': 'A model step has no saved model for its provider and none in `configs`.'}
 NO_BOOK = {'book_not_found': 'No book has this ID.'}
 ARCHIVED = {'series_archived': 'The series is removed (archived). Restore it first; reads still work.'}
 RUN_ACTIVE = {'series_run_active': 'This series has an active processing run, or an active series run reserves one '
@@ -450,84 +587,159 @@ OPS: list[Op] = [
     op('GET', '/api/books/{book_id}/series/context', 'getBookSeriesContext', TAG,
        'Preview earlier-volume context for a book',
        'Reads the bounded context that analysis of this book receives from strictly earlier volumes, without model '
-       'calls. It includes only observations of characters with confirmed links, from active earlier books of the '
-       'same active series, whose quotes still match the current source text; name mentions, later volumes, '
-       'unconfirmed links, removed or unavailable volumes and invalidated evidence are excluded. Missing volumes '
-       'contribute nothing.\n\n'
-       'The bound (at most 12,000 serialized characters and 8 observations per character) is an implementation '
-       'choice, not a request parameter. `fingerprint` is stable while the inputs are unchanged. All historical '
-       'observations remain retained even when omitted here.',
+       "calls. Since contract 0.3.0 it is each earlier book's **accepted** evidence (its current character "
+       'references: profile evidence and attributed dialogue), not the retained observation history, so accepting, '
+       'rolling back or setting aside a version there changes it. It includes only characters with confirmed links, '
+       'from active earlier books of the same active series, and evidence whose quote still matches the current '
+       'source text; name mentions, later volumes, unconfirmed links, removed or unavailable volumes and invalidated '
+       'evidence are excluded. Missing volumes contribute nothing.\n\n'
+       'The bound (at most 12,000 serialized characters and 8 entries per character) is an implementation choice, '
+       'not a request parameter; profile requests use a larger bound and send at most 6 entries per character. '
+       '`fingerprint` is stable while the inputs are unchanged.',
        response=BookSeriesContext,
        params={'book_id': BOOK_ID},
        errors={404: NO_BOOK}),
 
+    op('GET', '/api/books/{book_id}/series/suggestions', 'listSeriesLinkSuggestions', TAG,
+       'Suggest identity links for a book',
+       "Proposes series identities for this book's characters that have no link yet. A proposal needs an exact "
+       "match, ignoring case and repeated spaces, between one of the character's names or aliases and a name or "
+       'alias of a character in a strictly earlier, active volume of the same series that already has a confirmed '
+       'link. Nothing is linked or stored: confirm a proposal with `linkSeriesCharacter`. Namesakes, and one identity '
+       'proposed for two characters, are marked `ambiguous` and need an explicit choice. Narrator and unassigned are '
+       'never proposed. Read-only.',
+       response=BookSeriesSuggestions,
+       params={'book_id': BOOK_ID},
+       errors={404: NO_BOOK}),
+
     op('POST', '/api/series/{series_id}/plan', 'planSeriesProcessing', TAG, 'Preview a series analysis run',
-       'Previews staged analysis over the supplied, active books of an active series in reading order, without '
-       'sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for '
-       'per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when '
-       'omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from '
-       'runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.\n\n'
-       'The response lists ordered supplied books with nested book plans, models, known requests and cost, volume '
-       'slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so '
-       'the possible collection-wide spend grows with the number of books. The plan can be empty when the series '
-       'has no active books (starting it is then refused). The preview creates no jobs.\n\n'
-       'Side effects, all local and none of them changing a book, the same as '
-       '`POST /api/books/{book_id}/analysis-plan` for each planned book: it caches and retains the census (a '
-       '`census` artifact, and a `census` resource operation when computed fresh), imports validated discovery '
-       'found only in an older checkpoint into the unit cache (with its artifacts), and retains `series_context` '
-       'artifacts for linked earlier volumes.',
+       "Previews a series run: the step-pipeline plan of every supplied, active book of the series, in reading order, "
+       'for the same `steps`, `configs` and `fresh`, and the summed estimate. No model or service calls.\n\n'
+       "- Each book's `plan` is exactly what `planBookAnalysisPipelineRun` returns for that book over every eligible "
+       "chapter, computed from that book's accepted results and, for Character profiles, the accepted results of "
+       'earlier books through confirmed links.\n'
+       '- **Context-pending books.** In a later book whose linked characters have a confirmed link in an earlier book '
+       'of this run, Character profiles is `context_pending`: earlier books may accept new results during the run, '
+       'which changes what its prompts say but not which units exist. Its `up_to` estimate counts every such unit as '
+       'a request and estimates tokens from the current context, which can grow; say so when asking for consent. '
+       'Use the series `up_to` totals when `context_pending_books` is not empty.\n'
+       "- Omitted `configs` entries use the saved step settings; the resolved `configs` apply to every book.\n"
+       "- `estimated_cost_usd` is null when any book's cost is unknown; `known_cost_usd` and `unknown_cost_books` say "
+       'what is priced. Estimates cover known work before retries or evidence repairs.\n'
+       '- `missing_inputs` (per book) and `missing_credentials` do not fail the preview; starting the run is refused '
+       'while either is not empty.\n'
+       '- Missing and planned placeholders and removed books are listed in `skipped_volumes` and never run.\n'
+       '- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book\'s ID, '
+       "position and `consent_fingerprint` (the book revision, and each step's version, provider, model and unit "
+       'set, plus the exact requests of steps that are not context-pending). It does not cover `scheduling`, `gates`, '
+       '`concurrency` or `limits`.\n\n'
+       'The plan can be empty when the series has no active books. Not purely read-only: for each book the server '
+       'first records outside changes as the book pipeline plan does (`projection.sync`), and building units may '
+       'store free local census caches.',
        response=SeriesPlan,
        params={'series_id': SERIES_ID},
-       errors={400: {'provider_not_cloud': 'The provider (or the configured analysis provider) is not `gemini`, '
-                                           '`openai` or `anthropic`.'},
+       errors={400: STEP_ERRORS,
                404: NO_SERIES,
                409: ARCHIVED}),
 
     op('POST', '/api/series/{series_id}/process', 'startSeriesProcessing', TAG, 'Start a series analysis run',
-       'Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the '
-       'exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.\n\n'
-       'The server recomputes the plan under its store lock and compares the supplied fingerprint **before creating '
-       'jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A '
-       'mismatch returns 409 `plan_stale` (as the step pipeline does) and queues no processing. Re-preview and '
-       'review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for '
-       'direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and '
-       'consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data '
-       'between requests.\n\n'
-       '**Jobs.** The parent job has `kind: "series"` and `book_id: "series:SERIES_ID"`; `total` is the number of '
-       'books. One child `analyze` job per supplied active book uses the real book ID and is created queued. '
-       'Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books '
-       'are reserved: edits to them and to the series are refused with 409. Cancelling the parent '
-       '(`POST /api/jobs/{job_id}/cancel`) also stops its children.\n\n'
-       '**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; '
-       'profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not '
-       'run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` '
-       '(or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book\'s run '
-       'request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the '
-       'jobs, not in this response. A run record is retained as a `series_run` artifact on each book. When the run '
-       "is queued, each supplied book's current projection is recorded in the step pipeline's version history (as "
-       '`baseline` or `external` versions) when the history does not already explain it, so the replaced state '
-       'stays restorable.',
+       'Queues a series run and returns its parent job immediately. Send the same `steps`, `configs` and `fresh` as '
+       'the reviewed preview, with its `fingerprint` as `expected_fingerprint`.\n\n'
+       '**Checks, in order.** The server recomputes the plan under its store lock, then refuses the run when:\n\n'
+       '1. the server is shutting down (503 `shutting_down`);\n'
+       '2. the series is removed (409 `series_archived`), or `steps`, `configs` or `gates` names an unknown step, '
+       'or a step has no valid provider and model (400);\n'
+       '3. the series has no supplied active book (400 `series_empty`);\n'
+       '4. neither `expected_fingerprint` nor any `limits` value was sent (400 `run_unconfirmed`);\n'
+       '5. `expected_fingerprint` differs from the recomputed plan (409 `plan_stale`; preview again and review the new scope rather '
+       'than replacing the fingerprint and retrying);\n'
+       "6. any book's plan has `missing_inputs` (400 `step_inputs_missing`; the message names the steps, inputs and books);\n"
+       '7. a provider the steps contact has no API key or server URL configured (400 `api_key_missing` or '
+       '`server_url_missing`);\n'
+       '8. the series already has an active run (409 `series_run_active`);\n'
+       '9. a book has an active job (409 `job_active`) or is reserved by another series run (409 '
+       '`series_run_active`).\n\n'
+       'Nothing is queued when any check fails. The fingerprint is optimistic scope validation, not a reservation '
+       'that freezes data between requests. `limits` are optional caps for API callers; the confirmed fingerprint is '
+       'the authorization, and every paid HTTP attempt is still reserved and recorded by the pipeline runner.\n\n'
+       '**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number '
+       'of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with '
+       '`series_run_id`, `position`, `title`, `consent_fingerprint`, '
+       '`context_pending`, `context_sources` and `run_id: null`. '
+       'Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with '
+       '`listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, '
+       'single-book runs and accepting versions on them get 409 (except the book a paused run waits on, below). '
+       'Cancelling the parent '
+       '(`POST /api/jobs/{job_id}/cancel`) cancels queued children at once and asks the running child to stop; '
+       'cancelling a child stops the series at that book.\n\n'
+       '**Execution.** Books run one at a time in reading order; `concurrency` is the number of model requests in '
+       'flight inside the running book. Before each book starts, its plan is recomputed; if its `consent_fingerprint` '
+       "changed, that child fails with nothing sent and the series stops. Earlier books' newly accepted results "
+       "change a context-pending book's prompts but not its consent. Each book runs as one pipeline run (with "
+       '`series_run_id` set), with the same candidates, gates and auto-accept as a run started from the book.\n\n'
+       '**Review pauses.** A later book never reads unreviewed results. When a book completes with a version of an '
+       'evidence step (discovery, profiles or directing) waiting for review (a `review` gate) and a later book of the '
+       'run reads it (`context_sources`), the series pauses: '
+       'the parent stays `running` with `waiting_for_review` set and nothing runs. That book then accepts version '
+       'decisions (accept, roll back, set aside) while every other reservation holds. Resume with '
+       '`resumeSeriesProcessing` once nothing waits; cancel the parent to stop. A review gate on a book no later '
+       'book reads leaves its version waiting and the series continues. A restart while paused interrupts the run '
+       'like any active job.\n\n'
+       'The first child that does not complete stops the series with that status (`failed`, `budget_limited`, '
+       '`quota_limited`, `cancelled` or `interrupted`); children that never started end `cancelled` (after a cancel) '
+       'or `interrupted`, with `not_started: true`, and never start later. Validated units are cached per book, so '
+       'running a stopped series again reuses paid work. A run record is retained as a `series_run` artifact on each '
+       'book.',
        response=Job,
-       response_description='The queued parent series job.',
+       response_description='The queued parent series job. Not a result: poll it until it is terminal.',
        params={'series_id': SERIES_ID},
-       errors={400: {'provider_not_cloud': 'The provider (or the configured analysis provider) is not `gemini`, '
-                                           '`openai` or `anthropic`.',
+       errors={400: {**STEP_ERRORS,
                      'series_empty': 'The series has no supplied, active book.',
-                     'api_key_missing': 'No API key is configured for the provider.'},
+                     'run_unconfirmed': 'Neither `expected_fingerprint` nor any limit was sent.',
+                     'step_inputs_missing': 'A book lacks accepted results of a required input step that is not in '
+                                            'this run.',
+                     'api_key_missing': 'A cloud provider the steps use has no API key configured.',
+                     'server_url_missing': 'A self-hosted service or Local LLM the steps use has no server URL '
+                                           'configured (and no cloud key is missing).'},
                404: NO_SERIES,
                409: {**ARCHIVED,
-                     'plan_stale': '`expected_plan_fingerprint` does not match the recomputed plan. Nothing was queued.',
+                     'plan_stale': '`expected_fingerprint` does not match the recomputed plan. Nothing was queued.',
                      'series_run_active': 'This series already has an active run, or another series run holds one of '
                                           'its books.',
                      'job_active': 'A job is working on one of its supplied books.'},
                503: {'shutting_down': 'The series worker is not accepting work because the server is shutting down. '
-                                      'The jobs just created are marked failed or interrupted and nothing runs.'}},
+                                      'Nothing runs; jobs just created are marked failed or interrupted.'}},
+       cost='may_charge'),
+
+    op('POST', '/api/series/{series_id}/runs/{job_id}/resume', 'resumeSeriesProcessing', TAG,
+       'Resume a series run paused for review',
+       "Continues a series run that paused for the owner's review (`waiting_for_review` on the parent job). Refused "
+       'with 409 while the waiting book still has a version from this run waiting for a decision: accept it or set it '
+       'aside first. The run keeps the provider keys, server URLs and settings '
+       'snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it '
+       'starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent '
+       'job with `waiting_for_review: null`. No request body.',
+       response=Job,
+       response_description='The parent series job, still running. Poll it until it is terminal.',
+       params={'series_id': SERIES_ID, 'job_id': 'The parent `series` job ID.'},
+       errors={404: {**NO_SERIES,
+                     'series_run_not_found': 'The job is not a series run of this series.'},
+               409: {'series_run_not_waiting': 'The run is not waiting for review (never paused, already resumed, '
+                                               'ended, cancelled, or interrupted by a server restart, which also '
+                                               'clears `waiting_for_review`).',
+                     'series_run_not_resumable': 'The run is still marked as paused but its worker state is gone; '
+                                                 'start the series again.',
+                     'review_pending': 'The waiting book still has a version from this run waiting for a decision.'},
+               503: {'shutting_down': 'The series worker is not accepting work because the server is shutting down. '
+                                      'The run is marked failed and nothing more runs.'}},
        cost='may_charge'),
 
     op('GET', '/api/series/{series_id}/runs', 'listSeriesRuns', TAG, 'List recent series runs',
-       'Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child '
-       'job records embedded as `children`. The parent uses `book_id: "series:SERIES_ID"`; children use real book '
-       'IDs. Poll this route (or `GET /api/jobs`) to follow a run. Works for removed series too.',
+       'Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first. Each embeds its child '
+       'jobs as `children`, in reading order; a child that has started its book also carries `run`, a summary of its '
+       'pipeline run (`id`, `status`, per-step `outcomes`, `error`). The parent uses `book_id: "series:SERIES_ID"`; '
+       'children use real book IDs. A dangling child job ID in stored data is skipped. Poll this route (or '
+       '`GET /api/jobs`) to follow a run. Works for removed series too. Read-only.',
        response=SeriesRuns,
        params={'series_id': SERIES_ID},
        errors={404: NO_SERIES}),
@@ -569,20 +781,35 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         '__doc__': 'The series identity to link a book character to.',
         'series_character_id': "A series character ID from the book's series, or null (the default) to unlink.",
     },
-    'SeriesProcessingRequest': {
-        '__doc__': 'Scope of a series analysis preview or run. Send the same body to preview and to start, adding the '
-                   'reviewed fingerprint when starting.',
-        'provider': 'Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis '
-                    'provider, which must itself be a cloud provider. Other values are refused (400 '
-                    '`provider_not_cloud`).',
-        'phase': '`scan` (default): discovery only. `profiles`: refine character profiles from retained evidence and '
-                 'confirmed earlier-series context. `direct`: performance direction. `full`: all three in order.',
-        'concurrency': 'Parallel discovery workers, 1 or 2 (default 2). Profiles and direction always run one book '
-                       'at a time in reading order.',
-        'limits': 'Per-book analysis limits, applied separately to each supplied book.',
-        'expected_plan_fingerprint': 'The `plan_fingerprint` from the reviewed preview (at most 64 characters). '
-                                     'Used only by the start route; when present and different from the recomputed '
-                                     'plan, nothing is queued (409 `plan_stale`). Omitting it skips the check. '
-                                     'Ignored by the preview route.',
+    'SeriesPlanRequest': {
+        '__doc__': 'Which steps to preview across the series, with which providers. Send the same `steps`, `configs` and '
+                   '`fresh` to start the run: they are part of the fingerprint.',
+        'steps': 'Step IDs to plan in every book (1–40). Order does not matter: steps are planned in pipeline order. '
+                 'Duplicates are ignored. An unknown ID is refused with 400.',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model for this request, applied to every book. '
+                   'Entries for steps not requested are ignored.',
+        'fresh': 'When true, cached validated units are not reused in any book: new samples are requested. Part of the '
+                 'fingerprint. Default false.',
+    },
+    'SeriesRunRequest': {
+        '__doc__': 'A series run to queue: the reviewed preview\'s `steps`, `configs` and `fresh`, its `fingerprint`, and '
+                   'run options applied to each book\'s pipeline run. There is no chapter selection; every eligible '
+                   'chapter of each book is planned.',
+        'steps': 'Step IDs to run in every book (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID '
+                 'is refused with 400.',
+        'configs': '`{step ID: StepConfig}` overriding the saved provider/model, applied to every book. Entries for steps '
+                   'not requested are ignored.',
+        'fresh': 'Request new samples instead of reusing cached validated units (default false). Part of the fingerprint.',
+        'scheduling': '`serial` (default) runs each book\'s steps one after another in pipeline order. `parallel` starts every '
+                'step whose in-run inputs have finished. Books always run one at a time.',
+        'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run. With `review`, each book\'s '
+                 'version waits for a decision in that book, and the series pauses after a book that a later book '
+                 'reads until it is decided and the run resumed.',
+        'concurrency': 'Maximum model requests in flight inside the running book, 1–4 (default 2). Books run one at a '
+                       'time. Each step also has its own `parallel` cap.',
+        'limits': 'Optional caps applied separately to each book\'s run; see Limits. Uncapped when omitted. A limit '
+                  'reached stops that book as `budget_limited` and stops the series.',
+        'expected_fingerprint': 'The series plan `fingerprint` the owner confirmed (up to 64 characters). A mismatch '
+                                'with the recomputed plan returns 409 `plan_stale` and queues nothing. Required unless a limit is set.',
     },
 }

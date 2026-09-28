@@ -18,7 +18,6 @@ The semantics behind several families are explained in their own guides:
 
 - [analysis pipeline](ANALYSIS-PIPELINE.md): steps, versions, acceptance and rollback;
 - [provider setup](ANALYSIS-PROVIDERS.md) and [account checks](ACCOUNT-CHECKS.md);
-- [classic chapter analysis](CHAPTER-ANALYSIS.md): resume and authority rules;
 - [artifacts and storage](ARTIFACTS-AND-STORAGE.md), including exports;
 - [book structure](STRUCTURE.md);
 - [library, listening and resources](LIBRARY-LISTENING-RESOURCES.md);
@@ -35,9 +34,8 @@ The reference groups operations by family:
 | [Series](../contract/API-REFERENCE.md#series) | Membership, volume placeholders, cross-book identities, collection runs |
 | [Books](../contract/API-REFERENCE.md#books) | The book document and manual edits |
 | [Pronunciations](../contract/API-REFERENCE.md#pronunciations) | Per-book respellings sent to narrators, with where each word occurs |
-| [Classic analysis](../contract/API-REFERENCE.md#classic-analysis) | The older phase-based analysis, its plan preview and local preprocessing |
 | [Analysis pipeline](../contract/API-REFERENCE.md#analysis-pipeline) | Step settings, previewed runs, versioned results to accept or reject |
-| [Inspection](../contract/API-REFERENCE.md#inspection) | Stages, artifacts, the story map, passage search, resource usage, the analysis export |
+| [Inspection](../contract/API-REFERENCE.md#inspection) | Stage cards (one per pipeline step), artifacts, the story map, passage search, resource usage, the analysis export |
 | [Narration](../contract/API-REFERENCE.md#narration) | Enhanced (cast) takes and their audio |
 | [Listening](../contract/API-REFERENCE.md#listening) | Simple single-narrator listening for passages and chapters |
 | [Performances](../contract/API-REFERENCE.md#performances) | Saved named selections over retained audio |
@@ -105,7 +103,7 @@ Validation of a provider's output is separate from HTTP status. HTTP 200 from a 
 Long work is queued as a durable job, and the response returns immediately with the job. **A queued job is not a result.**
 
 - **Following a job.** Poll `GET /api/jobs` (optionally with `book_id`) and select your job by `id`. There is no single-job route; series runs also have their own runs endpoint. `active=true` returns every queued or running job with no bound. `./bardicctl` relies on it, and on the response being a bare list.
-- **Statuses.** `queued` and `running` are active. Terminal statuses are `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, and `quota_limited` (with `resume_after`). A terminal status is final: the server never changes a finished job's `status`, `message`, `error` or `resume_after` afterwards. Worker failures, cancellations and allowance stops appear in the job while polling still returns HTTP 200.
+- **Statuses.** `queued` and `running` are active. Terminal statuses are `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, and `quota_limited` (with `resume_after`). A terminal status is final: the server never changes a finished job's `status`, `message`, `error` or `resume_after` afterwards. Worker failures, cancellations and allowance stops appear in the job while polling still returns HTTP 200. A `series` parent can stay `running` while it waits for the owner's review (`waiting_for_review`); it continues only after `resumeSeriesProcessing` and ends when cancelled.
 - **Progress.** `progress`/`total` are in units specific to the job's `kind`. They are not a universal percentage.
 - **Cancellation.** Cancellation is cooperative. A queued job cancels before starting. A running job receives a flag and stops at the next safe boundary. A remote request that was already sent can still complete, and be billed, after cancellation. Validated outputs and completed audio are retained.
 - **Restart.** On a server restart, incomplete jobs become `interrupted`. To resume, call the relevant analyze, render, listen, pipeline or process operation again. Do not try to revive an old job ID.

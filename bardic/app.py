@@ -47,6 +47,7 @@ from .pipeline import default_registry
 from .pipeline.api import build_router as pipeline_router
 from .pipeline.projection import record_before_outside_write
 from .pipeline.repository import PipelineRepository
+from .series_processing import SeriesPlanRequest, SeriesRunRequest
 from .series import SeriesRepository, require_active_book
 from .structure import repair_structure, transform_checkpoint_structure
 from .store import InstanceLock, Store, public_job
@@ -86,29 +87,6 @@ class RenderRequest(StrictModel):
     scene_id: str | None = None
     segment_id: str | None = None
     force: bool = False
-
-
-class AnalysisLimits(StrictModel):
-    max_requests: int = Field(default=25, ge=1, le=1000)
-    max_input_tokens: int = Field(default=1000000, ge=1000, le=10000000)
-    max_output_tokens: int = Field(default=100000, ge=1000, le=2000000)
-    budget_usd: float | None = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
-
-
-class AnalysisRequest(StrictModel):
-    provider: str | None = None
-    chapter_id: str | None = None
-    resume: bool = True
-    phase: Literal["scan", "profiles", "direct", "full"] = "scan"
-    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
-
-
-class SeriesProcessingRequest(StrictModel):
-    provider: str | None = None
-    phase: Literal['scan', 'profiles', 'direct', 'full'] = 'scan'
-    concurrency: int = Field(default=2, ge=1, le=2)
-    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
-    expected_plan_fingerprint: str | None = Field(default=None, max_length=64)
 
 
 class BookMetadataRequest(StrictModel):
@@ -221,6 +199,31 @@ class TtsLimitsUpdate(StrictModel):
     rpd: int | None = Field(default=None, strict=True, ge=1, le=10_000_000)
 
 
+class StepPresetConfig(StrictModel):
+    """What an owner-authored saved step setting captures (version 1).
+
+    ``chapter_id`` null means all story sections; a chapter ID only applies in the book that has it.
+    ``custom_model`` marks a model ID typed by hand, which the browser accepts although it is not in the catalog."""
+    provider: str = Field(min_length=1, max_length=40)
+    model: str | None = Field(default=None, max_length=200)
+    custom_model: bool = False
+    gate: Literal['auto', 'review'] = 'auto'
+    concurrency: int = Field(default=2, ge=1, le=4, strict=True)
+    fresh: bool = False
+    chapter_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class StepPreset(StrictModel):
+    id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,40}$')
+    name: str = Field(min_length=1, max_length=60)
+    step: str = Field(pattern=r'^[a-z][a-z0-9_]{0,39}$')
+    config: StepPresetConfig
+    version: Literal[1] = 1
+
+
+MAX_STEP_PRESETS = 50
+
+
 class SettingsRequest(StrictModel):
     tts_model: str | None = None
     api_keys: dict[str, Annotated[str, Field(max_length=500)]] | None = None
@@ -233,6 +236,19 @@ class SettingsRequest(StrictModel):
     breeze_api_key: str | None = Field(default=None, max_length=500)
     # Self-hosted analysis servers by provider ID (see local_services.SERVICES); "" clears one.
     local_service_urls: dict[str, Annotated[str, Field(max_length=500)]] | None = None
+    # Owner-authored saved step settings; the list replaces the saved one ([] removes them all).
+    analysis_step_presets: list[StepPreset] | None = Field(default=None, max_length=MAX_STEP_PRESETS)
+
+
+def saved_step_presets(saved):
+    """Well-formed saved step settings from storage; malformed entries are dropped, never repaired."""
+    result = []
+    for item in saved if isinstance(saved, list) else []:
+        try:
+            result.append(StepPreset.model_validate(item).model_dump())
+        except (ValueError, TypeError):
+            continue
+    return result[:MAX_STEP_PRESETS]
 
 
 def valid_analysis_model(model):
@@ -263,6 +279,27 @@ class CharacterEdit(StrictModel):
     # One saved choice per narration provider; null removes that provider's choice.
     voices: dict[str, VoiceChoice | None] | None = None
     direction: str | None = Field(default=None, max_length=3000)
+
+
+PASSAGE_EDIT_FIELDS = ("cues", "direction", "seed", "speaker_id")
+
+
+def manual_fields(segment: dict) -> list[str]:
+    """The passage fields a person set by hand, from the stored edit locks (see pipeline.contract.locked).
+
+    ``["*"]`` or a bare ``edited`` flag (an edit from before per-field tracking) locks every field. A speaker
+    confirmed before per-field locks recorded confirmations (``edited`` and confidence 1.0) counts too.
+    """
+    from .pipeline.evidence import reviewed_speaker
+
+    fields = segment.get("edited_fields")
+    if isinstance(fields, list):
+        chosen = set(PASSAGE_EDIT_FIELDS) if "*" in fields else {f for f in fields if f in PASSAGE_EDIT_FIELDS}
+    else:
+        chosen = set(PASSAGE_EDIT_FIELDS) if segment.get("edited") else set()
+    if reviewed_speaker(segment):
+        chosen.add("speaker_id")
+    return sorted(chosen)
 
 
 class SegmentEdit(StrictModel):
@@ -384,6 +421,8 @@ class Runtime:
                                    if isinstance(saved.get("narration_defaults"), dict) else None},
             # Last listing of the Google project's stored voices (metadata only).
             "gemini_voice_catalog": saved.get("gemini_voice_catalog") if isinstance(saved.get("gemini_voice_catalog"), dict) else None,
+            # Saved step settings the owner authored on the Analyze tab (shared by every browser).
+            "analysis_step_presets": saved_step_presets(saved.get("analysis_step_presets")),
         }
         LIMITER.configure(self.preferences["tts_limits"])
         self.breeze_checking = False
@@ -744,6 +783,8 @@ class Runtime:
 
     def present(self, book):
         result = copy.deepcopy(book)
+        # Books imported before the language field present it as unknown (null).
+        result.setdefault("language", None)
         chapter_map = {c["id"]: c for c in result["chapters"]}
         previous = {}
         cast = self.resolved_cast(book)
@@ -759,6 +800,9 @@ class Runtime:
             c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
         for character in result["characters"]:
             character["voices"] = assignments(character)
+        # Which passage fields a person set by hand, as one public list (the UI's "Your edits").
+        for s in result["segments"]:
+            s["manual_fields"] = manual_fields(s)
         # Storage bookkeeping stays stored but off the wire: edit locks, legacy voice
         # fields (already folded into `voices`), profile cache keys, metadata locks.
         result.pop("metadata_edited", None)
@@ -802,7 +846,12 @@ class Runtime:
         item.pop("voice", None)
         item.pop("system_voice", None)
 
-    def run(self, job, operation, secrets=()):
+    def run(self, job, operation, secrets=(), completed_message=None):
+        """Run ``operation`` as ``job`` and settle its terminal status once.
+
+        ``completed_message`` (optional) is called after the operation succeeds and returns the
+        completion message; a terminal status and message are final, so it is written with them.
+        """
         job_id = job["id"]
         # Paced provider waits inside this job check its cancellation and shutdown.
         cancel_token = CANCEL_CHECK.set(lambda: self.check_cancel(job_id))
@@ -812,7 +861,7 @@ class Runtime:
                 return  # Cancelled after the check; its terminal status is final.
             operation()
             self.check_cancel(job_id)
-            self.store.update_job(job_id, status="completed", message=(
+            self.store.update_job(job_id, status="completed", message=(completed_message and completed_message()) or (
                 "Chapter ready to listen" if job["kind"] == "listen_chapter" else
                 "Performance ready" if job["kind"] == "performance" else
                 "Ready to listen" if job["kind"] in {"render", "listen", "voice_preview"} else "Analysis ready for review"))
@@ -968,66 +1017,6 @@ class Runtime:
                 raise Unavailable("shutting_down", "The narration worker is stopping and accepted no work. No narration was started.") from None
             return job
 
-    def analyze(self, book_id, provider, chapter_id=None, resume=True, phase="scan", limits=None):
-        from .errors import Conflict, Invalid, Unavailable
-        with self.store.lock:
-            book = self.store.book(book_id)
-            if self.store.is_archived(book_id):
-                raise Conflict("book_archived", "This book is archived.")
-            self.require_idle(book_id)
-            if chapter_id is not None and chapter_id not in {c["id"] for c in book["chapters"]}:
-                raise Invalid("unknown_chapter", "The book has no chapter with this ID.")
-            provider = provider or self.preferences["analysis_provider"]
-            if provider not in ANALYSIS_LABELS:
-                raise Invalid("unknown_provider", "The analysis provider must be local, gemini, openai or anthropic.")
-            key = self.api_keys.get(provider, "")
-            if provider == "gemini" and not key:
-                raise Invalid("gemini_key_missing", "No Gemini API key is configured.")
-            if provider != "local" and not key:
-                raise Invalid("api_key_missing", f"No {ANALYSIS_LABELS[provider]} API key is configured.")
-            if self.stopping.is_set():
-                raise Unavailable("shutting_down", "The server is shutting down and cannot start new work.")
-            model = self.preferences["analysis_models_by_provider"].get(provider)
-            scan_model = self.preferences["preprocess_models_by_provider"].get(provider)
-            # The analysis will replace the projection: keep the current one restorable in the pipeline history.
-            record_before_outside_write(self.store, book_id)
-            job = self.store.create_job(book_id, "analyze")
-            job = self.store.update_job(job["id"], provider=provider, model=model, scan_model=scan_model, phase=phase, chapter_id=chapter_id)
-
-            def work():
-                def progress(done, total, message):
-                    self.check_cancel(job["id"])
-                    self.store.update_job(job["id"], progress=done, total=total, message=message)
-                def prepare(snapshot):
-                    self.check_cancel(job["id"])
-                    self.assign_local_voices(snapshot)
-                    cast = self.resolved_cast(snapshot)
-                    for segment in snapshot["segments"]:
-                        if segment.get("audio") and not self.valid_audio(snapshot, segment, cast):
-                            segment["audio"] = None
-                from contextlib import nullcontext
-                from .resources import ResourceLedger
-                timing = ResourceLedger(self.store).operation(book_id, 'local_analysis', run_id=job['id'],
-                    chapter_id=chapter_id, measure_cpu=True) if provider == 'local' else nullcontext()
-                with timing:
-                    updated = analyze_book(book, provider, key, model, progress, lambda: self.cancelled(job["id"]),
-                                           store=self.store, chapter_id=chapter_id, resume=resume, prepare=prepare,
-                                           phase=phase, scan_model=scan_model, limits=limits, run_id=job["id"])
-                self.check_cancel(job["id"])
-                self.assign_local_voices(updated)
-                updated["revision"] = book.get("revision", 0) + 1
-                cast = self.resolved_cast(updated)
-                for s in updated["segments"]:
-                    if s.get("audio") and not self.valid_audio(updated, s, cast):
-                        s["audio"] = None
-                self.store.save_book(updated)
-            try:
-                self.pool.submit(self.run, job, work, (key,))
-            except RuntimeError:  # The pool stopped between the check above and this submission.
-                self.store.update_job(job["id"], status="interrupted", message="The server was shutting down. No analysis was started.")
-                raise Unavailable("shutting_down", "The server is shutting down and cannot start new work.") from None
-            return job
-
 
 class UploadLimit:
     """Refuse an oversized book upload without reading the rest of it (413 `upload_too_large`).
@@ -1093,6 +1082,8 @@ def create_app(data_dir: Path | None = None):
         app.state.runtime.close()
 
     app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
+    # One step registry for book pipeline routes and series runs.
+    pipeline_registry = default_registry()
     from .importer import MAX_UPLOAD
     # Multipart framing adds a few hundred bytes around the file; allow 64 KiB.
     app.add_middleware(UploadLimit, limit=MAX_UPLOAD + 64 * 1024)
@@ -1163,6 +1154,16 @@ def create_app(data_dir: Path | None = None):
     def status(runtime):
         voices = list_system_voices()
         with runtime.store.lock:
+            # Today's Gemini speech requests for the selected model, so a whole-book
+            # or scene estimate can compare its request count with what is left.
+            tts_model = runtime.preferences["tts_model"]
+            tts_limits = runtime.preferences["tts_limits"].get(tts_model, dict(DEFAULT_TTS_LIMITS))
+            # The usage ledger's table appears with the first recorded operation;
+            # until then this library has recorded no requests. Status stays read-only.
+            with runtime.store.connect() as conn:
+                ledger = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_operations'").fetchone()
+            tts_quota = {tts_model: {"requests_today": requests_today(runtime.store, tts_model) if ledger else 0, "rpd": tts_limits["rpd"],
+                                     "resets_at": quota_day()[1].isoformat(), "scope": "this library"}}
             preferences = copy.deepcopy(runtime.preferences)
             preferences.pop("breeze_catalog", None)
             preferences.pop("gemini_voice_catalog", None)
@@ -1190,6 +1191,7 @@ def create_app(data_dir: Path | None = None):
                     "model_catalogs": {provider: runtime.model_catalog.view(provider, runtime.api_keys[provider]) for provider in ANALYSIS_CATALOG},
                     "system_voices": voices, "tts_models": TTS_MODELS,
                     "tts_rate": {model: LIMITER.view(model) for model in TTS_MODELS},
+                    "tts_quota": tts_quota,
                     "timing_kind": "segment"}
 
     @app.get("/api/status")
@@ -1232,6 +1234,34 @@ def create_app(data_dir: Path | None = None):
                 raise Conflict("settings_changed", "The key changed during the refresh; its result was discarded.")
         return result
 
+    def step_presets(items):
+        """Validate saved step settings against the step registry: a known step, a provider and model
+        that step accepts, unique IDs and unique names per step. Model availability in a catalog and
+        provider keys are checked when a set is applied, because both change after saving."""
+        from .pipeline.api import _validate_config
+        result, ids, names = [], set(), set()
+        for item in items:
+            if item.step not in pipeline_registry:
+                raise Invalid("unknown_step", f"Unknown pipeline step in `analysis_step_presets`: {item.step}.")
+            step = pipeline_registry.get(item.step)
+            name = " ".join(item.name.split())
+            if not name:
+                raise Invalid("step_preset_invalid", "A saved step setting has an empty name.")
+            if item.id in ids:
+                raise Invalid("step_preset_invalid", f"Two saved step settings have the ID {item.id}.")
+            if (item.step, name.casefold()) in names:
+                raise Invalid("step_preset_invalid", f"Two saved settings for {step.label} are both named “{name}”.")
+            ids.add(item.id)
+            names.add((item.step, name.casefold()))
+            config = item.config.model_dump()
+            config.update(_validate_config(step, {"provider": config["provider"], "model": config["model"]}))
+            if config["model"] is None:
+                config["custom_model"] = False
+            if not step.chapter_scoped:
+                config["chapter_id"] = None
+            result.append({"id": item.id, "name": name, "step": item.step, "config": config, "version": 1})
+        return result
+
     @app.post("/api/settings")
     def settings(body: SettingsRequest, request: Request):
         runtime = rt(request)
@@ -1265,6 +1295,9 @@ def create_app(data_dir: Path | None = None):
                 service_urls[provider] = local_services.normalize_url(value, provider)
             except ValueError as error:
                 raise Invalid("service_url_invalid", str(error)) from None
+        presets = None
+        if body.analysis_step_presets is not None:
+            presets = step_presets(body.analysis_step_presets)
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
@@ -1276,6 +1309,8 @@ def create_app(data_dir: Path | None = None):
                 preferences["tts_limits"][model] = normalize_limits({**preferences["tts_limits"][model], **given})
             if chunking is not None:
                 preferences["listen_chunking"] = chunking
+            if presets is not None:
+                preferences["analysis_step_presets"] = presets
             if breeze_url is not None:
                 preferences["breeze_url"] = breeze_url
             preferences["local_service_urls"].update(service_urls)
@@ -1367,7 +1402,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/books/{book_id}/repair-structure")
     def repair_book_structure(book_id: str, request: Request):
-        from .staged_analysis import fingerprint
+        from .analysis_common import fingerprint
         from .resources import ResourceLedger
 
         runtime = rt(request)
@@ -1471,32 +1506,23 @@ def create_app(data_dir: Path | None = None):
                                          for item in character['observations']]
         return context
 
-    @app.get("/api/books/{book_id}/analysis")
-    def get_analysis(book_id: str, request: Request):
-        runtime = rt(request)
-        book = runtime.store.book(book_id)
-        status = runtime.store.analysis_status(book_id)
-        if status:
-            status.pop("fingerprint", None)  # Checkpoint cache key; internal.
-            return status
-        return {
-            "status": "not_started", "stage": "discovery", "provider": None, "model": None,
-            "completed_units": 0, "total_units": 0, "current_chapter_id": None,
-            "chapters": [{"id": c["id"], "title": c["title"], "stage": "discovery", "status": "pending",
-                          "completed_units": 0, "total_units": 0, "discovery_complete": False, "directing_complete": False}
-                         for c in book["chapters"]]}
+    @app.get("/api/books/{book_id}/series/suggestions")
+    def get_book_series_suggestions(book_id: str, request: Request):
+        # Proposals only: confirming one uses the link route above.
+        return SeriesRepository(rt(request).store).suggestions(book_id)
 
     @app.get("/api/books/{book_id}/characters/{character_id}/references")
     def get_character_references(book_id: str, character_id: str, request: Request):
-        from .staged_analysis import current_references
+        from .pipeline.projection import current_references
 
         runtime = rt(request)
-        book = runtime.store.book(book_id)
-        if character_id not in {c["id"] for c in book["characters"]}:
-            raise NotFound("character_not_found", "No character has this ID in the book.")
-        # Derived from the current book on every read, so every writer of the book is reflected;
-        # only discovery evidence comes from the stored analysis references.
-        return current_references(book, runtime.store.character_references(book_id, character_id), character_id)
+        with runtime.store.lock:
+            book = runtime.store.book(book_id)
+            if character_id not in {c["id"] for c in book["characters"]}:
+                raise NotFound("character_not_found", "No character has this ID in the book.")
+            # The projection of accepted evidence, rebuilt from the current book on every read (and rolled
+            # back), so manual edits and pipeline acceptance show at once without the GET recording anything.
+            return current_references(runtime.store, pipeline_registry, book, character_id)
 
     def require_editable(runtime, book_id):
         """Changes need a known (404), non-archived (409 book_archived) and idle (409) book."""
@@ -1692,43 +1718,6 @@ def create_app(data_dir: Path | None = None):
             return [item for item in entries if item["id"] != entry_id]
         return save_lexicon(rt(request), book_id, change)
 
-    @app.post("/api/books/{book_id}/analyze")
-    def analyze(book_id: str, body: AnalysisRequest, request: Request):
-        return rt(request).analyze(book_id, body.provider, body.chapter_id, body.resume, body.phase, body.limits.model_dump())
-
-    @app.get("/api/books/{book_id}/preprocessing")
-    def preprocessing(book_id: str, request: Request):
-        from .preprocessing import coverage
-        from .progressive import discoveries, profile_status
-        from .processing import ProcessingStore
-        runtime = rt(request)
-        with runtime.store.lock:
-            book = runtime.store.book(book_id)
-            # Read-only: nothing is imported or retained; only the disposable census cache may be written.
-            accepted = discoveries(book, runtime.store, ProcessingStore(runtime.store), persist=False)
-            result = coverage(book, runtime.store, retain=False, units=accepted)
-            result.update(profile_status(book, runtime.store, accepted, result, persist=False))
-            return result
-
-    @app.post("/api/books/{book_id}/analysis-plan")
-    def analysis_plan(book_id: str, body: AnalysisRequest, request: Request):
-        from .errors import Invalid
-        from .progressive import plan
-        runtime = rt(request)
-        with runtime.store.lock:
-            book = runtime.store.book(book_id)
-            if runtime.store.is_archived(book_id):  # The preview retains artifacts, so a removed book is refused.
-                raise Conflict('book_archived', 'This book is archived.')
-            if body.chapter_id and body.chapter_id not in {c['id'] for c in book['chapters']}:
-                raise Invalid('unknown_chapter', 'The book has no chapter with this ID.')
-            provider = body.provider or runtime.preferences['analysis_provider']
-            if provider not in ANALYSIS_LABELS:
-                raise Invalid('unknown_provider', 'The analysis provider must be local, gemini, openai or anthropic.')
-            result = plan(book, runtime.store, provider, runtime.preferences['analysis_models_by_provider'].get(provider),
-                          runtime.preferences['preprocess_models_by_provider'].get(provider), body.phase, body.chapter_id, body.resume)
-            result['limits'] = body.limits.model_dump()
-            return result
-
     @app.post("/api/books/{book_id}/render")
     def render(book_id: str, body: RenderRequest, request: Request):
         return rt(request).render(book_id, body)
@@ -1756,6 +1745,11 @@ def create_app(data_dir: Path | None = None):
                                                  message='Series cancelled before this book started.')
                     elif child['status'] == 'running':
                         runtime.store.update_job(identifier, cancel_requested=True, message='Stopping after current request.')
+                if job.get('waiting_for_review'):
+                    # Paused for review: no worker is running to settle it, so it ends now.
+                    from .series_processing import cancel_paused
+                    runtime.store.update_job(job_id, cancel_requested=True)
+                    return public_job(cancel_paused(runtime, runtime.store.job(job_id)))
             if job['kind'] == 'performance':
                 # A performance runs Gemini chapters as child jobs; stop the active one too.
                 for child in runtime.store.jobs(job['book_id'], limit=None, active=True):
@@ -1845,7 +1839,7 @@ def create_app(data_dir: Path | None = None):
         with runtime.store.lock:
             book = runtime.store.book(book_id)
             cast = runtime.resolved_cast(book)
-            return pipeline(runtime.store, book, lambda book, segment: runtime.valid_audio(book, segment, cast))
+            return pipeline(runtime.store, book, lambda book, segment: runtime.valid_audio(book, segment, cast), pipeline_registry)
 
     @app.get('/api/books/{book_id}/resources')
     def resource_usage(book_id: str, request: Request, limit: int = 100, offset: int = 0, run_id: str | None = None):
@@ -1973,36 +1967,24 @@ def create_app(data_dir: Path | None = None):
             return library_repository(runtime).remove_volume(series_id, position)
 
     @app.post('/api/series/{series_id}/plan')
-    def plan_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+    def plan_series(series_id: str, body: SeriesPlanRequest, request: Request):
         from .series_processing import plan
-        runtime = rt(request)
-        with runtime.store.lock:
-            return plan(runtime, series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
-                        limits=body.limits.model_dump())
+        return plan(rt(request), pipeline_registry, series_id, body.steps, configs=body.configs, fresh=body.fresh)
 
     @app.post('/api/series/{series_id}/process')
-    def process_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+    def process_series(series_id: str, body: SeriesRunRequest, request: Request):
         from .series_processing import start
-        return public_job(start(rt(request), series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
-                                limits=body.limits.model_dump(), expected_plan_fingerprint=body.expected_plan_fingerprint))
+        return public_job(start(rt(request), pipeline_registry, series_id, body))
 
     @app.get('/api/series/{series_id}/runs')
     def series_runs(series_id: str, request: Request):
-        from .series_processing import series_view
-        store = rt(request).store
-        series_view(store, series_id)
-        parents = store.jobs('series:' + series_id, limit=20)
+        from .series_processing import runs
+        return runs(rt(request), series_id)
 
-        def children(parent):
-            # Jobs are never deleted, so a missing child means damaged data; list what exists, as cancel does.
-            found = []
-            for identifier in parent.get('child_job_ids', []):
-                try:
-                    found.append(public_job(store.job(identifier)))
-                except KeyError:
-                    continue
-            return found
-        return {'runs': [{**public_job(parent), 'children': children(parent)} for parent in parents]}
+    @app.post('/api/series/{series_id}/runs/{job_id}/resume')
+    def resume_series_run(series_id: str, job_id: str, request: Request):
+        from .series_processing import resume
+        return public_job(resume(rt(request), pipeline_registry, series_id, job_id))
 
     @app.get('/api/series/{series_id}/map')
     def series_map(series_id: str, request: Request):
@@ -2416,7 +2398,7 @@ def create_app(data_dir: Path | None = None):
             shutil.rmtree(temp, ignore_errors=True)
             raise
 
-    app.include_router(pipeline_router(default_registry()))
+    app.include_router(pipeline_router(pipeline_registry))
     install_contract(app)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="assets")

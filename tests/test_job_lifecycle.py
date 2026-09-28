@@ -126,19 +126,35 @@ def test_jobs_stored_with_legacy_names_are_read_with_new_names(client, legacy, e
         assert json.loads(conn.execute('SELECT body FROM jobs WHERE id=?', (job['id'],)).fetchone()[0]) == job
 
 
-def test_series_parent_carries_analysis_limits_and_keeps_its_fingerprint_private(client, monkeypatch):
+def test_series_parent_carries_analysis_limits_and_keeps_its_fingerprint_private(client):
     series = client.post('/api/series', json={'name': 'The Lanterns'}).json()
     book = import_text(client, 'Chapter One\n\nMara found the lamp.')
     client.put(f"/api/books/{book['id']}/series", json={'series_id': series['id'], 'position': 1.0})
-    monkeypatch.setattr('bardic.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
+    # Series runs are step-pipeline runs; a local step needs no key and sends nothing.
     limits = {'max_requests': 7, 'max_input_tokens': 5000, 'max_output_tokens': 4000, 'budget_usd': 0.5}
-    parent = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai', 'limits': limits}).json()
+    parent = client.post(f"/api/series/{series['id']}/process",
+                         json={'steps': ['census'], 'scheduling': 'parallel', 'limits': limits}).json()
     assert parent['analysis_limits'] == limits and 'limits' not in parent and 'plan_fingerprint' not in parent
-    wait_job(client, parent['id'])
+    assert parent['scheduling'] == 'parallel' and 'mode' not in parent
+    assert wait_job(client, parent['id'])['status'] == 'completed'
     run = client.get(f"/api/series/{series['id']}/runs").json()['runs'][0]
     assert run['analysis_limits'] == limits and 'plan_fingerprint' not in run
+    assert all('plan_fingerprint' not in child for child in run['children'])
     stored = client.app.state.runtime.store.job(parent['id'])
     assert len(stored['plan_fingerprint']) == 64, 'storage keeps the confirmed plan fingerprint'
+
+
+def test_series_parent_stored_with_pipeline_era_names_is_read_with_the_current_names(client):
+    store = client.app.state.runtime.store
+    parent = store.create_job('series:series_old', 'series')
+    # A pipeline series run recorded before contract 0.3.0 stored `mode` and `limits`.
+    with store.lock, store.connect() as conn:
+        body = {**parent, 'mode': 'serial', 'limits': {'max_requests': None, 'max_input_tokens': None,
+                                                       'max_output_tokens': None, 'budget_usd': None}}
+        conn.execute('UPDATE jobs SET body=? WHERE id=?', (json.dumps(body), parent['id']))
+    read = client.get('/api/jobs', params={'book_id': 'series:series_old'}).json()[0]
+    assert read['scheduling'] == 'serial' and read['analysis_limits']['max_requests'] is None
+    assert 'mode' not in read and 'limits' not in read
 
 
 def test_pipeline_job_reports_scheduling_not_mode(client):

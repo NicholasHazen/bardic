@@ -156,10 +156,17 @@ class PipelineRepository:
 
     # --- versions, heads and decisions ------------------------------------------------------
     def record_version(self, conn, book_id, step, scope, result, *, origin, provider=None, model=None,
-                       inputs=None, dependencies=()):
-        """Retain a candidate for one scope without selecting it."""
+                       inputs=None, dependencies=(), series_inputs=None):
+        """Retain a candidate for one scope without selecting it.
+
+        ``series_inputs`` ({book_id: digest}) records the earlier series volumes'
+        accepted evidence the scope could read; it is stored only when present, so
+        versions outside a series keep their identity.
+        """
         payload = {'schema_version': PAYLOAD_SCHEMA, 'step_id': step.id, 'step_version': step.version,
                    'scope': scope, 'origin': origin, 'inputs': inputs or {}, 'result': result}
+        if series_inputs:
+            payload['series_inputs'] = dict(sorted(series_inputs.items()))
         return record(conn, book_id, KIND, version_key(step.id, scope), payload, label=f'{step.label} · {scope}',
                       stage=step.id, provider=provider, model=model, dependencies=dependencies,
                       legacy_provenance=origin != 'run', select=False)

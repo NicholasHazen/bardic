@@ -55,6 +55,24 @@ class JobChapterChunk(View):
     boundaries: int | None = Field(None, description='Passage boundaries the aligner tried to match (`done`).')
 
 
+# ----------------------------------------------------------------------- pipeline run settings
+# Defined here because `pipeline` and `series` jobs embed them; the pipeline family re-uses them.
+
+class PipelineStepConfigView(View):
+    """The provider and model a run snapshotted for one step."""
+    provider: str = Field(description='Provider ID the run uses for this step: `local` for plain steps, otherwise a '
+                                      'pipeline provider ID.')
+    model: str | None = Field(description='Model ID the run sends, or null for plain steps and service providers.')
+
+
+class PipelineRunLimits(View):
+    """Caps a run was started with; null means uncapped."""
+    max_requests: int | None = Field(description='HTTP attempts allowed in this run.')
+    max_input_tokens: int | None = Field(description='Input tokens (reserved or reported) allowed in this run.')
+    max_output_tokens: int | None = Field(description='Output tokens (reserved or reported) allowed in this run.')
+    budget_usd: float | None = Field(description='Cumulative USD guard across every tracked attempt for the book, including earlier runs.')
+
+
 # ----------------------------------------------------------------------- job
 
 class Job(View):
@@ -68,29 +86,33 @@ class Job(View):
       and finished audio are kept.
     - `cancelled`: stopped by a cancel request (or never started).
     - `interrupted`: the server stopped or restarted while the job was queued
-      or running, or (series) the collection run stopped before this book.
+      or running, or (series child) the series run stopped before this book
+      started.
     - `budget_limited`: an analysis request allowance or dollar budget was
       reached; saved work is kept.
     - `quota_limited`: the daily Gemini speech request quota was reached;
       `resume_after` says when it resets.
+
+    A `series` parent can also stay `running` while it waits for the owner's
+    review (`waiting_for_review` is set and no book is running); it continues
+    only when resumed (`resumeSeriesProcessing`) and ends when cancelled.
 
     **A terminal status is final.** Once a job reaches a terminal status,
     its `status`, `message`, `error` and `resume_after` never change again,
     whatever happens later (a worker slot coming up for a job cancelled while
     queued, or the server shutting down). Other fields may still be updated
     as bookkeeping. Resuming work uses the original start route and creates a
-    new job; old job IDs are never revived. A series child that finished
-    discovery and waits for earlier volumes stays `running` without doing
-    work.
+    new job; old job IDs are never revived. A queued series child that is
+    cancelled or passed over never starts later.
 
     **Kinds and their extra fields** (a field not listed for a kind is absent):
 
     | kind | started by | extra fields |
     | --- | --- | --- |
     | `render` | enhanced narration | none |
-    | `analyze` | classic analysis, or a series run (one per book) | `provider`, `model`, `scan_model`, `phase`; standalone: `chapter_id`; series child: `series_id`, `series_run_id`, `position` |
-    | `pipeline` | analysis pipeline run | `run_id`, `steps`, `scheduling` |
-    | `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `analysis_limits`, `finished_at` |
+    | `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.3.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
+    | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `scheduling`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |
+    | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `estimated_cost_usd`, `requests`, `context_pending_books`, `finished_at`, and `waiting_for_review` once it has paused. A run recorded before contract 0.3.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `analysis_limits` (SeriesJobLimits), `book_ids`, `child_job_ids` and `finished_at`, with `analyze` children |
     | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
     | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
     | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
@@ -127,16 +149,18 @@ class Job(View):
 
     # Shared optional fields
     provider: Literal['local', 'gemini', 'openai', 'anthropic', 'system', 'breeze'] | None = Field(
-        None, description='Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider '
+        None, description='Analysis provider (`analyze`, and `series` runs recorded before contract 0.3.0: local, '
+                          'gemini, openai, anthropic) or narration provider '
                           '(`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini).')
     model: str | None = Field(
         None, description='Model snapshotted when the job was queued: the analysis model (null for local analysis) or '
                           'the speech model (`macos-say` for device narration). `render` jobs do not record it.')
     scan_model: str | None = Field(
-        None, description='Preprocessing (scan) model for `analyze` and `series`; null for local analysis.')
+        None, description='Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.3.0); '
+                          'null for local analysis.')
     phase: Literal['scan', 'profiles', 'direct', 'full', 'simple_listen', 'chapter_listen', 'voice_preview', 'performance'] | None = Field(
-        None, description='`analyze`/`series`: the classic analysis phase (a series child switches to `scan` during '
-                          'discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, '
+        None, description='`analyze` (historical) and `series` runs recorded before contract 0.3.0: the Classic analysis '
+                          'phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, '
                           '`voice_preview`, `performance`.')
     mode: Literal['simple', 'cast'] | None = Field(
         None, description='`performance` only: `simple` (one narrator) or `cast` (character voices).')
@@ -152,26 +176,71 @@ class Job(View):
         None, description='`quota_limited` only: when the daily quota resets (next midnight Pacific time), as ' + TIME)
 
     # pipeline
-    run_id: str | None = Field(None, description='`pipeline`: the pipeline run this job executes.')
-    steps: list[str] | None = Field(None, description='`pipeline`: step IDs in the run, including required upstream steps.')
+    run_id: str | None = Field(
+        None, description='`pipeline`: the pipeline run this job executes. A series child carries null until the '
+                          'series worker starts its book, and keeps null if the book never starts.')
+    steps: list[str] | None = Field(
+        None, description='`pipeline` and `series`: the requested step IDs with their required upstream steps, '
+                          'deduplicated, in pipeline order.')
     scheduling: Literal['serial', 'parallel'] | None = Field(
-        None, description='`pipeline` only: `serial` (one step at a time) or `parallel` (independent steps together), '
-                          'as requested by the run\'s `mode` field.')
+        None, description='`pipeline` and `series` (inside each book\'s run): `serial` (one step at a time) or '
+                          '`parallel` (independent steps together), as requested by the run\'s `scheduling` field.')
 
     # series parent and children
-    series_id: str | None = Field(None, description='`series` parent and its `analyze` children: the series.')
-    series_run_id: str | None = Field(None, description='`analyze` series child: the parent `series` job ID.')
-    position: float | None = Field(None, description='`analyze` series child: the book\'s reading-order position in the series.')
+    series_id: str | None = Field(None, description='`series` parent and its children: the series.')
+    series_run_id: str | None = Field(None, description='Series child: the parent `series` job ID.')
+    position: float | None = Field(None, description='Series child: the book\'s reading-order position in the series.')
+    title: str | None = Field(None, description='Series child (`pipeline`): the book title when the run was queued.')
+    not_started: bool | None = Field(
+        None, description='Series child (`pipeline`): true when the child ended without starting, either because the '
+                          'series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or '
+                          'could not start (status `interrupted`). Absent otherwise.')
     book_ids: list[str] | None = Field(None, description='`series`: the books processed, in reading order (missing volumes excluded).')
     child_job_ids: list[str] | None = Field(
-        None, description='`series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` '
-                          'jobs started so far (Gemini simple performances only; empty otherwise).')
-    concurrency: int | None = Field(None, description='`series`: parallel discovery workers (1–2; 1 for phases without discovery).')
-    analysis_limits: SeriesJobLimits | None = Field(
-        None, description='`series` only: the analysis allowance the run was started with, applied to each book.')
+        None, description='`series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs '
+                          'recorded before contract 0.3.0). `performance`: the `listen_chapter` jobs started so far '
+                          '(Gemini simple performances only; empty otherwise).')
+    concurrency: int | None = Field(
+        None, description='`series`: maximum model requests in flight inside the running book (1–4); books run one at a '
+                          'time. Runs recorded before contract 0.3.0: parallel discovery workers (1–2).')
+    configs: dict[str, PipelineStepConfigView] | None = Field(
+        None, description='`series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to '
+                          'every book.')
+    gates: dict[str, Literal['auto', 'review']] | None = Field(
+        None, description='`series`: `{step ID: gate}` resolved when the run was queued (the request\'s `gates`, else '
+                          'the saved step setting).')
+    fresh: bool | None = Field(
+        None, description='`series`: true when every book requests new samples instead of reusing cached validated units.')
+    analysis_limits: PipelineRunLimits | SeriesJobLimits | None = Field(
+        None, description='`series` only: the optional caps applied to each book\'s run (PipelineRunLimits; every value '
+                          'is null when none were sent), or the analysis allowance of a run recorded before contract '
+                          '0.3.0 (SeriesJobLimits).')
+    consent_fingerprint: str | None = Field(
+        None, description='Series child (`pipeline`): the `consent_fingerprint` confirmed for that book '
+                          '(`SeriesPlanBook`). Before the book starts it is recomputed; the book is not run when it '
+                          'differs. It covers the unit set, providers, models, `fresh` and step versions, but not '
+                          'the earlier-volume context in context-pending prompts.')
+    context_pending: list[str] | None = Field(
+        None, description='Series child (`pipeline`): step IDs whose prompts read earlier books of this run '
+                          '(see `SeriesPlanBook.context_pending`). Empty when none.')
+    context_sources: list[str] | None = Field(
+        None, description='Series child (`pipeline`): earlier books of this run whose accepted results this book '
+                          'reads, in no particular order. The series pauses after such a book while it has results '
+                          'waiting for review.')
+    context_pending_books: list[str] | None = Field(
+        None, description='`series`: books whose estimate was "up to" because a step reads earlier books of the run.')
+    waiting_for_review: SeriesReviewWait | None = Field(
+        None, description='`series`: set while the run is paused for the owner\'s review of one book (the parent '
+                          'stays `running`). Null after it resumes or ends. Absent on runs that never paused.')
+    estimated_cost_usd: float | None = Field(
+        None, description='`series`: the confirmed plan\'s `estimated_cost_usd` in USD, or null when any book\'s cost '
+                          'was unknown. Approximate; not an invoice.')
+    requests: int | None = Field(
+        None, description='`series`: the confirmed plan\'s total model requests, before retries or evidence repairs.')
     finished_at: str | None = Field(
-        None, description='`series`: when the collection run ended (set on completion, cancellation after start, or a '
-                          'start failure), as ' + TIME)
+        None, description='`series`: when the series worker settled the run (a parent cancelled while queued gains it '
+                          'when its worker slot comes up). Series child: set only when the child failed because its '
+                          'book changed after the preview. As ' + TIME)
 
     # performance
     performance_id: str | None = Field(None, description='`performance`: the saved performance being prepared.')
@@ -217,13 +286,29 @@ class Job(View):
                           'until the job ends.')
 
 
-class SeriesJobLimits(View):
-    """The analysis allowance a series run was started with, applied to each book separately.
+class SeriesReviewWait(View):
+    """The book a paused series run waits on.
 
-    Request and token caps count that book's `analyze` child job (both of its
-    stages in a `full` run). The dollar ceiling counts every tracked attempt
-    for the book, including earlier runs. Reaching any cap stops the book with
-    `budget_limited` and stops the series.
+    Decide the book's waiting versions (accept them or set them aside), then
+    call `resumeSeriesProcessing`. While paused, that book accepts
+    version decisions; every other reservation still holds.
+    """
+    book_id: str = Field(description='Book waiting for review.')
+    child_job_id: str = Field(description='The completed series child job of that book.')
+    title: str = Field(description='Book title when the run was queued; empty when unknown.')
+    position: float = Field(description='The book\'s reading-order position.')
+    steps: list[str] = Field(description='Step IDs whose version from this run is waiting for a decision.')
+    since: str = Field(description='When the run paused: ' + TIME)
+
+
+class SeriesJobLimits(View):
+    """The analysis allowance of a series run recorded before contract 0.3.0, applied to each book separately.
+
+    Newer series runs record `PipelineRunLimits` instead. Request and token
+    caps counted that book's `analyze` child job (both of its stages in a
+    `full` run). The dollar ceiling counted every tracked attempt for the
+    book, including earlier runs. Reaching any cap stopped the book with
+    `budget_limited` and stopped the series.
     """
     max_requests: int = Field(description='Maximum provider requests (1–1000).')
     max_input_tokens: int = Field(description='Maximum input tokens (1,000–10,000,000).')

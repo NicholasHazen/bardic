@@ -9,8 +9,10 @@ const vm = require('node:vm');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function settle(times = 20) { for (let i = 0; i < times; i++) await tick(); }
 class Container {
-  constructor() { this.innerHTML = ''; this.listeners = {}; }
-  addEventListener(name, handler) { this.listeners[name] = handler; }
+  constructor() { this.innerHTML = ''; this.handlers = {}; }
+  // Every handler for an event runs, as in the DOM (the BardicUI choice binds its own).
+  addEventListener(name, handler) { (this.handlers[name] ||= []).push(handler); }
+  get listeners() { return Object.fromEntries(Object.entries(this.handlers).map(([name, list]) => [name, event => list.forEach(handler => handler(event))])); }
   contains() { return false; }
   querySelector() { return null; }
 }
@@ -45,7 +47,9 @@ function environment(responses = {}) {
       if (data.status_code) return {ok:false, status:data.status_code, json:async () => ({detail:data.detail, code:data.code})};
       return {ok:true, status:200, json:async () => data};
     }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/voices.js'), 'utf8'), scope);
+  vm.createContext(scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/ui.js'), 'utf8'), scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../bardic/static/voices.js'), 'utf8'), scope);
   const container = new Container();
   const hooks = {changes:0, saved:[]};
   const options = extra => ({library:library(), book:{id:'book-b'}, onChange:() => { hooks.changes++; }, onSaved:(result, info) => { hooks.saved.push({result, info}); }, ...extra});
@@ -107,7 +111,7 @@ test('Breeze previews use the chosen count and save as a new version assigned to
   await settle();
   const generate = env.calls.find(call => call.url.endsWith('/generate'));
   assert.deepEqual(generate.body, {book_id:'book-b', count:3});
-  assert.match(env.container.innerHTML, /Preview c1 · seed 7/);
+  assert.match(env.container.innerHTML, /Sample c1 · seed 7/);
   assert.match(env.container.innerHTML, /Version 2 of “Mara &lt;alto&gt;” \(becomes current\)/);
   assert.match(env.container.innerHTML, /data-voices-action="save" >Save version 2/);
   env.click('save-assign');
@@ -171,7 +175,7 @@ test('switching versions and the default voice are confirmed and explain re-voic
     usage:[{book_id:'b', book_title:'B', character_id:'n', character_name:'Narrator', follows:'default'}]}), two]})}));
   assert.match(env.container.innerHTML, /Changed on the Breeze server since this version was saved\./);
   env.click('make-current', {id:'vl_mara', version:'1'});
-  assert.match(env.container.innerHTML, /switch to version 1\. Their current takes become out of date/);
+  assert.match(env.container.innerHTML, /switch to version 1\. Their recordings become out of date/);
   env.click('confirm');
   await settle();
   assert.deepEqual(env.calls.at(-1).body, {version:1});
@@ -193,6 +197,6 @@ test('errors show the server detail, a hint keyed on the code, and a recorded pr
   refresh = {status_code:400, code:'gemini_key_missing', detail:'No Gemini API key is configured.'};
   env.click('refresh-gemini');
   await settle();
-  assert.match(env.container.innerHTML, /No Gemini API key is configured\. Add a Gemini API key in Settings first\./);
+  assert.match(env.container.innerHTML, /No Gemini API key is configured\. Add a Gemini API key in Providers &amp; settings first\./);
   assert.equal(env.hooks.changes, 1, 'A refused request changes nothing, so nothing is reloaded');
 });

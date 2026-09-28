@@ -59,6 +59,9 @@ function environment(prior) {
   return {api:scope.window.BardicListen,calls,storage,container,change,click};
 }
 const options = (extra = {}) => ({status:status(),chapterId:'chapter-1',segmentId:'segment-1',...extra});
+// The narrator menu the sheet shows (BardicListen.choices), as [id, name, usable, reason, selected].
+const menu = (api, draft) => { const choice = api.choices(book, draft); return choice.voices.map(voice => [voice.id,voice.name,voice.usable,voice.reason,voice.id === choice.voice]); };
+const has = (api, entry, draft) => menu(api, draft).some(item => JSON.stringify(item) === JSON.stringify(entry));
 
 // The voice library snapshot (/api/voices) the listen panel and cast read.
 function library(extra = {}) {
@@ -94,13 +97,12 @@ test('Breeze narration defaults to the library default voice, lists library voic
   assert.equal(refreshes,0,'A checked server is not refreshed again');
   assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'breeze',voice:'',model:null},
     'Default is an empty choice the server resolves; Breeze sends no model');
-  assert.match(env.container.innerHTML,/<option value="" selected >Default \(Story &lt;teller&gt;\)<\/option>/);
-  assert.match(env.container.innerHTML,/<option value="library:vl_narr"  >Narrator<\/option>/);
-  assert.match(env.container.innerHTML,/<option value="library:vl_gone"  disabled>Old Sailor · unavailable<\/option>/,'Unassignable voices are listed but disabled');
-  assert.doesNotMatch(env.container.innerHTML,/Astronomer/,'Gemini voices are not offered for Breeze');
+  assert.ok(has(env.api,['','Default (Story <teller>)',true,'',true]));
+  assert.ok(has(env.api,['library:vl_narr','Narrator',true,'',false]));
+  assert.ok(has(env.api,['library:vl_gone','Old Sailor',false,'unavailable',false]),'Unassignable voices are listed but disabled');
+  assert.ok(!menu(env.api).some(([, name]) => name === 'Astronomer'),'Gemini voices are not offered for Breeze');
   assert.match(env.container.drawer.summary.textContent,/One narrator: Default \(Story <teller>\) \/ Breeze · runs on your Breeze server/);
-  assert.doesNotMatch(env.container.innerHTML,/data-listen-field="chunk-preset"/,'Breeze has no Gemini chunk settings');
-  assert.doesNotMatch(env.container.innerHTML,/data-listen-field="model"/,'Breeze has no speech model choice');
+  assert.doesNotMatch(env.container.innerHTML,/data-listen-field/,'Narrator and expert settings are not in More options');
   const result = await env.api.ensure(book,book.segments[0]);
   assert.equal(result.asset_id,'take');
   const posts = env.calls.filter(call => call.method === 'POST');
@@ -123,7 +125,7 @@ test('an earlier Breeze server-voice choice follows its library voice; an unknow
   const env = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Leda',breeze:'retired'},model:'gemini-3.8-flash-tts'});
   await env.api.render(env.container,book,options({voiceLibrary:library()}));
   assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'breeze',voice:'retired',model:null});
-  assert.match(env.container.innerHTML,/value="retired" selected >retired \(not in library\)/);
+  assert.ok(has(env.api,['retired','retired (not in library)',true,'',true]));
   env.change('provider','gemini');
   assert.deepEqual({...env.api.getSelection(book)},{mode:'simple',provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-tts'});
   env.change('provider','system');
@@ -135,12 +137,12 @@ test('an earlier Breeze server-voice choice follows its library voice; an unknow
 test('Gemini narrators include library voices, disabled when the speech model cannot use them', async () => {
   const env = environment({mode:'simple',provider:'gemini',voices:{system:'',gemini:'Kore',breeze:''},model:'gemini-3.8-flash-tts'});
   await env.api.render(env.container,book,options({voiceLibrary:library()}));
-  assert.match(env.container.innerHTML,/<option value="Kore" selected >Kore<\/option>/);
-  assert.match(env.container.innerHTML,/<option value="library:vl_gem"  >Astronomer<\/option>/);
+  assert.ok(has(env.api,['Kore','Kore',true,'',true]));
+  assert.ok(has(env.api,['library:vl_gem','Astronomer',true,'',false]));
   const legacy = library();
   legacy.providers.gemini.designed_voices_supported = false;
   await env.api.render(env.container,book,options({voiceLibrary:legacy}));
-  assert.match(env.container.innerHTML,/<option value="library:vl_gem"  disabled>Astronomer · needs Gemini 3.8 TTS<\/option>/);
+  assert.ok(has(env.api,['library:vl_gem','Astronomer',false,'needs Gemini 3.8 TTS',false]));
 });
 
 test('a new current version or default voice never reuses the earlier listening session', async () => {
@@ -183,10 +185,11 @@ test('selecting an unchecked Breeze server asks the app to refresh once; renderi
   assert.equal(refreshes,1);
   await env.api.render(env.container,book,hooks);
   assert.equal(refreshes,1);
-  assert.match(env.container.innerHTML,/Default \(none set yet\)/);
+  assert.ok(menu(env.api).some(([, name]) => name === 'Default (none set yet)'));
   assert.match(env.container.innerHTML,/Check the Breeze connection in Settings\./,'The unavailable reason is shown');
   assert.match(env.container.innerHTML,/data-listen-action="start" disabled/,'Nothing can be generated without a connection');
-  assert.match(env.container.innerHTML,/data-listen-action="preview" [^>]*disabled/,'No example without a Breeze voice');
+  assert.equal(env.api.choices(book).breezeVoiceReady,false,'No example without a Breeze voice (the sheet disables Hear example)');
+  assert.equal(env.api.choices(book).unavailableReason,'Check the Breeze connection in Settings.');
   assert.equal(env.calls.filter(call => call.method === 'POST').length,0);
 });
 
@@ -211,12 +214,14 @@ test('chunked chapter listening follows the provider capability, not its name', 
   legacy.change('mode','simple');
   legacy.change('provider','gemini');
   await legacy.api.render(legacy.container,book,options({status:oldStatus}));
-  assert.match(legacy.container.innerHTML,/data-listen-field="chunk-preset"/);
+  assert.equal(legacy.api.choices(book).chunked,true);
+  assert.match(legacy.container.innerHTML,/Prepare rest of chapter · paid/,'Chunked Gemini preparation is offered');
 });
 
 // App-level cast helpers, executed from the real sources.
 const appSource = fs.readFileSync(path.join(__dirname,'../bardic/static/app.js'),'utf8');
 const voicesSource = fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8');
 function between(start, end) {
   const a = appSource.indexOf(start), b = appSource.indexOf(end, a + start.length);
   assert.ok(a >= 0 && b > a, `${start} boundaries`);
@@ -225,7 +230,9 @@ function between(start, end) {
 function castHelpers(appStatus = status(), voiceLibrary = library()) {
   const toasts = [];
   const context = {state:{status:appStatus,voiceLibrary},window:{},toast:message => toasts.push(message)};
-  vm.runInNewContext(voicesSource, context);
+  vm.createContext(context);
+  vm.runInContext(uiSource, context);
+  vm.runInContext(voicesSource, context);
   vm.runInNewContext([
     appSource.split('\n').find(line => line.startsWith('const escapeHTML =')),
     between('// One cast voice per narration provider.', 'function auditionCharacter('),
@@ -261,8 +268,8 @@ test('cast voice options: Default names the default voice, library and direct vo
   assert.match(cast.castOptions('gemini','',old,status()),/value="library:vl_gem"  disabled>Astronomer · needs Gemini 3.8 TTS/);
 
   const device = cast.castOptions('system','',library(),status());
-  assert.match(device,/<option value="" selected >Default device voice<\/option><optgroup label="Device voices"><option value="id:Samantha"  >Samantha · en-US<\/option>/);
-  assert.doesNotMatch(device,/Create new voice/,'Device voices cannot be created');
+  assert.match(device,/<option value="" selected >Default Mac voice<\/option><optgroup label="Mac voices"><option value="id:Samantha"  >Samantha · en-US<\/option>/);
+  assert.doesNotMatch(device,/Create new voice/,'Mac voices cannot be created');
 });
 
 test('cast choices encode the per-provider map and decode to assignments', () => {
@@ -310,7 +317,7 @@ test('cast warnings explain deleted, changed and unsupported voices and a missin
   assert.deepEqual([...cast.castWarnings('breeze','',library({defaults:{breeze:null}}),status())],
     ['No default Breeze voice yet. Check the Breeze connection in Settings, or choose a default in Voices.']);
   assert.deepEqual([...cast.castWarnings('breeze','library:vl_removed',library(),status())],['This voice was deleted. Choose another voice.']);
-  assert.deepEqual([...cast.castWarnings('breeze','library:vl_gone',library(),status())],['Missing from the server; it cannot be re-rendered.']);
+  assert.deepEqual([...cast.castWarnings('breeze','library:vl_gone',library(),status())],['Missing from the server, so it cannot record new audio.']);
   const changed = library();
   changed.voices[1].versions[0].server_state = 'changed';
   assert.deepEqual([...cast.castWarnings('breeze','',changed,status())],['Default voice: Changed on the Breeze server since this version was saved.']);

@@ -15,10 +15,6 @@ def eligible_chapters(book):
     return [c for c in book['chapters'] if c.get('kind') not in {'front_matter', 'back_matter'}]
 
 
-# Census bookkeeping that stays in the cache and the retained artifact but is not presented to clients.
-INTERNAL_FIELDS = ('fingerprint', 'source_hash')
-
-
 def census(book, store, *, retain=True):
     """The whole-book census, from the per-book cache when its inputs are unchanged.
 
@@ -125,50 +121,3 @@ def _compute_census(book, repository, identity, *, retain=True):
               'note': 'Free local census. Name mentions, speech tags and spread guide effort; they do not prove identity, presence, or narrative importance. Unknown pronouns and rare speakers still require review.'}
     repository.save_preprocessing(book['id'], identity, result, retain=retain)
     return result
-
-
-def coverage(book, store, *, retain=True, units=None):
-    """Census, semantic discovery coverage and tracked usage.
-
-    ``units`` are the accepted discovery units to count (default: those saved for
-    the current source). ``retain`` is passed to :func:`census`. The presented
-    census omits :data:`INTERNAL_FIELDS`.
-    """
-    repository = ProcessingStore(store)
-    local = census(book, store, retain=retain)
-    if units is None:
-        units = repository.units(book['id'], 'discovery', source_hash(book))
-    checkpoint_status = store.analysis_status(book['id']) or {}
-    checkpoint = store.analysis_checkpoint(book['id'], checkpoint_status.get('fingerprint')) or {}
-    # Include pre-upgrade validated chapter discovery without claiming unscanned text.
-    rows = ({r['id']: r for r in checkpoint.get('chapters', [])}
-            if 'phase' not in checkpoint and checkpoint.get('provider') in a.PROVIDER_LABELS else {})
-    baseline = {c['id']: c['text'] for c in checkpoint.get('working_book', {}).get('chapters', [])}
-    chapter_map = {c['id']: c for c in book['chapters']}
-    intervals = defaultdict(list)
-    for unit in units:
-        chapter = chapter_map.get(unit.get('chapter_id'))
-        start, end = unit.get('start'), unit.get('end')
-        if (chapter is not None and unit.get('provider') in a.PROVIDER_LABELS
-                and type(start) is int and type(end) is int and 0 <= start < end <= len(chapter['text'])):
-            intervals[chapter['id']].append((start, end))
-    complete = []
-    for chapter in eligible_chapters(book):
-        parts = sorted(intervals[chapter['id']])
-        merged = []
-        for start, end in parts:
-            if merged and not chapter['text'][merged[-1][1]:start].strip():
-                merged[-1][1] = max(merged[-1][1], end)
-            else:
-                merged.append([start, end])
-        is_complete = bool(merged and len(merged) == 1 and not chapter['text'][:merged[0][0]].strip() and not chapter['text'][merged[0][1]:].strip())
-        legacy_complete = (rows.get(chapter['id'], {}).get('discovery_complete') is True
-                           and baseline.get(chapter['id']) == chapter['text'])
-        if is_complete or legacy_complete:
-            complete.append(chapter['id'])
-    all_discovered = bool(local['eligible_chapters']) and len(complete) == local['eligible_chapters']
-    return {'local': {k: v for k, v in local.items() if k not in INTERNAL_FIELDS}, 'semantic_chapters_complete': len(complete), 'semantic_chapter_ids': complete,
-            'eligible_chapters': local['eligible_chapters'], 'whole_book_discovered': all_discovered,
-            'profiles_provisional': not all_discovered,
-            'usage': repository.usage(book['id']),
-            'note': 'Full discovery coverage is required for comprehensive profiles; it does not guarantee that all identities or traits are correct.'}

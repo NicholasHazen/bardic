@@ -2,15 +2,7 @@
 .simple-listen-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
 .simple-listen h3 { margin: 0 0 6px; font-size: 1rem; font-weight: 600; letter-spacing: -.02em; }
 .simple-listen-heading p { margin: 0; color: var(--muted, #6f6b75); font-size: .79rem; line-height: 1.55; }
-.simple-listen label { display: block; min-width: 0; color: var(--muted, #6f6b75); font-size: .7rem; font-weight: 500; }
-.simple-listen select { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin-top: 7px; background-color: var(--white, #fff); }
-.simple-listen-heading > label { flex: 0 0 168px; }
-.simple-listen-settings { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(0, 1.5fr); gap: 16px; align-items: end; }
-.simple-listen-voice { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
-.simple-listen-voice label { flex: 1 1 110px; }
-.simple-listen-voice > button { flex: 0 0 auto; white-space: nowrap; }
 .simple-listen-note { margin: 14px 0; font-size: .73rem; line-height: 1.65; color: var(--muted, #6f6b75); }
-.simple-listen-disclosure { margin-bottom: 16px; }
 .simple-listen-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
 .simple-listen-actions > span { color: var(--muted, #6f6b75); font-size: .7rem; margin-left: auto; }
 .simple-listen-message { font-size: .77rem; line-height: 1.6; margin: 0 0 18px; overflow-wrap: anywhere; }
@@ -22,12 +14,6 @@
 .simple-listen-buffer > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; font-size: .73rem; line-height: 1.5; }
 .simple-listen-buffer > div > span + span { color: var(--muted, #6f6b75); }
 .simple-listen-buffer progress { display: block; width: 100%; height: 5px; margin: 10px 0 0; accent-color: var(--green, #63516d); }
-.simple-listen-options { border-top: 1px solid var(--line, #e5e1e7); }
-.simple-listen-options > summary { padding: 15px 0; cursor: pointer; color: var(--muted, #6f6b75); font-size: .75rem; font-weight: 500; }
-.simple-listen-options > summary:hover { color: var(--ink, #292730); }
-.simple-listen-options > summary:focus-visible { outline: 2px solid var(--green, #63516d); outline-offset: 3px; border-radius: 3px; }
-.simple-listen-advanced { padding: 3px 0 20px; }
-.simple-listen-advanced .simple-listen-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .simple-listen-preparation { display: flex; align-items: center; gap: 20px; padding-top: 14px; border-top: 1px solid var(--line, #e5e1e7); }
 .simple-listen-preparation h4 { margin: 0 0 5px; font-size: .79rem; font-weight: 600; }
 .simple-listen-preparation p { margin: 0; color: var(--muted, #6f6b75); font-size: .73rem; line-height: 1.6; }
@@ -36,14 +22,8 @@
 @media (max-width: 680px) {
   .simple-listen { padding: 18px 18px 0; }
   .simple-listen-heading { flex-direction: column; gap: 14px; }
-  .simple-listen-heading > label { flex-basis: auto; width: 100%; }
-  .simple-listen-settings, .simple-listen-advanced .simple-listen-settings { grid-template-columns: 1fr; gap: 14px; }
   .simple-listen-preparation { flex-direction: column; align-items: stretch; gap: 12px; }
   .simple-listen-actions > span { margin-left: 0; }
-}
-@media (max-width: 400px) {
-  .simple-listen-voice { flex-wrap: wrap; }
-  .simple-listen-voice label { flex-basis: 100%; }
 }
 
 .listening-drawer #listening-summary { overflow-wrap: anywhere; }
@@ -75,3 +55,55 @@
 .passage.listen-queued { text-decoration-style: dashed; text-decoration-thickness: 1px; text-decoration-color: rgba(120,128,120,.35); }
 @keyframes listen-generating { 50% { text-decoration-color: rgba(99,81,109,.2); } }
 @media (prefers-reduced-motion: reduce) { .passage.listen-generating { animation: none; } }
+
+/* First paid Play per book and browser session: an inline question above the
+   player (workspace and reader view). JS sets its bottom offset to the player. */
+.paid-consent {
+  position:fixed; z-index:25; bottom:112px; left:calc(var(--sidebar, 0px) + 16px); right:16px; margin:0 auto; max-width:620px;
+  display:grid; gap:10px; padding:14px 16px; border:1px solid var(--line); border-radius:12px;
+  background:var(--white); color:var(--ink); box-shadow:inset 3px 0 var(--green), var(--shadow-2);
+}
+.paid-consent[hidden] { display:none; }
+.paid-consent strong { font-size: var(--text-md); }
+.paid-consent p { margin:6px 0 0; font-size: var(--text-xs); line-height:1.55; }
+.paid-consent .field-help { color:var(--muted); }
+.paid-consent-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+@media (max-width: 600px) {
+  .paid-consent { left:12px; right:12px; }
+  .paid-consent-actions .button { flex:1 1 auto; }
+}
+.listen-sheet-consent { margin:0 0 10px; }
+
+/* Studio Narrate book / Narrate scene estimate (styled like the Analysis run preview). */
+.render-confirm[hidden] { display:none; }
+.render-confirm { margin:0 0 18px; }
+.render-confirm .ap-plan-totals dd { overflow-wrap:anywhere; }
+
+/* Player: one listening status (listen-status.js), skips, the ready range and the sleep timer. */
+.player-book .player-status { display:flex; align-items:center; gap:var(--space-1-5); min-width:0; margin-top:var(--space-1); }
+.player-book .player-status[hidden] { display:none; }
+.player-book .player-status .badge { flex-shrink:0; margin:0; }
+.player-book .player-status-detail { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--color-text-muted); font-size:var(--text-2xs); }
+.player-book .player-status .button { min-height:var(--control-sm); padding:0 var(--space-1); flex-shrink:0; }
+.player-controls .skip-button svg { width:22px; height:22px; }
+.player-scrubber { position:relative; flex:1; min-width:0; display:flex; align-items:center; }
+.player-scrubber input { flex:1; min-width:0; }
+/* Prepared audio, as a thin line under the track (like a streaming player's buffer). */
+.player-ready { position:absolute; left:6px; right:6px; top:calc(50% + 6px); height:3px; pointer-events:none; }
+.player-ready span { position:absolute; top:0; bottom:0; border-radius:var(--radius-pill); background:var(--color-accent-border); }
+.player-options .sleep-remaining { color:var(--color-text-muted); font-size:var(--text-2xs); white-space:nowrap; }
+.player-options .sleep-remaining:empty { display:none; }
+.player-options #sleep-timer { width:auto; max-width:150px; }
+body.reader-mode .player-ready span { background:var(--reader-line); }
+body.reader-mode .player-book .player-status-detail, body.reader-mode .player-options .sleep-remaining { color:var(--reader-muted); }
+body.reader-mode .player-options #sleep-timer { color:var(--reader-ink); }
+@media (max-width:620px) {
+  .player-book .player-status-detail { display:none; }
+  #previous-segment, #next-segment { display:none; }
+  .player-options { flex-wrap:nowrap; justify-content:flex-end; gap:var(--space-1-5); }
+  .player-options .sleep-remaining { display:none; }
+  .player-options #sleep-timer { max-width:96px; }
+}
+.listen-sheet-status { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); margin:var(--space-2) 0 0; font-size:var(--text-xs); color:var(--color-text-muted); }
+.listen-sheet-setup { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); }
+.listen-sheet-setup .inline-error { flex:1 1 260px; margin:var(--space-3) 0 0; }

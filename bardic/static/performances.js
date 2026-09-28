@@ -1,12 +1,14 @@
-/* Saved performances: chosen chapters narrated ahead by one narrator or the
+/* Performances: chosen chapters recorded ahead by one narrator or the full
    cast, then played later without new requests. The server job does the
-   work; this panel lists, previews, starts, resumes and plays them. */
+   work; this panel lists, estimates, starts, resumes and plays them.
+   Markup escapes and formats numbers with the BardicUI kit (ui.js). */
 (() => {
   'use strict';
   const panels = new WeakMap();
   const ACTIVE = new Set(['queued','running']);
-  const PROVIDER_LABELS = {system:'Device', gemini:'Gemini', breeze:'Breeze'};
-  const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const PROVIDER_LABELS = {system:'Mac voices', gemini:'Gemini', breeze:'Breeze'};
+  const UI = window.BardicUI;
+  const escape = UI.esc, plural = UI.fmt.plural;
   const encode = value => encodeURIComponent(value);
   const base = book => `/api/books/${encode(book.id)}/performances`;
   function span(seconds) {
@@ -15,7 +17,7 @@
     return `${Math.floor(value / 3600)} h ${Math.round(value % 3600 / 60)} min`;
   }
   // Server details state the condition; the hint says where to fix it.
-  const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
   async function request(url, {method = 'GET', body} = {}) {
     const response = await fetch(url, {method, headers:{Accept:'application/json', ...(body === undefined ? {} : {'Content-Type':'application/json'})},
       ...(body === undefined ? {} : {body:JSON.stringify(body)})});
@@ -85,11 +87,12 @@
   function statusLine(record) {
     const job = record.job, progress = record.progress || {};
     const ready = `${progress.passages_ready ?? 0} of ${progress.passages_total ?? 0} passages ready`;
-    if (ACTIVE.has(job?.status)) return `Processing · ${job.message || ready}`;
+    if (ACTIVE.has(job?.status)) return `Recording · ${job.message || ready}`;
     if (job?.status === 'quota_limited') return `Paused at the daily request limit · ${ready}`;
-    if (job?.status === 'budget_limited') return `Paused at the spending allowance · ${ready}`;
+    if (job?.status === 'budget_limited') return `Paused at the spending limit · ${ready}`;
     if (job?.status === 'failed') return `Stopped on an error · ${ready}`;
-    if (['cancelled','interrupted'].includes(job?.status)) return `Stopped · ${ready}`;
+    if (job?.status === 'cancelled') return `Stopped by you · ${ready}`;
+    if (job?.status === 'interrupted') return `Interrupted when Bardic stopped · ${ready}`;
     return progress.passages_total && progress.passages_ready >= progress.passages_total ? `Ready · ${span(progress.seconds_ready)} of listening` : ready;
   }
   function cardMarkup(panel, record) {
@@ -102,16 +105,16 @@
     return `<article class="performance-card${current ? ' is-current' : ''}" data-performance="${escape(record.id)}">
       <div class="performance-card-head">${renaming
         ? `<label class="sr-only" for="rename-${escape(record.id)}">Performance name</label><input id="rename-${escape(record.id)}" data-performance-name value="${escape(record.name)}" maxlength="120"><button type="button" class="button subtle" data-performance-action="save-name">Save</button>`
-        : `<div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${chapters} ${chapters === 1 ? 'chapter' : 'chapters'}${current ? ' · playing now' : ''}</small></div>`}</div>
+        : `<div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(plural(chapters, 'chapter'))}${current ? ' · playing now' : ''}</small></div>`}</div>
       <progress max="${progress.passages_total || 1}" value="${progress.passages_ready || 0}" aria-label="Passages ready"></progress>
       <p class="performance-status">${escape(statusLine(record))}${job?.error && !running ? ` <span class="performance-error">${escape(job.error)}</span>` : ''}</p>
-      ${archiving ? `<div class="performance-confirm" role="group" aria-label="Archive ${escape(record.name)}"><span>Archive this performance? Its audio is kept.</span><button type="button" class="button subtle" data-performance-action="archive-confirm">Archive</button><button type="button" class="button subtle" data-performance-action="archive-cancel">Keep</button></div>`
+      ${archiving ? `<div class="performance-confirm" role="group" aria-label="Remove ${escape(record.name)}"><span>Remove this performance from the list? Its audio is kept.</span><button type="button" class="button subtle" data-performance-action="archive-confirm">Remove</button><button type="button" class="button subtle" data-performance-action="archive-cancel">Cancel</button></div>`
         : `<div class="performance-actions">
         <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : 'Play'}</button>
-        ${running ? '<button type="button" class="button subtle" data-performance-action="stop">Stop processing</button>'
-          : complete ? '' : '<button type="button" class="button subtle" data-performance-action="resume">Resume processing</button>'}
+        ${running ? '<button type="button" class="button subtle" data-performance-action="stop">Stop recording</button>'
+          : complete ? '' : '<button type="button" class="button subtle" data-performance-action="resume">Resume recording</button>'}
         <button type="button" class="button text-button" data-performance-action="rename">Rename</button>
-        <button type="button" class="button text-button" data-performance-action="archive">Archive</button>
+        <button type="button" class="button text-button" data-performance-action="archive">Remove</button>
       </div>`}
     </article>`;
   }
@@ -119,8 +122,8 @@
     const list = panel.list;
     const body = list === null ? '<p class="field-help">Loading performances…</p>'
       : list.length ? list.map(record => cardMarkup(panel, record)).join('')
-      : '<p class="performance-empty">No performances yet. Make one to narrate chosen chapters ahead of time, with one narrator or the whole cast, and listen later with no waiting.</p>';
-    return `<div class="performance-list-head"><p>Narrated ahead of time. Playing one never makes new requests.</p><button type="button" class="button primary" data-performance-action="new">New performance</button></div>
+      : '<p class="performance-empty">No performances yet. Record chosen chapters ahead of time, with one narrator or the full cast, and listen later with no waiting.</p>';
+    return `<div class="performance-list-head"><p>Recorded ahead of time. Playing one never makes new requests.</p><button type="button" class="button primary" data-performance-action="new">Create performance</button></div>
       ${panel.error ? `<p class="inline-error" role="alert">${escape(panel.error)}</p>` : ''}
       <div class="performance-list">${body}</div>`;
   }
@@ -133,7 +136,7 @@
     const counts = book.segments.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
     const summary = !form.chapters.size ? 'Choose at least one chapter.'
       : !result ? 'Checking what is already saved…'
-      : `${result.passages_total} passages · ${result.passages_ready} already saved · ${result.passages_to_generate} to narrate${result.passages_to_generate ? ` · about ${result.requests_estimate} ${result.requests_estimate === 1 ? 'request' : 'requests'}` : ''} · about ${span(result.expected_seconds)} of listening`;
+      : `${plural(result.passages_total, 'passage')} · ${result.passages_ready} already saved · ${result.passages_to_generate} to record${result.passages_to_generate ? ` · about ${plural(result.requests_estimate, 'request')}` : ''} · about ${span(result.expected_seconds)} of listening`;
     const quota = result?.quota ? `This library has used ${result.quota.requests_today} of ${result.quota.rpd} Gemini requests today. Processing pauses at the limit; resume after the reset.` : '';
     return `<form class="performance-form" data-performance-form novalidate>
       <label class="field-label" for="performance-name">Name</label>
@@ -141,25 +144,25 @@
       <span class="field-label" id="performance-mode-label">Voices</span>
       <div class="performance-segmented" role="radiogroup" aria-labelledby="performance-mode-label">
         <button type="button" role="radio" data-performance-mode="simple" aria-checked="${form.mode === 'simple'}"><strong>One narrator</strong><small>A single voice reads everything</small></button>
-        <button type="button" role="radio" data-performance-mode="cast" aria-checked="${form.mode === 'cast'}"><strong>Full cast</strong><small>Each character's voice from Cast; unanalysed chapters use the narrator</small></button>
+        <button type="button" role="radio" data-performance-mode="cast" aria-checked="${form.mode === 'cast'}"><strong>Full cast</strong><small>Each character's voice from Cast; chapters not yet analyzed use the narrator</small></button>
       </div>
-      <span class="field-label" id="performance-provider-label">Narration</span>
+      <span class="field-label" id="performance-provider-label">Service</span>
       <div class="performance-providers" role="radiogroup" aria-labelledby="performance-provider-label">${['system','gemini','breeze'].map(id => {
         const option = listen?.narratorOptions?.(book, id);
-        return `<button type="button" role="radio" data-performance-provider="${id}" aria-checked="${id === provider}"><strong>${PROVIDER_LABELS[id]}</strong><small>${option?.available === false ? 'Not set up' : id === 'gemini' ? 'Cloud' : id === 'breeze' ? 'Your server' : 'Free'}</small></button>`;
+        return `<button type="button" role="radio" data-performance-provider="${id}" aria-checked="${id === provider}"><strong>${PROVIDER_LABELS[id]}</strong><small>${option?.available === false ? 'Not set up' : id === 'gemini' ? 'Paid' : id === 'breeze' ? 'Your server · free' : 'Free'}</small></button>`;
       }).join('')}</div>
-      ${form.mode === 'simple' ? `<label class="field-label" for="performance-voice">Voice</label><select id="performance-voice" data-performance-field="voice">${(narrator?.voices || []).map(item => `<option value="${escape(item.id)}" ${item.id === voice ? 'selected' : ''} ${item.usable || item.id === voice ? '' : 'disabled'}>${escape(item.name)}${item.locale ? ` · ${escape(item.locale)}` : ''}</option>`).join('')}</select>` : ''}
+      ${form.mode === 'simple' ? `<label class="field-label" for="performance-voice">Voice</label><select id="performance-voice" data-performance-field="voice">${(narrator?.voices || []).map(item => `<option value="${escape(item.id)}" ${item.id === voice ? 'selected' : ''} ${item.usable || item.id === voice ? '' : 'disabled'}>${escape(item.name)}${item.locale ? ` · ${escape(item.locale)}` : ''}</option>`).join('')}</select>${provider === 'system' && (narrator?.hiddenVoices || narrator?.showAllVoices) ? `<label class="performance-all-voices"><input type="checkbox" data-performance-field="all-voices" ${narrator.showAllVoices ? 'checked' : ''}> Show all voices${narrator.showAllVoices ? '' : ` (${escape(narrator.hiddenVoices)} in other languages or novelty voices hidden)`}</label>` : ''}` : ''}
       <div class="performance-chapters-head"><span class="field-label" id="performance-chapters-label">Chapters</span><span><button type="button" class="button text-button" data-performance-action="all">All</button><button type="button" class="button text-button" data-performance-action="none">None</button></span></div>
       <div class="performance-chapters" role="group" aria-labelledby="performance-chapters-label">${book.chapters.map(chapter => {
         const ready = result?.chapters?.find(item => item.id === chapter.id);
-        return `<label><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${form.chapters.has(chapter.id) ? 'checked' : ''}><span>${escape(chapter.title || 'Untitled section')}</span><small>${ready ? `${ready.passages_ready}/${ready.passages_total} saved` : `${counts.get(chapter.id) || 0} passages`}</small></label>`;
+        return `<label><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${form.chapters.has(chapter.id) ? 'checked' : ''}><span>${escape(chapter.title || 'Untitled chapter')}</span><small>${ready ? `${ready.passages_ready}/${ready.passages_total} saved` : escape(plural(counts.get(chapter.id) || 0, 'passage'))}</small></label>`;
       }).join('')}</div>
       <p class="performance-summary" role="status">${escape(summary)}</p>
       ${quota ? `<p class="field-help">${escape(quota)}</p>` : ''}
       ${(result?.notes || []).map(note => `<p class="field-help">${escape(note)}</p>`).join('')}
       ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem.detail)}${HINTS[problem.code] ? ` ${escape(HINTS[problem.code])}` : ''}</p>`).join('')}
       ${panel.formError ? `<p class="inline-error" role="alert">${escape(panel.formError)}</p>` : ''}
-      <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : 'Create performance'}</button></div>
+      <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : provider === 'gemini' && result?.passages_to_generate ? `Record performance · about ${escape(plural(result.requests_estimate, 'paid request'))} · cost unknown` : 'Record performance'}</button></div>
     </form>`;
   }
   function paint(panel) {
@@ -245,6 +248,7 @@
         const chapter = event.target.dataset.performanceChapter;
         if (chapter) { if (event.target.checked) form.chapters.add(chapter); else form.chapters.delete(chapter); }
         else if (event.target.dataset.performanceField === 'voice') form.voices[form.provider] = event.target.value;
+        else if (event.target.dataset.performanceField === 'all-voices') { panel.options.listen?.setShowAllVoices?.(panel.book, event.target.checked); paint(panel); return; }
         else return;
         paint(panel); void preview(panel);
       });

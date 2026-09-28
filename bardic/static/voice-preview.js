@@ -21,14 +21,14 @@
   const current = task => active === task;
 
   // Server details state the condition; the hint says where to fix it.
-  const HINTS = {gemini_key_missing:'Add a Gemini API key in Settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Settings, or choose another narrator.'};
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.'};
   async function request(url, body) {
     const response = await fetch(url, body === undefined ? {headers:{Accept:'application/json'}} :
       {method:'POST', headers:{Accept:'application/json', 'Content-Type':'application/json'}, body:JSON.stringify(body)});
     let data;
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
-      const detail = typeof data?.detail === 'string' ? data.detail : `Voice preview request failed (${response.status}).`;
+      const detail = typeof data?.detail === 'string' ? data.detail : `Voice example request failed (${response.status}).`;
       const error = new Error(HINTS[data?.code] ? `${detail} ${HINTS[data.code]}` : detail);
       error.status = response.status;
       error.code = data?.code;
@@ -61,7 +61,7 @@
       let jobs;
       try {
         jobs = await request(`/api/jobs?book_id=${encode(known.bookId)}`);
-        if (!Array.isArray(jobs)) throw new Error('The voice preview job status could not be read.');
+        if (!Array.isArray(jobs)) throw new Error('The voice example’s status could not be read.');
         failures = 0;
       } catch (error) {
         if (!isCurrent()) return null;
@@ -73,7 +73,7 @@
       if (!isCurrent()) return null;
       const job = jobs.find(item => item.id === known.id);
       if (!job) {
-        if (++missing >= 3) throw new Error('The previous voice preview job could not be found. Try again to check its status before requesting another sample.');
+        if (++missing >= 3) throw new Error('The previous voice example could not be found. Try again to check its status before requesting another.');
         continue;
       }
       missing = 0;
@@ -83,7 +83,7 @@
       }
       if (!settling) publish({jobId:job.id, preview:job.preview || state.preview});
     }
-    throw new Error('The voice preview is still running. Try again later to check its status before requesting another sample.');
+    throw new Error('The voice example is still being made. Try again later to check its status before requesting another.');
   }
 
   function waitForStopped() {
@@ -127,13 +127,13 @@
       const job = busy(initial) ? await observeJob(task, knownJob) : initial;
       if (!current(task)) return null;
       if (!job || job.status !== 'completed') {
-        throw new Error(job?.error || job?.message || 'Voice preview stopped before the sample was ready.');
+        throw new Error(job?.error || job?.message || 'The voice example stopped before it was ready.');
       }
       audio = job.audio;
       preview = job.preview || preview;
     }
     if (!current(task)) return null;
-    if (!playable(audio) || !preview) throw new Error('The voice preview finished without a playable sample.');
+    if (!playable(audio) || !preview) throw new Error('The voice example finished without playable audio.');
     publish({status:'ready', preview, error:''});
     if (!current(task)) return null;
     await hooks.onReady?.(audio, preview);
@@ -162,12 +162,12 @@
     hooks.onStart?.();
     const task = {book, bookId, body, signature, promise:null};
     active = task;
-    publish({status:'loading', label:label || config.voice || 'Voice preview', bookId:bookId || null,
+    publish({status:'loading', label:label || config.voice || 'Voice example', bookId:bookId || null,
       preview:null, error:'', jobId:null});
     task.promise = serial.catch(() => {}).then(async () => {
       if (!current(task)) return null;
       try {
-        if (!bookId) throw new Error('Open a book before previewing a voice.');
+        if (!bookId) throw new Error('Open a book before hearing a voice example.');
         return await generate(task);
       } catch (error) {
         if (current(task)) {
@@ -177,7 +177,7 @@
               segment_id:bookId === task.bookId ? task.body.segment_id : undefined,
               job_id:task.observedJob?.id || state.jobId, operation:task.operation || 'request', http_status:error.status});
           } catch { /* Optional operational logging never changes playback. */ }
-          publish({status:'error', error:error.message || 'Voice preview could not be prepared.'});
+          publish({status:'error', error:error.message || 'The voice example could not be made.'});
         }
         return null;
       }

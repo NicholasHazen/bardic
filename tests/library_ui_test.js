@@ -35,7 +35,9 @@ function submit(container, kind, id, values) {
     return {ok:true,status:200,json:async () => url.startsWith('/api/library') ? sample : {id:'new'}};
   };
   const context = {window:{},console,fetch:async (url,options) => { calls.push({url,...options}); return respond(url,options); }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/library.js'),'utf8'),context);
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/ui.js'),'utf8'),context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../bardic/static/library.js'),'utf8'),context);
   const component = context.window.BardicLibrary;
   const container = new Container();
   let changed = 0, openedBook, openedSeries;
@@ -108,6 +110,6 @@ function submit(container, kind, id, values) {
   assert.ok(!container.innerHTML.includes('The &lt;Lantern&gt;'));
   click(container,'active');
   assert.ok(container.innerHTML.includes('Create a series'));
-  assert.ok(container.innerHTML.includes('Import your first ebook'));
+  assert.ok(container.innerHTML.includes('No books yet. Import one from the sidebar.'));
   console.log('Library UI behavior checks passed');
 })().catch(error => { console.error(error); process.exitCode=1; });

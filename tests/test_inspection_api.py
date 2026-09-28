@@ -1,8 +1,12 @@
-"""Inspection and classic-analysis API contract fixes (contract 0.2.0).
+"""Inspection API contract fixes (contract 0.2.0), on the step pipeline of contract 0.3.0.
 
 Offline: synthetic prose, a fake analysis provider, and tmp_path libraries.
+
+Dropped with the Classic engine (contract 0.3.0): the three tests that a cancelled Classic run shows
+`cancelled` (not `interrupted`) on its inspector stage. The inspector's stage cards now come from the
+step pipeline and never read a Classic checkpoint. The Classic `/analysis`, `/preprocessing`,
+`/analysis-plan` and `/analyze` routes are gone, so their error-code checks became the pipeline run's.
 """
-from copy import deepcopy
 import io
 import json
 import zipfile
@@ -14,7 +18,7 @@ from fastapi.testclient import TestClient
 from bardic.app import create_app
 from bardic.processing import ProcessingStore
 from bardic.series import SeriesRepository
-from test_progressive import FakeProvider, process, story
+from test_analysis_pipeline import MODEL, STORY, FakeProvider, run
 
 
 SOURCE = 'Chapter One\n\nMara waited by the gate.\n\n“Stay,” Mara said.\n\nChapter Two\n\nElio did not answer.\n'
@@ -23,7 +27,8 @@ SOURCE = 'Chapter One\n\nMara waited by the gate.\n\n“Stay,” Mara said.\n\nC
 # search index (search_books, passage_search) are disposable derived caches and may change.
 DOMAIN_TABLES = ('books', 'jobs', 'takes', 'analysis_checkpoints', 'analysis_units', 'analysis_attempts',
                  'pipeline_events', 'resource_operations', 'artifact_versions', 'artifact_heads',
-                 'artifact_dependencies', 'artifact_backfills', 'character_observations', 'character_references')
+                 'artifact_dependencies', 'artifact_backfills', 'character_observations', 'character_references',
+                 'pipeline_runs', 'pipeline_step_runs', 'pipeline_decisions', 'pipeline_state', 'pipeline_units')
 
 
 def offline(monkeypatch):
@@ -60,52 +65,6 @@ def snapshot(store):
 def count(store, table, book_id):
     with store.lock, store.connect() as conn:
         return conn.execute(f'SELECT COUNT(*) FROM {table} WHERE book_id=?', (book_id,)).fetchone()[0]
-
-
-# ------------------------------------------------------------ 1. cancelled stage
-
-
-def interrupted_scan(store, monkeypatch, job_status):
-    """A real classic run stopped by cancellation: the checkpoint records `interrupted`."""
-    book = story()
-    store.save_book(book)
-    job = store.create_job(book['id'], 'analyze')
-    provider = FakeProvider(monkeypatch)
-
-    def stop(stage, result, prompt):
-        raise InterruptedError('stopped by the test')
-    provider.transform = stop
-    with pytest.raises(InterruptedError):
-        process(book, store, cancelled=lambda: True, run_id=job['id'])
-    store.update_job(job['id'], status=job_status)
-    assert store.analysis_status(book['id'])['status'] == 'interrupted'
-    return book
-
-
-def test_pipeline_stage_reports_a_cancelled_run_as_cancelled(client, monkeypatch):
-    store = client.app.state.runtime.store
-    book = interrupted_scan(store, monkeypatch, 'cancelled')
-    stages = {s['id']: s for s in client.get(f"/api/books/{book['id']}/pipeline").json()['stages']}
-    assert stages['discovery']['status'] == 'cancelled'
-
-
-def test_pipeline_stage_reports_a_restart_as_interrupted(client, monkeypatch):
-    store = client.app.state.runtime.store
-    book = interrupted_scan(store, monkeypatch, 'interrupted')
-    stages = {s['id']: s for s in client.get(f"/api/books/{book['id']}/pipeline").json()['stages']}
-    assert stages['discovery']['status'] == 'interrupted'
-
-
-def test_checkpoint_without_a_run_id_stays_interrupted(client):
-    book = import_book(client)
-    store = client.app.state.runtime.store
-    job = store.create_job(book['id'], 'analyze')
-    store.update_job(job['id'], status='cancelled')
-    store.save_analysis_checkpoint(book['id'], 'older-checkpoint', {
-        'status': 'interrupted', 'stage': 'discovery', 'provider': 'openai', 'model': 'test-model',
-        'working_book': deepcopy(store.book(book['id'])), 'units': {}, 'chapters': []})
-    stages = {s['id']: s for s in client.get(f"/api/books/{book['id']}/pipeline").json()['stages']}
-    assert stages['discovery']['status'] == 'interrupted'
 
 
 # ----------------------------------------------------------- 2. dangling edges
@@ -198,13 +157,19 @@ def test_search_returns_items_without_the_results_alias(client):
 # ------------------------------------------------------------- 6. GET safety
 
 
-def legacy_library(client, monkeypatch):
-    """A book with pre-upgrade discovery (only in its checkpoint), series context and an uncached census."""
-    store = client.app.state.runtime.store
-    book = story()
-    store.save_book(book)
-    FakeProvider(monkeypatch)
-    scanned = process(book, store)
+def analyzed_library(client, monkeypatch):
+    """A book with accepted pipeline results, a linked earlier volume with Classic-era evidence, and outside changes
+    written straight to the store, so a sync would record versions and rebuild references, and the census is stale."""
+    runtime = client.app.state.runtime
+    store = runtime.store
+    client.provider = FakeProvider()
+    monkeypatch.setattr('bardic.analysis._openai_request', client.provider)
+    runtime.api_keys['openai'] = 'test-openai-secret'
+    client.post('/api/settings', json={'analysis_provider': 'openai', 'analysis_models_by_provider': {'openai': MODEL},
+                                       'preprocess_models_by_provider': {'openai': MODEL}})
+    book = import_book(client, STORY, 'story.txt')
+    job, _ = run(client, book['id'], ['discovery', 'profiles', 'directing'])
+    assert job['status'] == 'completed', job
     earlier = import_book(client, 'Mara used a low voice.', 'earlier.txt')
     early = store.book(earlier['id'])
     early['characters'].append({'id': 'early-mara', 'name': 'Mara', 'aliases': [], 'description': '', 'direction': ''})
@@ -213,7 +178,8 @@ def legacy_library(client, monkeypatch):
     saga = series.create_series('Saga')
     series.set_membership(early['id'], saga['id'], 1)
     series.set_membership(book['id'], saga['id'], 2)
-    mara = next(c for c in scanned['characters'] if c['name'] == 'Mara')
+    current = store.book(book['id'])
+    mara = next(c for c in current['characters'] if c['name'] == 'Mara')
     linked = series.create_character(saga['id'], 'Mara')
     series.link_character(early['id'], 'early-mara', linked['id'])
     series.link_character(book['id'], mara['id'], linked['id'])
@@ -222,38 +188,43 @@ def legacy_library(client, monkeypatch):
         'id': 'observation', 'character_id': 'early-mara', 'chapter_id': chapter['id'], 'start': 0,
         'end': len(chapter['text']), 'quote': chapter['text'], 'kind': 'profile_evidence',
         'profile_description': 'Low voice.', 'provider': 'openai', 'model': 'older-model'}]})
-    # Pre-upgrade: validated discovery lived only in the checkpoint, not in the unit cache.
-    with store.lock, store.connect() as conn:
-        conn.execute('DELETE FROM analysis_units WHERE book_id=?', (book['id'],))
-    # A cast change makes the cached census stale, so a view must compute it again.
+    # Outside changes: a speaker the accepted directing version does not explain, and a new cast member
+    # (which also makes the cached census stale).
     current = store.book(book['id'])
+    elio = next(c['id'] for c in current['characters'] if c['name'] == 'Elio')
+    line = next(s for s in current['segments'] if s['kind'] == 'dialogue' and s['speaker_id'] == mara['id'])
+    line['speaker_id'] = elio
     current['characters'].append({'id': 'guest', 'name': 'Guest', 'aliases': [], 'description': '', 'direction': ''})
     store.save_book(current)
-    return current
+    return store.book(book['id']), mara['id']
 
 
 def test_inspection_gets_create_no_domain_records(client, monkeypatch):
-    book = legacy_library(client, monkeypatch)
+    book, character_id = analyzed_library(client, monkeypatch)
     store = client.app.state.runtime.store
     artifact_id = client.get(f"/api/books/{book['id']}/artifacts", params={'limit': 1}).json()['items'][0]['id']
-    before = snapshot(store)
     base = f"/api/books/{book['id']}"
-    coverage = client.get(base + '/preprocessing')
-    assert coverage.status_code == 200, coverage.text
-    for route, params in (('/analysis', {}), ('/pipeline', {}), ('/resources', {}), ('/artifacts', {}),
-                          ('/artifacts/' + artifact_id, {}), ('/story-map', {}), ('/analysis-export', {}),
-                          ('/search', {'q': 'Mara'}), ('/search', {'q': 'Mara', 'scope': 'earlier'})):
+    # The overview reports the outside changes it would record ...
+    overview = client.get(base + '/analysis-pipeline').json()
+    directing = next(s for s in overview['steps'] if s['id'] == 'directing')
+    assert directing['accepted_origins'].get('external', 0) >= 1
+    before = snapshot(store)
+    for route, params in (('/pipeline', {}), ('/resources', {}), ('/artifacts', {}), ('/artifacts/' + artifact_id, {}),
+                          ('/story-map', {}), ('/analysis-export', {}), ('/search', {'q': 'Mara'}),
+                          ('/search', {'q': 'Mara', 'scope': 'earlier'}), ('/analysis-pipeline', {}),
+                          (f'/characters/{character_id}/references', {}), ('/series/context', {}),
+                          ('/series/suggestions', {})):
         response = client.get(base + route, params=params)
         assert response.status_code == 200, (route, response.text)
+    # ... but no GET records it (only the disposable census cache and search index may change).
     assert snapshot(store) == before
-    # Checkpoint-only discovery still counts, exactly as after the plan preview imports it.
-    semantic = coverage.json()['semantic_chapter_ids']
-    assert semantic
-    plan = client.post(base + '/analysis-plan', json={'provider': 'openai', 'phase': 'profiles'})
+    assert client.get(base + '/series/context').json()['characters']
+    # The next pipeline POST records what the GETs only reported.
+    plan = client.post(base + '/analysis-pipeline/plan', json={'steps': ['census']})
     assert plan.status_code == 200, plan.text
-    assert plan.json()['coverage']['semantic_chapter_ids'] == semantic
-    assert count(store, 'analysis_units', book['id']) > 0  # The plan POST may import and retain.
-    assert snapshot(store)['artifact_versions'] != before['artifact_versions']
+    after = snapshot(store)
+    assert after['pipeline_step_runs'] != before['pipeline_step_runs']
+    assert after['artifact_versions'] != before['artifact_versions']
 
 
 def test_legacy_data_is_retained_at_startup_once_not_by_gets(tmp_path, monkeypatch):
@@ -261,10 +232,12 @@ def test_legacy_data_is_retained_at_startup_once_not_by_gets(tmp_path, monkeypat
     with TestClient(create_app(tmp_path)) as client:
         book = import_book(client)
         store = client.app.state.runtime.store
-        ProcessingStore(store)
         legacy = {'stage': 'discovery', 'chapter_id': book['chapters'][0]['id'], 'start': 0, 'end': 5,
                   'provider': 'openai', 'model': 'older-model', 'unit_key': 'legacy-unit', 'result': {'characters': []}}
         with store.lock, store.connect() as conn:
+            # A new library never creates the removed Classic unit cache; an older library still has it.
+            conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, '
+                         'source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
             conn.execute('INSERT INTO analysis_units VALUES (?,?,?,?,?)',
                          (book['id'], 'legacy-unit', 'discovery', 'old-source', json.dumps(legacy)))
         before = count(store, 'artifact_versions', book['id'])
@@ -285,22 +258,18 @@ def test_legacy_data_is_retained_at_startup_once_not_by_gets(tmp_path, monkeypat
 # -------------------------------------------------------- 7. internal fields
 
 
-def test_internal_fields_are_not_presented(client, monkeypatch):
-    store = client.app.state.runtime.store
-    book = story()
-    store.save_book(book)
-    FakeProvider(monkeypatch)
-    process(book, store, run_id='offline-run')
-    status = client.get(f"/api/books/{book['id']}/analysis").json()
-    assert status['status'] == 'completed' and 'fingerprint' not in status
-    local = client.get(f"/api/books/{book['id']}/preprocessing").json()['local']
-    assert not {'fingerprint', 'source_hash'} & set(local)
-    plan = client.post(f"/api/books/{book['id']}/analysis-plan", json={'provider': 'openai'}).json()
-    assert not {'fingerprint', 'source_hash'} & set(plan['coverage']['local'])
+def test_internal_fields_are_not_presented(client):
+    book = import_book(client)
+    # The local census step measures its work in the resource ledger; no key is needed.
+    job, _ = run(client, book['id'], ['census'])
+    assert job['status'] == 'completed', job
     operations = client.get(f"/api/books/{book['id']}/resources").json()['operations']
     assert operations and not any('process_id' in row for row in operations)
     # Storage keeps the bookkeeping it needs.
-    assert store.analysis_status(book['id'])['fingerprint']
+    with client.app.state.runtime.store.connect() as conn:
+        stored = [json.loads(row[0]) for row in conn.execute('SELECT body FROM resource_operations WHERE book_id=?',
+                                                             (book['id'],))]
+    assert any('process_id' in row for row in stored)
 
 
 # ------------------------------------------------------------ 8. error codes
@@ -312,39 +281,32 @@ def error(response, status, code):
     assert 'Settings' not in response.json()['detail']
 
 
-def test_classic_analysis_errors_have_codes(client):
+def test_pipeline_run_errors_have_codes(client):
     book = import_book(client)
     store = client.app.state.runtime.store
     runtime = client.app.state.runtime
-    url = f"/api/books/{book['id']}/analyze"
-    error(client.post(url, json={'provider': 'local', 'chapter_id': 'no-such-chapter'}), 400, 'unknown_chapter')
-    error(client.post(url, json={'provider': 'mystery'}), 400, 'unknown_provider')
-    error(client.post(url, json={'provider': 'gemini'}), 400, 'gemini_key_missing')
-    error(client.post(url, json={'provider': 'openai'}), 400, 'api_key_missing')
-    error(client.post(url, json={'provider': 'anthropic'}), 400, 'api_key_missing')
-    error(client.post('/api/books/missing/analyze', json={'provider': 'local'}), 404, 'book_not_found')
+    url = f"/api/books/{book['id']}/analysis-pipeline/runs"
+    census = {'steps': ['census'], 'limits': {'max_requests': 5}}
+    discovery = {'steps': ['discovery'], 'configs': {'discovery': {'provider': 'openai', 'model': MODEL}},
+                 'limits': {'max_requests': 5}}
+    error(client.post(url, json={**census, 'chapter_ids': ['no-such-chapter']}), 400, 'unknown_chapter')
+    error(client.post(url, json=discovery), 400, 'api_key_missing')
+    error(client.post('/api/books/missing/analysis-pipeline/runs', json=census), 404, 'book_not_found')
     runtime.stopping.set()
     try:
-        error(client.post(url, json={'provider': 'local'}), 503, 'shutting_down')
+        error(client.post(url, json=census), 503, 'shutting_down')
     finally:
         runtime.stopping.clear()
     series = store.create_job('a-series', 'series')
     store.update_job(series['id'], book_ids=[book['id']])
-    error(client.post(url, json={'provider': 'local'}), 409, 'series_run_active')
+    error(client.post(url, json=census), 409, 'series_run_active')
     store.update_job(series['id'], status='cancelled')
-    busy = store.create_job(book['id'], 'analyze')
-    error(client.post(url, json={'provider': 'local'}), 409, 'job_active')
+    busy = store.create_job(book['id'], 'render')
+    error(client.post(url, json=census), 409, 'job_active')
     store.update_job(busy['id'], status='cancelled')
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
-    error(client.post(url, json={'provider': 'local'}), 409, 'book_archived')
+    error(client.post(url, json=census), 409, 'book_archived')
     assert [job['id'] for job in store.jobs(book['id'])] == [busy['id']]  # No refused request queued a job.
-
-    plan = f"/api/books/{book['id']}/analysis-plan"
-    error(client.post(plan, json={'provider': 'local'}), 409, 'book_archived')  # The preview retains records.
-    assert client.post(f"/api/books/{book['id']}/restore").status_code == 200
-    error(client.post(plan, json={'provider': 'local', 'chapter_id': 'no-such-chapter'}), 400, 'unknown_chapter')
-    error(client.post(plan, json={'provider': 'mystery'}), 400, 'unknown_provider')
-    error(client.post('/api/books/missing/analysis-plan', json={}), 404, 'book_not_found')
 
 
 def test_inspection_errors_have_codes(client):
@@ -354,8 +316,7 @@ def test_inspection_errors_have_codes(client):
     error(client.get(base + '/search', params={'q': 'x' * 301}), 400, 'search_query_invalid')
     error(client.get(base + '/search', params={'q': 'Mara', 'scope': 'everything'}), 400, 'search_scope_invalid')
     error(client.get(base + '/artifacts/artifact_missing'), 404, 'artifact_not_found')
-    for route in ('analysis', 'preprocessing', 'pipeline', 'resources', 'artifacts', 'artifacts/x', 'story-map',
-                  'analysis-export'):
+    for route in ('pipeline', 'resources', 'artifacts', 'artifacts/x', 'story-map', 'analysis-export'):
         error(client.get(f'/api/books/missing/{route}'), 404, 'book_not_found')
     error(client.get('/api/books/missing/search', params={'q': 'Mara'}), 404, 'book_not_found')
 

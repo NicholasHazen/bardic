@@ -1,5 +1,7 @@
 # Progressive, series-aware analysis
 
+> **Historical record.** The engine this page describes was removed in Classic removal stage 3 (2026-09-28): its modules, routes and panel are gone. Analysis now runs only on the step pipeline; see the [analysis pipeline](ANALYSIS-PIPELINE.md) and [Classic removal](CLASSIC-REMOVAL.md). File and route names below refer to code that no longer exists.
+
 Research and implementation plan — September 27, 2026.
 
 This is the historical design and milestone record. The opening findings describe defects before this update; the implementation section records their resolution. For today's module boundaries and remaining work, use [architecture](ARCHITECTURE.md), [development](DEVELOPMENT.md) and the [roadmap](ROADMAP.md).
