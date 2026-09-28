@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bardic kitchen sink</title>
+  <!-- The reference for every UI primitive. Copy markup and calls from here, not from a sibling feature file.
+       Served at /static/kitchen-sink.html. Same stylesheet order as index.html: tokens, components, then the base. -->
+  <link rel="stylesheet" href="/static/tokens.css">
+  <link rel="stylesheet" href="/static/components.css">
+  <script defer src="/static/ui.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* Page layout only; tokens only. */
+    .ks { max-width:1080px; margin:0 auto; padding:var(--space-10) var(--space-6) var(--space-16); }
+    .ks > section { margin:0 0 var(--space-12); }
+    .ks h2.ks-title { margin:0 0 var(--space-4); padding-bottom:var(--space-2); border-bottom:1px solid var(--color-border); font-family:var(--font-sans); font-size:var(--text-xl); font-weight:var(--weight-semibold); }
+    .ks h3.ks-sub { margin:var(--space-6) 0 var(--space-2); font-size:var(--text-sm); font-weight:var(--weight-semibold); color:var(--color-text-muted); }
+    .ks p.ks-note { margin:0 0 var(--space-3); max-width:70ch; font-size:var(--text-sm); line-height:var(--leading-help); color:var(--color-text-muted); }
+    .ks pre { margin:var(--space-2) 0 0; padding:var(--space-3); overflow:auto; border-radius:var(--radius-md); background:var(--color-bg-sunken); font-size:var(--text-xs); line-height:var(--leading-ui); }
+    .ks-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); }
+    .ks-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:var(--space-3); }
+    .ks-swatch { display:grid; gap:var(--space-1); font-size:var(--text-xs); }
+    .ks-swatch span { height:var(--space-10); border:1px solid var(--color-border); border-radius:var(--radius-md); }
+    .ks-swatch code, .ks-scale code { color:var(--color-text-muted); }
+    .ks-scale { display:grid; grid-template-columns:140px minmax(0,1fr); align-items:center; gap:var(--space-2) var(--space-4); }
+    .ks-bar { height:var(--space-3); background:var(--color-accent-soft); border:1px solid var(--color-accent-border); }
+    .ks-radius { width:var(--space-16); height:var(--space-10); border:1px solid var(--color-border-strong); background:var(--color-surface); }
+    .ks-shadow { padding:var(--space-4); border-radius:var(--radius-lg); background:var(--color-surface); font-size:var(--text-xs); }
+    .ks-panel { padding:var(--space-5); border:1px solid var(--color-border); border-radius:var(--radius-xl); background:var(--color-surface); }
+    .ks-story { font-family:var(--font-serif); }
+    .ks-panel .section-head { margin:0; padding:0; border:0; }
+    .ks-format { grid-template-columns:320px minmax(0,1fr); }
+  </style>
+</head>
+<body>
+<main class="ks" id="kitchen-sink">
+  <header class="section-head">
+    <div class="section-head-text">
+      <p class="section-head-eyebrow">Design system</p>
+      <h1 class="ks-story" style="margin:0;font-size:var(--text-4xl);font-weight:var(--weight-regular)">Bardic kitchen sink</h1>
+      <p class="section-head-lead">Every token and primitive, rendered by bardic/static/ui.js. Copy from this page, not from a sibling feature file.</p>
+    </div>
+  </header>
+
+  <section aria-labelledby="ks-colour">
+    <h2 class="ks-title" id="ks-colour">Colour tokens</h2>
+    <p class="ks-note">Semantic names in tokens.css. The legacy names (--paper, --green, --muted, --line) are aliases; new code uses these.</p>
+    <div class="ks-grid" data-ks="colours"></div>
+    <h3 class="ks-sub">Status tones (text on its background)</h3>
+    <div class="ks-row" data-ks="tones"></div>
+  </section>
+
+  <section aria-labelledby="ks-type">
+    <h2 class="ks-title" id="ks-type">Type, space, radius, shadow</h2>
+    <p class="ks-note">Serif for story and reading surfaces (book text, chapter titles, character and voice names, section heads). Sans for operational surfaces (panels, runs, tables, settings).</p>
+    <div class="ks-scale" data-ks="type"></div>
+    <h3 class="ks-sub">Space (4px scale with 2px and 6px half steps)</h3>
+    <div class="ks-scale" data-ks="space"></div>
+    <h3 class="ks-sub">Radius and control heights</h3>
+    <div class="ks-row" data-ks="radius"></div>
+    <div class="ks-row" data-ks="controls" style="margin-top:var(--space-3)"></div>
+    <h3 class="ks-sub">Shadow</h3>
+    <div class="ks-row" data-ks="shadow"></div>
+  </section>
+
+  <section aria-labelledby="ks-buttons">
+    <h2 class="ks-title" id="ks-buttons">1 · Buttons</h2>
+    <p class="ks-note">One primary action per surface. Sizes: small (32px) for dense rows, default (40px), large (48px) for the final action of a sheet or consent. Busy buttons are disabled and set aria-busy.</p>
+    <div data-ks="buttons"></div>
+    <pre><code>BardicUI.button({label:'Start listening', variant:'primary', size:'large'})
+BardicUI.button({label:'Delete voice', variant:'danger', size:'small', attrs:{'data-id':id}})
+BardicUI.button({label:'Run', variant:'primary', busy:true, busyLabel:'Running…'})</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-badges">
+    <h2 class="ks-title" id="ks-badges">2 · Badges and status tones</h2>
+    <p class="ks-note">One badge per status. The tone always comes from BardicUI.statusTone(state), the single map; never pick a colour per screen.</p>
+    <div class="ks-row" data-ks="badges"></div>
+    <h3 class="ks-sub">statusBadge(state) for common states</h3>
+    <div class="ks-row" data-ks="states"></div>
+    <pre><code>BardicUI.statusBadge('budget_limited')        // Budget limited, warn
+BardicUI.badge('9 of 12 voiced', BardicUI.statusTone('partial'))</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-callouts">
+    <h2 class="ks-title" id="ks-callouts">3 · Callouts and messages</h2>
+    <p class="ks-note">A callout is a block that stays (what happened, what is kept, what to do). A message is a live line that changes; render it empty and fill it with setMessage.</p>
+    <div data-ks="callouts"></div>
+    <div data-ks="messages"></div>
+    <pre><code>BardicUI.callout({tone:'bad', title:'The run stopped', text:'Finished chapters are kept.', actions:BardicUI.button({label:'Retry failed'})})
+node.innerHTML = BardicUI.message({id:'save-message'});
+BardicUI.setMessage(document.getElementById('save-message'), 'Could not save. Your edits are still here.', {tone:'bad'});</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-section-head">
+    <h2 class="ks-title" id="ks-section-head">4 · Section head</h2>
+    <p class="ks-note">H2 names the job (not a tagline). The lead has at most two sentences. At most one Next.</p>
+    <div class="ks-panel" data-ks="section-head"></div>
+    <pre><code>BardicUI.sectionHead({eyebrow:'Book', title:'Analyze the story', lead:'Find the characters and who speaks each line. Nothing runs until you confirm an estimate.',
+  actions:BardicUI.button({label:'Step settings', size:'small'}), next:{label:'Review 2 results', attrs:{'data-next':'review'}}})</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-steps">
+    <h2 class="ks-title" id="ks-steps">5 · Steps</h2>
+    <p class="ks-note">One ordered list, one state and one tone per step. The compact strip sits under the tabs; the card variant is the expanded view.</p>
+    <div data-ks="steps-compact"></div>
+    <div data-ks="steps-cards" style="margin-top:var(--space-4)"></div>
+    <pre><code>BardicUI.steps({label:'Book progress', steps:[{id:'analyze', label:'Analyze', state:'complete'}, …], next:{label:'Choose voices'}})
+BardicUI.steps({variant:'cards', steps:[{id:'cast', label:'Cast', state:'partial', stateLabel:'9 of 12 voiced', detail:'…', uses:['Analyze'], current:true}]})</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-consent">
+    <h2 class="ks-title" id="ks-consent">6 · Consent</h2>
+    <p class="ks-note">Every paid action shows scope, what is sent where, and an estimate before it starts. Unknown cost says "Cost unknown", never $0. The confirm label carries the cost. A missing key or server disables the confirm and says why, with a Set up link.</p>
+    <div data-ks="consent"></div>
+    <pre><code>panel.innerHTML = BardicUI.consent({scope:'Chapter 1, passages 4–32', sends:[{what:'Chapter text', where:'Gemini (Google)'}],
+  estimate:{requests:3, cost:0.021}, confirm:'Record chapter'});
+BardicUI.openConsent(panel.querySelector('[data-consent]'));   // scrolls into view and takes focus</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-choice">
+    <h2 class="ks-title" id="ks-choice">7 · Choice</h2>
+    <p class="ks-note">Exclusive choices are radio groups (one tab stop; arrow keys move and select). Toggles use aria-pressed. Looks: segmented, cards, chips. Try the keyboard here.</p>
+    <div data-ks="choice"></div>
+    <p class="message" id="ks-choice-message" role="status"></p>
+    <pre><code>container.innerHTML = BardicUI.choice({kind:'cards', label:'Narration', name:'provider', value:'device',
+  options:[{value:'device', label:'Device', hint:'Free · voices on the Bardic computer'}, …]});
+BardicUI.bindChoices(container, change => save(change.name, change.value));</code></pre>
+  </section>
+
+  <section aria-labelledby="ks-format">
+    <h2 class="ks-title" id="ks-format">8 · Formatting</h2>
+    <p class="ks-note">BardicUI.fmt: money, percent, plural. Missing numbers read "unknown".</p>
+    <div data-ks="format"></div>
+  </section>
+</main>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const ui = window.BardicUI, esc = ui.esc;
+  const put = (name, html) => { document.querySelector(`[data-ks="${name}"]`).innerHTML = html; };
+
+  const colours = ['bg', 'bg-sunken', 'surface', 'hover', 'text', 'text-muted', 'border', 'border-strong', 'accent', 'accent-hover', 'accent-soft', 'accent-border', 'on-accent', 'gold'];
+  put('colours', colours.map(name => `<div class="ks-swatch"><span style="background:var(--color-${name})"></span><code>--color-${name}</code></div>`).join(''));
+  put('tones', ui.TONES.map(tone => `<span class="badge" data-tone="${tone}">--tone-${tone}-text on -bg</span>`).join(''));
+
+  const sizes = ['2xs', 'xs', 'sm', 'md', 'lg', 'xl', '2xl', '3xl', '4xl'];
+  put('type', sizes.map(size => `<code>--text-${size}</code><span style="font-size:var(--text-${size})${['2xl', '3xl', '4xl'].includes(size) ? ';font-family:var(--font-serif)' : ''}">Mara found the lighthouse door open</span>`).join(''));
+  put('space', ['0-5', '1', '1-5', '2', '3', '4', '5', '6', '8', '10', '12', '16'].map(step => `<code>--space-${step}</code><span class="ks-bar" style="width:var(--space-${step})"></span>`).join(''));
+  put('radius', ['sm', 'md', 'lg', 'xl', '2xl', 'pill'].map(r => `<div class="ks-swatch"><span class="ks-radius" style="border-radius:var(--radius-${r})"></span><code>--radius-${r}</code></div>`).join(''));
+  put('controls', ['sm', 'md', 'touch', 'lg'].map(c => `<div class="ks-swatch"><span class="ks-bar" style="width:var(--space-16);height:var(--control-${c})"></span><code>--control-${c}</code></div>`).join(''));
+  put('shadow', ['1', '2', '3'].map(s => `<div class="ks-shadow" style="box-shadow:var(--shadow-${s})"><code>--shadow-${s}</code></div>`).join(''));
+
+  const variants = ['primary', 'subtle', 'text', 'danger', 'danger-primary'];
+  put('buttons', ['small', undefined, 'large'].map(size => `<h3 class="ks-sub">${size || 'default'}</h3><div class="ks-row">${variants.map(variant => ui.button({label:variant === 'danger-primary' ? 'Delete for good' : variant === 'danger' ? 'Delete' : variant[0].toUpperCase() + variant.slice(1), variant, size})).join('')}${ui.button({label:'Run', variant:'primary', size, busy:true, busyLabel:'Running…'})}${ui.button({label:'Disabled', size, disabled:true})}</div>`).join(''));
+
+  put('badges', ui.TONES.map(tone => ui.badge(tone, tone)).join(''));
+  put('states', ['complete', 'accepted', 'running', 'queued', 'stale', 'budget_limited', 'interrupted', 'failed', 'rejected', 'candidate', 'cancelled', 'not_started'].map(state => ui.statusBadge(state)).join(''));
+
+  put('callouts', ui.TONES.map(tone => ui.callout({tone, title:`${tone[0].toUpperCase()}${tone.slice(1)} callout`, text:'What happened, what is kept, and what to do next.', actions:tone === 'bad' ? ui.button({label:'Retry failed', size:'small'}) : ''})).join(''));
+  put('messages', ['', 'good', 'info', 'warn', 'bad'].map((tone, i) => ui.message({id:`ks-message-${i}`})).join(''));
+  ['', 'good', 'info', 'warn', 'bad'].forEach((tone, i) => ui.setMessage(document.getElementById(`ks-message-${i}`), `Message${tone ? ` (${tone})` : ''}: saved changes are kept.`, {tone}));
+
+  put('section-head', ui.sectionHead({eyebrow:'Book', title:'Analyze the story', lead:'Find the characters and who speaks each line. Nothing runs until you confirm an estimate.', actions:ui.button({label:'Step settings', size:'small'}), next:{label:'Review 2 results', attrs:{'data-next':'review'}}}));
+
+  const lifecycle = [
+    {id:'read', label:'Read & listen', state:'ready', detail:'The book is imported and readable.', uses:['Source import']},
+    {id:'analyze', label:'Analyze', state:'complete', stateLabel:'5 of 5 steps', detail:'Characters, profiles and speakers are accepted.', uses:['Chapters & titles']},
+    {id:'cast', label:'Cast', state:'partial', stateLabel:'9 of 12 voiced', detail:'Three characters still need a voice.', uses:['Analyze'], current:true, action:{label:'Choose voices'}},
+    {id:'script', label:'Script', state:'stale', stateLabel:'2 chapters to review', detail:'Direction changed after the last run.', uses:['Analyze', 'Cast']},
+    {id:'record', label:'Record', state:'not_started', stateLabel:'Not started', detail:'No kept production audio yet.', uses:['Cast', 'Script']},
+  ];
+  put('steps-compact', ui.steps({label:'Book progress', steps:lifecycle, next:{label:'Choose voices'}}));
+  put('steps-cards', ui.steps({variant:'cards', label:'Book progress', steps:lifecycle}));
+
+  put('consent', [
+    ui.consent({id:'ks-consent-known', title:'Record chapter 1', scope:'Chapter 1, passages 4–32 (29 passages)', sends:[{what:'Chapter text and direction notes', where:'Gemini (Google)'}], estimate:{requests:3, cost:0.021, note:'About 7 minutes of audio. Saved takes are reused.'}, confirm:'Record chapter'}),
+    ui.consent({id:'ks-consent-unknown', title:'Run Speakers & delivery', scope:'Whole book (12 chapters)', sends:[{what:'Passages and the accepted cast', where:'Local LLM server'}], estimate:{requests:null, note:'This model has no price in the catalog.'}, confirm:'Run step'}),
+    ui.consent({id:'ks-consent-blocked', title:'Design a Gemini voice', scope:'One stored voice in your Google project', sends:[{what:'Your voice description', where:'Gemini (Google)'}], estimate:{requests:1, cost:null}, confirm:'Create voice', blocked:{reason:'Add a Gemini API key first.', setupAttrs:{'data-open-settings':'gemini'}}}),
+    ui.consent({id:'ks-consent-free', title:'Chapters & titles', scope:'Whole book', estimate:{free:true, requests:0}, capNote:'', confirm:'Run step'}),
+  ].join(''));
+
+  put('choice', [
+    '<h3 class="ks-sub">Segmented (radio)</h3>', ui.choice({kind:'segmented', label:'Line spacing', name:'spacing', value:'normal', options:[{value:'tight', label:'Tight'}, {value:'normal', label:'Normal'}, {value:'loose', label:'Loose'}]}),
+    '<h3 class="ks-sub">Cards (radio)</h3>', ui.choice({kind:'cards', label:'Narration', name:'provider', value:'device', options:[{value:'device', label:'Device', hint:'Free · voices on the Bardic computer'}, {value:'gemini', label:'Gemini', hint:'Paid · Google'}, {value:'breeze', label:'Breeze', hint:'Not set up', disabled:true}]}),
+    '<h3 class="ks-sub">Chips (radio)</h3>', ui.choice({kind:'chips', label:'Speed', name:'speed', value:'1', options:['0.75', '1', '1.25', '1.5', '2'].map(v => ({value:v, label:`${v}×`}))}),
+    '<h3 class="ks-sub">Chips (toggles, aria-pressed)</h3>', ui.choice({kind:'chips', mode:'pressed', label:'Voices for', name:'filter', value:['breeze'], options:[{value:'breeze', label:'Breeze'}, {value:'gemini', label:'Gemini'}, {value:'device', label:'Device'}]}),
+  ].join(''));
+  ui.bindChoices(document.querySelector('[data-ks="choice"]'), change => ui.setMessage(document.getElementById('ks-choice-message'), `${change.name} → ${change.value}${change.group.getAttribute('role') === 'group' ? (change.pressed ? ' (on)' : ' (off)') : ''}`, {tone:'info'}));
+
+  const rows = [
+    ['fmt.money(0.021, {approx:true})', ui.fmt.money(0.021, {approx:true})], ['fmt.money(0.004)', ui.fmt.money(0.004)], ['fmt.money(null)', ui.fmt.money(null)],
+    ['fmt.percent(0.88)', ui.fmt.percent(0.88)], ['fmt.percent(0.996)', ui.fmt.percent(0.996)], ['fmt.plural(1, "chapter")', ui.fmt.plural(1, 'chapter')], ['fmt.plural(undefined, "request")', ui.fmt.plural(undefined, 'request')],
+  ];
+  put('format', `<div class="ks-scale ks-format">${rows.map(([call, out]) => `<code>${esc(call)}</code><span>${esc(out)}</span>`).join('')}</div>`);
+});
+</script>
+</body>
+</html>
