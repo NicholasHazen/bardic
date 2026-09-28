@@ -15,7 +15,7 @@ from bardic.app import create_app
 from bardic.importer import parse_book
 from bardic.pipeline import Registry, Step, default_registry
 from bardic.pipeline.contract import locked
-from bardic.processing import request_context
+from bardic.processing import ProcessingStore, request_context
 
 STORY = ('Chapter One\n\nMara lit the lamp by the harbor.\n\n“Stay close,” Mara said.\n\n'
          'Chapter Two\n\nElio opened the gate at dawn.\n\n“We leave now,” Elio said.\n\n“Not yet,” Mara said.\n')
@@ -98,7 +98,15 @@ def wait_job(client, job_id):
     pytest.fail('pipeline worker did not finish')
 
 
+def fingerprint(client, book_id, steps):
+    return client.post(f'/api/books/{book_id}/analysis-pipeline/plan', json={'steps': steps}).json()['fingerprint']
+
+
 def run(client, book_id, steps, **body):
+    # Like the Analysis tab: preview, then confirm with the plan's fingerprint.
+    if 'expected_fingerprint' not in body and 'limits' not in body:
+        preview = {'steps': steps, **{k: body[k] for k in ('chapter_ids', 'configs', 'fresh') if k in body}}
+        body['expected_fingerprint'] = client.post(f'/api/books/{book_id}/analysis-pipeline/plan', json=preview).json()['fingerprint']
     response = client.post(f'/api/books/{book_id}/analysis-pipeline/runs', json={'steps': steps, **body})
     assert response.status_code == 200, response.text
     return wait_job(client, response.json()['job']['id']), response.json()['run']
@@ -138,6 +146,11 @@ def test_registry_rejects_invalid_step_graphs():
         Registry([A(), Claims()])
     with pytest.raises(ValueError, match='Duplicate'):
         Registry([A(), A()])
+    class Requires(Step):
+        id, inputs, requires = 'delta', ('alpha',), ('beta',)
+
+    with pytest.raises(ValueError, match='only require steps it reads'):
+        Registry([A(), B(), Requires()])
     bad = A()
     bad.id = 'Bad-ID'
     with pytest.raises(ValueError, match='Invalid pipeline step id'):
@@ -171,6 +184,7 @@ def test_definitions_expose_steps_and_validated_settings(client):
     body = client.get('/api/analysis-pipeline').json()
     assert [s['id'] for s in body['steps']] == ['structure', 'census', 'discovery', 'profiles', 'directing']
     discovery = next(s for s in body['steps'] if s['id'] == 'discovery')
+    assert {s['id']: s['requires'] for s in body['steps']}['directing'] == ['profiles']
     assert discovery['settings'] == {'provider': 'openai', 'model': MODEL, 'gate': 'auto', 'saved': False}
     assert client.put('/api/analysis-pipeline/steps/structure/settings', json={'provider': 'openai', 'model': MODEL}).status_code == 400
     assert client.put('/api/analysis-pipeline/steps/profiles/settings', json={'provider': 'local'}).status_code == 400
@@ -296,6 +310,50 @@ def test_budget_limit_keeps_completed_scopes_and_resume_reuses_them(client):
     assert job['status'] == 'completed' and client.provider.calls.count('discovery') == 2
 
 
+def test_runs_have_no_default_caps_but_still_record_each_attempt(client):
+    book = import_book(client)
+    # An unpriced model used to stop at the default dollar guard before its first request.
+    configs = {'discovery': {'provider': 'openai', 'model': 'unpriced-model-x'}}
+    job, stored = run(client, book['id'], ['discovery'], configs=configs)
+    assert job['status'] == 'completed'
+    assert stored['limits'] == {'max_requests': None, 'max_input_tokens': None, 'max_output_tokens': None, 'budget_usd': None}
+    assert client.provider.calls.count('discovery') == 2
+    recorded = [a for a in ProcessingStore(client.app.state.runtime.store).attempts(book['id']) if a['run_id'] == job['id']]
+    assert len(recorded) == 2 and all(a['cost_basis'] == 'unknown' for a in recorded)
+
+
+def test_steps_need_accepted_inputs_unless_requested_together(client):
+    book = import_book(client)
+    base = f"/api/books/{book['id']}/analysis-pipeline"
+    plan = client.post(f'{base}/plan', json={'steps': ['profiles']}).json()
+    assert plan['missing_inputs'] == {'profiles': ['discovery']} and plan['steps'][0]['missing_inputs'] == ['discovery']
+    refused = client.post(f'{base}/runs', json={'steps': ['profiles']})
+    assert refused.status_code == 400 and 'needs accepted results from Character discovery' in refused.json()['detail']
+    # Directing reads the cast in the book; it requires profiles, not discovery.
+    refused = client.post(f'{base}/runs', json={'steps': ['directing']})
+    assert refused.status_code == 400 and 'from Character profiles.' in refused.json()['detail']
+    assert client.post(f'{base}/plan', json={'steps': ['discovery', 'profiles']}).json()['missing_inputs'] == {}
+    assert client.provider.calls == [], 'a refused run sends nothing'
+    job, _ = run(client, book['id'], ['discovery'])
+    assert job['status'] == 'completed'
+    assert client.post(f'{base}/plan', json={'steps': ['profiles']}).json()['missing_inputs'] == {}
+    assert run(client, book['id'], ['profiles'])[0]['status'] == 'completed'
+
+
+def test_only_required_inputs_held_for_review_skip_a_step_in_the_same_run(client):
+    book = import_book(client)
+    run(client, book['id'], ['discovery', 'profiles'])
+    # Directing records discovery but reads the accepted cast: a held discovery does not stop it.
+    job, _ = run(client, book['id'], ['discovery', 'directing'], gates={'discovery': 'review'}, fresh=True)
+    outcomes = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]['outcomes']
+    assert job['status'] == 'completed' and outcomes['discovery']['accepted'] is False
+    assert outcomes['directing']['status'] == 'completed'
+    # A held required input does.
+    run(client, book['id'], ['profiles', 'directing'], gates={'profiles': 'review'}, fresh=True)
+    outcomes = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]['outcomes']
+    assert outcomes['directing'] == {'status': 'skipped', 'reason': 'Character profiles is waiting for your review.'}
+
+
 def test_failed_step_skips_dependents_and_redacts_key(client):
     book = import_book(client)
     client.provider.fail = lambda stage, _count: stage == 'discovery'
@@ -311,6 +369,10 @@ def test_run_validation_rejects_unsafe_requests(client):
     assert client.post(f'{base}/runs', json={'steps': ['nope']}).status_code == 404
     assert client.post(f'{base}/runs', json={'steps': ['discovery'], 'chapter_ids': ['missing']}).status_code == 400
     assert client.post(f'{base}/runs', json={'steps': ['discovery'], 'expected_fingerprint': 'stale'}).status_code == 409
+    unconfirmed = client.post(f'{base}/runs', json={'steps': ['census']})
+    assert unconfirmed.status_code == 400 and 'expected_fingerprint' in unconfirmed.json()['detail']
+    capped = client.post(f'{base}/runs', json={'steps': ['census'], 'limits': {'max_requests': 5}})
+    assert capped.status_code == 200 and wait_job(client, capped.json()['job']['id'])['status'] == 'completed'
     client.post('/api/settings', json={'api_keys': {'openai': ''}})
     assert 'API key' in client.post(f'{base}/runs', json={'steps': ['discovery']}).json()['detail']
 
@@ -355,7 +417,8 @@ def test_cancel_keeps_validated_scopes_and_marks_versions_cancelled(client):
         return False
 
     client.provider.fail = cancel_after_first
-    response = client.post(f"/api/books/{book['id']}/analysis-pipeline/runs", json={'steps': ['discovery'], 'concurrency': 1})
+    response = client.post(f"/api/books/{book['id']}/analysis-pipeline/runs", json={'steps': ['discovery'], 'concurrency': 1,
+                                                                                  'expected_fingerprint': fingerprint(client, book['id'], ['discovery'])})
     job_holder['id'] = response.json()['job']['id']
     job = wait_job(client, job_holder['id'])
     assert job['status'] == 'cancelled', job
@@ -371,7 +434,8 @@ def test_step_failing_before_units_is_settled_and_dependents_skip(client, monkey
         raise ValueError('planning failed')
 
     monkeypatch.setattr(DiscoveryStep, 'units', broken)
-    job, _ = run(client, book['id'], ['discovery', 'profiles'], mode='parallel')
+    # Planning fails too, so this API caller runs with explicit limits instead of a preview.
+    job, _ = run(client, book['id'], ['discovery', 'profiles'], mode='parallel', limits={'max_requests': 50})
     assert job['status'] == 'failed' and 'planning failed' in job['error']
     assert latest(client, book['id'], 'discovery')['status'] == 'failed'
     outcomes = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]['outcomes']
@@ -429,8 +493,10 @@ def test_cancelling_a_queued_run_settles_it(client):
     first, second = import_book(client), import_book(client)
     release = threading.Event()
     client.provider.fail = lambda stage, count: not release.wait(5)
-    busy = client.post(f"/api/books/{first['id']}/analysis-pipeline/runs", json={'steps': ['discovery']}).json()['job']
-    queued = client.post(f"/api/books/{second['id']}/analysis-pipeline/runs", json={'steps': ['census']}).json()['job']
+    busy = client.post(f"/api/books/{first['id']}/analysis-pipeline/runs",
+                       json={'steps': ['discovery'], 'expected_fingerprint': fingerprint(client, first['id'], ['discovery'])}).json()['job']
+    queued = client.post(f"/api/books/{second['id']}/analysis-pipeline/runs",
+                         json={'steps': ['census'], 'expected_fingerprint': fingerprint(client, second['id'], ['census'])}).json()['job']
     assert client.post(f"/api/jobs/{queued['id']}/cancel").status_code == 200
     release.set()
     wait_job(client, busy['id'])

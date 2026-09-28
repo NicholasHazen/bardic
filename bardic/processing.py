@@ -123,7 +123,8 @@ class RequestBudget:
     """Reserve each HTTP attempt before sending; failed/unknown usage keeps its reserve.
 
     Dollar limits apply to tracked attempts for the entire book, including prior
-    runs. Request/token limits apply to this run. Estimates are not an invoice.
+    runs. Request/token limits apply to this run. ``None`` means no cap; the
+    attempt is still reserved and recorded. Estimates are not an invoice.
     """
     def __init__(self, repository, book_id, run_id=None, *, max_requests=25, max_input_tokens=1000000,
                  max_output_tokens=100000, budget_usd=1.0):
@@ -157,11 +158,11 @@ class RequestBudget:
         with self.repository.store.lock:
             attempts = self.repository.attempts(self.book_id)
             run = [a for a in attempts if a['run_id'] == self.run_id]
-            if len(run) >= self.max_requests:
+            if self.max_requests is not None and len(run) >= self.max_requests:
                 raise BudgetReached('Run request limit reached. Saved steps are retained; review the plan before resuming.')
-            if sum(a.get('input_tokens') if a.get('input_tokens') is not None else a['reserved_input_tokens'] for a in run) + input_reserve > self.max_input_tokens:
+            if self.max_input_tokens is not None and sum(a.get('input_tokens') if a.get('input_tokens') is not None else a['reserved_input_tokens'] for a in run) + input_reserve > self.max_input_tokens:
                 raise BudgetReached('Run input-token allowance reached. Saved steps are retained.')
-            if sum(a.get('output_tokens') if a.get('output_tokens') is not None else a['reserved_output_tokens'] for a in run) + output_reserve > self.max_output_tokens:
+            if self.max_output_tokens is not None and sum(a.get('output_tokens') if a.get('output_tokens') is not None else a['reserved_output_tokens'] for a in run) + output_reserve > self.max_output_tokens:
                 raise BudgetReached('Run output-token allowance reached. Saved steps are retained.')
             if self.budget_usd is not None:
                 if estimated_cost is None:

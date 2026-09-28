@@ -35,6 +35,8 @@ class DirectingStep(Step):
     chapter_scoped = True
     capturable = True
     inputs = ('discovery', 'profiles')
+    # Passages are attributed to the cast in the book; discovery is recorded for staleness only.
+    requires = ('profiles',)
     parallel = 2
     owns = ('scenes[]', 'scenes.character_ids', *('scenes.' + f for f in SCENE_FIELDS), *('segments.' + f for f in SEGMENT_FIELDS))
 

@@ -48,10 +48,12 @@ class StepSettings(StepConfig):
 
 
 class Limits(Strict):
-    max_requests: int = Field(default=25, ge=1, le=1000)
-    max_input_tokens: int = Field(default=1000000, ge=1000, le=10000000)
-    max_output_tokens: int = Field(default=100000, ge=1000, le=2000000)
-    budget_usd: float | None = Field(default=1.0, gt=0, le=1000, allow_inf_nan=False)
+    """Optional caps for API callers. The Analysis tab sends none: the confirmed plan
+    is the authorization, and each unit's retries and evidence repairs are bounded."""
+    max_requests: int | None = Field(default=None, ge=1, le=1000)
+    max_input_tokens: int | None = Field(default=None, ge=1000, le=10000000)
+    max_output_tokens: int | None = Field(default=None, ge=1000, le=2000000)
+    budget_usd: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
 
 
 class PlanRequest(Strict):
@@ -164,6 +166,12 @@ def _versions_view(repository, registry, conn, book_id, step, step_runs):
     return items
 
 
+def unmet_message(registry, step_id, inputs):
+    labels = ' and '.join(registry.get(i).label for i in inputs)
+    return (f'{registry.get(step_id).label} needs accepted results from {labels}. '
+            f"Run and accept {labels} first, or include {'them' if len(inputs) > 1 else 'it'} in this run.")
+
+
 def audio_checker(runtime):
     """``valid_audio(book, segment)`` that resolves each book's voice cast only once.
 
@@ -252,7 +260,7 @@ def build_router(registry: Registry):
                     versions = _versions_view(repository, registry, conn, book_id, step, repository.step_runs(book_id, step.id, 20))
                     scopes = [s for s in step.scopes(book) if not step.chapter_scoped or s in eligible]
                     steps.append({'id': step.id, 'settings': settings[step.id],
-                                  'accepted_scopes': sum(s in heads for s in scopes),
+                                  'accepted_scopes': sum(s in heads for s in scopes), 'has_accepted': bool(heads),
                                   'total_scopes': len(scopes), 'accepted_origins': origins,
                                   'stale_scopes': stale.get(step.id, []),
                                   'pending_versions': sum(v['state'] == 'candidate' for v in versions),
@@ -284,8 +292,12 @@ def build_router(registry: Registry):
     def plan_run(book_id: str, body: PlanRequest, request: Request):
         runtime = runtime_of(request)
         steps = [step_of(s) for s in body.steps]
-        book = runtime.store.book(book_id)
         configs = configs_for(runtime, body, steps)
+        # Read and sync under one lock: a stale snapshot would be recorded as an outside change.
+        with runtime.store.lock:
+            book = runtime.store.book(book_id)
+            with runtime.store.connect() as conn:
+                projection.sync(PipelineRepository(runtime.store), registry, conn, book)
         return plan(runtime.store, registry, book_id, [s.id for s in steps], configs, chapter_ids=chapters_for(book, body),
                     fresh=body.fresh)
 
@@ -302,6 +314,14 @@ def build_router(registry: Registry):
             missing = [PROVIDER_LABELS[p] for p in sorted(providers_needed) if not runtime.api_keys.get(p)]
             if missing:
                 raise HTTPException(400, 'Add an API key in Settings first: ' + ', '.join(missing))
+            repository = PipelineRepository(runtime.store)
+            with runtime.store.connect() as conn:
+                projection.sync(repository, registry, conn, book)
+                unmet = registry.missing_inputs(lambda step_id: repository.heads(conn, book_id, step_id), [s.id for s in steps])
+            if unmet:
+                raise HTTPException(400, ' '.join(unmet_message(registry, step_id, inputs) for step_id, inputs in unmet.items()))
+            if not body.expected_fingerprint and all(v is None for v in body.limits.model_dump().values()):
+                raise HTTPException(400, 'Preview the run and confirm it (send expected_fingerprint), or set limits.')
             if body.expected_fingerprint:
                 current = plan(runtime.store, registry, book_id, [s.id for s in steps], configs, chapter_ids=chapter_ids,
                                fresh=body.fresh)
@@ -312,7 +332,6 @@ def build_router(registry: Registry):
             # Snapshot provider credentials now; a later settings change must not alter queued work.
             secrets = {p: runtime.api_keys[p] for p in providers_needed}
             job = runtime.store.create_job(book_id, 'pipeline')
-            repository = PipelineRepository(runtime.store)
             run = repository.create_run(book_id, job_id=job['id'], steps=[s.id for s in registry.closure(body.steps)],
                                         mode=body.mode, chapter_ids=chapter_ids, configs=configs, gates=gates,
                                         concurrency=body.concurrency, fresh=body.fresh, limits=body.limits.model_dump())

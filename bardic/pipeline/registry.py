@@ -34,6 +34,8 @@ class Registry:
             for dependency in step.inputs:
                 if dependency not in self._steps:
                     raise ValueError(f'Step {step.id} reads {dependency}, which must be declared earlier.')
+            if not set(step.required_inputs) <= set(step.inputs):
+                raise ValueError(f'Step {step.id} can only require steps it reads.')
             for owned in step.owns:
                 if owned in owners:
                     raise ValueError(f'Steps {owners[owned]} and {step.id} both claim {owned}.')
@@ -70,3 +72,22 @@ class Registry:
         for step_id in wanted:
             self.get(step_id)
         return [step for step in self._steps.values() if step.id in wanted]
+
+    def missing_inputs(self, heads, step_ids):
+        """{step_id: [required input IDs]} lacking an accepted result and not requested alongside.
+
+        ``heads(step_id)`` returns that step's accepted {scope: artifact_id}.
+        """
+        wanted, found, result = set(step_ids), {}, {}
+        for step in self.closure(step_ids):
+            missing = []
+            for input_id in step.required_inputs:
+                if input_id in wanted:
+                    continue
+                if input_id not in found:
+                    found[input_id] = bool(heads(input_id))
+                if not found[input_id]:
+                    missing.append(input_id)
+            if missing:
+                result[step.id] = missing
+        return result
