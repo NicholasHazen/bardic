@@ -29,6 +29,7 @@ class FakeProvider:
         self.calls = []
         self.speaker = 'Mara'
         self.fail = None
+        self.mangle = None  # mangle(stage, prompt, result) may alter a response before it is returned
 
     def __call__(self, _client, model, key, prompt, schema, cancelled):
         assert key == 'test-openai-secret'
@@ -60,6 +61,8 @@ class FakeProvider:
         self.calls.append(stage)
         if self.fail and self.fail(stage, len(self.calls)):
             raise ValueError('Simulated provider failure')
+        if self.mangle:
+            self.mangle(stage, prompt, result)
         return result
 
 
@@ -361,6 +364,54 @@ def test_failed_step_skips_dependents_and_redacts_key(client):
     assert job['status'] == 'failed' and 'test-openai-secret' not in json.dumps(job)
     stored = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]
     assert stored['outcomes']['profiles']['status'] == 'skipped'
+
+
+def mistype(segment_id):
+    return segment_id[:-1] + ('0' if segment_id[-1] != '0' else '1')
+
+
+def test_skipped_or_mistyped_passage_ids_get_one_repair_naming_them(client):
+    book = import_book(client)
+    assert run(client, book['id'], ['discovery', 'profiles'], gates={'discovery': 'auto', 'profiles': 'auto'})[0]['status'] == 'completed'
+    prompts = []
+
+    def mangle(stage, prompt, result):
+        if stage != 'directing':
+            return
+        prompts.append(prompt)
+        if 'PASSAGE ID CORRECTION' not in prompt and len(result['segments']) > 1:
+            # Like the observed failures: one ID mistyped by a character, the last passage skipped.
+            result['segments'][0]['id'] = mistype(result['segments'][0]['id'])
+            result['segments'].pop()
+
+    client.provider.mangle = mangle
+    job, _ = run(client, book['id'], ['directing'])
+    assert job['status'] == 'completed', job
+    repairs = [p for p in prompts if 'PASSAGE ID CORRECTION' in p]
+    # Every mangled first response was followed by exactly one repair request.
+    assert repairs and len(prompts) == 2 * len(repairs)
+    passages = json.loads(repairs[0].split('\nPASSAGES:\n', 1)[1].split('\nCONTEXT AFTER:\n', 1)[0])
+    note = repairs[0].rsplit('PASSAGE ID CORRECTION', 1)[1]
+    assert passages[-1]['id'] in note and mistype(passages[0]['id']) in note
+    assert all(p['text'] not in note for p in passages)
+    assert latest(client, book['id'], 'directing')['units']['failed'] == 0
+
+
+def test_a_second_bad_id_response_fails_the_unit_without_a_third_request(client):
+    book = import_book(client)
+    assert run(client, book['id'], ['discovery', 'profiles'], gates={'discovery': 'auto', 'profiles': 'auto'})[0]['status'] == 'completed'
+
+    def mangle(stage, _prompt, result):
+        if stage == 'directing':
+            result['segments'].append(dict(result['segments'][0]))
+
+    client.provider.mangle = mangle
+    before = len(client.provider.calls)
+    job, _ = run(client, book['id'], ['directing'])
+    assert job['status'] == 'failed'
+    assert '1 duplicated' in job['error'] and 'single repair attempt also failed' in job['error']
+    units = latest(client, book['id'], 'directing')['units']
+    assert len(client.provider.calls) - before == 2 * units['total'] and units['failed'] == units['total']
 
 
 def test_run_validation_rejects_unsafe_requests(client):

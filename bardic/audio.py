@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from . import pronunciation
+
 
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 TTS_MODELS = (
@@ -278,13 +280,19 @@ def _recipe(segment: dict, character: dict, scene: dict, provider: str, model: s
     text = segment.get("text")
     if not isinstance(text, str) or not text.strip():
         raise AudioError("The passage has no text to narrate.")
+    # Callers attach the book lexicon as a render input; the source passage is
+    # unchanged. Only terms actually respelled enter the recipe, so passages
+    # without them keep their existing audio identity.
+    spoken, replaced = pronunciation.apply(text, segment.get("pronunciations"), provider)
+    applied = pronunciation.recipe_identity(replaced)
     return {
         "version": _RECIPE_VERSION,
         # Separate repeated source passages so regenerating a single take cannot
         # overwrite the audio (or invalidate timing) of another identical line.
         "segment_id": segment.get("id"),
         "provider": provider,
-        "text": text,
+        "text": spoken,
+        **({"pronunciation": applied} if applied else {}),
         "sample_rate": SAMPLE_RATE,
         # model, voice and style, plus any provider-specific performance inputs.
         **_RECIPES[provider](segment, character, scene, model),

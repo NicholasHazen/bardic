@@ -52,7 +52,7 @@ for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 uv lock --check --offline
 ```
 
-The Node command includes the model-picker `.test.cjs` suite as well as the standalone UI harnesses. There is no npm installation or frontend compilation. Tests use temporary directories, synthetic prose and mocked transports. Some pytest wrappers require Node; they skip when it is absent. The opt-in Mac narration smoke test and manual browser checks are described in [development](docs/DEVELOPMENT.md).
+The Node command includes the model-picker `.test.cjs` suite as well as the standalone UI harnesses. The app needs no npm installation or frontend compilation. The one development-only npm check, which verifies that clients can generate types from the API contract, is described in [the API workflow](docs/API-WORKFLOW.md). Tests use temporary directories, synthetic prose and mocked transports. Some pytest wrappers require Node; they skip when it is absent. The opt-in Mac narration smoke test and manual browser checks are described in [development](docs/DEVELOPMENT.md).
 
 Use the focused test map in that guide. For UI changes, verify in a real browser as well as the harness: open the changed view, exercise loading/errors and switching books, and verify pending work cannot restart playback or dispatch a stale paid plan. Keep personal validation screenshots outside Git.
 

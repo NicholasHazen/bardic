@@ -406,6 +406,17 @@ function auditionCharacter(form, provider = form.dataset.castProvider || state.c
     voice, model:narrationModel(provider),
     direction:form.elements.direction.value}, `${character.name} · ${NARRATION_LABELS[provider] || provider}`);
 }
+// Hear an unsaved respelling in the narrator's voice for the Cast provider, in the sentence where the word first appears.
+function auditionPronunciation(draft) {
+  const provider = state.castProvider;
+  const narrator = characterById('narrator');
+  if (!narrator) return;
+  const voice = voiceRequest(narrator, provider, characterVoice(narrator, provider));
+  if (voice === null) return;
+  const spoken = draft.providers?.[provider] || draft.respelling;
+  startVoicePreview({provider, voice, model:narrationModel(provider), pronunciation:draft},
+    `${draft.term} → ${spoken} · ${NARRATION_LABELS[provider] || provider}`);
+}
 function auditionPassage(form) {
   const character = characterById(form.elements.speaker_id.value);
   if (!character) return;
@@ -1209,6 +1220,7 @@ function renderCast() {
       : NARRATION_PROVIDERS.includes($('#render-provider')?.value) ? $('#render-provider').value : 'breeze';
   }
   renderCastProviderSwitch();
+  window.BardicPronunciations?.render($('#pronunciation-panel'), state.book, {onBook:applyBook, audition:auditionPronunciation});
   // A job finishing re-renders Cast; carry over text the owner typed but has not saved.
   const unsaved = new Map($$('#cast-grid [data-character-form]').map(form => [form.dataset.characterForm,
     $$('textarea[name], input[type="text"][name]', form).filter(field => field.value !== field.defaultValue).map(field => [field.name, field.value])]));
@@ -1645,6 +1657,12 @@ function updatePlayer() {
     $('#voice-preview-message').textContent = preview.error || (loading ? 'Preparing a short voice example…' : 'Your reading is paused. Close the example to return to your place.');
     $('#voice-preview-source').textContent = sample ? `${sample.source === 'demo' ? 'Demo text · no assigned passage' : 'From your book'}${sample.truncated ? ' · Short excerpt' : ''}` : 'One short example. Matching saved audio is reused.';
     $('#voice-preview-text').textContent = sample?.text || '';
+    // Pronunciations change only what the narrator reads; show it beside the book's text.
+    const spoken = $('#voice-preview-spoken');
+    if (spoken) {
+      spoken.hidden = !sample?.spoken_text;
+      spoken.textContent = sample?.spoken_text ? `Sent to the narrator: ${sample.spoken_text}` : '';
+    }
     $('#player-title').textContent = preview.label || 'Voice example';
     $('#player-subtitle').textContent = 'Voice example · Shared playback speed';
     $('#play-button').innerHTML = icon(loading || !audio.paused ? 'pause' : 'play');

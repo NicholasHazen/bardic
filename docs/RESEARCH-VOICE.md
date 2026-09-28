@@ -91,6 +91,28 @@ Researched and measured **September 27, 2026** against the owner's server (`bree
 
 At about real time, a listener at 1.5× or faster overtakes generation unless the chapter is prepared ahead. Offline tests (`tests/test_narration_providers.py`) cover the documented HTTP/SSE contract with a fake server; they do not measure quality or speed.
 
+## Name pronunciation (respelling trial)
+
+Checked **September 28, 2026**. No supported provider accepts phoneme input for this purpose: the [Gemini speech guide](https://ai.google.dev/gemini-api/docs/speech-generation) describes a verbatim transcript with style annotations and inline vocal tags, and says capitalization conveys emphasis; Breeze documents no lexicon; macOS `say` has a phoneme mode that Bardic does not use. A plain respelling in the sent text is the one mechanism all three read.
+
+Trial: five invented names (Aoibhe, Cthaelor, Eilidh, Ngaiovar, Xhosari) in one original carrier sentence, each spelled four ways: original, natural respelling (`Kaylor`), hyphenated lowercase (`kay-lor`) and hyphenated with capitalized stress (`KAY-lor`). One take per clip on macOS (Samantha) and Breeze (the default cloned voice, fixed seed); one listener judged right/close/wrong against the intended pronunciation. Gemini was not rendered.
+
+| Spelling | macOS right/close/wrong | Breeze right/close/wrong |
+| --- | --- | --- |
+| Original | 0/0/5 | 2/2/1 |
+| Natural respelling | 3/2/0 | 4/1/0 |
+| Hyphenated lowercase | 2/2/1 | 4/0/1 |
+| Hyphenated, capitalized stress | 1/2/2 | 2/0/3 |
+
+Findings, indicative at this sample size:
+
+- Models differ: Breeze pronounced the two Gaelic-spelled names correctly unaided; macOS missed every original spelling. A respelling must be auditioned on the narrating provider.
+- A natural-looking respelling was never judged wrong. It is the default recommendation.
+- Hyphenated pieces are read as separate words (`ay-lee` failed on both, plausibly as "aye"). Hyphenation helped only where the natural form merged syllables (`ny-oh-var` right on both, `Nyovar` close on both).
+- Capitalized syllables were read as letters or abbreviations (`NY-oh-var` wrong on both). macOS otherwise ignores case: four of its five capitalized clips were sample-identical to the lowercase ones and received the same verdicts, a useful consistency check on the ratings.
+- Four of five names had one spelling that was right on both providers; second-syllable stress (`Xhosari`) had none on macOS. Per-provider respellings are therefore optional, not the common case.
+- Measured audio showed Breeze hyphenated/capitalized forms were usually longer than the natural form (up to 1.3 s) with a 0.6 s gap around `kay-lor`: respelling style changes pacing as well as phonemes.
+
 ## Local validation and operating notes
 
 The macOS adapter discovers installed voices with `say -v ?`, writes transcript input into a temporary file, synthesizes AIFF, then converts it with ffmpeg to mono 24 kHz PCM WAV. It validates frame counts, complete data, and nonzero audio before atomically replacing a take. Assembly copies those PCM frames without inserted silence and computes each boundary from integer sample counts.

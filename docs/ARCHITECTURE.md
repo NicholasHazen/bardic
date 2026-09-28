@@ -44,6 +44,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`__main__.py`](../bardic/__main__.py), [`config.py`](../bardic/config.py), [`lan.py`](../bardic/lan.py) | Load the project `.env`, choose the bind address and port, start Uvicorn. Optionally trust and advertise a `.local` name while the server runs. |
 | [`service.py`](../bardic/service.py), [`bardicctl`](../bardicctl) | Operations tooling, not imported by the app: run the owner's server as a macOS LaunchAgent and start/list/stop isolated development servers. |
 | [`app.py`](../bardic/app.py) | Request validation, routes, local HTTP protections, `Runtime`, worker submission, cancellation, presentation, editing, playback, and export endpoints. |
+| [`apispec/`](../bardic/apispec/) | The published HTTP contract: one module per route family with operation descriptions, response views, errors and cost. It builds `/openapi.json` and `contract/`, and validates responses in tests. Views are not applied at runtime. |
 | [`store.py`](../bardic/store.py) | SQLite connections and lock, current book/take/job/settings state, atomic analysis publication, startup interruption recovery, process lock. |
 | [`importer.py`](../bardic/importer.py) | Safe EPUB/TXT ingestion, canonical text extraction, initial scenes/passages, bounded cover thumbnails. |
 | [`structure.py`](../bardic/structure.py) | EPUB navigation/NCX/headings/section classification, metadata-only structure repair and checkpoint transformation. |
@@ -92,7 +93,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Resource usage (**Details** tab) | `resources.js`, `resources.css` | Book `/resources` |
 | Book lifecycle strip, routes, breadcrumb | `lifecycle.js` (`window.BardicLifecycle`, pure), `shell.js` (`window.BardicShell`) | Book `/analysis-pipeline` overview (read-only) |
 
-The table summarizes endpoint families; inspect [route definitions](../bardic/app.py) for request models and exact paths. These are internal application APIs without a separate compatibility/versioning policy. The generated schema is available at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.
+The table summarizes endpoint families. The complete, versioned contract is checked in as [`contract/openapi.json`](../contract/openapi.json), with a readable [reference](../contract/API-REFERENCE.md). It is generated from the route DTOs and the descriptions in [`bardic/apispec/`](../bardic/apispec/), which the test suite checks against every response. The contract is normative for future clients and for any replacement server; see [the API workflow](API-WORKFLOW.md). The running server also serves the contract at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.
 
 ### Browser UI
 
@@ -137,7 +138,7 @@ The progressive phases are:
 
 Front/back matter are excluded from default semantic coverage; a specifically selected section can still be processed. The pipeline's `scan` model is independently configurable from the deeper analysis model. The word “preprocessing” in model settings refers to this cheap cloud discovery role; the local census remains a separate free step.
 
-Evidence validation accepts only a short contiguous source quotation, with constrained typography/whitespace normalization mapped back to exact source coordinates. A quotation mark added at an excerpt edge (a common model habit when an excerpt starts or ends mid-dialogue) is dropped if the remaining text of two or more words matches exactly. It does not accept paraphrases, invented spelling, or separated snippets joined with ellipses. One evidence-specific repair generation is allowed after a rejected response. Invalid results never become accepted annotations.
+Evidence validation accepts only a short contiguous source quotation, with constrained typography/whitespace normalization mapped back to exact source coordinates. A quotation mark added at an excerpt edge (a common model habit when an excerpt starts or ends mid-dialogue) is dropped if the remaining text of two or more words matches exactly. It does not accept paraphrases, invented spelling, or separated snippets joined with ellipses. One repair generation is allowed after a response rejected for unanchored evidence or for skipped, repeated or unknown passage IDs. Invalid results never become accepted annotations.
 
 ### Step pipeline
 
@@ -161,7 +162,7 @@ Accepted units are saved before chapter publication or progress callbacks. If pu
 
 Each progressive HTTP attempt reserves a request count, input allowance, output allowance, and conservative estimated cost **before** it is sent. Per-run request/token limits differ from the dollar allowance, which applies cumulatively to tracked analysis attempts for the book, including earlier runs. Defaults are defined by `AnalysisLimits` in [app.py](../bardic/app.py). Analysis tab pipeline runs are the exception: they reserve and record every attempt but have no cap unless an API caller sets one; the confirmed plan preview authorizes the run ([details](ANALYSIS-PIPELINE.md#cost-caching-and-provenance)).
 
-In the metered path, a transient HTTP error permits at most two total HTTP attempts per provider-adapter invocation, subject to the remaining allowance. Authentication/billing failures are not retried. A failed connection (`ConnectError`/`ConnectTimeout`) sent nothing, so it is recorded as `not_sent` at zero cost and uses the same bounded retry. An uncertain network outcome is recorded and not automatically repeated. A single evidence-repair generation may invoke the adapter a second time, so one logical analysis unit can have up to four HTTP attempts when both invocations need their permitted transport retry. Every attempt consumes the same guards.
+In the metered path, a transient HTTP error permits at most two total HTTP attempts per provider-adapter invocation, subject to the remaining allowance. Authentication/billing failures are not retried. A failed connection (`ConnectError`/`ConnectTimeout`) sent nothing, so it is recorded as `not_sent` at zero cost and uses the same bounded retry. An uncertain network outcome is recorded and not automatically repeated. A single repair generation may invoke the adapter a second time, so one logical analysis unit can have up to four HTTP attempts when both invocations need their permitted transport retry. Every attempt consumes the same guards.
 
 Unknown pricing blocks use of a dollar guard; an explicit request/token-only configuration can proceed without that guard. Missing provider usage keeps a conservative reservation. Displayed planning estimates are smaller forecasting estimates, not reservations, invoices, or guaranteed final totals. Account checks only test a small text request; they do not expose an actual credit balance.
 

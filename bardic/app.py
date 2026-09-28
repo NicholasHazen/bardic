@@ -28,9 +28,10 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analysis import analyze_book
+from .apispec import install as install_contract
 from .processing import BudgetReached
 from .account_checks import check_account
-from . import breeze, local_services
+from . import breeze, local_services, pronunciation
 from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, assemble_audio, list_system_voices,
                     providers_status, render_fingerprint, synthesize, validate_audio, voice_id, voice_selection)
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
@@ -141,6 +142,17 @@ class PerformanceEdit(StrictModel):
     archived: bool | None = None
 
 
+class PronunciationEntry(StrictModel):
+    """A book pronunciation; bardic.pronunciation validates content beyond these bounds."""
+    id: str | None = Field(default=None, max_length=40)
+    term: str = Field(max_length=200)
+    respelling: str = Field(max_length=300)
+    providers: dict[Literal['system', 'gemini', 'breeze'], str | None] | None = None
+    match_case: bool = True
+    character_id: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class VoicePreviewRequest(StrictModel):
     provider: Literal['system', 'gemini', 'breeze'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
@@ -149,6 +161,8 @@ class VoicePreviewRequest(StrictModel):
     character_id: str | None = Field(default=None, max_length=200)
     direction: str | None = Field(default=None, max_length=3000)
     segment_direction: str | None = Field(default=None, max_length=3000)
+    # An unsaved pronunciation to audition in place of the entry it edits.
+    pronunciation: PronunciationEntry | None = None
 
 
 class DiagnosticRequest(StrictModel):
@@ -623,7 +637,8 @@ class Runtime:
         try:
             characters = self.resolved_cast(book) if cast is None else cast
             scenes = {s["id"]: s for s in book["scenes"]}
-            expected = render_fingerprint(segment, characters[segment["speaker_id"]], scenes[segment["scene_id"]], metadata["provider"], metadata["model"])
+            expected = render_fingerprint(pronunciation.with_lexicon(segment, pronunciation.book_lexicon(book)),
+                                          characters[segment["speaker_id"]], scenes[segment["scene_id"]], metadata["provider"], metadata["model"])
             return expected == metadata.get("fingerprint") and self.take_path(book["id"], metadata).is_file()
         except (ValueError, KeyError, TypeError):
             return False
@@ -774,6 +789,7 @@ class Runtime:
             def work():
                 characters = cast
                 scenes = {s["id"]: s for s in book["scenes"]}
+                lexicon = pronunciation.book_lexicon(book)
                 reused = 0
                 for i, s in enumerate(selected):
                     self.check_cancel(job["id"])
@@ -781,7 +797,8 @@ class Runtime:
                     with ResourceLedger(self.store).operation(book_id, "narration", run_id=job["id"], unit_key=s["id"],
                         chapter_id=s["chapter_id"], provider=request.provider, model=model, kind="narration") as metrics:
                         character, scene = characters[s["speaker_id"]], scenes[s["scene_id"]]
-                        fingerprint = render_fingerprint(s, character, scene, request.provider, model)
+                        rendered = pronunciation.with_lexicon(s, lexicon)
+                        fingerprint = render_fingerprint(rendered, character, scene, request.provider, model)
                         path = self.audio_path(book_id, fingerprint)
                         path.parent.mkdir(parents=True, exist_ok=True)
                         self.store.update_job(job["id"], message=f"Passage {i+1} of {len(selected)} · {character['name']}")
@@ -819,7 +836,7 @@ class Runtime:
                                 except (OSError, EOFError, ValueError):
                                     pass
                         if metadata is None:
-                            metadata = produce_take(s, character, scene, request.provider, model, key, path.parent, synthesizer=synthesize)
+                            metadata = produce_take(rendered, character, scene, request.provider, model, key, path.parent, synthesizer=synthesize)
                         else:
                             metrics["cached"] = True
                             reused += 1
@@ -1317,6 +1334,83 @@ def create_app(data_dir: Path | None = None):
     @app.patch("/api/books/{book_id}/scenes/{scene_id}")
     def edit_scene(book_id: str, scene_id: str, body: SceneEdit, request: Request):
         return edit(rt(request), book_id, "scenes", scene_id, body.model_dump(exclude_none=True))
+
+    # Pronunciations: respellings sent to narrators in place of a word. Book text never changes.
+
+    def lexicon_usage(runtime, book):
+        """Entries with their use in the book. Runs outside the store lock: it scans all text."""
+        lexicon = pronunciation.book_lexicon(book)
+        cast = runtime.resolved_cast(book)
+        # Current Studio takes: an edit to an entry retires those containing its word (archived audio stays reusable).
+        rendered = {s["id"] for s in book["segments"] if s.get("audio") and runtime.valid_audio(book, s, cast)}
+        stats = pronunciation.usage(book["chapters"], book["segments"], lexicon, rendered=rendered)
+        return [{**entry, "usage": stats[entry["id"]]} for entry in lexicon]
+
+    def save_lexicon(runtime, book_id, change):
+        with runtime.store.lock:
+            runtime.require_idle(book_id)
+            book = runtime.store.book(book_id)
+            before = {entry["id"]: entry for entry in pronunciation.book_lexicon(book)}
+            entries = pronunciation.normalize_lexicon(change(copy.deepcopy(list(before.values()))))
+            characters = {c["id"] for c in book["characters"]}
+            # Only the entry being changed must name a current character; an older link is left alone.
+            if any(before.get(entry["id"]) != entry and entry.get("character_id") not in (None, *characters)
+                   for entry in entries):
+                raise HTTPException(400, "Choose a character in this book's cast")
+            cast = runtime.resolved_cast(book)
+            valid_before = {s["id"] for s in book["segments"] if s.get("audio") and runtime.valid_audio(book, s, cast)}
+            if entries:
+                book["pronunciations"] = entries
+            else:
+                book.pop("pronunciations", None)
+            retired = 0
+            for s in book["segments"]:
+                if s["id"] in valid_before and not runtime.valid_audio(book, s, cast):
+                    s["audio"] = None
+                    retired += 1
+            book["revision"] = book.get("revision", 0) + 1
+            runtime.store.save_book(book)
+            presented = runtime.present(book)
+        return {"book": presented, "pronunciations": lexicon_usage(runtime, book), "retired_takes": retired}
+
+    def lexicon_entry(body, entry_id=None):
+        values = body.model_dump(exclude_none=True)
+        values.pop("id", None)
+        return pronunciation.normalize_entry(values, entry_id=entry_id)
+
+    @app.get("/api/books/{book_id}/pronunciations")
+    def list_pronunciations(book_id: str, request: Request):
+        runtime = rt(request)
+        book = runtime.store.book(book_id)
+        return {"pronunciations": lexicon_usage(runtime, book)}
+
+    @app.post("/api/books/{book_id}/pronunciations")
+    def add_pronunciation(book_id: str, body: PronunciationEntry, request: Request):
+        entry = lexicon_entry(body)
+        return save_lexicon(rt(request), book_id, lambda entries: [*entries, entry])
+
+    @app.patch("/api/books/{book_id}/pronunciations/{entry_id}")
+    def edit_pronunciation(book_id: str, entry_id: str, body: PronunciationEntry, request: Request):
+        # Fields left out keep their saved values; send null (or {} for providers) to clear one.
+        changes = body.model_dump(exclude_unset=True)
+        changes.pop("id", None)
+
+        def change(entries):
+            current = next((item for item in entries if item["id"] == entry_id), None)
+            if current is None:
+                raise HTTPException(404, "Pronunciation not found")
+            values = {key: value for key, value in {**current, **changes}.items() if key != "id" and value is not None}
+            entry = pronunciation.normalize_entry(values, entry_id=entry_id)
+            return [entry if item["id"] == entry_id else item for item in entries]
+        return save_lexicon(rt(request), book_id, change)
+
+    @app.delete("/api/books/{book_id}/pronunciations/{entry_id}")
+    def delete_pronunciation(book_id: str, entry_id: str, request: Request):
+        def change(entries):
+            if not any(item["id"] == entry_id for item in entries):
+                raise HTTPException(404, "Pronunciation not found")
+            return [item for item in entries if item["id"] != entry_id]
+        return save_lexicon(rt(request), book_id, change)
 
     @app.post("/api/books/{book_id}/analyze")
     def analyze(book_id: str, body: AnalysisRequest, request: Request):
@@ -1851,7 +1945,9 @@ def create_app(data_dir: Path | None = None):
             preview = repository.prepare(book_id, body.provider, voice, model,
                                          segment_id=body.segment_id, character_id=body.character_id,
                                          direction=body.direction, segment_direction=body.segment_direction,
-                                         selection=selection)
+                                         selection=selection,
+                                         pronunciation_draft=body.pronunciation.model_dump(exclude_none=True)
+                                         if body.pronunciation else None)
             cached = repository.cached(book_id, preview['id'])
             if cached:
                 with ResourceLedger(store).operation(book_id, 'voice_preview', unit_key=preview['id'],
@@ -1964,6 +2060,7 @@ def create_app(data_dir: Path | None = None):
             raise
 
     app.include_router(pipeline_router(pipeline_registry))
+    install_contract(app)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="assets")
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="studio")

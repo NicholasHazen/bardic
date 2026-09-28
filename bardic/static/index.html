@@ -16,6 +16,7 @@
   <script src="/static/diagnostics.js" defer></script>
   <script src="/static/voice-preview.js" defer></script>
   <script defer src="/static/series.js"></script>
+  <script defer src="/static/pronunciations.js"></script>
   <script defer src="/static/pipeline.js"></script>
   <link rel="stylesheet" href="/static/analysis-pipeline.css">
   <script defer src="/static/analysis-pipeline.js"></script>
@@ -283,6 +284,10 @@
           <div id="analysis-note" class="notice"></div>
           <div id="cast-provider" class="cast-provider" role="group" aria-label="Narration service for cast voices"></div>
           <div id="cast-grid" class="cast-grid"></div>
+          <details id="pronunciation-details" class="workspace-details">
+            <summary><span>Pronunciations</span><small>Fix how names and invented words are said</small></summary>
+            <div id="pronunciation-panel" class="pronunciation-panel"></div>
+          </details>
           <details class="workspace-details">
             <summary><span>Series &amp; continuity</span><small>Connect characters across your books</small></summary>
             <div id="series-panel"></div>
@@ -371,6 +376,7 @@
     <p id="voice-preview-message" role="status"></p>
     <small id="voice-preview-source"></small>
     <p id="voice-preview-text"></p>
+    <p id="voice-preview-spoken" class="voice-preview-spoken" hidden></p>
   </aside>
   <dialog id="listen-sheet" class="modal listen-sheet" aria-labelledby="listen-sheet-title">
     <div class="modal-header">
