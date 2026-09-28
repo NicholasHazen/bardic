@@ -1826,7 +1826,9 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound take whose `reuse` points at the original take. A cache hit
+   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate
+   whose copy fails its integrity check (for example this book already holds a damaged file under that
+   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit
    records a cached resource operation (stage `simple_listen`); it may also add the take to the
    equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel

@@ -338,10 +338,11 @@ class ListeningRepository:
                 continue
             try:
                 self._copy_asset(source_book_id, book_id, original['asset_id'])
-            except (OSError, EOFError, ValueError):
+            except (EOFError, ValueError):
                 # The source changed while copying, or this book already holds a damaged file
                 # under that asset ID (never overwritten). Damaged stored data is skipped like
-                # a damaged source: the passage is generated instead.
+                # a damaged source, so the passage can be generated. An OSError (for example a
+                # full disk) still propagates: it must not start a paid fallback.
                 continue
             # The producer fingerprint remains the real original fingerprint.
             # The target source-bound recipe is recorded in source_anchor;
