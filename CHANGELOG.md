@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Listening consent and correctness.**
+  - Tapping or pressing Enter on the text moves your reading place; it plays from there only when narration is already playing. Play, Space and media keys start listening.
+  - New books start with one narrator (unless they already have Studio takes); saved choices, including Full cast, are kept.
+  - Gemini narration is marked "paid" and the first Play or chapter preparation for a book in each browser session asks first (kept in `sessionStorage`). **Hear example** with Gemini says it is paid.
+  - Studio **Narrate book** and **Narrate scene** with Gemini or Breeze show an inline estimate (scope, passages, reused audio, requests, today's Gemini requests left, cost *unknown*) before anything is posted. `/api/status` adds `tts_quota`.
+  - The player names the voice (never a raw library id, and the Breeze default by name); Pause says Paused; failed, cancelled, interrupted and allowance-limited jobs have distinct labels; chapter and book percent agree; the Cast badge matches its cards; the book status counts audio from your narrator; the job banner shows only running or unacknowledged jobs; scripted scrolling respects reduced motion.
 - **Analysis** tab: your own servers as providers, set by URL in **Settings → Your analysis servers** (or `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL`, `BARDIC_NOVEL_ANALYZER_URL`). They are free per request but use that machine's GPU.
   - **Local LLM**: an OpenAI-compatible server such as vLLM, offered for discovery, profiles and Speakers & delivery, with the same checks as the cloud providers.
   - **Quote attribution (BookNLP)**: a new step, about a second per chapter, that changes nothing in the book. It lists where BookNLP's speaker differs from the current one. When it is accepted, Speakers & delivery checks every provider's speakers against it: agreement raises confidence, and disagreement keeps the speaker at 0.65 and flags it. BookNLP can also supply speakers itself.

@@ -261,6 +261,10 @@ test('status polling re-renders only on change, stops on book switch and never o
   const polls = env.calls.filter(call => call.url === '/api/jobs?book_id=book-chunks').length;
   await settle(80);
   assert.equal(env.calls.filter(call => call.url === '/api/jobs?book_id=book-chunks').length,polls,'no polling for a hidden book');
+  // The other book starts with one narrator and adopts this fake running job;
+  // finish it so that book's watcher settles and the test can exit.
+  env.state.jobs = [{...running,id:'job-2',status:'completed'}];
+  await settle(20);
 });
 
 test('automatic continuation into a passage outside the running job fails immediately', async () => {

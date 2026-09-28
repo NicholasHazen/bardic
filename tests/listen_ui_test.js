@@ -58,7 +58,7 @@ function ordinary(call){
   await env.api.render(container,book,hooks);
   assert.equal(env.calls.length,0,'Rendering controls never queues a narration');
   assert.equal(container.drawer.open,false,'Rendering leaves the reader foremost');
-  assert.match(container.drawer.summary.textContent,/Studio voices selected.*Default device voice.*Device.*free on this device/);
+  assert.match(container.drawer.summary.textContent,/Full cast selected.*Default device voice.*Device.*free on this device/);
   assert.equal(env.api.enabled(book),false);
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
   assert.ok(container.innerHTML.includes('Start simple listening'));
@@ -110,9 +110,9 @@ function ordinary(call){
   change(container,'provider','gemini');
   change(container,'voice','Leda');
   change(container,'model','gemini-3.8-flash-lite-tts');
-  assert.ok(container.innerHTML.includes('may incur charges'));
+  assert.ok(container.innerHTML.includes('Google bills each request, including examples'));
   assert.ok(container.innerHTML.includes('value="Leda" selected'));
-  assert.match(container.drawer.summary.textContent,/Studio voices selected.*Leda.*Gemini.*usage may incur charges/);
+  assert.match(container.drawer.summary.textContent,/Full cast selected.*Leda.*Gemini · paid/);
   assert.equal(container.drawer.open,false,'Changing narrator settings does not force open the drawer');
   const persisted=JSON.parse(env.storage.get('bardic:listen:book-9'));
   assert.equal(persisted.provider,'gemini');
