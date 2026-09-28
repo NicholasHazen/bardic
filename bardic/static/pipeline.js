@@ -10,7 +10,7 @@
   const labels = {not_started:'Not started', pending:'Pending', partial:'Partial', current:'Current', complete:'Complete', completed:'Complete',
     stale:'Needs refresh', running:'Running', queued:'Queued', failed:'Failed', interrupted:'Interrupted', cancelled:'Cancelled',
     budget_limited:'Allowance reached', planned:'Planned', ready:'Ready', available:'Available', blocked:'Waiting', unknown:'Unknown',
-    reserved:'Reserved', received:'Response received', uncertain:'Outcome uncertain', accepted:'Accepted', rejected:'Rejected',
+    reserved:'Reserved', received:'Response received', uncertain:'Outcome uncertain', not_sent:'Not sent (connection failed)', accepted:'Accepted', rejected:'Rejected',
     provisional:'Provisional draft', interrupted_unknown:'Interrupted · outcome unknown'};
   const status = value => labels[value] || String(value || 'Unknown').replaceAll('_', ' ');
   const statusClass = value => Object.hasOwn(labels, value) ? value : 'unknown';

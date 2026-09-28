@@ -142,6 +142,7 @@ def test_transport_failure_does_not_mutate_existing_book(provider, monkeypatch):
         raise httpx.ConnectError("private-test-key", request=httpx.Request("POST", url))
 
     monkeypatch.setattr(httpx.Client, "post", offline)
+    monkeypatch.setattr(analysis.time, "sleep", lambda _: None)
     book = parse_book("sample.txt", b"The house was quiet.")
     original = deepcopy(book)
     with pytest.raises(ValueError, match="could not connect") as exc:

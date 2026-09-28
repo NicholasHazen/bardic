@@ -18,7 +18,7 @@ from .resources import ResourceLedger
 VERSION = 2
 RECIPE_SCHEMA_VERSION = 1
 ADAPTER_VERSION = 1
-VALIDATOR_VERSION = 1
+VALIDATOR_VERSION = 2
 PHASES = {'scan', 'profiles', 'direct', 'full'}
 
 
