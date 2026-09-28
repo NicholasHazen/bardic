@@ -187,6 +187,7 @@ def write_analysis_export(store, book_id, path):
         member = series.membership(book_id)
         identity = {'membership': member, 'links': series.links_for_book(book_id),
                     'series_characters': series.list_characters(member['series_id']) if member else []}
+        # Version 1 keeps its original wire identifier across the product rename.
         manifest = {'schema_version': 1, 'format': 'spintails-analysis', 'exported_at': now(), 'book_id': book_id,
                     'artifact_count': len(artifacts), 'external_book_dependencies': sorted({owner for owner, _ in rows if owner != book_id}),
                     'audio_files_included': False, 'source_text_included': True, 'word_alignment': False,
@@ -209,5 +210,5 @@ def write_analysis_export(store, book_id, path):
                 archive.writestr(name, json.dumps(value, ensure_ascii=False, indent=2))
             archive.writestr('artifacts.jsonl', ''.join(json.dumps(a, ensure_ascii=False) + '\n' for a in artifacts))
             archive.writestr('pipeline-events.jsonl', ''.join(row[0] + '\n' for row in event_rows))
-            archive.writestr('README.txt', 'Spin Tails reusable analysis bundle\n\nStart with manifest.json. book.json is the current reader projection, including chapter text and passage IDs. story-map.json contains typed nodes, edges and source references. artifacts.jsonl preserves immutable versions, current selection and dependency IDs; legacy_provenance means original production inputs may be incomplete. Dependencies from other books are included transitively. Voice assignments are separate from profiles. Audio binaries and credentials are not included. Local draft scene boundaries, attributed speakers and mentions do not establish physical scene presence.\n')
+            archive.writestr('README.txt', 'Bardic reusable analysis bundle\n\nStart with manifest.json. book.json is the current reader projection, including chapter text and passage IDs. story-map.json contains typed nodes, edges and source references. artifacts.jsonl preserves immutable versions, current selection and dependency IDs; legacy_provenance means original production inputs may be incomplete. Dependencies from other books are included transitively. Voice assignments are separate from profiles. Audio binaries and credentials are not included. Local draft scene boundaries, attributed speakers and mentions do not establish physical scene presence.\n')
     return manifest

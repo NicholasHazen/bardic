@@ -17,44 +17,46 @@ From the repository root (use your existing checkout if you already have one):
 
 ```sh
 uv sync --frozen --group dev
-uv run --frozen python -m spintails
+uv run --frozen python -m bardic
 ```
 
 Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
 
 Node.js is required to execute the JavaScript tests. The tests use Node built-ins; no npm dependencies are needed. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
 
-Device narration additionally requires macOS `say`, installed voices, and `ffmpeg`. Other operating systems can run the app and use Gemini narration, but do not gain a local speech backend automatically. Provider adapters and format validation live in [audio.py](../spintails/audio.py).
+Device narration additionally requires macOS `say`, installed voices, and `ffmpeg`. Other operating systems can run the app and use Gemini narration, but do not gain a local speech backend automatically. Provider adapters and format validation live in [audio.py](../bardic/audio.py).
 
 ## Configuration and data isolation
 
-[The entry point](../spintails/__main__.py) loads the `.env` beside `pyproject.toml` through [config.py](../spintails/config.py). It does not search parent directories. Existing process environment variables win, and dotenv interpolation is disabled. Make a new local configuration from [.env.example](../.env.example) only if you do not already have a `.env`.
+[The entry point](../bardic/__main__.py) loads the `.env` beside `pyproject.toml` through [config.py](../bardic/config.py). It does not search parent directories. Existing process environment variables win, and dotenv interpolation is disabled. Make a new local configuration from [.env.example](../.env.example) only if you do not already have a `.env`.
 
 | Variable | Effect |
 | --- | --- |
-| `SPINTAILS_PORT` | Loopback HTTP port; default `8765`. |
-| `SPINTAILS_DATA_DIR` | Data directory; default `.spintails` relative to the process working directory. |
+| `BARDIC_PORT` | Loopback HTTP port; default `8765`. |
+| `BARDIC_DATA_DIR` | Data directory; default `.bardic` relative to the process working directory, or existing `.spintails` when `.bardic` is absent. |
 | `GEMINI_API_KEY` | Gemini analysis and narration key. |
 | `GOOGLE_API_KEY` | Gemini fallback when `GEMINI_API_KEY` is empty or absent. |
 | `OPENAI_API_KEY` | OpenAI analysis key. |
 | `ANTHROPIC_API_KEY` | Anthropic analysis key. |
+
+The old `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain aliases. Shell settings win over file values even across prefixes; within one source the `BARDIC_` spelling wins. `bardic.config.data_directory()` resolves explicit configuration and the existing-library fallback without moving files. Use it in maintenance tools instead of hardcoding a default path. The old module launcher remains available; source imports and new scripts use `bardic`. See [upgrade details](OPERATIONS.md#upgrading-from-spin-tails).
 
 Changing `.env` requires a server restart. Settings saves model preferences in SQLite but keeps changed API keys only in the current runtime's memory. Settings does not rewrite `.env`; restarting reloads configured environment/file keys. Never copy `.env`, user ebooks, generated audio, library databases, or provider response dumps into fixtures or documentation.
 
 Use an isolated data directory and port for manual development. The following starts with cloud keys explicitly blank, even if the checkout has a configured `.env`:
 
 ```sh
-scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/spintails-dev.XXXXXX")
-SPINTAILS_DATA_DIR="$scratch_dir" SPINTAILS_PORT=8766 GEMINI_API_KEY='' GOOGLE_API_KEY='' OPENAI_API_KEY='' ANTHROPIC_API_KEY='' uv run --frozen python -m spintails
+scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/bardic-dev.XXXXXX")
+BARDIC_DATA_DIR="$scratch_dir" BARDIC_PORT=8766 GEMINI_API_KEY='' GOOGLE_API_KEY='' OPENAI_API_KEY='' ANTHROPIC_API_KEY='' uv run --frozen python -m bardic
 ```
 
-Keep that shell's printed/assigned `scratch_dir` available if you want to inspect the scratch library later. Stop the process before removing or backing up its data. The repository's normal `.spintails` directory is not a disposable test fixture.
+Keep that shell's printed/assigned `scratch_dir` available if you want to inspect the scratch library later. Stop the process before removing or backing up its data. Neither the normal `.bardic` nor legacy `.spintails` library is a disposable test fixture.
 
-The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `spintails.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably.
+The runtime uses an OS lock on `server.lock` before performing startup recovery. A second server using the same directory is rejected. Do not remove the lock or bypass it to run another worker against a live library. An import of `bardic.app` constructs the FastAPI application but starts its `Runtime` only when lifespan begins. Tests should use `TestClient(create_app(tmp_path))` as a context manager so the worker pool and lock close reliably.
 
-The ordinary launch command deliberately has no reload flag. For Python edits, stop and restart the isolated server. Browser files are served directly; refresh the browser after edits. Launching `uvicorn spintails.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
+The ordinary launch command deliberately has no reload flag. For Python edits, stop and restart the isolated server. Browser files are served directly; refresh the browser after edits. Launching `uvicorn bardic.app:app` directly bypasses the project dotenv loader unless you load that configuration yourself. Multiple uvicorn workers are inappropriate for the same data directory.
 
-Sources: [Runtime and create_app](../spintails/app.py), [Store and InstanceLock](../spintails/store.py).
+Sources: [Runtime and create_app](../bardic/app.py), [Store and InstanceLock](../bardic/store.py).
 
 ## Checks and test commands
 
@@ -62,17 +64,17 @@ Run from the repository root after dependency setup:
 
 ```sh
 uv run --frozen pytest -q
-node --test tests/model-picker-ui.test.cjs
-rg --files spintails/static -g '*.js' | xargs -n 1 node --check
+node --test tests/*_test.js tests/*.test.cjs
+rg --files bardic/static -g '*.js' | xargs -n 1 node --check
 ```
 
-The CommonJS model-picker suite is separate from pytest and must be run explicitly. Pytest invokes the other `*_ui_test.js` and player harnesses through Python wrappers when Node is installed.
+Run the Node command explicitly: the CommonJS model-picker suite and `browser_storage_test.js` are separate from pytest. Pytest invokes the `*_ui_test.js` and player harnesses through Python wrappers when Node is installed; the full Node command also reruns those harnesses.
 
 For an already installed environment with no dependency resolution:
 
 ```sh
 .venv/bin/python -m pytest -q
-node --test tests/model-picker-ui.test.cjs
+node --test tests/*_test.js tests/*.test.cjs
 ```
 
 Useful targeted suites:
@@ -93,7 +95,7 @@ The default suites use synthetic prose, temporary stores, fake provider response
 The optional macOS integration test invokes actual local speech and assembly:
 
 ```sh
-SPINTAILS_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
+BARDIC_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
 ```
 
 Run that only on a machine with the speech services and ffmpeg available. It is a local audio test, not a Gemini test. A default test run should not inherit that opt-in unintentionally.
@@ -104,24 +106,24 @@ For manual checks, import the built-in original sample with **Try a sample**, us
 
 | Responsibility | Main source |
 | --- | --- |
-| HTTP DTOs, runtime, job scheduling, UI presentation, downloads | [app.py](../spintails/app.py) |
-| Exact source extraction, passage IDs, EPUB safety, cover extraction | [importer.py](../spintails/importer.py), [structure.py](../spintails/structure.py) |
-| Mutable reader projection, selected enhanced takes, restart recovery | [store.py](../spintails/store.py) |
-| Immutable versions, dependency edges, current artifact heads | [artifacts.py](../spintails/artifacts.py) |
-| Local census and semantic coverage | [preprocessing.py](../spintails/preprocessing.py) |
-| Discovery/profile/direction recipes and staged execution | [progressive.py](../spintails/progressive.py) |
-| Structured provider adapters and evidence validation | [analysis.py](../spintails/analysis.py) |
-| Local/legacy checkpoint execution | [staged_analysis.py](../spintails/staged_analysis.py) |
-| Accepted unit cache, request reservations and usage | [processing.py](../spintails/processing.py) |
-| Model inventory, roles, dated prices, explicit access checks | [model_catalog.py](../spintails/model_catalog.py), [account_checks.py](../spintails/account_checks.py) |
-| Confirmed series identities and earlier-volume observations | [series.py](../spintails/series.py) |
-| Series planning and parent/child execution | [series_processing.py](../spintails/series_processing.py) |
-| Reversible library archive, metadata, covers, disk reporting | [library.py](../spintails/library.py) |
-| Narration recipes, provider I/O, normalized audio | [audio.py](../spintails/audio.py), [take_archive.py](../spintails/take_archive.py) |
-| Separate single-voice listening archive | [listening.py](../spintails/listening.py) |
-| Pipeline view, typed story graph, portable analysis bundle | [pipeline_view.py](../spintails/pipeline_view.py) |
-| Local lexical passage index | [search.py](../spintails/search.py) |
-| Per-operation resource measurements | [resources.py](../spintails/resources.py) |
+| HTTP DTOs, runtime, job scheduling, UI presentation, downloads | [app.py](../bardic/app.py) |
+| Exact source extraction, passage IDs, EPUB safety, cover extraction | [importer.py](../bardic/importer.py), [structure.py](../bardic/structure.py) |
+| Mutable reader projection, selected enhanced takes, restart recovery | [store.py](../bardic/store.py) |
+| Immutable versions, dependency edges, current artifact heads | [artifacts.py](../bardic/artifacts.py) |
+| Local census and semantic coverage | [preprocessing.py](../bardic/preprocessing.py) |
+| Discovery/profile/direction recipes and staged execution | [progressive.py](../bardic/progressive.py) |
+| Structured provider adapters and evidence validation | [analysis.py](../bardic/analysis.py) |
+| Local/legacy checkpoint execution | [staged_analysis.py](../bardic/staged_analysis.py) |
+| Accepted unit cache, request reservations and usage | [processing.py](../bardic/processing.py) |
+| Model inventory, roles, dated prices, explicit access checks | [model_catalog.py](../bardic/model_catalog.py), [account_checks.py](../bardic/account_checks.py) |
+| Confirmed series identities and earlier-volume observations | [series.py](../bardic/series.py) |
+| Series planning and parent/child execution | [series_processing.py](../bardic/series_processing.py) |
+| Reversible library archive, metadata, covers, disk reporting | [library.py](../bardic/library.py) |
+| Narration recipes, provider I/O, normalized audio | [audio.py](../bardic/audio.py), [take_archive.py](../bardic/take_archive.py) |
+| Separate single-voice listening archive | [listening.py](../bardic/listening.py) |
+| Pipeline view, typed story graph, portable analysis bundle | [pipeline_view.py](../bardic/pipeline_view.py) |
+| Local lexical passage index | [search.py](../bardic/search.py) |
+| Per-operation resource measurements | [resources.py](../bardic/resources.py) |
 
 One runtime worker schedules normal analysis, enhanced narration, and simple-listen jobs. Series execution is coordinated separately and allows at most two independent discovery workers; later interpretation follows reading order. Busy-book and active-series guards protect edits and membership changes. Cancellation is cooperative at request/unit boundaries; it is not a guarantee that a remote request or speech subprocess stops immediately.
 
@@ -129,17 +131,19 @@ SQLite uses WAL and foreign keys. Store operations share an `RLock`; connections
 
 ## Frontend namespace contracts
 
-[app.js](../spintails/static/app.js) owns the selected book/chapter/passage, shared `Audio` element, reader highlighting, settings, and main job polling. [index.html](../spintails/static/index.html) loads the independent scripts before the application module. Each component owns only its mount container and scoped CSS.
+[app.js](../bardic/static/app.js) owns the selected book/chapter/passage, shared `Audio` element, reader highlighting, settings, and main job polling. [index.html](../bardic/static/index.html) loads the independent scripts before the application module. Each component owns only its mount container and scoped CSS.
+
+Browser storage writes use the `bardic:` prefix and fall back to old `spintails:` values on reads. Preserve that compatibility when changing preference or reading-position storage. JavaScript feature interfaces use the `Bardic` prefix shown below.
 
 | Namespace and source | Public interface |
 | --- | --- |
-| `SpinTailsSeries` — [series.js](../spintails/static/series.js) | `render(container, book)` loads membership, explicit identity links, and prior context. |
-| `SpinTailsProduction` — [production.js](../spintails/static/production.js) | `render(container, book, {provider, chapterId, busy, scanModel, model, onStart, onRefresh})`; `onStart(payload)` dispatches a reviewed per-book plan. |
-| `SpinTailsPipeline` — [pipeline.js](../spintails/static/pipeline.js) | `render(container, book, {busy})`; reads stage status, history, graph, search and exports. It does not dispatch model work. |
-| `SpinTailsResources` — [resources.js](../spintails/static/resources.js) | `render(container, book, {busy})`; paged run/stage/operation measurements. |
-| `SpinTailsLibrary` — [library.js](../spintails/static/library.js) | `render(container, {busy, onChange, onSelectBook, onSelectSeries, books?, series?, storage?})`; `refresh(container)` explicitly reloads the snapshot. Selection callbacks receive IDs. |
-| `SpinTailsSeriesProcessing` — [series-processing.js](../spintails/static/series-processing.js) | `render(container, series, {status, onChange})`; `series` needs an ID, while name/books improve display. A new accepted fingerprinted preview is required for every dispatch. |
-| `SpinTailsListen` — [listen.js](../spintails/static/listen.js) | `render(container, book, {status, chapterId, segmentId, busy, onChange, onPlay, onStop, onJob})`, plus playback methods below. |
+| `BardicSeries` — [series.js](../bardic/static/series.js) | `render(container, book)` loads membership, explicit identity links, and prior context. |
+| `BardicProduction` — [production.js](../bardic/static/production.js) | `render(container, book, {provider, chapterId, busy, scanModel, model, onStart, onRefresh})`; `onStart(payload)` dispatches a reviewed per-book plan. |
+| `BardicPipeline` — [pipeline.js](../bardic/static/pipeline.js) | `render(container, book, {busy})`; reads stage status, history, graph, search and exports. It does not dispatch model work. |
+| `BardicResources` — [resources.js](../bardic/static/resources.js) | `render(container, book, {busy})`; paged run/stage/operation measurements. |
+| `BardicLibrary` — [library.js](../bardic/static/library.js) | `render(container, {busy, onChange, onSelectBook, onSelectSeries, books?, series?, storage?})`; `refresh(container)` explicitly reloads the snapshot. Selection callbacks receive IDs. |
+| `BardicSeriesProcessing` — [series-processing.js](../bardic/static/series-processing.js) | `render(container, series, {status, onChange})`; `series` needs an ID, while name/books improve display. A new accepted fingerprinted preview is required for every dispatch. |
+| `BardicListen` — [listen.js](../bardic/static/listen.js) | `render(container, book, {status, chapterId, segmentId, busy, onChange, onPlay, onStop, onJob})`, plus playback methods below. |
 
 Listening exposes `isSimple(book)`/`enabled(book)`, `resolve(book, segment)`/`take(book, segment)`, `ensure(book, segment)`, `stop(book)`, and `allowsAdvance(book, current, next)`. The resolver returns the selected mode's valid audio. `ensure` may create one simple passage job and poll it; use it only for an explicit Play or continuation of that playback. `stop` invalidates pending playback and requests cancellation. A stale `ensure` resolves to `null`. The main player must also check its selection/play generation after awaiting it. Enhanced studio previews use the enhanced take and end after that passage; they must not trigger simple continuation.
 
@@ -149,8 +153,8 @@ Preserve component inputs during unrelated parent renders. Use generation/select
 
 ### Add or change an analysis provider
 
-1. Implement the structured request adapter in [analysis.py](../spintails/analysis.py), preserving its `(client, model, key, prompt, schema, cancelled)` contract and semantic validators. The existing adapters return parsed objects, not replacement book prose.
-2. Register labels/defaults/roles/inventory in [model_catalog.py](../spintails/model_catalog.py) and the runtime/settings interfaces in [app.py](../spintails/app.py). Review both discovery and detailed-analysis model roles. An inventory listing is not proof of structured-output support or account credit.
+1. Implement the structured request adapter in [analysis.py](../bardic/analysis.py), preserving its `(client, model, key, prompt, schema, cancelled)` contract and semantic validators. The existing adapters return parsed objects, not replacement book prose.
+2. Register labels/defaults/roles/inventory in [model_catalog.py](../bardic/model_catalog.py) and the runtime/settings interfaces in [app.py](../bardic/app.py). Review both discovery and detailed-analysis model roles. An inventory listing is not proof of structured-output support or account credit.
 3. Route every analysis HTTP attempt through the request-budget context. Reserve before sending; retain uncertain charges; record usage only when reported. Add an explicit account-check adapter only if that operation is supported.
 4. Update the progressive request dispatch and UI provider choices. Keep provider selection explicit; do not silently send text to another provider after failure.
 5. Add fake success, malformed response, unavailable model, authentication, rate-limit, retry, cancellation, and redaction tests. Document any new environment variable and cost assumptions. Unknown prices must remain unknown.
@@ -159,7 +163,7 @@ A custom model ID can already be selected without adding a new provider. A local
 
 ### Add an analysis stage or change a recipe
 
-Define the stage's source inputs, output schema, validator, and stable unit key in [progressive.py](../spintails/progressive.py). Include inputs that actually affect the result in the recipe identity; avoid invalidating unrelated work. Save the input recipe/dependencies and accepted output through [ProcessingStore](../spintails/processing.py). Keep rejected output distinguishable from accepted knowledge. Emit events tied to the precise attempt, so HTTP success does not imply validation success.
+Define the stage's source inputs, output schema, validator, and stable unit key in [progressive.py](../bardic/progressive.py). Include inputs that actually affect the result in the recipe identity; avoid invalidating unrelated work. Save the input recipe/dependencies and accepted output through [ProcessingStore](../bardic/processing.py). Keep rejected output distinguishable from accepted knowledge. Emit events tied to the precise attempt, so HTTP success does not imply validation success.
 
 Update preview estimates, current/stale detection, pipeline dependency/status display, and export retention. Test a cold run, a cache hit, a changed dependency, failure after a durable unit, cancellation, resume, and a manually reviewed item. Use [test_progressive_artifacts.py](../tests/test_progressive_artifacts.py) and [test_pipeline_view_api.py](../tests/test_pipeline_view_api.py) for examples. The stage cards describe real saved state; there is no generic DAG executor to register a stage with automatically.
 

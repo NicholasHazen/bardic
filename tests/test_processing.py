@@ -6,10 +6,10 @@ import json
 import httpx
 import pytest
 
-from spintails import analysis, processing
-from spintails.importer import parse_book
-from spintails.processing import BudgetReached, ProcessingStore, RequestBudget
-from spintails.store import Store
+from bardic import analysis, processing
+from bardic.importer import parse_book
+from bardic.processing import BudgetReached, ProcessingStore, RequestBudget
+from bardic.store import Store
 
 
 @pytest.fixture

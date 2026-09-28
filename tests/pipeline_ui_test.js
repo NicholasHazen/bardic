@@ -101,8 +101,8 @@ function environment(handler = ordinary) {
     const result = await handler(call);
     return {ok:result.ok !== false,status:result.status || 200,json:async () => result.data};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../spintails/static/pipeline.js'),'utf8'), scope);
-  return {calls,render:scope.window.SpinTailsPipeline.render,advance:ms => { clock += ms; }};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/pipeline.js'),'utf8'), scope);
+  return {calls,render:scope.window.BardicPipeline.render,advance:ms => { clock += ms; }};
 }
 
 (async () => {

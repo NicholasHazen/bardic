@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from spintails.store import Store
+from bardic.store import Store
 
 
 def book(book_id="book"):

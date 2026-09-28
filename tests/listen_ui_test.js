@@ -32,8 +32,8 @@ function environment(handler, prior={}){
       const value=await handler(call);
       return {ok:value.ok !== false,status:value.status || 200,json:async()=>value.data};
     }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../spintails/static/listen.js'),'utf8'),scope);
-  return {api:scope.window.SpinTailsListen,calls,storage};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen.js'),'utf8'),scope);
+  return {api:scope.window.BardicListen,calls,storage};
 }
 function options(extra={}){ return {status,chapterId:'chapter-1',segmentId:'segment-1',...extra}; }
 function ordinary(call){
@@ -83,7 +83,7 @@ function ordinary(call){
   change(container,'model','gemini-3.8-flash-lite-tts');
   assert.ok(container.innerHTML.includes('may incur charges'));
   assert.ok(container.innerHTML.includes('value="Leda" selected'));
-  const persisted=JSON.parse(env.storage.get('spintails:listen:book-9'));
+  const persisted=JSON.parse(env.storage.get('bardic:listen:book-9'));
   assert.equal(persisted.provider,'gemini');
   assert.equal(persisted.voices.gemini,'Leda');
   assert.equal(persisted.model,'gemini-3.8-flash-lite-tts');
@@ -99,6 +99,25 @@ function ordinary(call){
   await restore.api.render(restoredContainer,book,options());
   assert.equal(restore.calls.length,1);
   assert.equal(restore.api.take(book,book.segments[0]).asset_id,'simple');
+
+  // A legacy narrator/session selection survives the rename; new choices take precedence.
+  assert.equal(restore.storage.get('spintails:listen:book-9'),JSON.stringify(savedConfig));
+  const changedLegacy=environment(ordinary,{'spintails:listen:book-9':JSON.stringify(savedConfig)});
+  const changedLegacyContainer=new Container();
+  await changedLegacy.api.render(changedLegacyContainer,book,options());
+  change(changedLegacyContainer,'voice','Samantha');
+  assert.equal(JSON.parse(changedLegacy.storage.get('bardic:listen:book-9')).voices.system,'Samantha');
+  assert.equal(changedLegacy.storage.get('spintails:listen:book-9'),JSON.stringify(savedConfig),'Legacy preferences remain untouched');
+  const newerConfig={...savedConfig,mode:'enhanced',voices:{system:'Samantha',gemini:'Leda'},sessionId:null,sessionKey:null};
+  const preferred=environment(ordinary,{
+    'spintails:listen:book-9':JSON.stringify(savedConfig),
+    'bardic:listen:book-9':JSON.stringify(newerConfig),
+  });
+  const preferredContainer=new Container();
+  await preferred.api.render(preferredContainer,book,options());
+  assert.equal(preferred.api.enabled(book),false);
+  assert.ok(preferredContainer.innerHTML.includes('value="Samantha" selected'));
+  assert.equal(preferred.calls.length,0,'Restoring preferences must not start narration');
 
   // Stop while POST is pending cancels its late job and cannot return playable audio.
   let pendingPost;

@@ -6,7 +6,7 @@ import threading
 import httpx
 import pytest
 
-from spintails import model_catalog as m
+from bardic import model_catalog as m
 
 
 def fake_transport(monkeypatch, handler):

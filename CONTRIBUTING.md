@@ -1,6 +1,6 @@
-# Contributing to Spin Tails
+# Contributing to Bardic
 
-Spin Tails turns personal fiction ebooks into reusable story analysis and narrated read-along experiences. Humans and coding agents share the same source, tests and documentation. The goal is understandable, inspectable work that preserves source text and avoids repeating expensive inference.
+Bardic turns personal fiction ebooks into reusable story analysis and narrated read-along experiences. Humans and coding agents share the same source, tests and documentation. The goal is understandable, inspectable work that preserves source text and avoids repeating expensive inference.
 
 ## Start here
 
@@ -48,7 +48,7 @@ Do not claim word-level synchronization, semantic identity resolution, model qua
 uv sync --frozen --group dev
 uv run --frozen pytest -q
 node --test tests/*_test.js tests/*.test.cjs
-for script in spintails/static/*.js; do node --check "$script" || exit 1; done
+for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 uv lock --check --offline
 ```
 

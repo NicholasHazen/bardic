@@ -6,15 +6,15 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.model_catalog import PREPROCESS_DEFAULTS, catalog
+from bardic.app import create_app
+from bardic.model_catalog import PREPROCESS_DEFAULTS, catalog
 
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
 
 
 @pytest.fixture

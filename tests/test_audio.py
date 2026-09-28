@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from spintails import audio
+from bardic import audio
 
 
 def wav_bytes(frames=2400, rate=24000, *, silence=False):
@@ -237,8 +237,11 @@ def test_bad_assembly_preserves_existing_export(tmp_path):
 
 
 @pytest.mark.skipif(
-    sys.platform != "darwin" or not shutil.which("ffmpeg") or os.environ.get("SPINTAILS_TEST_SYSTEM_AUDIO") != "1",
-    reason="Opt-in local integration: SPINTAILS_TEST_SYSTEM_AUDIO=1; requires macOS speech and ffmpeg",
+    sys.platform != "darwin"
+    or not shutil.which("ffmpeg")
+    or os.environ.get("BARDIC_TEST_SYSTEM_AUDIO", os.environ.get("SPINTAILS_TEST_SYSTEM_AUDIO")) != "1",
+    reason=("Opt-in local integration: BARDIC_TEST_SYSTEM_AUDIO=1 "
+            "(legacy SPINTAILS_TEST_SYSTEM_AUDIO also accepted); requires macOS speech and ffmpeg"),
 )
 def test_real_macos_narration_and_assembly(tmp_path):
     segment = {"id": "hello", "text": "The moon rose over the quiet harbor."}

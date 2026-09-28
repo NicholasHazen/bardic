@@ -3,8 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from spintails import analysis
-from spintails.importer import parse_book
+from bardic import analysis
+from bardic.importer import parse_book
 
 
 def profile(evidence):

@@ -12,7 +12,7 @@ From the project directory:
 
 ```sh
 uv sync --frozen --group dev
-uv run --frozen python -m spintails
+uv run --frozen python -m bardic
 ```
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). There is no frontend compilation step. The launcher binds to loopback; this version has no user account system and is intended for local use. The application checks request origins for writes. A publicly hosted deployment is not configured or promised by this setup.
@@ -24,14 +24,27 @@ An operating-system lock on `server.lock` enforces one application instance per 
 An alternate launch can use another port and a separate data directory:
 
 ```sh
-SPINTAILS_PORT=8766 SPINTAILS_DATA_DIR=/absolute/path/to/test-library uv run --frozen python -m spintails
+BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library uv run --frozen python -m bardic
 ```
 
 This is useful for testing a restored **copy**. Changing the port alone does not allow two servers to share one library. Keep the primary database on a local filesystem; SQLite WAL relies on same-host coordination. See [SQLite WAL](https://sqlite.org/wal.html).
 
+## Upgrading from Spin Tails
+
+The project is now **Bardic**, with source in `bardic/` and the preferred launcher `uv run --frozen python -m bardic`. Update the checkout and run `uv sync --frozen --group dev`, then restart the app with the new command when active work has stopped. An existing checkout named `spin-tails` can keep that directory name. The rename does not require replacing `.env`, moving a library or migrating its database/media formats.
+
+- `python -m spintails` remains a compatibility launcher. New code and scripts should import `bardic`; the compatibility launcher is not a second implementation of the application.
+- `BARDIC_PORT` and `BARDIC_DATA_DIR` are the preferred settings. `SPINTAILS_PORT` and `SPINTAILS_DATA_DIR` remain accepted aliases. Existing provider-key names are unchanged.
+- Shell values take precedence over `.env` even across old/new aliases. Within the same source, the `BARDIC_` setting takes precedence over its `SPINTAILS_` alias. For example, a shell `SPINTAILS_DATA_DIR` overrides a file `BARDIC_DATA_DIR`, while two file settings select `BARDIC_DATA_DIR`.
+- An explicit data-directory setting selects that path. Otherwise, use `.bardic/` relative to the working directory; if it is absent and `.spintails/` is an existing directory, reuse `.spintails/` in place. If both exist, `.bardic/` is selected. No directory is automatically copied, merged, renamed or removed. Set `BARDIC_DATA_DIR` explicitly when both libraries exist and you want the older one.
+- Browser preferences use `bardic:` keys for new writes, with fallback reads from existing `spintails:` keys when no new value exists. Keep the same browser origin to retain reading position and listening preferences; changing ports creates a different origin.
+- Portable analysis exports retain the version-1 `spintails-analysis` format identifier. Existing schema, source coordinates, artifact identities and audio files retain their contracts.
+
+Use the regular full-library backup procedure before any separate data move or repair. A renamed display/package alone is not a reason to alter retained source or paid outputs.
+
 ## Configuration and credentials
 
-The supported launcher loads the `.env` beside `pyproject.toml`, through [config.py](../spintails/config.py), before importing the application. It does not search parent folders. An unrelated working directory does not change which `.env` file is loaded, although a **relative data path is still relative to the working directory**.
+The supported launcher loads the `.env` beside `pyproject.toml`, through [config.py](../bardic/config.py), before importing the application. It does not search parent folders. An unrelated working directory does not change which `.env` file is loaded, although a **relative data path is still relative to the working directory**.
 
 For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` does not already exist, then edit it locally. Do not replace an existing file to add one setting.
 
@@ -41,8 +54,8 @@ For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` 
 | `GOOGLE_API_KEY` | Fallback Gemini alias if `GEMINI_API_KEY` is unset or empty. |
 | `OPENAI_API_KEY` | OpenAI text-analysis credential. |
 | `ANTHROPIC_API_KEY` | Anthropic text-analysis credential. |
-| `SPINTAILS_DATA_DIR` | Library root; defaults to `.spintails` relative to the launch working directory. Prefer an absolute path for alternate libraries. |
-| `SPINTAILS_PORT` | Local port for `python -m spintails`; defaults to `8765`. |
+| `BARDIC_DATA_DIR` | Library root; defaults to `.bardic` relative to the launch working directory, with existing `.spintails` fallback described above. Prefer an absolute path for alternate libraries. |
+| `BARDIC_PORT` | Local port for `python -m bardic`; defaults to `8765`. |
 
 Environment values already present in the launching shell win over the same `.env` entry, including intentionally empty values. File values are loaded literally without variable interpolation. For Gemini, the separate `GOOGLE_API_KEY` fallback can still supply a key if `GEMINI_API_KEY` is empty.
 
@@ -50,7 +63,7 @@ Restart the server after changing `.env`. A browser refresh does not reload cred
 
 Keys entered in **Settings** replace the current server session's in-memory value only. They are not written to `.env`, SQLite or browser storage. Clearing a session key does not erase the file/environment value; it returns after restart. Provider/model preferences are saved in SQLite. A queued job captures its configuration so changing Settings does not reroute a request already scheduled.
 
-`.env` and the default `.spintails/` directory are excluded by [`.gitignore`](../.gitignore). Git is for source and documentation, not library backup. If using another data directory inside the checkout, add its precise path to the ignore rules before staging files, or keep that directory outside the checkout. Exports and screenshots can contain private book content even when they contain no API keys.
+`.env`, `.bardic/` and legacy `.spintails/` directories are excluded by [`.gitignore`](../.gitignore). Git is for source and documentation, not library backup. If using another data directory inside the checkout, add its precise path to the ignore rules before staging files, or keep that directory outside the checkout. Exports and screenshots can contain private book content even when they contain no API keys.
 
 ### Model inventory versus account checks
 
@@ -77,7 +90,7 @@ Simple listening has a separate audio store and does not require or change enhan
 
 ## Budget and resource semantics
 
-The progressive analysis request limits are implemented in [processing.py](../spintails/processing.py). Defaults are:
+The progressive analysis request limits are implemented in [processing.py](../bardic/processing.py). Defaults are:
 
 | Allowance | Default | Scope |
 | --- | ---: | --- |
@@ -147,16 +160,15 @@ For the documented source launcher, this example uses the same configuration loa
 uv run --frozen python - <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
-import os
 import shutil
-from spintails.config import load_project_env
+from bardic.config import data_directory, load_project_env
 
 load_project_env()
-source = Path(os.environ.get("SPINTAILS_DATA_DIR", ".spintails")).resolve()
+source = data_directory().resolve()
 if not (source / "library.sqlite3").is_file():
     raise SystemExit("No library.sqlite3 at the configured data directory")
 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-destination = Path.home() / "Backups" / "SpinTails" / stamp
+destination = Path.home() / "Backups" / "Bardic" / stamp
 if destination.resolve().is_relative_to(source):
     raise SystemExit("Choose a backup destination outside the library directory")
 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +177,7 @@ print(destination)
 PY
 ```
 
-This copies private ebook/analysis/audio data to a local backup destination; it does not publish or upload it. If the library path was supplied only in the server launch command, supply that same `SPINTAILS_DATA_DIR` for this command. Do not accidentally back up an unused default folder.
+This copies private ebook/analysis/audio data to a local backup destination; it does not publish or upload it. If the library path was supplied only in the server launch command, supply that same `BARDIC_DATA_DIR` for this command. Do not accidentally back up an unused default folder.
 
 For a running database, use [SQLite's backup API](https://sqlite.org/backup.html) for a consistent database snapshot instead of copying only `library.sqlite3`. That API does **not** snapshot the separate original/audio files. A consistent full live backup needs coordinated media retention and a manifest; no one-click implementation is present. A stopped whole-directory copy remains the recommended operational path.
 
@@ -202,8 +214,8 @@ The **audiobook ZIP** contains current enhanced takes, production metadata, text
 | Symptom | What to inspect and do |
 | --- | --- |
 | Server says the data directory is already in use | Open the existing instance or stop its process. Confirm the resolved data path; changing only the port does not resolve the directory lock. Do not unlink the lock file to force concurrent access. |
-| Address/port already in use | Stop the service using that port or choose `SPINTAILS_PORT`. A new port also means a different browser storage origin. |
-| Library appears empty after restart | Check launch working directory and `SPINTAILS_DATA_DIR`; a relative path may have selected another folder. Preserve both folders while locating the intended `library.sqlite3`. |
+| Address/port already in use | Stop the service using that port or choose `BARDIC_PORT`. A new port also means a different browser storage origin. |
+| Library appears empty after restart | Check launch working directory, `BARDIC_DATA_DIR` / `SPINTAILS_DATA_DIR` and whether both `.bardic/` and `.spintails/` exist. A relative path or the default selection may have chosen another folder. Preserve both folders while locating the intended `library.sqlite3`. |
 | Updated `.env` key appears ignored | Restart the server; inspect inherited variable names and the Gemini alias precedence. Settings changes are session-only. Use an explicit small check only when you want to test inference. |
 | Model refresh succeeds but generation fails | Visibility does not prove structured-output compatibility, permission for a separate TTS model, quota or balance. Read the actual failure and verify the selected model role. |
 | “Invalid character evidence” / quoted text not in source | Inspect the rejected output and request recipe in Pipeline explorer. Evidence must be a contiguous passage in that request's supplied source, not a paraphrase or a quotation from a different chapter. One repair is automatic; a repeated failure stops safely. Resume the relevant stage/chapter after reviewing model/output/context; do not weaken source validation or repeatedly force the entire book. |
@@ -229,14 +241,15 @@ Routine offline suite:
 
 ```sh
 uv run --frozen pytest -q
+node --test tests/*_test.js tests/*.test.cjs
 ```
 
-Node is needed for the JavaScript behavior harnesses invoked by the Python tests. Tests without Node can skip those checks; read the test summary. The default suite uses fake provider transports and temporary libraries, not paid API calls or the user's real library.
+Node is needed for the JavaScript behavior harnesses. Run the Node command explicitly: the model-picker CommonJS suite and `browser_storage_test.js` are outside pytest. Python tests invoke the remaining UI/player harnesses when Node is installed and can skip those checks when it is missing; read the test summary. The default suite uses fake provider transports and temporary libraries, not paid API calls or the user's real library.
 
 The real macOS speech smoke test is opt-in:
 
 ```sh
-SPINTAILS_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
+BARDIC_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
 ```
 
 It uses local installed voices and should run in a normal terminal with speech-service access. Live cloud checks are separate user-selected actions. Passing mocks does not prove the current endpoint, model availability, project quota, voice quality or a full-book production.

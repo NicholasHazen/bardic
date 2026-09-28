@@ -28,7 +28,7 @@ function setup() {
     },
   };
   vm.createContext(sandbox);
-  const source = fs.readFileSync(new URL('../spintails/static/app.js', `file://${__filename}`), 'utf8');
+  const source = fs.readFileSync(new URL('../bardic/static/app.js', `file://${__filename}`), 'utf8');
   vm.runInContext(source.split('function clearKeyInputs()')[0] + '\nglobalThis.api={state,fillSettings,fillProviderModels,modelValue,modelPickerChanged,refreshModels};', sandbox);
   sandbox.api.state.status = {
     analysis_provider:'openai',tts_model:'gemini-tts',tts_models:['gemini-tts','gemini-lite-tts'],

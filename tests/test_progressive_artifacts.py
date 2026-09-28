@@ -7,14 +7,14 @@ import zipfile
 import httpx
 import pytest
 
-from spintails import analysis, progressive
-from spintails.artifacts import ArtifactRepository
-from spintails.importer import parse_book
-from spintails.pipeline_view import write_analysis_export
-from spintails.preprocessing import coverage
-from spintails.processing import BudgetReached, ProcessingStore, digest, source_hash
-from spintails.series import SeriesRepository
-from spintails.store import Store
+from bardic import analysis, progressive
+from bardic.artifacts import ArtifactRepository
+from bardic.importer import parse_book
+from bardic.pipeline_view import write_analysis_export
+from bardic.preprocessing import coverage
+from bardic.processing import BudgetReached, ProcessingStore, digest, source_hash
+from bardic.series import SeriesRepository
+from bardic.store import Store
 from test_progressive import FakeProvider, process, story
 
 

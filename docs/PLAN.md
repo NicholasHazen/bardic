@@ -1,6 +1,6 @@
-# Spin Tails implementation plan
+# Bardic implementation plan
 
-**Historical initial plan.** This records the first-version scope and early contracts. The implementation has since added progressive analysis, immutable artifacts, series scheduling, library management and independent simple listening. Use the current [architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md), [API guide](API.md) and [roadmap](ROADMAP.md) for development. The contract and endpoint summaries below are an incomplete historical snapshot, not the current API specification.
+**Historical initial plan, originally written for Spin Tails.** This records the first-version scope and early contracts. The implementation has since added progressive analysis, immutable artifacts, series scheduling, library management and independent simple listening, and is now named Bardic. Use the current [architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md), [API guide](API.md) and [roadmap](ROADMAP.md) for development. The contract and endpoint summaries below are an incomplete historical snapshot, not the current API specification. Original launcher/configuration spellings below are retained as history; use [the upgrade guide](OPERATIONS.md#upgrading-from-spin-tails) for current defaults and aliases.
 
 Build a personal, local audiobook studio, with optional cloud inference. Python 3.12 + FastAPI serves a plain JavaScript browser interface. SQLite stores the library and durable job history; audio and original imports live beside it. No account or hosted service is required.
 

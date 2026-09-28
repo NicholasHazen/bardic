@@ -269,5 +269,5 @@
     return Promise.resolve();
   }
 
-  window.SpinTailsProduction = {render};
+  window.BardicProduction = {render};
 })();

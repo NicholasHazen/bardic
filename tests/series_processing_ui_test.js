@@ -53,8 +53,8 @@ function environment(handler=ordinary){
       const call={url,method:options.method || 'GET',body:options.body ? JSON.parse(options.body):undefined};calls.push(call);
       const result=await handler(call);return {ok:result.ok!==false,status:result.status || 200,json:async()=>{if(result.unreadable)throw new Error('bad JSON');return result.data;}};
     }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../spintails/static/series-processing.js'),'utf8'),scope);
-  return {calls,timers,render:scope.window.SpinTailsSeriesProcessing.render};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/series-processing.js'),'utf8'),scope);
+  return {calls,timers,render:scope.window.BardicSeriesProcessing.render};
 }
 const node=(container,name)=>container.querySelector(`[data-series-${name}]`);
 function submit(container){return container.querySelector('form').listeners.submit({preventDefault(){}});}

@@ -1,4 +1,4 @@
-# Spin Tails
+# Bardic
 
 A local audiobook studio for your fiction library. Import an EPUB or text file, build a cast, direct the performances, and listen while the exact passage is highlighted.
 
@@ -19,10 +19,12 @@ From the checkout root (including an existing `spin-tails` folder):
 
 ```sh
 uv sync --frozen --group dev
-uv run --frozen python -m spintails
+uv run --frozen python -m bardic
 ```
 
-Open **http://127.0.0.1:8765**. The server binds only to your computer. Stop it with Ctrl+C. Set `SPINTAILS_PORT` to choose another port. The Python virtual environment and lockfile keep dependencies reproducible.
+Open **http://127.0.0.1:8765**. The server binds only to your computer. Stop it with Ctrl+C. Set `BARDIC_PORT` to choose another port. The Python virtual environment and lockfile keep dependencies reproducible.
+
+**Upgrading from Spin Tails:** keep your existing checkout and `.env`. The preferred launcher is now `python -m bardic`; `python -m spintails` remains a compatibility launcher. Existing `SPINTAILS_PORT` and `SPINTAILS_DATA_DIR` settings still work. If no data directory is configured, Bardic uses an existing `.spintails/` in place when `.bardic/` is absent. No library move or database migration is required for the rename. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
 
 ## Try it
 
@@ -56,7 +58,7 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 ```
 
-`python -m spintails` automatically loads this project's `.env` at startup, including when launched with `uv run --frozen`. Restart the server after editing it. Existing shell environment variables override matching `.env` entries; values are read literally without variable interpolation. The loader does not search parent folders. `.env` is excluded from Git.
+`python -m bardic` automatically loads this project's `.env` at startup, including when launched with `uv run --frozen`. Restart the server after editing it. Existing shell environment variables override matching `.env` entries; values are read literally without variable interpolation. The loader does not search parent folders. `.env` is excluded from Git.
 
 You can also enter keys in **Settings** for the current server session. Those changes are kept in memory, never written to `.env`, SQLite, or browser storage. Clearing a key affects only that session; a restart reloads any configured file or environment key. Gemini keys are also accepted as `GOOGLE_API_KEY`.
 
@@ -107,17 +109,17 @@ The [research and implementation plan](docs/PROGRESSIVE-ANALYSIS-PLAN.md) record
 
 ## Data and development
 
-Data defaults to `.spintails/` in the working directory: SQLite library/job history, original uploads, and audio. Override with `SPINTAILS_DATA_DIR`. Back up that directory with the app stopped. The UI remembers reading position in this browser's local storage.
+New libraries default to `.bardic/` in the working directory: SQLite library/job history, original uploads, and audio. An existing `.spintails/` is reused when `.bardic/` is absent and no data directory is configured. Override with `BARDIC_DATA_DIR`. Back up the active directory with the app stopped. The UI remembers reading position in this browser's local storage and can read saved Spin Tails preferences.
 
 ```sh
 uv run --frozen pytest -q
 node --test tests/*_test.js tests/*.test.cjs
 # Optional real macOS narration and assembly smoke test:
-SPINTAILS_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
+BARDIC_TEST_SYSTEM_AUDIO=1 uv run --frozen pytest -q tests/test_audio.py
 ```
 
 Tests cover EPUB safety/spine order, Unicode source integrity, conservative attribution, model-result validation, audio contracts, cache reuse/invalidation, exports, and restart recovery. Cloud API behavior is tested with recorded-shape mocks; live paid inference needs your key. The local voice smoke test must run in a normal terminal with access to macOS speech services.
 
 See the current [architecture](docs/ARCHITECTURE.md), [data model](docs/DATA-MODEL.md), [API guide](docs/API.md), [operations guide](docs/OPERATIONS.md), and [roadmap](docs/ROADMAP.md). [Design decisions](docs/DECISIONS.md) explain the tradeoffs; [pipeline research](docs/RESEARCH-PIPELINE.md) and [voice research](docs/RESEARCH-VOICE.md) preserve dated external findings. The application uses FastAPI, SQLite, plain JavaScript, and standard WAV files: no frontend build step, hosted database, or account system.
 
-The [GitHub repository](https://github.com/NicholasHazen/bardic) contains source, tests, documentation and the dependency lockfile. The repository is named `bardic`; the current application/package is still named Spin Tails / `spintails`. Personal ebooks, database/media state, credentials, exports and local validation captures are excluded. No project license has been selected. Use synthetic/original excerpts for shared tests; see [contributing](CONTRIBUTING.md).
+The [GitHub repository](https://github.com/NicholasHazen/bardic) contains source, tests, documentation and the dependency lockfile. The application is named **Bardic**, with the Python package `bardic`. Personal ebooks, database/media state, credentials, exports and local validation captures are excluded. No project license has been selected. Use synthetic/original excerpts for shared tests; see [contributing](CONTRIBUTING.md).

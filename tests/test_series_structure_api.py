@@ -4,8 +4,8 @@ from copy import deepcopy
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.staged_analysis import fingerprint
+from bardic.app import create_app
+from bardic.staged_analysis import fingerprint
 from test_structure import epub, toc
 
 
@@ -13,7 +13,7 @@ from test_structure import epub, toc
 def client(tmp_path, monkeypatch):
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
     with TestClient(create_app(tmp_path)) as test_client:
         yield test_client
 

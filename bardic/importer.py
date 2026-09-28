@@ -465,5 +465,5 @@ Elias untied the rope. The boat slid into the fog, and the lantern laid a narrow
 '''
     book = parse_book("The Last Light.txt", text.encode())
     book["title"] = "The Last Light"
-    book["author"] = "An original Spin Tails demonstration"
+    book["author"] = "An original Bardic demonstration"
     return book

@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
+from bardic.app import create_app
 from test_progressive import FakeProvider
 from test_staged_api import import_book,wait_job
 
@@ -14,7 +14,7 @@ from test_staged_api import import_book,wait_job
 def client(tmp_path,monkeypatch):
     for name in ('GEMINI_API_KEY','GOOGLE_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY'):
         monkeypatch.delenv(name,raising=False)
-    monkeypatch.setattr('spintails.app.list_system_voices',lambda:[])
+    monkeypatch.setattr('bardic.app.list_system_voices',lambda:[])
     with TestClient(create_app(tmp_path)) as client:
         yield client
 
@@ -69,7 +69,7 @@ def test_explicit_full_phase_and_limits_reach_worker_unchanged(client,monkeypatc
     def analyze(source,provider,key,model,progress,cancelled,**options):
         calls.append(options)
         return deepcopy(source)
-    monkeypatch.setattr('spintails.app.analyze_book',analyze)
+    monkeypatch.setattr('bardic.app.analyze_book',analyze)
     client.post('/api/settings',json={'api_keys':{'anthropic':'fake-key'},'preprocess_models_by_provider':{'anthropic':'custom-fast'}})
     limits={'max_requests':3,'max_input_tokens':10000,'max_output_tokens':9000,'budget_usd':None}
     response=client.post(f"/api/books/{book['id']}/analyze",json={'provider':'anthropic','phase':'full','limits':limits})

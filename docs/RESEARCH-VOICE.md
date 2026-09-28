@@ -21,7 +21,7 @@ Source: [Google speech generation guide](https://ai.google.dev/gemini-api/docs/s
 
 Source: [Gemini 3.8 Flash TTS model](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts), [legacy 3.1 model](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-tts-preview).
 
-`spintails/audio.py` calls `POST https://generativelanguage.googleapis.com/v1beta/interactions` with the key in the `x-goog-api-key` header. Current-model requests contain user-input text items, optional `speech_metadata` annotations with `style`, an audio response format, and a voice in `generation_config.speech_config`. The parser reads the last model-output audio block from `steps[].content[]`.
+`bardic/audio.py` calls `POST https://generativelanguage.googleapis.com/v1beta/interactions` with the key in the `x-goog-api-key` header. Current-model requests contain user-input text items, optional `speech_metadata` annotations with `style`, an audio response format, and a voice in `generation_config.speech_config`. The parser reads the last model-output audio block from `steps[].content[]`.
 
 Current unary output defaults to a complete 24 kHz, mono, 16-bit PCM WAV. Older 3.1 output defaults to raw PCM and must receive a WAV container. The adapter distinguishes the actual container/MIME type; it does not prepend a second header. Legacy calls use a natural-language transcript prompt rather than 3.8's structured speech metadata.
 
@@ -69,7 +69,7 @@ Validation detects corrupt, truncated, empty, and entirely silent takes. It does
 Routine tests use mocked provider responses and require no API key. A real macOS narration and assembly smoke test passed on the development host. To repeat it:
 
 ```sh
-SPINTAILS_TEST_SYSTEM_AUDIO=1 .venv/bin/python -m pytest tests/test_audio.py::test_real_macos_narration_and_assembly -q
+BARDIC_TEST_SYSTEM_AUDIO=1 .venv/bin/python -m pytest tests/test_audio.py::test_real_macos_narration_and_assembly -q
 ```
 
 Run that optional check outside a tool sandbox that blocks the macOS speech service. In the restricted development sandbox, `say` returned success with a zero-frame file; validation correctly rejected it. Ordinary application execution outside that sandbox produced a valid audible take.

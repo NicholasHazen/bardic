@@ -3,11 +3,11 @@ from copy import deepcopy
 
 import pytest
 
-from spintails import preprocessing
-from spintails.importer import parse_book
-from spintails.preprocessing import census, coverage, eligible_chapters
-from spintails.processing import ProcessingStore, source_hash
-from spintails.store import Store
+from bardic import preprocessing
+from bardic.importer import parse_book
+from bardic.preprocessing import census, coverage, eligible_chapters
+from bardic.processing import ProcessingStore, source_hash
+from bardic.store import Store
 
 
 @pytest.fixture

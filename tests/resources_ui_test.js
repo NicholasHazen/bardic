@@ -25,8 +25,8 @@ function env(handler) {
     calls.push({url,method:options.method});
     return handler ? handler(url) : {ok:true,json:async () => data(Number(new URL(url,'http://localhost').searchParams.get('offset')))};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../spintails/static/resources.js'),'utf8'),scope);
-  return {calls,render:scope.window.SpinTailsResources.render,advance:n=>{now+=n;}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/resources.js'),'utf8'),scope);
+  return {calls,render:scope.window.BardicResources.render,advance:n=>{now+=n;}};
 }
 function click(container, action) { const node = {dataset:{resourceAction:action},disabled:false}; container.listeners.click({target:{closest:()=>node}}); }
 (async () => {

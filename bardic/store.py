@@ -250,7 +250,7 @@ class InstanceLock:
                 fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self.file.close()
-            raise RuntimeError("Spin Tails is already using this data directory. Open the running app or stop it before starting another server.") from None
+            raise RuntimeError("Bardic is already using this data directory. Open the running app or stop it before starting another server.") from None
 
     def close(self):
         self.file.close()

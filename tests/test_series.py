@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from spintails.series import SeriesRepository, source_hash
-from spintails.store import Store
+from bardic.series import SeriesRepository, source_hash
+from bardic.store import Store
 
 
 def book(book_id, text="Mira spoke softly."):

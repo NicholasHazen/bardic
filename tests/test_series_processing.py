@@ -6,8 +6,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.processing import BudgetReached
+from bardic.app import create_app
+from bardic.processing import BudgetReached
 from test_app import import_text, wait_job
 
 
@@ -15,7 +15,7 @@ from test_app import import_text, wait_job
 def client(tmp_path, monkeypatch):
     for name in ('GEMINI_API_KEY','GOOGLE_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY'):
         monkeypatch.delenv(name,raising=False)
-    monkeypatch.setattr('spintails.app.list_system_voices',lambda:[])
+    monkeypatch.setattr('bardic.app.list_system_voices',lambda:[])
     with TestClient(create_app(tmp_path)) as client:
         client.app.state.runtime.api_keys['openai']='private-test-key'
         yield client
@@ -36,7 +36,7 @@ def test_plan_never_sends_text_and_incomplete_series_can_start_at_nine(client,mo
     client.put(f"/api/books/{books[0]['id']}/series",json={'series_id':series['id'],'position':9.0})
     assert client.put(f"/api/series/{series['id']}/volumes",json={'position':1,'title':'Earlier book','status':'missing'}).status_code==200
     def forbidden(*args,**kwargs): pytest.fail('Preview cannot call a model')
-    monkeypatch.setattr('spintails.analysis.analyze_book',forbidden)
+    monkeypatch.setattr('bardic.analysis.analyze_book',forbidden)
     response=client.post(f"/api/series/{series['id']}/plan",json={'provider':'openai','phase':'full'})
     assert response.status_code==200,response.text
     plan=response.json()
@@ -64,7 +64,7 @@ def test_parallel_scans_then_ordered_interpretation_reserves_every_book(client,m
             if phase=='scan': active-=1
             calls.append((book['id'],phase,'end',options['run_id']))
         return deepcopy(book)
-    monkeypatch.setattr('spintails.analysis.analyze_book',fake)
+    monkeypatch.setattr('bardic.analysis.analyze_book',fake)
     response=client.post(f"/api/series/{series['id']}/process",json={'provider':'openai','phase':'full','concurrency':2})
     assert response.status_code==200,response.text
     parent=wait_job(client,response.json()['id'])
@@ -86,7 +86,7 @@ def test_budget_failure_does_not_start_later_books_and_history_remains(client,mo
     calls=[]
     def fail(book,*args,**options):
         calls.append(book['id']);raise BudgetReached('Allowance reached')
-    monkeypatch.setattr('spintails.analysis.analyze_book',fail)
+    monkeypatch.setattr('bardic.analysis.analyze_book',fail)
     result=client.post(f"/api/series/{series['id']}/process",json={'provider':'openai','phase':'full','concurrency':1}).json()
     parent=wait_job(client,result['id'])
     assert parent['status']=='failed'
@@ -107,7 +107,7 @@ def test_cancel_parent_cancels_children_and_blocks_book_edit_until_finished(clie
         while not cancelled() and time.monotonic()<deadline: time.sleep(.005)
         if cancelled(): raise InterruptedError('Stopped')
         pytest.fail('Cancellation did not propagate')
-    monkeypatch.setattr('spintails.analysis.analyze_book',wait_cancel)
+    monkeypatch.setattr('bardic.analysis.analyze_book',wait_cancel)
     parent=client.post(f"/api/series/{series['id']}/process",json={'provider':'openai','phase':'scan'}).json()
     assert started.wait(2)
     assert client.patch(f"/api/books/{books[0]['id']}/metadata",json={'title':'Changed','author':''}).status_code==409
@@ -122,7 +122,7 @@ def test_archived_books_and_placeholders_are_not_scheduled(client,monkeypatch):
     assert client.post(f"/api/books/{books[0]['id']}/archive").status_code==200
     calls=[]
     def fake(book,*args,**kwargs):calls.append(book['id']);return deepcopy(book)
-    monkeypatch.setattr('spintails.analysis.analyze_book',fake)
+    monkeypatch.setattr('bardic.analysis.analyze_book',fake)
     result=client.post(f"/api/series/{series['id']}/process",json={'provider':'openai','phase':'scan'}).json()
     assert wait_job(client,result['id'])['status']=='completed'
     assert calls==[books[1]['id']]

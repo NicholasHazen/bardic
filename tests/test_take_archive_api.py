@@ -5,8 +5,8 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.audio import AudioError, render_fingerprint
+from bardic.app import create_app
+from bardic.audio import AudioError, render_fingerprint
 from test_app import import_text, wait_job
 from test_take_archive import fake_renderer, wav_bytes
 
@@ -15,7 +15,7 @@ from test_take_archive import fake_renderer, wav_bytes
 def client(tmp_path, monkeypatch):
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
     with TestClient(create_app(tmp_path)) as client:
         client.post("/api/settings", json={"api_key": "fake-key"})
         yield client
@@ -33,7 +33,7 @@ def test_forced_takes_remain_accessible_and_latest_take_is_exported(client, monk
     takes = []
     for sample in (16, 32):
         data = wav_bytes(sample)
-        monkeypatch.setattr("spintails.app.synthesize", fake_renderer(data))
+        monkeypatch.setattr("bardic.app.synthesize", fake_renderer(data))
         assert render(client, book["id"], force=True)["status"] == "completed"
         take = client.get(base).json()["segments"][0]["audio"]
         takes.append(take)
@@ -61,7 +61,7 @@ def test_no_force_reuses_selected_asset_before_legacy_recipe_cache(client, monke
     legacy.parent.mkdir(parents=True)
     legacy.write_bytes(wav_bytes(16))
     calls = []
-    monkeypatch.setattr("spintails.app.synthesize", fake_renderer(wav_bytes(32), calls))
+    monkeypatch.setattr("bardic.app.synthesize", fake_renderer(wav_bytes(32), calls))
     assert render(client, book["id"])["status"] == "completed"
     assert calls == []  # Pre-archive libraries retain their recipe cache.
     base = f"/api/books/{book['id']}"
@@ -80,7 +80,7 @@ def test_no_force_reuses_selected_asset_before_legacy_recipe_cache(client, monke
 def test_failed_force_keeps_selected_take_and_removes_partial_output(client, monkeypatch):
     book = import_text(client, "The lamp flickered.")
     base = f"/api/books/{book['id']}"
-    monkeypatch.setattr("spintails.app.synthesize", fake_renderer(wav_bytes()))
+    monkeypatch.setattr("bardic.app.synthesize", fake_renderer(wav_bytes()))
     assert render(client, book["id"])["status"] == "completed"
     before = client.get(base).json()["segments"][0]["audio"]
 
@@ -88,7 +88,7 @@ def test_failed_force_keeps_selected_take_and_removes_partial_output(client, mon
         args[-1].write_bytes(b"unfinished")
         raise AudioError("Provider stopped")
 
-    monkeypatch.setattr("spintails.app.synthesize", fail)
+    monkeypatch.setattr("bardic.app.synthesize", fail)
     assert render(client, book["id"], force=True)["status"] == "failed"
     assert client.get(base).json()["segments"][0]["audio"] == before
     assert client.get(before["url"]).content == wav_bytes()
@@ -99,7 +99,7 @@ def test_failed_force_keeps_selected_take_and_removes_partial_output(client, mon
 def test_edit_invalidates_selected_playback_but_retains_archived_audio(client, monkeypatch):
     book = import_text(client, "The lamp flickered.")
     base = f"/api/books/{book['id']}"
-    monkeypatch.setattr("spintails.app.synthesize", fake_renderer(wav_bytes()))
+    monkeypatch.setattr("bardic.app.synthesize", fake_renderer(wav_bytes()))
     assert render(client, book["id"])["status"] == "completed"
     before = client.get(base).json()["segments"][0]["audio"]
     edited = client.patch(f"{base}/segments/{book['segments'][0]['id']}", json={"direction": "Speak slowly"})
@@ -115,16 +115,16 @@ def test_restoring_performance_reuses_archived_take_without_provider_call(client
     book = import_text(client, 'The lamp flickered.')
     base = f"/api/books/{book['id']}"
     segment = book['segments'][0]
-    monkeypatch.setattr('spintails.app.synthesize', fake_renderer(wav_bytes(16)))
+    monkeypatch.setattr('bardic.app.synthesize', fake_renderer(wav_bytes(16)))
     assert render(client, book['id'])['status'] == 'completed'
     original = client.get(base).json()['segments'][0]['audio']
     assert client.patch(f"{base}/segments/{segment['id']}", json={'direction': 'Speak slowly'}).status_code == 200
-    monkeypatch.setattr('spintails.app.synthesize', fake_renderer(wav_bytes(32)))
+    monkeypatch.setattr('bardic.app.synthesize', fake_renderer(wav_bytes(32)))
     assert render(client, book['id'])['status'] == 'completed'
     assert client.patch(f"{base}/segments/{segment['id']}", json={'direction': segment.get('direction', '')}).status_code == 200
     def no_generation(*args):
         pytest.fail('Restored performance must reuse its retained audio')
-    monkeypatch.setattr('spintails.app.synthesize', no_generation)
+    monkeypatch.setattr('bardic.app.synthesize', no_generation)
     job = render(client, book['id'])
     assert job['status'] == 'completed', job
     assert client.get(base).json()['segments'][0]['audio'] == original

@@ -4,8 +4,8 @@ import wave
 
 import pytest
 
-from spintails.audio import AudioError, DEFAULT_TTS_MODEL, render_fingerprint
-from spintails.take_archive import produce_take
+from bardic.audio import AudioError, DEFAULT_TTS_MODEL, render_fingerprint
+from bardic.take_archive import produce_take
 
 
 @pytest.fixture

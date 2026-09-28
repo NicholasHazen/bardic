@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
-const source=fs.readFileSync(path.join(__dirname,'../spintails/static/app.js'),'utf8');
+const source=fs.readFileSync(path.join(__dirname,'../bardic/static/app.js'),'utf8');
 function between(start,end){ const a=source.indexOf(start),b=source.indexOf(end,a+start.length); assert.ok(a>=0&&b>a,`${start} boundaries`); return source.slice(a,b); }
 const functions=[
   between('function stopAudio(', 'function renderLibrary('),
@@ -29,7 +29,7 @@ function environment(ensure){
     ensure:async(book,segment)=>{calls.ensures.push(segment.id);const value=await ensure(book,segment);if(value)takes.set(segment.id,value);return value;},
     stop:()=>{calls.stops++;},render:(_node,_book,hooks)=>{readerHooks=hooks;},allowsAdvance:(_book,a,b)=>a.chapter_id===b.chapter_id};
   const $=selector=>{if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',hidden:false,disabled:false,classList:{toggle(){}},setAttribute(){}});return nodes.get(selector);};
-  const context={state,audio,window:{SpinTailsListen:listen},$, $$:()=>[],icon:name=>name,formatTime:value=>String(value),
+  const context={state,audio,window:{BardicListen:listen},$, $$:()=>[],icon:name=>name,formatTime:value=>String(value),
     escapeHTML:value=>String(value??''),toast:message=>calls.toasts.push(message),saveProgress:()=>calls.saves++,
     updateHighlight:()=>{},renderStudio:()=>{},renderJob:()=>{},pollJobs:()=>{}};
   vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false;\n${helpers}\n${functions}\n`+

@@ -1,6 +1,6 @@
 # Local API guide
 
-The API is implemented in [app.py](../spintails/app.py). It is a local application interface, not a hosted public service. Examples assume `http://127.0.0.1:8765`; use the alternate port of your isolated development server when testing. See [DEVELOPMENT](DEVELOPMENT.md) for launching with a temporary library and no cloud keys.
+The API is implemented in [app.py](../bardic/app.py). It is a local application interface, not a hosted public service. Examples assume `http://127.0.0.1:8765`; use the alternate port of your isolated development server when testing. See [DEVELOPMENT](DEVELOPMENT.md) for launching with a temporary library and no cloud keys.
 
 ## Source of truth and conventions
 
@@ -58,7 +58,7 @@ A preference-only request:
 }
 ```
 
-Analysis model IDs may be custom syntactically valid IDs; the provider validates actual support when used. IDs contain 1–200 letters, digits, dots, underscores, colons, or hyphens, starting with a letter or digit. Key values are limited to 500 characters. TTS choices are restricted to the app's configured list. Prefer `/api/status` over assuming a fixed list. Identical account checks reuse an in-memory result for 30 seconds; checks are tied to the key/model configuration. Details: [provider setup](ANALYSIS-PROVIDERS.md), [account checks](ACCOUNT-CHECKS.md), [model catalog source](../spintails/model_catalog.py).
+Analysis model IDs may be custom syntactically valid IDs; the provider validates actual support when used. IDs contain 1–200 letters, digits, dots, underscores, colons, or hyphens, starting with a letter or digit. Key values are limited to 500 characters. TTS choices are restricted to the app's configured list. Prefer `/api/status` over assuming a fixed list. Identical account checks reuse an in-memory result for 30 seconds; checks are tied to the key/model configuration. Details: [provider setup](ANALYSIS-PROVIDERS.md), [account checks](ACCOUNT-CHECKS.md), [model catalog source](../bardic/model_catalog.py).
 
 ## Books and library lifecycle
 
@@ -83,7 +83,7 @@ curl --fail --request POST http://127.0.0.1:8765/api/books \
   --form 'file=@/absolute/path/to/synthetic-story.txt;type=text/plain'
 ```
 
-There is no destructive book-delete endpoint. Archiving does not reclaim disk space; saved assets remain readable. Active processing and most edits reject archived books. Counts distinguish narrative chapters from other sections. Library `database_payload_bytes` does not apportion SQLite pages/indexes/free space exactly; shared database/WAL/SHM bytes are reported separately. Sources: [library.py](../spintails/library.py), [structure guide](STRUCTURE.md), [library tests](../tests/test_library_api.py).
+There is no destructive book-delete endpoint. Archiving does not reclaim disk space; saved assets remain readable. Active processing and most edits reject archived books. Counts distinguish narrative chapters from other sections. Library `database_payload_bytes` does not apportion SQLite pages/indexes/free space exactly; shared database/WAL/SHM bytes are reported separately. Sources: [library.py](../bardic/library.py), [structure guide](STRUCTURE.md), [library tests](../tests/test_library_api.py).
 
 ## Per-book analysis and review
 
@@ -128,7 +128,7 @@ Send that first to `/analysis-plan`. Dispatching it to `/analyze` with a cloud p
 
 Limits default to 25 requests, 1,000,000 input tokens, 100,000 output tokens, and a $1 tracked book allowance. Request cap: 1–1,000. Input cap: 1,000–10,000,000. Output cap: 1,000–2,000,000. Dollar cap: greater than zero and at most 1,000, or explicit `null` to use request/token caps without a dollar guard. The dollar guard includes prior tracked analysis for this book; request/token limits apply to the run. Unknown prices can prevent a guarded run. These limits do not cap TTS spending or represent account credit.
 
-Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is not replaced by model output. Whole-book scan coverage and profile freshness are separate. See [progressive.py](../spintails/progressive.py), [processing.py](../spintails/processing.py), and [chapter analysis](CHAPTER-ANALYSIS.md).
+Accepted units and completed chapter work survive later failures. Human edits remain authoritative, affected enhanced takes become stale, and source text is not replaced by model output. Whole-book scan coverage and profile freshness are separate. See [progressive.py](../bardic/progressive.py), [processing.py](../bardic/processing.py), and [chapter analysis](CHAPTER-ANALYSIS.md).
 
 Review field bounds: character names are 1–100 characters, descriptions/directions at most 3,000, and voice IDs at most 200. Scene titles are 1–200, summaries at most 4,000, tone at most 1,000, and directions at most 3,000. Passage directions are at most 3,000; `aliases` and `cues` are string arrays. These review endpoints ignore omitted or `null` fields; use an empty string or array to clear an allowed value. Character creation enforces a nonempty `name` even though it shares the optional-field edit DTO.
 
@@ -159,7 +159,7 @@ A membership request uses a JSON number, not a numeric string:
 
 Positions are finite numbers from 0 through 1,000,000; decimals support prequels and side stories. Duplicate supplied-book positions are rejected. Assigning a real book at a placeholder position replaces that placeholder. Detaching or moving to another series removes that book's active identity links. Archived membership/history is retained for restoration.
 
-Names alone never establish cross-book identity. Context excludes later volumes, unconfirmed links, unavailable/archived source volumes, and invalidated evidence. Its default bound is an implementation choice in [series.py](../spintails/series.py), not a request parameter on the HTTP route.
+Names alone never establish cross-book identity. Context excludes later volumes, unconfirmed links, unavailable/archived source volumes, and invalidated evidence. Its default bound is an implementation choice in [series.py](../bardic/series.py), not a request parameter on the HTTP route.
 
 ## Series preview and execution
 
@@ -181,7 +181,7 @@ The server recomputes the plan under its store lock and compares the supplied fi
 
 The start response is a parent series job. `GET /api/series/{series_id}/runs` returns `{"runs":[...]}` with up to 20 parent runs and their child job records. The parent uses `book_id: "series:SERIES_ID"`; child jobs use actual book IDs. Discovery may run on two independent books; profiles/direction use reading order. Missing/planned/archived books do not run. A failed or allowance-limited book stops new work; already finished outputs remain reusable. Full-run phases share each book's run request/token caps, while its dollar allowance includes earlier tracked spend.
 
-Source: [series_processing.py](../spintails/series_processing.py). Contract tests: [test_series_processing.py](../tests/test_series_processing.py), [series UI tests](../tests/series_processing_ui_test.js).
+Source: [series_processing.py](../bardic/series_processing.py). Contract tests: [test_series_processing.py](../tests/test_series_processing.py), [series UI tests](../tests/series_processing_ui_test.js).
 
 ## Jobs and cancellation
 
@@ -217,7 +217,7 @@ For Gemini, select `provider: "gemini"`, a supported voice/model, or omit `model
 
 A cache hit returns `{"session":{...},"audio":{...},"cached":true}` immediately, even if the provider key/device is no longer available. New work returns `{"session":{...},"job":{...},"cached":false}`. Poll that job; when completed its `audio` includes `url`, duration, provider/model/voice, asset/recipe identity, and `mode: "simple"`. Failure/cancellation remains a job outcome. Finished simple audio can be recovered through `/listen/takes` after cancellation.
 
-The API creates only the requested passage. The browser controls sequential playback and stops simple autoplay at the chapter boundary. Simple listening has no separate TTS budget field in its request. Analysis ZIPs include saved simple-listening session/take metadata when those tables exist; neither export includes the separate simple-listening WAVs. Audiobook ZIPs package enhanced production audio. Sources: [audio.py](../spintails/audio.py), [take archive](../spintails/take_archive.py), [listening.py](../spintails/listening.py), [listening API tests](../tests/test_listen_api.py).
+The API creates only the requested passage. The browser controls sequential playback and stops simple autoplay at the chapter boundary. Simple listening has no separate TTS budget field in its request. Analysis ZIPs include saved simple-listening session/take metadata when those tables exist; neither export includes the separate simple-listening WAVs. Audiobook ZIPs package enhanced production audio. Sources: [audio.py](../bardic/audio.py), [take archive](../bardic/take_archive.py), [listening.py](../bardic/listening.py), [listening API tests](../tests/test_listen_api.py).
 
 ## Pipeline inspection, artifacts, graph, search, and portable export
 
@@ -234,7 +234,7 @@ Search accepts 1–300 characters and scopes `book` or `earlier`. The latter inc
 
 Artifact metadata includes kind/logical key/stage, creation time, provider/model where recorded, `is_current`, schema version, and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge. The pipeline is an inspector, not a generic dependency scheduler. Its stage counts have different units and must not be summed into a global completion percentage.
 
-The analysis ZIP includes all retained versions belonging to the selected book and the transitive artifact dependencies needed by them, which can include source excerpts/observations from earlier books. When their tables exist, `resource-operations.json`, `listening-sessions.json`, and `listening-takes.json` contain the selected book's saved metadata (possibly empty arrays). Take metadata identifies separately stored audio assets; the ZIP excludes all audio binaries, API keys, and settings credentials. Some legacy outputs lack original prompts or exact attempt provenance; the export marks that absence rather than reconstructing it. See [storage/export details](ARTIFACTS-AND-STORAGE.md), [export implementation](../spintails/pipeline_view.py), and [pipeline API tests](../tests/test_pipeline_view_api.py).
+The analysis ZIP includes all retained versions belonging to the selected book and the transitive artifact dependencies needed by them, which can include source excerpts/observations from earlier books. When their tables exist, `resource-operations.json`, `listening-sessions.json`, and `listening-takes.json` contain the selected book's saved metadata (possibly empty arrays). Take metadata identifies separately stored audio assets; the ZIP excludes all audio binaries, API keys, and settings credentials. Some legacy outputs lack original prompts or exact attempt provenance; the export marks that absence rather than reconstructing it. See [storage/export details](ARTIFACTS-AND-STORAGE.md), [export implementation](../bardic/pipeline_view.py), and [pipeline API tests](../tests/test_pipeline_view_api.py).
 
 ## Resource accounting
 
@@ -248,4 +248,4 @@ The analysis ZIP includes all retained versions belonging to the selected book a
 
 Operations distinguish request count, reported tokens/cache tokens, retained estimates/reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes, and cache reuse. Missing measurements stay `null`/unknown and are accompanied by coverage counters. Historical runs can exist without measurements. Recorded analysis attempts are the analysis ledger; local/narration operations supplement them without double-counting.
 
-Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs, and remote machines. Cached work does not represent another provider call. Source: [resources.py](../spintails/resources.py); tests: [test_resources.py](../tests/test_resources.py).
+Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs, and remote machines. Cached work does not represent another provider call. Source: [resources.py](../bardic/resources.py); tests: [test_resources.py](../tests/test_resources.py).

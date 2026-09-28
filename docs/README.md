@@ -1,16 +1,17 @@
 # Documentation map
 
-Spin Tails is a local-first ebook analysis, audiobook production and read-along app. This directory documents the implemented system and the work still needed. Current reference pages describe the code at the initial repository baseline, September 27, 2026. Model and pricing research is dated separately.
+Bardic is a local-first ebook analysis, audiobook production and read-along app, originally named Spin Tails. This directory documents the implemented system and the work still needed. Current reference pages include the Bardic rename following the September 27, 2026 repository baseline. Model and pricing research is dated separately.
 
 ## Choose a starting point
 
 | I want to… | Start with |
 | --- | --- |
 | Run the app and use my library | [Project README](../README.md), [operations](OPERATIONS.md) |
+| Update an existing Spin Tails installation | [Rename and compatibility details](OPERATIONS.md#upgrading-from-spin-tails) |
 | Understand the implementation | [Architecture](ARCHITECTURE.md), [data model](DATA-MODEL.md) |
 | Make a change as a human | [Contributing](../CONTRIBUTING.md), [development](DEVELOPMENT.md) |
 | Make a change as an agent | [AGENTS.md](../AGENTS.md), then the same architecture/development references |
-| Call or change an endpoint | [API guide](API.md), the app's `/openapi.json`, and [app.py](../spintails/app.py); Swagger/ReDoc pages are disabled |
+| Call or change an endpoint | [API guide](API.md), the app's `/openapi.json`, and [app.py](../bardic/app.py); Swagger/ReDoc pages are disabled |
 | Plan the next work | [Roadmap](ROADMAP.md), [decisions](DECISIONS.md) |
 | Inspect provenance and reusable outputs | [Data model](DATA-MODEL.md), [artifacts and storage](ARTIFACTS-AND-STORAGE.md) |
 | Understand series, library controls and simple listening | [Library, listening and resources](LIBRARY-LISTENING-RESOURCES.md) |

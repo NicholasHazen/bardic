@@ -197,5 +197,5 @@
     container.querySelector('[data-series-runs]').addEventListener('click',event=>cancel(panel,event));
     return refresh(panel);
   }
-  window.SpinTailsSeriesProcessing = {render};
+  window.BardicSeriesProcessing = {render};
 })();

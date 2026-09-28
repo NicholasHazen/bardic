@@ -3,7 +3,7 @@ import zipfile
 
 import pytest
 
-from spintails.importer import MAX_SEGMENT, make_demo_book, parse_book
+from bardic.importer import MAX_SEGMENT, make_demo_book, parse_book
 
 
 def epub_file(*, chapters=None, spine=None, extras=None, metadata=""):

@@ -41,7 +41,7 @@
     const initials = (book.title || 'Book').trim().split(/\s+/).slice(0,2).map(word => [...word][0]).join('').toUpperCase();
     // Derive the trusted same-origin route instead of accepting arbitrary image URLs.
     return book.cover ? `<img class="library-cover" src="/api/books/${path(book.id)}/cover?v=${path(book.cover.sha256 || '')}" alt="Cover of ${escape(book.title)}" loading="lazy">`
-      : `<div class="library-cover library-cover-fallback" aria-label="No cover available"><span>${escape(initials)}</span><small>Spin Tails</small></div>`;
+      : `<div class="library-cover library-cover-fallback" aria-label="No cover available"><span>${escape(initials)}</span><small>Bardic</small></div>`;
   }
   function removeControl(kind, id, archived) {
     return archived ? `<button type="button" class="button subtle" data-library-action="restore-${kind}" data-library-id="${escape(id)}">Restore ${kind}</button>`
@@ -133,5 +133,5 @@
     return Promise.resolve();
   }
   function refresh(container) { const panel = panels.get(container); return panel ? load(panel) : Promise.resolve(); }
-  window.SpinTailsLibrary = {render, refresh};
+  window.BardicLibrary = {render, refresh};
 })();

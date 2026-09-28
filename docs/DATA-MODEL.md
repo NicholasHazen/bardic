@@ -41,7 +41,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 
 ## Current book projection
 
-`books.body` stores a JSON object with these principal fields. Optional analysis/version fields evolve through processing; inspect [importer.py](../spintails/importer.py), [analysis.py](../spintails/analysis.py), and [progressive.py](../spintails/progressive.py) before changing their shape.
+`books.body` stores a JSON object with these principal fields. Optional analysis/version fields evolve through processing; inspect [importer.py](../bardic/importer.py), [analysis.py](../bardic/analysis.py), and [progressive.py](../bardic/progressive.py) before changing their shape.
 
 | Field | Meaning |
 | --- | --- |
@@ -60,7 +60,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../spintails/store.py), [series.py](../spintails/series.py), [library.py](../spintails/library.py), [processing.py](../spintails/processing.py), [artifacts.py](../spintails/artifacts.py), [listening.py](../spintails/listening.py), [resources.py](../spintails/resources.py), and [search.py](../spintails/search.py). `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [resources.py](../bardic/resources.py), and [search.py](../bardic/search.py). `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -192,7 +192,7 @@ Migration currently uses additive table/index/trigger initialization and targete
 
 ## Files, exports, and backups
 
-The default root is `.spintails/`, configurable with `SPINTAILS_DATA_DIR`. The entry point loads the project-root `.env`; an existing shell environment takes precedence. A relative data root resolves from the process working directory.
+New libraries default to `.bardic/`, configurable with `BARDIC_DATA_DIR` (legacy alias `SPINTAILS_DATA_DIR`). With neither variable configured, an existing `.spintails/` directory is reused in place if `.bardic/` is absent. The entry point loads the project-root `.env`; an existing shell environment takes precedence even across these aliases. A relative data root resolves from the process working directory. The product rename moves no files and changes no database schema; see [upgrade details](OPERATIONS.md#upgrading-from-spin-tails).
 
 ```text
 <data-root>/
@@ -214,6 +214,8 @@ Library storage reports measure original/enhanced/simple-audio files. Per-book d
 An artifact snapshot captures a supported scope at a point in its content history. A collection of snapshots is useful for reuse and inspection but is not guaranteed to reconstruct every job, preference, thumbnail, or filesystem object. Current reader JSON and immutable historical inputs must both be retained when exporting reusable knowledge.
 
 ### Portable analysis bundle
+
+The manifest's format identifier remains `spintails-analysis` with schema version `1`. It is a retained interchange contract, independent of the Bardic display/package name. Existing exports and consumers do not require a format migration for the rename.
 
 `/api/books/{book_id}/analysis-export` includes:
 

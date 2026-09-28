@@ -5,13 +5,13 @@ import re
 
 import pytest
 
-from spintails import analysis as a
-from spintails.importer import parse_book
-from spintails.preprocessing import coverage
-from spintails.processing import ProcessingStore, source_hash
-from spintails.progressive import discoveries, plan, profile_specs, run
-from spintails.series import SeriesRepository
-from spintails.store import Store
+from bardic import analysis as a
+from bardic.importer import parse_book
+from bardic.preprocessing import coverage
+from bardic.processing import ProcessingStore, source_hash
+from bardic.progressive import discoveries, plan, profile_specs, run
+from bardic.series import SeriesRepository
+from bardic.store import Store
 
 
 def json_after(prompt, marker):
@@ -339,7 +339,7 @@ def test_importing_old_checkpoint_cannot_promote_old_unit_over_newer_accepted_re
 
 
 def test_dense_long_chapter_uses_prose_chunks_and_keeps_complete_coverage(tmp_path,monkeypatch):
-    from spintails.progressive import discovery_specs
+    from bardic.progressive import discovery_specs
     book=parse_book('dense.txt',('Chapter One\n\n'+('“Stay,” Mara said.\n\n'*2600)).encode())
     store=Store(tmp_path)
     store.save_book(book)
@@ -369,7 +369,7 @@ def test_dense_long_chapter_uses_prose_chunks_and_keeps_complete_coverage(tmp_pa
     '\n\n'+' words '*8000+'\n\n   ',
 ])
 def test_discovery_range_limits_do_not_omit_nonwhitespace(text):
-    from spintails.progressive import discovery_ranges
+    from bardic.progressive import discovery_ranges
     ranges=discovery_ranges(text)
     assert ranges
     cursor=0
@@ -382,7 +382,7 @@ def test_discovery_range_limits_do_not_omit_nonwhitespace(text):
 
 
 def test_existing_legacy_discovery_ranges_are_replayed_without_new_calls(tmp_path,monkeypatch):
-    from spintails.progressive import discovery_specs
+    from bardic.progressive import discovery_specs
     book=parse_book('legacy-dense.txt',('Chapter One\n\n'+('“Stay,” Mara said.\n\n'*2300)).encode())
     store=Store(tmp_path)
     store.save_book(book)
@@ -409,7 +409,7 @@ def test_existing_legacy_discovery_ranges_are_replayed_without_new_calls(tmp_pat
 
 
 def test_direction_roster_is_bounded_and_prioritizes_local_or_reviewed_speakers():
-    from spintails.progressive import direction_cast
+    from bardic.progressive import direction_cast
     book=story(1)
     def character(n,name=None,aliases=()):
         return {'id':f'person-{n}','name':name or f'Remote Person {n}', 'aliases':list(aliases),
@@ -432,7 +432,7 @@ def test_direction_roster_is_bounded_and_prioritizes_local_or_reviewed_speakers(
 
 
 def test_remote_profile_edits_do_not_invalidate_local_direction_request():
-    from spintails.progressive import direction_specs,unit_key
+    from bardic.progressive import direction_specs,unit_key
     book=story(1)
     book['characters'] += [
         {'id':'mara','name':'Mara','aliases':[],'description':'Local voice.','direction':'Calm.'},

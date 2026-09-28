@@ -5,12 +5,12 @@ import json
 import httpx
 import pytest
 
-from spintails import audio, processing, resources
-from spintails.importer import parse_book
-from spintails.preprocessing import census
-from spintails.processing import ProcessingStore, RequestBudget
-from spintails.resources import ResourceLedger, resource_summary, tts_usage
-from spintails.store import Store
+from bardic import audio, processing, resources
+from bardic.importer import parse_book
+from bardic.preprocessing import census
+from bardic.processing import ProcessingStore, RequestBudget
+from bardic.resources import ResourceLedger, resource_summary, tts_usage
+from bardic.store import Store
 
 
 @pytest.fixture
@@ -223,7 +223,7 @@ def test_progressive_validators_and_publication_measure_local_work_and_cache_val
 
 def test_resource_api_is_read_only_and_paginated(tmp_path):
     from fastapi.testclient import TestClient
-    from spintails.app import create_app
+    from bardic.app import create_app
     with TestClient(create_app(tmp_path)) as client:
         store = client.app.state.runtime.store
         book = parse_book('test.txt', b'Chapter 1\n\nMara said, "Wait."')

@@ -35,8 +35,8 @@ function submit(container, kind, id, values) {
     return {ok:true,status:200,json:async () => url.startsWith('/api/library') ? sample : {id:'new'}};
   };
   const context = {window:{},console,fetch:async (url,options) => { calls.push({url,...options}); return respond(url,options); }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../spintails/static/library.js'),'utf8'),context);
-  const component = context.window.SpinTailsLibrary;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/library.js'),'utf8'),context);
+  const component = context.window.BardicLibrary;
   const container = new Container();
   let changed = 0, openedBook, openedSeries;
   const options = {onChange:() => changed++, onSelectBook:id => openedBook=id,onSelectSeries:id=>openedSeries=id};

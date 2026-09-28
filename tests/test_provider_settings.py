@@ -8,9 +8,9 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import TTS_MODELS, create_app
-from spintails.audio import render_fingerprint
-from spintails.store import Store
+from bardic.app import TTS_MODELS, create_app
+from bardic.audio import render_fingerprint
+from bardic.store import Store
 
 
 KEYS = {provider: f"test-{provider}-credential" for provider in ("gemini", "openai", "anthropic")}
@@ -21,7 +21,7 @@ MODELS = {provider: f"custom-{provider}-model:latest" for provider in KEYS}
 def isolated_environment(monkeypatch):
     for variable in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def record_analysis(monkeypatch):
         progress(1, 1, "Analysis ready")
         return result
 
-    monkeypatch.setattr("spintails.app.analyze_book", analyze)
+    monkeypatch.setattr("bardic.app.analyze_book", analyze)
     return calls
 
 
@@ -229,7 +229,7 @@ def test_analysis_failure_after_key_rotation_redacts_old_and_current_keys(client
         assert release.wait(5)
         raise ValueError(f"Provider failed: {key}, {rotated}, {KEYS['anthropic']}")
 
-    monkeypatch.setattr("spintails.app.analyze_book", fail)
+    monkeypatch.setattr("bardic.app.analyze_book", fail)
     client.post("/api/settings", json={"analysis_provider": "openai", "api_keys": KEYS})
     book = import_book(client)
     response = client.post(f"/api/books/{book['id']}/analyze", json={})
@@ -257,7 +257,7 @@ def test_gemini_narration_uses_its_own_key_and_model_with_anthropic_analysis_sel
         return {"fingerprint": render_fingerprint(segment, character, scene, provider, model),
                 "duration": .1, "provider": provider, "model": model, "voice": character["voice"]}
 
-    monkeypatch.setattr("spintails.app.synthesize", synthesize)
+    monkeypatch.setattr("bardic.app.synthesize", synthesize)
     response = client.post("/api/settings", json={
         "api_keys": KEYS, "analysis_provider": "anthropic", "analysis_models_by_provider": MODELS, "tts_model": TTS_MODELS[-1],
     })

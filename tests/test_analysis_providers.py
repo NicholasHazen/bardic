@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 
-from spintails import analysis
-from spintails.importer import parse_book
+from bardic import analysis
+from bardic.importer import parse_book
 
 
 ADAPTERS = {"gemini": analysis._request, "openai": analysis._openai_request, "anthropic": analysis._anthropic_request}

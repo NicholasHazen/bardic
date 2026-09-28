@@ -6,6 +6,8 @@
 *.p12
 
 # Runtime state, personal ebooks, recordings, exports and backups.
+.bardic/
+.bardic-*/
 .spintails/
 .spintails-*/
 *.sqlite

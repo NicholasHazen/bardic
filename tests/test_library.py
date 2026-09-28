@@ -9,11 +9,11 @@ import zipfile
 from PIL import Image
 import pytest
 
-from spintails.artifacts import ArtifactRepository
-from spintails.importer import parse_book
-from spintails.library import LibraryRepository
-from spintails.series import SeriesRepository
-from spintails.store import Store
+from bardic.artifacts import ArtifactRepository
+from bardic.importer import parse_book
+from bardic.library import LibraryRepository
+from bardic.series import SeriesRepository
+from bardic.store import Store
 
 
 def illustrated_epub(*, cover_path='images/cover.png', cover_type='image/png', raster=None, epub2=False, cover_page=False):

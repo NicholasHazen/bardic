@@ -1,12 +1,12 @@
 """Character aliases must not select a different person by iteration order."""
 from copy import deepcopy
 
-from spintails import analysis as a
-from spintails.importer import parse_book
-from spintails.processing import ProcessingStore,source_hash
-from spintails.progressive import discoveries,profile_specs
-from spintails.staged_analysis import _references
-from spintails.store import Store
+from bardic import analysis as a
+from bardic.importer import parse_book
+from bardic.processing import ProcessingStore,source_hash
+from bardic.progressive import discoveries,profile_specs
+from bardic.staged_analysis import _references
+from bardic.store import Store
 
 
 def person(identifier,name,aliases=(),**extra):

@@ -5,10 +5,10 @@ import sqlite3
 
 import pytest
 
-from spintails.audio import DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint
-from spintails.importer import parse_book
-from spintails.listening import ListeningRepository
-from spintails.store import Store
+from bardic.audio import DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint
+from bardic.importer import parse_book
+from bardic.listening import ListeningRepository
+from bardic.store import Store
 from test_audio import wav_bytes
 
 
@@ -95,7 +95,7 @@ def test_cached_recipe_survives_restart_enhanced_edits_and_voice_round_trip(setu
 
 def test_device_cached_takes_do_not_query_or_require_installed_voices(setup, monkeypatch):
     store, repo, book, calls, render = setup
-    monkeypatch.setattr('spintails.audio.list_system_voices', lambda: pytest.fail('A cache read cannot query device voices'))
+    monkeypatch.setattr('bardic.audio.list_system_voices', lambda: pytest.fail('A cache read cannot query device voices'))
     session = repo.session(book['id'], 'system', 'Samantha')
     assert session['model'] == SYSTEM_MODEL
     segment = book['segments'][0]

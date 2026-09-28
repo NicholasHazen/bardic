@@ -58,8 +58,8 @@ function environment(handler) {
     const result = await handler(call);
     return {ok:result.ok !== false, status:result.status || 200, json:async () => result.data};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../spintails/static/production.js'), 'utf8'), scope);
-  return {calls, render:scope.window.SpinTailsProduction.render};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/production.js'), 'utf8'), scope);
+  return {calls, render:scope.window.BardicProduction.render};
 }
 
 function ordinary(call) { return {data:call.method === 'GET' ? coverage : plan}; }

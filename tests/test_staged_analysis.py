@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from spintails import analysis
-from spintails.importer import parse_book
-from spintails.staged_analysis import analyze_staged, fingerprint
-from spintails.store import Store
+from bardic import analysis
+from bardic.importer import parse_book
+from bardic.staged_analysis import analyze_staged, fingerprint
+from bardic.store import Store
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def run(book, store, **kwargs):
 
 
 def test_overlapping_aliases_are_one_mention_and_keep_exact_source():
-    from spintails.staged_analysis import _references
+    from bardic.staged_analysis import _references
     book = parse_book("aliases.txt", b"The Queen entered. The Queen left.")
     book["characters"].append({"id": "queen", "name": "The Queen", "aliases": ["Queen"]})
     refs = _references(book, {}, "openai", "test-model", [])

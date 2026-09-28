@@ -8,10 +8,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.artifacts import ArtifactRepository, record
-from spintails.processing import ProcessingStore
-from spintails.series import SeriesRepository
+from bardic.app import create_app
+from bardic.artifacts import ArtifactRepository, record
+from bardic.processing import ProcessingStore
+from bardic.series import SeriesRepository
 
 
 SOURCE = ('Chapter One\n\nMara remembered Elio beneath the moon 🌙.\n\n'
@@ -22,7 +22,7 @@ SOURCE = ('Chapter One\n\nMara remembered Elio beneath the moon 🌙.\n\n'
 def client(tmp_path, monkeypatch):
     for variable in ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'):
         monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr('spintails.app.list_system_voices', lambda: [])
+    monkeypatch.setattr('bardic.app.list_system_voices', lambda: [])
 
     def no_network(*_args, **_kwargs):
         pytest.fail('Pipeline browsing and export must not call providers or external services')
@@ -286,7 +286,7 @@ def test_pipeline_validation_history_is_not_lost_when_latest_event_preview_is_bo
 
 
 def test_pipeline_does_not_count_local_drafts_as_semantic_discovery_or_direction(client):
-    from spintails.analysis import analyze_book
+    from bardic.analysis import analyze_book
 
     book = import_book(client)
     store = client.app.state.runtime.store

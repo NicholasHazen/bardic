@@ -45,8 +45,8 @@ function environment(handler) {
     const result = await handler(call);
     return {ok:result.ok !== false, status:result.status || 200, json:async () => result.data};
   }};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../spintails/static/series.js'), 'utf8'), scope);
-  return {render:scope.window.SpinTailsSeries.render, calls};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/series.js'), 'utf8'), scope);
+  return {render:scope.window.BardicSeries.render, calls};
 }
 
 const book = {id:'book/9', characters:[{id:'narrator', name:'Narrator'}, {id:'mira', name:'Mira <script>x</script>'}]};

@@ -7,14 +7,14 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
+from bardic.app import create_app
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
     with TestClient(create_app(tmp_path)) as client:
         yield client
 
@@ -34,7 +34,7 @@ def test_status_reports_configuration_without_probing(client, monkeypatch):
     def unexpected_probe(*args):
         pytest.fail("Reading status must not make a provider request")
 
-    monkeypatch.setattr("spintails.app.check_account", unexpected_probe)
+    monkeypatch.setattr("bardic.app.check_account", unexpected_probe)
     checks = client.get("/api/status").json()["account_checks"]
     assert set(checks) == {"gemini", "openai", "anthropic"}
     assert all(check["state"] == "missing_key" for check in checks.values())
@@ -55,7 +55,7 @@ def test_checks_use_only_the_selected_provider_key_and_saved_model(client, monke
         calls.append((provider, key, model))
         return ready_result()
 
-    monkeypatch.setattr("spintails.app.check_account", probe)
+    monkeypatch.setattr("bardic.app.check_account", probe)
     keys = {provider: f"test-{provider}-secret" for provider in ("gemini", "openai", "anthropic")}
     models = {provider: f"custom-{provider}-model" for provider in keys}
     response = client.post("/api/settings", json={"api_keys": keys,
@@ -92,7 +92,7 @@ def test_missing_credentials_and_unsupported_provider(client, monkeypatch):
         assert key == ""
         return {"state": "missing_key", "message": "Add an API key.", "usage": None, "http_status": None}
 
-    monkeypatch.setattr("spintails.app.check_account", probe)
+    monkeypatch.setattr("bardic.app.check_account", probe)
     unsupported = client.post("/api/account-checks/unknown")
     assert unsupported.status_code == 400
     assert calls == []
@@ -106,8 +106,8 @@ def test_missing_credentials_and_unsupported_provider(client, monkeypatch):
 def test_check_cache_expires_after_thirty_seconds(client, monkeypatch):
     calls = []
     clock = [100.0]
-    monkeypatch.setattr("spintails.app.time", SimpleNamespace(monotonic=lambda: clock[0]))
-    monkeypatch.setattr("spintails.app.check_account", lambda *args: calls.append(args) or ready_result())
+    monkeypatch.setattr("bardic.app.time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr("bardic.app.check_account", lambda *args: calls.append(args) or ready_result())
     set_keys(client, openai="test-openai-secret")
     first = client.post("/api/account-checks/openai").json()
     clock[0] = 129.9
@@ -122,7 +122,7 @@ def test_check_cache_expires_after_thirty_seconds(client, monkeypatch):
 
 def test_key_and_model_edits_invalidate_only_the_changed_provider(client, monkeypatch):
     calls = []
-    monkeypatch.setattr("spintails.app.check_account", lambda *args: calls.append(args) or ready_result())
+    monkeypatch.setattr("bardic.app.check_account", lambda *args: calls.append(args) or ready_result())
     set_keys(client, openai="first-openai-secret", anthropic="test-anthropic-secret")
     client.post("/api/account-checks/openai")
     client.post("/api/account-checks/anthropic")
@@ -149,7 +149,7 @@ def test_only_one_check_per_provider_runs_but_other_providers_are_independent(cl
             assert release.wait(5), "test did not release the account check"
         return ready_result()
 
-    monkeypatch.setattr("spintails.app.check_account", probe)
+    monkeypatch.setattr("bardic.app.check_account", probe)
     set_keys(client, openai="test-openai-secret", anthropic="test-anthropic-secret")
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(client.post, "/api/account-checks/openai")
@@ -178,7 +178,7 @@ def test_in_flight_result_cannot_replace_a_changed_credentials_status(client, mo
             assert release.wait(5), "test did not release the account check"
         return ready_result()
 
-    monkeypatch.setattr("spintails.app.check_account", probe)
+    monkeypatch.setattr("bardic.app.check_account", probe)
     set_keys(client, openai="old-openai-secret")
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(client.post, "/api/account-checks/openai")
@@ -205,7 +205,7 @@ def test_unexpected_helper_failure_does_not_expose_credentials(client, monkeypat
     def broken_probe(*args):
         raise RuntimeError(f"Transport failure for Authorization: Bearer {secret}")
 
-    monkeypatch.setattr("spintails.app.check_account", broken_probe)
+    monkeypatch.setattr("bardic.app.check_account", broken_probe)
     response = client.post("/api/account-checks/openai")
     assert response.status_code == 200
     assert response.json()["state"] == "provider_error"
@@ -218,7 +218,7 @@ def test_unexpected_helper_failure_does_not_expose_credentials(client, monkeypat
 
 def test_account_check_rejects_cross_origin_requests_before_probing(client, monkeypatch):
     calls = []
-    monkeypatch.setattr("spintails.app.check_account", lambda *args: calls.append(args) or ready_result())
+    monkeypatch.setattr("bardic.app.check_account", lambda *args: calls.append(args) or ready_result())
     set_keys(client, openai="test-openai-secret")
     response = client.post("/api/account-checks/openai", headers={"Origin": "https://untrusted.example"})
     assert response.status_code == 403

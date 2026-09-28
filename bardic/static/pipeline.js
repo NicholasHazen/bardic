@@ -338,5 +338,5 @@
     return Promise.resolve();
   }
 
-  window.SpinTailsPipeline = {render};
+  window.BardicPipeline = {render};
 })();

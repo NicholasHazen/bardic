@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
-from spintails.app import create_app
+from bardic.app import create_app
 from test_library import illustrated_epub
 
 
@@ -14,7 +14,7 @@ from test_library import illustrated_epub
 def client(tmp_path, monkeypatch):
     for name in ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr('spintails.app.list_system_voices', lambda: [])
+    monkeypatch.setattr('bardic.app.list_system_voices', lambda: [])
     with TestClient(create_app(tmp_path)) as client:
         yield client
 

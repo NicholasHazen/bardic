@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Renamed the application, Python package, browser interfaces and current documentation to **Bardic**. The preferred launcher is `python -m bardic`, with `BARDIC_PORT` and `BARDIC_DATA_DIR` configuration.
+- Kept the old module launcher and environment aliases, reused existing `.spintails/` libraries in place, and retained access to saved browser preferences. New libraries default to `.bardic/`; existing `.env` files need no changes.
+- Preserved the version-1 `spintails-analysis` portable export identifier and existing library/media formats. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
+
 ## 0.1.0 · Initial repository baseline · 2026-09-27
 
 This is the first version-controlled development snapshot, not a claim of a published package or production release.

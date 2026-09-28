@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.audio import render_fingerprint
-from spintails.store import InstanceLock, Store
+from bardic.app import create_app
+from bardic.audio import render_fingerprint
+from bardic.store import InstanceLock, Store
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def fake_audio(monkeypatch):
             wav.writeframes(b'\x10\0' * 2400)
         return dict(fingerprint=render_fingerprint(segment, character, scene, provider, model), duration=.1,
                     provider=provider, model=model, voice=character['voice'])
-    monkeypatch.setattr('spintails.app.synthesize', synthesize)
+    monkeypatch.setattr('bardic.app.synthesize', synthesize)
     return calls
 
 
@@ -128,7 +128,7 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
 
 def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):
     calls = fake_audio(monkeypatch)
-    from spintails import app as module
+    from bardic import app as module
     original = module.synthesize
     def fail_second(*args):
         if len(calls) == 1:
@@ -181,7 +181,7 @@ def test_restart_recovers_more_than_recent_job_page(tmp_path):
 
 def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, monkeypatch):
     calls = fake_audio(monkeypatch)
-    from spintails import app as module
+    from bardic import app as module
     original = module.synthesize
     started, release = threading.Event(), threading.Event()
     def delayed(*args):

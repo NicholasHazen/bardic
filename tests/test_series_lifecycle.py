@@ -3,8 +3,8 @@ from concurrent.futures import Future, wait as wait_all
 from copy import deepcopy
 import threading
 
-from spintails.processing import BudgetReached
-from spintails import series_processing
+from bardic.processing import BudgetReached
+from bardic import series_processing
 from test_app import import_text, wait_job
 from test_series_processing import client, collection
 
@@ -17,7 +17,7 @@ def test_completed_child_remains_reserved_until_parent_finishes(client, monkeypa
             second_started.set()
             assert release.wait(3)
         return deepcopy(book)
-    monkeypatch.setattr('spintails.analysis.analyze_book', fake)
+    monkeypatch.setattr('bardic.analysis.analyze_book', fake)
     parent = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai', 'phase': 'scan', 'concurrency': 1}).json()
     try:
         assert second_started.wait(2)
@@ -44,7 +44,7 @@ def test_cancelling_queued_parent_immediately_releases_children_and_never_resurr
         started.set()
         assert release.wait(3)
         return deepcopy(book)
-    monkeypatch.setattr('spintails.analysis.analyze_book', fake)
+    monkeypatch.setattr('bardic.analysis.analyze_book', fake)
     first_parent = client.post(f"/api/series/{first['id']}/process", json={'provider': 'openai'}).json()
     try:
         assert started.wait(2)
@@ -75,7 +75,7 @@ def test_all_simultaneously_finished_results_are_checked_before_more_paid_work(c
         # Force the successful item first. The old per-result scheduling loop
         # would launch book three before noticing the failure in the same batch.
         return sorted(done, key=lambda f: not f.result()), pending
-    monkeypatch.setattr('spintails.analysis.analyze_book', fake)
+    monkeypatch.setattr('bardic.analysis.analyze_book', fake)
     monkeypatch.setattr(series_processing, 'wait', finished_together)
     parent = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai', 'concurrency': 2}).json()
     assert wait_job(client, parent['id'])['status'] == 'failed'
@@ -98,7 +98,7 @@ def test_executor_submission_failure_releases_books_redacts_error_and_preserves_
     for book in books:
         assert client.patch(f"/api/books/{book['id']}/metadata", json={'title': 'Still editable'}).status_code == 200
         assert client.get(f"/api/books/{book['id']}/artifacts?kind=series_run").json()['total'] >= 2
-    monkeypatch.setattr('spintails.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
+    monkeypatch.setattr('bardic.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
     retried = client.post(f"/api/series/{series['id']}/process", json={'provider': 'openai'}).json()
     assert wait_job(client, retried['id'])['status'] == 'completed'
 
@@ -129,7 +129,7 @@ def test_preview_fingerprint_is_stable_and_rejects_changed_scope_before_jobs(cli
     assert client.get('/api/jobs').json() == []
     current = client.post(url + '/plan', json=body).json()
     assert current['plan_fingerprint'] != first['plan_fingerprint']
-    monkeypatch.setattr('spintails.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
+    monkeypatch.setattr('bardic.analysis.analyze_book', lambda book, *args, **kwargs: deepcopy(book))
     accepted = client.post(url + '/process', json={**body, 'expected_plan_fingerprint': current['plan_fingerprint']})
     assert accepted.status_code == 200, accepted.text
     assert wait_job(client, accepted.json()['id'])['status'] == 'completed'

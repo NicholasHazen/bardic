@@ -29,6 +29,7 @@ from .analysis import analyze_book
 from .processing import BudgetReached
 from .account_checks import check_account
 from .audio import assemble_audio, list_system_voices, render_fingerprint, synthesize, validate_audio
+from .config import data_directory
 from .importer import make_demo_book, parse_book
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .series import SeriesRepository
@@ -157,7 +158,7 @@ class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
         self.store = Store(root)
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spintails")
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bardic")
         self.series_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='series-coordinator')
         self.stopping = threading.Event()
         self.api_keys = {
@@ -470,11 +471,11 @@ class Runtime:
 def create_app(data_dir: Path | None = None):
     @asynccontextmanager
     async def lifespan(app):
-        app.state.runtime = Runtime(data_dir or Path(os.environ.get("SPINTAILS_DATA_DIR", ".spintails")))
+        app.state.runtime = Runtime(data_dir if data_dir is not None else data_directory())
         yield
         app.state.runtime.close()
 
-    app = FastAPI(title="Spin Tails", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
 
     @app.middleware("http")
@@ -874,14 +875,14 @@ def create_app(data_dir: Path | None = None):
         available_ids = {s["id"] for s in available}
         if not available:
             raise HTTPException(400, "Generate some audio before exporting")
-        temp = Path(tempfile.mkdtemp(prefix="spintails-export-"))
+        temp = Path(tempfile.mkdtemp(prefix="bardic-export-"))
         try:
             export_path = temp / "audiobook.zip"
             manifest = {"title": book["title"], "timing_kind": "segment", "complete": len(available) == len(book["segments"]), "chapters": [], "missing_segment_ids": [s["id"] for s in book["segments"] if s["id"] not in available_ids]}
             with ResourceLedger(runtime.store).operation(book_id, 'audio_export', measure_cpu=True) as metrics:
                 with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
                     archive.writestr("production.json", json.dumps(book, ensure_ascii=False, indent=2))
-                    archive.writestr("README.txt", "Spin Tails audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
+                    archive.writestr("README.txt", "Bardic audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
                     for s in available:
                         archive.write(runtime.take_path(book_id, s["audio"]), f"takes/{s['id']}.wav")
                     for index, chapter in enumerate(book["chapters"]):
@@ -1125,7 +1126,7 @@ def create_app(data_dir: Path | None = None):
         from .resources import ResourceLedger
         store = rt(request).store
         book = store.book(book_id)
-        temp = Path(tempfile.mkdtemp(prefix='spintails-analysis-'))
+        temp = Path(tempfile.mkdtemp(prefix='bardic-analysis-'))
         try:
             path = temp / 'analysis.zip'
             with ResourceLedger(store).operation(book_id, 'analysis_export', measure_cpu=True) as metrics:

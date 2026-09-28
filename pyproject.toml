@@ -1,5 +1,5 @@
 [project]
-name = "spin-tails"
+name = "bardic"
 version = "0.1.0"
 description = "A local audiobook production studio and read-along library"
 requires-python = ">=3.11"

@@ -10,12 +10,15 @@
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
   const configKey = state => JSON.stringify([state.provider,state.voices[state.provider],state.provider === 'gemini' ? state.model : 'macos-say']);
-  const storageKey = id => `spintails:listen:${id}`;
+  const storageKey = id => `bardic:listen:${id}`;
   const stateFor = book => book && books.get(book.id);
   const enabled = book => stateFor(book)?.mode === 'simple';
 
   function saved(id) {
-    try { return JSON.parse(localStorage.getItem(storageKey(id))) || {}; } catch { return {}; }
+    try {
+      const value = localStorage.getItem(storageKey(id)) ?? localStorage.getItem(`spintails:listen:${id}`);
+      return JSON.parse(value) || {};
+    } catch { return {}; }
   }
   function save(state) {
     const value = {mode:state.mode,provider:state.provider,voices:state.voices,model:state.model,
@@ -265,5 +268,5 @@
   function allowsAdvance(book, currentSegment, nextSegment) {
     return !enabled(book) || Boolean(currentSegment && nextSegment && currentSegment.chapter_id === nextSegment.chapter_id);
   }
-  window.SpinTailsListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,stop,allowsAdvance};
+  window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,stop,allowsAdvance};
 })();

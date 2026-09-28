@@ -7,9 +7,9 @@ import sqlite3
 import httpx
 import pytest
 
-from spintails.search import search
-from spintails.series import SeriesRepository
-from spintails.store import Store
+from bardic.search import search
+from bardic.series import SeriesRepository
+from bardic.store import Store
 
 
 def book(identifier, passages):

@@ -5,10 +5,10 @@ import sqlite3
 
 import pytest
 
-from spintails.artifacts import ArtifactRepository, capture_book, initialize_schema, output_head, record
-from spintails.importer import parse_book
-from spintails.processing import ProcessingStore, source_hash
-from spintails.store import Store
+from bardic.artifacts import ArtifactRepository, capture_book, initialize_schema, output_head, record
+from bardic.importer import parse_book
+from bardic.processing import ProcessingStore, source_hash
+from bardic.store import Store
 
 
 @pytest.fixture
@@ -256,7 +256,7 @@ def test_backfill_keeps_legacy_checkpoint_units_and_observations_with_verified_s
     unit = {'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0, 'end': len(chapter['text']), 'result': {'characters': []}}
     store.save_analysis_checkpoint(book['id'], 'old', {'provider': 'anthropic', 'model': 'old-model', 'working_book': book,
                                                      'units': {'legacy-unit': unit}, 'chapters': []})
-    from spintails.series import source_hash as text_hash
+    from bardic.series import source_hash as text_hash
     observation = {'id': 'observation', 'chapter_id': chapter['id'], 'start': 0, 'end': 7, 'quote': chapter['text'][:7],
                    'source_hash': text_hash(chapter['text']), 'provider': 'anthropic', 'model': 'old-model'}
     with store.connect() as conn:
@@ -376,7 +376,7 @@ def test_checkpoint_observations_have_exact_source_dependencies_and_survive_chec
 
 
 def test_series_link_and_membership_history_survives_explicit_unlink(store):
-    from spintails.series import SeriesRepository
+    from bardic.series import SeriesRepository
     book = story()
     book['characters'].append({'id': 'mara', 'name': 'Mara'})
     store.save_book(book)

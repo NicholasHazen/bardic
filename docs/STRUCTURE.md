@@ -1,6 +1,6 @@
 # EPUB structure and metadata repair
 
-The EPUB spine defines reading order, not chapter numbering. Spin Tails preserves one immutable source unit per readable linear spine document. Its displayed title and section kind are determined locally, without a model request:
+The EPUB spine defines reading order, not chapter numbering. Bardic preserves one immutable source unit per readable linear spine document. Its displayed title and section kind are determined locally, without a model request:
 
 1. A valid EPUB 3 table-of-contents navigation link and its target anchor.
 2. Legacy NCX navigation when the EPUB 3 TOC is unavailable or has no valid targets.

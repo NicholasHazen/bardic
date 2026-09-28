@@ -2,9 +2,9 @@ from copy import deepcopy
 
 import pytest
 
-from spintails import analysis
-from spintails.analysis import AnalysisCancelled, analyze_book
-from spintails.importer import make_demo_book, parse_book
+from bardic import analysis
+from bardic.analysis import AnalysisCancelled, analyze_book
+from bardic.importer import make_demo_book, parse_book
 
 
 def test_local_attribution_is_conservative_and_cannot_rewrite_text():

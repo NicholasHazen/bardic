@@ -5,8 +5,8 @@ import zipfile
 
 import pytest
 
-from spintails.importer import _resolve, _xhtml_content, parse_book
-from spintails.structure import repair_structure, transform_checkpoint_structure
+from bardic.importer import _resolve, _xhtml_content, parse_book
+from bardic.structure import repair_structure, transform_checkpoint_structure
 
 
 def epub(documents, *, nav=None, ncx=None, spine=None):
@@ -137,7 +137,7 @@ def test_same_document_fragment_resolves_to_document_not_parent():
 ])
 def test_anchor_extraction_preserves_legacy_whitespace(body):
     from defusedxml import ElementTree as ET
-    from spintails.importer import BLOCKS, SKIP_TAGS, _tag
+    from bardic.importer import BLOCKS, SKIP_TAGS, _tag
     data = ('<html><body>' + body + '</body></html>').encode()
     pieces = []
     def legacy_walk(element):

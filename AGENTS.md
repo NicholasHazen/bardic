@@ -1,4 +1,4 @@
-# Working on Spin Tails
+# Working on Bardic
 
 This file is the entry point for coding agents. Humans should start with [CONTRIBUTING.md](CONTRIBUTING.md). User instructions for the current task take precedence over this repository guidance.
 
@@ -13,7 +13,7 @@ The app is Python/FastAPI/SQLite with plain JavaScript and CSS. It has no fronte
 
 ## Protect the library and source contracts
 
-- Treat the user's `.spintails/`, `.env`, original ebooks, audio and exports as private runtime state. Do not print keys, commit them, use their text as fixtures, or erase them to fix a test. Use `tmp_path`, original synthetic prose and mocked provider responses.
+- Treat the user's `.bardic/`, legacy `.spintails/`, `.env`, original ebooks, audio and exports as private runtime state. Do not print keys, commit them, use their text as fixtures, or erase them to fix a test. Use `tmp_path`, original synthetic prose and mocked provider responses.
 - Before a migration or repair affecting an existing library, take a recoverable backup and verify source, reference and audio preservation. Follow [operations](docs/OPERATIONS.md); a database-only backup omits media.
 - Canonical chapter text is immutable. Spans are zero-based Python Unicode code-point offsets, with exclusive ends. They are not bytes or JavaScript string indices. The browser uses exact passage text and IDs.
 - LLMs annotate source IDs and return evidence. They must not rewrite the prose. Evidence must resolve to the supplied source and exact original coordinates. Preserve ambiguity; never fabricate an evidence quote to satisfy validation.
@@ -46,12 +46,14 @@ Useful commands, from the repository root:
 uv sync --frozen --group dev
 uv run --frozen pytest -q
 node --test tests/*_test.js tests/*.test.cjs
-for script in spintails/static/*.js; do node --check "$script" || exit 1; done
+for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 ```
 
 Python 3.11+ is supported by project metadata; the recorded development environment is Python 3.12 and Node 22. Node behavior tests do not install browser packages. The optional real Mac speech test is opt-in; routine tests use fake audio and do not call cloud providers. Node-dependent pytest wrappers skip if Node is missing, so run the Node command explicitly for frontend work.
 
-Use an isolated `SPINTAILS_DATA_DIR` and another `SPINTAILS_PORT` for a development server if the user's app is already running. See [development](docs/DEVELOPMENT.md) for a key-free launch. `python -m spintails` loads only the repository-root `.env`; existing shell variables win. Running the ASGI app directly does not invoke that loader.
+Use an isolated `BARDIC_DATA_DIR` and another `BARDIC_PORT` for a development server if the user's app is already running. See [development](docs/DEVELOPMENT.md) for a key-free launch. `python -m bardic` loads only the repository-root `.env`; existing shell variables win. Running the ASGI app directly does not invoke that loader.
+
+The old `python -m spintails` launcher and `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain compatibility paths. New libraries use `.bardic/`; an existing `.spintails/` is reused in place when no directory is configured and `.bardic/` is absent. Use `bardic.config.data_directory()` when resolving the default in tooling. Preserve the version-1 `spintails-analysis` export format identifier; a product rename is not a schema change. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
 
 ## Completion and review
 

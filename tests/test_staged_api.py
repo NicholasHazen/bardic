@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
+from bardic.app import create_app
 
 
 STORY = ('Chapter One\n\nMara lit the lamp.\n\n“Hello,” Mara said.\n\n'
@@ -18,7 +18,7 @@ STORY = ('Chapter One\n\nMara lit the lamp.\n\n“Hello,” Mara said.\n\n'
 def client(tmp_path, monkeypatch):
     for variable in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr("spintails.app.list_system_voices", lambda: [])
+    monkeypatch.setattr("bardic.app.list_system_voices", lambda: [])
 
     def no_network(*_args, **_kwargs):
         pytest.fail("Staged API tests must not make real network requests")
@@ -52,7 +52,7 @@ def test_analysis_summary_is_read_only_and_starts_with_pending_chapters(client, 
     def unexpected_analysis(*_args, **_kwargs):
         pytest.fail("Reading progress must not start analysis")
 
-    monkeypatch.setattr("spintails.app.analyze_book", unexpected_analysis)
+    monkeypatch.setattr("bardic.app.analyze_book", unexpected_analysis)
     for _ in range(2):
         response = client.get(f"/api/books/{book['id']}/analysis")
         assert response.status_code == 200
@@ -79,7 +79,7 @@ def test_analysis_request_routes_chapter_scope_and_resume_choice(client, monkeyp
         calls.append((selected_provider, key, model, options))
         return copy.deepcopy(source)
 
-    monkeypatch.setattr("spintails.app.analyze_book", fake_analysis)
+    monkeypatch.setattr("bardic.app.analyze_book", fake_analysis)
     if provider != "local":
         saved = client.post("/api/settings", json={
             "api_keys": {provider: "test-selected-credential"},
@@ -191,7 +191,7 @@ def test_cloud_failure_exposes_validated_chapter_and_resume_reuses_it(client, mo
                      "confidence": 1 if passage["kind"] == "narration" else 0,
                      "direction": "", "cues": [], "evidence": []} for passage in passages]}
 
-    monkeypatch.setattr("spintails.analysis._openai_request", fake_request)
+    monkeypatch.setattr("bardic.analysis._openai_request", fake_request)
     response = client.post(f"{base}/analyze", json={"provider": "openai", "phase": "full"})
     assert response.status_code == 200, response.text
     failed = wait_job(client, response.json()["id"])

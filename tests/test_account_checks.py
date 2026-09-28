@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from spintails import account_checks as checks
+from bardic import account_checks as checks
 
 
 RESPONSES = {

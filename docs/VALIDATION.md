@@ -2,7 +2,17 @@
 
 Verified on September 27, 2026, on this Apple Silicon Mac with Python 3.12.2 and Node 22.22.1.
 
-This is a dated development record. Counts and account outcomes below belong to their respective milestones, not a live health dashboard. Personal-library screenshots named here are local files excluded from Git; the repository contains source-based tests and synthetic fixtures. The [development guide](DEVELOPMENT.md) gives reproducible commands, including the additional model-picker CJS suite.
+This is a dated development record. Counts and account outcomes below belong to their respective milestones, not a live health dashboard. Personal-library screenshots named here are local files excluded from Git; the repository contains source-based tests and synthetic fixtures. The [development guide](DEVELOPMENT.md) gives reproducible commands, including the model-picker CJS and browser-storage suites outside pytest.
+
+Historical `.spintails/` backup paths and `spintails` commands below retain their original spelling. The current application is Bardic; see [rename compatibility](OPERATIONS.md#upgrading-from-spin-tails) for current launch commands and library selection.
+
+## Bardic rename
+
+- Ran `.venv/bin/python -m pytest -q`: **728 passed, 1 skipped**. The expected skip remains the opt-in real macOS speech test. Ran `node --test tests/*_test.js tests/*.test.cjs`: **17 test entries passed**, including browser-preference compatibility and the model-picker checks outside pytest.
+- All browser JavaScript syntax checks passed. `uv lock --check --offline` passed outside the restricted sandbox after uv encountered a macOS panic inside it.
+- Checked **295 local Markdown file/heading links** and parsed the operations guide's Python examples. Backup/restore examples were checked syntactically, not run against the personal library.
+- An isolated FastAPI `TestClient` check verified the Bardic homepage and API title, and all **16 referenced static assets** returned HTTP 200. It used a synthetic temporary library and mocked device voices; this was an in-process HTTP check, not a real-browser capture or a server bound to a port. All **41 application package files** were verified present under `bardic/`. The user's running app and library were unchanged.
+- The rename retains legacy configuration aliases, the module launcher, existing-library selection and browser preference reads. Portable analysis exports retain their version-1 format identifier. These checks used offline tests and synthetic state; they do not establish live provider access, speech quality or browser behavior on a target device.
 
 ## Initial Git and documentation baseline
 

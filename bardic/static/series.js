@@ -180,5 +180,5 @@
     return load(panel);
   }
 
-  window.SpinTailsSeries = {render};
+  window.BardicSeries = {render};
 })();

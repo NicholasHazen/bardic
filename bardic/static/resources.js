@@ -92,5 +92,5 @@
     }
     return Promise.resolve();
   }
-  window.SpinTailsResources = {render};
+  window.BardicResources = {render};
 })();

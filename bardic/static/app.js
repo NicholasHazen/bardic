@@ -3,12 +3,18 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const formatTime = (seconds) => { const n = Math.max(0, Math.floor(Number(seconds) || 0)); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
-const safeRead = (key, fallback = null) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+const safeRead = (key, fallback = null) => {
+  try {
+    // Read old preferences without removing them; all subsequent writes use Bardic keys.
+    const value = localStorage.getItem(key) ?? (key.startsWith('bardic:') ? localStorage.getItem(`spintails:${key.slice('bardic:'.length)}`) : null);
+    return JSON.parse(value) ?? fallback;
+  } catch { return fallback; }
+};
 const safeWrite = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Reading remains usable without browser storage. */ } };
 const state = {status:null, books:[], book:null, chapterId:null, segmentId:null, tab:'read', jobs:[], poll:null, selectionVersion:0, audioSegmentId:null, pendingOffset:0, lastSave:0, loading:false, settingsBusy:false, accountChecksPending:new Set(), analysisSummary:null, analysisError:null, referenceCache:new Map(), referenceVersion:0};
 const audio = new Audio();
 audio.preload = 'metadata';
-audio.playbackRate = Number(safeRead('spintails:speed', 1)) || 1;
+audio.playbackRate = Number(safeRead('bardic:speed', 1)) || 1;
 let toastTimer;
 let playGeneration = 0;
 let preparingListen = false;
@@ -42,11 +48,11 @@ const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === 
 const segmentById = (id) => state.book?.segments.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
 const playable = (segment) => Boolean(segment?.audio?.url && segment.audio.available !== false && !segment.audio.stale && !segment.audio.is_stale);
-const simpleActive = () => !previewEnhanced && Boolean(window.SpinTailsListen?.isSimple(state.book));
-const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.SpinTailsListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
+const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
+const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.BardicListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
 const listeningReady = segment => Boolean(listeningAudio(segment)?.url);
 const busyJob = () => state.jobs.find(job => ['queued','running'].includes(job.status));
-const progressKey = () => `spintails:progress:${state.book?.id}`;
+const progressKey = () => `bardic:progress:${state.book?.id}`;
 const analysisLabels = {local:'Local draft', gemini:'Gemini', openai:'OpenAI', anthropic:'Anthropic'};
 const cloudProviders = ['gemini','openai','anthropic'];
 const providerField = (name, provider) => $(`#${name}${provider === 'gemini' ? '' : `-${provider}`}`);
@@ -206,11 +212,11 @@ function saveProgress() {
   if (!state.book) return;
   const time = state.audioSegmentId === state.segmentId && Number.isFinite(audio.currentTime) ? audio.currentTime : state.pendingOffset || 0;
   safeWrite(progressKey(), {chapterId:state.chapterId, segmentId:state.segmentId, currentTime:time});
-  safeWrite('spintails:lastBook', state.book.id);
+  safeWrite('bardic:lastBook', state.book.id);
 }
 function stopAudio({clear = false} = {}) {
   playGeneration++; preparingListen = false;
-  window.SpinTailsListen?.stop(state.book);
+  window.BardicListen?.stop(state.book);
   audio.pause();
   if (clear) { audio.removeAttribute('src'); audio.load(); state.audioSegmentId = null; state.pendingOffset = 0; previewEnhanced = false; }
   updatePlayer();
@@ -288,7 +294,7 @@ function renderBook() {
   $('#book-workspace').hidden = false;
   $('#player').hidden = false;
   $('#book-title').textContent = book.title || 'Untitled';
-  document.title = `${book.title || 'Untitled'} — Spin Tails`;
+  document.title = `${book.title || 'Untitled'} — Bardic`;
   const narrativeCount = book.chapters.filter(c => c.kind === 'chapter').length;
   const otherCount = book.chapters.length - narrativeCount;
   const structureLabel = narrativeCount ? `${narrativeCount} chapters${otherCount ? ` · ${otherCount} other sections` : ''}` : `${book.chapters.length} sections`;
@@ -306,7 +312,7 @@ function renderBook() {
   updatePlayer();
 }
 function renderReader() {
-  window.SpinTailsListen?.render($('#simple-listen'), state.book, {
+  window.BardicListen?.render($('#simple-listen'), state.book, {
     status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, busy:Boolean(busyJob()),
     onChange:() => { renderReader(); updatePlayer(); },
     onStop:() => { stopAudio({clear:true}); previewEnhanced = false; },
@@ -422,7 +428,7 @@ async function loadCharacterReferences(characterId, {retry = false} = {}) {
   updateCharacterReferences(characterId);
 }
 function renderCast() {
-  window.SpinTailsSeries?.render($("#series-panel"), state.book);
+  window.BardicSeries?.render($("#series-panel"), state.book);
   const openReferences = new Set($$('[data-character-references][open]').map(node => node.dataset.characterReferences));
   const book = state.book;
   const notes = book.analysis?.notes;
@@ -467,9 +473,9 @@ function renderAnalysisProgress() {
   }
 }
 function renderProduction() {
-  window.SpinTailsResources?.render($('#resource-usage'), state.book, {busy:Boolean(busyJob())});
-  window.SpinTailsPipeline?.render($('#pipeline-inspector'), state.book, {busy: Boolean(busyJob())});
-  window.SpinTailsProduction?.render($('#progressive-production'), state.book, {
+  window.BardicResources?.render($('#resource-usage'), state.book, {busy:Boolean(busyJob())});
+  window.BardicPipeline?.render($('#pipeline-inspector'), state.book, {busy: Boolean(busyJob())});
+  window.BardicProduction?.render($('#progressive-production'), state.book, {
     provider: $('#analysis-provider').value, chapterId: state.chapterId, busy: Boolean(busyJob()),
     scanModel: state.status?.preprocess_models_by_provider?.[$('#analysis-provider').value],
     model: state.status?.analysis_models_by_provider?.[$('#analysis-provider').value],
@@ -522,7 +528,7 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
   // Repeated passage clicks share the pending request. Selecting another
   // passage or a studio preview stops that request's playback intent.
   if (preparingListen && state.segmentId === id && !enhanced) return;
-  if (preparingListen) window.SpinTailsListen?.stop(state.book);
+  if (preparingListen) window.BardicListen?.stop(state.book);
   preparingListen = false;
   const playToken = ++playGeneration;
   const bookVersion = state.selectionVersion;
@@ -535,7 +541,7 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
   let selectedAudio = listeningAudio(segment);
   if (simpleActive() && !selectedAudio && autoplay) {
     preparingListen = true; updatePlayer();
-    try { selectedAudio = await window.SpinTailsListen.ensure(state.book, segment); }
+    try { selectedAudio = await window.BardicListen.ensure(state.book, segment); }
     catch (error) { if (playToken === playGeneration) toast(error.message, true); }
     if (playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId || state.segmentId !== id) return;
     preparingListen = false;
@@ -779,12 +785,12 @@ async function libraryChanged() {
 $('#library-manage').addEventListener('click', async () => {
   $('#library-dialog').showModal();
   const mounted = Boolean($('#library-manager').children.length);
-  await window.SpinTailsLibrary?.render($('#library-manager'), {
+  await window.BardicLibrary?.render($('#library-manager'), {
     onChange:libraryChanged,
     onSelectBook:async id => { $('#library-dialog').close(); await selectBook(id); },
-    onSelectSeries:series => window.SpinTailsSeriesProcessing?.render($('#series-processing'), typeof series === 'string' ? {id:series} : series, {status:state.status,onChange:() => pollJobs(true)}),
+    onSelectSeries:series => window.BardicSeriesProcessing?.render($('#series-processing'), typeof series === 'string' ? {id:series} : series, {status:state.status,onChange:() => pollJobs(true)}),
   });
-  if (mounted) await window.SpinTailsLibrary?.refresh($('#library-manager'));
+  if (mounted) await window.BardicLibrary?.refresh($('#library-manager'));
 });
 $('#settings-button').addEventListener('click', () => openSettings());
 $$('[data-close]').forEach(button => button.addEventListener('click', () => document.getElementById(button.dataset.close).close()));
@@ -847,7 +853,7 @@ $('#play-button').addEventListener('click', togglePlayback);
 $('#previous-segment').addEventListener('click', () => moveSegment(-1));
 $('#next-segment').addEventListener('click', () => moveSegment(1));
 $('#playback-speed').value = String(audio.playbackRate);
-$('#playback-speed').addEventListener('change', event => { audio.playbackRate = Number(event.target.value); safeWrite('spintails:speed',audio.playbackRate); });
+$('#playback-speed').addEventListener('change', event => { audio.playbackRate = Number(event.target.value); safeWrite('bardic:speed',audio.playbackRate); });
 $('#audio-progress').addEventListener('input', event => {
   const time = Number(event.target.value);
   if (state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration)) { audio.currentTime = time; saveProgress(); }
@@ -863,7 +869,7 @@ audio.addEventListener('ended', async () => {
   if (previewEnhanced) { stopAudio({clear:true}); renderReader(); saveProgress(); return; }
   const segments = orderedSegments();
   const index = segments.findIndex(segment => segment.id === state.segmentId);
-  if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.SpinTailsListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
+  if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.BardicListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
     await moveSegment(1,true);
   } else {
     updatePlayer(); saveProgress();
@@ -878,12 +884,12 @@ document.addEventListener('keydown', event => { if (event.code === 'Space' && !e
 async function init() {
   try {
     await Promise.all([refreshStatus(), refreshLibrary()]);
-    const saved = safeRead('spintails:lastBook');
+    const saved = safeRead('bardic:lastBook');
     const book = state.books.find(item => item.id === saved) || state.books[0];
     if (book) await selectBook(book.id); else renderBook();
   } catch (error) {
     $('#fatal-error').hidden = false;
-    $('#fatal-error').textContent = `The local studio could not connect: ${error.message}. Check that the Spin Tails server is running, then reload this page.`;
+    $('#fatal-error').textContent = `The local studio could not connect: ${error.message}. Check that the Bardic server is running, then reload this page.`;
   }
 }
 init();

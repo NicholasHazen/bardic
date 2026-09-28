@@ -7,9 +7,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from spintails.app import create_app
-from spintails.audio import DEFAULT_TTS_MODEL, render_fingerprint
-from spintails.resources import publish_metrics
+from bardic.app import create_app
+from bardic.audio import DEFAULT_TTS_MODEL, render_fingerprint
+from bardic.resources import publish_metrics
 from test_app import import_text, wait_job
 from test_audio import wav_bytes
 from test_listening import production_snapshot
@@ -19,7 +19,7 @@ from test_listening import production_snapshot
 def client(tmp_path, monkeypatch):
     for key in ('GEMINI_API_KEY','GOOGLE_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY'):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr('spintails.app.list_system_voices', lambda: [])
+    monkeypatch.setattr('bardic.app.list_system_voices', lambda: [])
     monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', lambda *_args, **_kwargs: pytest.fail('No live provider calls allowed'))
     with TestClient(create_app(tmp_path)) as client:
         yield client
@@ -37,7 +37,7 @@ def renderer(monkeypatch):
         path.write_bytes(wav_bytes(frames=2400+len(calls)))
         return {'fingerprint':render_fingerprint(segment,character,scene,provider,model),
                 'duration':.1,'provider':provider,'model':model,'voice':character.get('system_voice') if provider=='system' else character['voice']}
-    monkeypatch.setattr('spintails.app.synthesize', synthesize)
+    monkeypatch.setattr('bardic.app.synthesize', synthesize)
     return calls, synthesize
 
 
@@ -55,7 +55,7 @@ def test_lazy_single_passage_preserves_enhanced_work_and_cached_audio_needs_no_p
     calls, _ = renderer
     runtime = client.app.state.runtime
     runtime.api_key = 'offline-key'
-    monkeypatch.setattr('spintails.app.shutil.which', lambda name:'/fake/'+name if name in {'say','ffmpeg'} else None)
+    monkeypatch.setattr('bardic.app.shutil.which', lambda name:'/fake/'+name if name in {'say','ffmpeg'} else None)
     book = import_text(client)
     # An existing enhanced take is separate from simple listening.
     enhanced = client.post(f"/api/books/{book['id']}/render", json={'provider':'gemini','segment_id':book['segments'][0]['id']}).json()
@@ -79,7 +79,7 @@ def test_lazy_single_passage_preserves_enhanced_work_and_cached_audio_needs_no_p
     assert len(indexed['takes']) == 1 and indexed['takes'][0]['segment_id'] == book['segments'][0]['id']
     # Cache retrieval comes before checking keys or installed speech tools.
     runtime.api_key = ''
-    monkeypatch.setattr('spintails.app.shutil.which',lambda _name:None)
+    monkeypatch.setattr('bardic.app.shutil.which',lambda _name:None)
     cached = begin(client,book,provider)
     assert cached['cached'] is True and 'job' not in cached
     assert cached['audio']['asset_id'] == finished['audio']['asset_id']
@@ -112,7 +112,7 @@ def test_cancelling_current_request_retains_completed_simple_take_without_publis
         entered.set()
         assert release.wait(3), 'Test renderer was not released'
         return synthesize(*args)
-    monkeypatch.setattr('spintails.app.synthesize', blocked)
+    monkeypatch.setattr('bardic.app.synthesize', blocked)
     result = begin(client,book)
     try:
         assert entered.wait(2)
@@ -138,7 +138,7 @@ def test_failed_generation_is_retryable_and_resource_failure_retains_reported_us
     def fails(*_args):
         publish_metrics(request_count=1,http_status=429,estimated_cost_usd=None)
         raise ValueError('Quota unavailable private-offline-key')
-    monkeypatch.setattr('spintails.app.synthesize',fails)
+    monkeypatch.setattr('bardic.app.synthesize',fails)
     result = begin(client,book)
     job = wait_job(client,result['job']['id'])
     assert job['status'] == 'failed' and 'private-offline-key' not in json.dumps(job)
@@ -147,7 +147,7 @@ def test_failed_generation_is_retryable_and_resource_failure_retains_reported_us
     assert len(usage['operations']) == 1
     assert usage['operations'][0]['status'] == 'failed' and usage['operations'][0]['request_count'] == 1
     assert usage['operations'][0]['estimated_cost_usd'] is None
-    monkeypatch.setattr('spintails.app.synthesize',synthesize)
+    monkeypatch.setattr('bardic.app.synthesize',synthesize)
     retry = begin(client,book)
     assert wait_job(client,retry['job']['id'])['status'] == 'completed'
     assert len(calls) == 1
