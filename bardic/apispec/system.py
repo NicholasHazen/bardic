@@ -403,7 +403,7 @@ OPS: list[Op] = [
        '- A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe '
        'boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; '
        'validated outputs and finished audio are kept.\n'
-       '- Cancelling a `series` parent also cancels its queued child `analyze` jobs and flags running ones.\n'
+       '- Cancelling a `series` parent also cancels its queued child jobs and flags a running one.\n'
        '- Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.\n\n'
        'Cancelled work is resumed through the original start route, which creates a new job.',
        response=Job, cost='none',

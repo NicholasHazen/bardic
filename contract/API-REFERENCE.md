@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.1.3
+# Bardic 0.2.0
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -216,7 +216,7 @@ Requests cancellation and returns the updated job. The body is ignored (send `{}
 - A job that is already terminal is returned unchanged (idempotent).
 - A `queued` job becomes `cancelled` immediately.
 - A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; validated outputs and finished audio are kept.
-- Cancelling a `series` parent also cancels its queued child `analyze` jobs and flags running ones.
+- Cancelling a `series` parent also cancels its queued child jobs and flags a running one.
 - Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.
 
 Cancelled work is resumed through the original start route, which creates a new job.
@@ -729,20 +729,27 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 
 **Preview a series analysis run** · operation `planSeriesProcessing` · cost `none`
 
-Previews staged analysis over the supplied, active books of the series in reading order, without sending provider requests. Accepts `provider`, `phase`, `concurrency` and the same `limits` object used for per-book analysis. Providers must be cloud analysis providers (`gemini`, `openai` or `anthropic`); when omitted, the configured analysis provider is used, and a local provider setting is refused. Models come from runtime settings. Concurrency defaults to 2, is limited to 1 or 2, and applies to discovery only.
+Previews a series run: the step-pipeline plan of every supplied, active book of the series, in reading order, for the same `steps`, `configs` and `fresh`, and the summed estimate. No model or service calls.
 
-The response lists ordered supplied books with nested book plans, models, known requests and cost, volume slots, `limits_per_book`, notes and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books. The plan can be empty when the series has no active books (starting it is then refused). Building the preview may fill local caches.
+- Each book's `plan` is exactly what `planBookAnalysisPipelineRun` returns for that book over every eligible chapter, computed from that book's own accepted results. Accepted results in one book are not read by another.
+- Omitted `configs` entries use the saved step settings; the resolved `configs` apply to every book.
+- `estimated_cost_usd` is null when any book's cost is unknown; `known_cost_usd` and `unknown_cost_books` say what is priced. Estimates cover known work before retries or evidence repairs.
+- `missing_inputs` (per book) and `missing_credentials` do not fail the preview; starting the run is refused while either is not empty.
+- Missing and planned placeholders and removed books are listed in `skipped_volumes` and never run.
+- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book's ID, position and plan fingerprint (which covers the book revision and every unit's identity). It does not cover `mode`, `gates`, `concurrency` or `limits`.
+
+The plan can be empty when the series has no active books. Not purely read-only: for each book the server first records outside changes as the book pipeline overview does (`projection.sync`), and building units may store free local census caches.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `series_id` | path | string | yes | Series ID. |
 
-Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesprocessingrequest)
+Request body (`application/json`): [SeriesPlanRequest](#schema-seriesplanrequest)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesPlan](#schema-seriesplan) | Success. |
-| 400 | [Error](#schema-error) | The provider is not a cloud analysis provider (`gemini`, `openai`, `anthropic`). |
+| 400 | [Error](#schema-error) | `steps` names an unknown step ID (400 here, where the book pipeline returns 404), or a `configs` entry is invalid for its step. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
@@ -752,27 +759,37 @@ Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesproce
 
 **Start a series analysis run** · operation `startSeriesProcessing` · cost `may_charge`
 
-Queues a series run and returns its parent job immediately. Send the same body as the preview, adding the exact `plan_fingerprint` it returned as `expected_plan_fingerprint`.
+Queues a series run and returns its parent job immediately. Send the same `steps`, `configs` and `fresh` as the reviewed preview, with its `fingerprint` as `expected_fingerprint`.
 
-The server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions and source hashes, and relevant series context. A mismatch returns **400** (not 409, which the step pipeline uses for its equivalent) and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The fingerprint is optional for direct API clients (omitting it skips the check), but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.
+**Checks, in order.** The server recomputes the plan under its store lock, then refuses the run when:
 
-**Jobs.** The parent job has `kind: "series"` and `book_id: "series:SERIES_ID"`; `total` is the number of books. One child `analyze` job per supplied active book uses the real book ID and is created queued. Follow them with `GET /api/series/{series_id}/runs` or `GET /api/jobs`. While the run is active its books are reserved: edits to them and to the series are refused with 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) also stops its children.
+1. the series has no supplied active book (400);
+2. neither `expected_fingerprint` nor any `limits` value was sent (400);
+3. `expected_fingerprint` differs from the recomputed plan (409; preview again and review the new scope rather than replacing the fingerprint and retrying);
+4. any book's plan has `missing_inputs` (400; the message names the steps, inputs and books);
+5. a provider the steps contact has no API key or server URL configured (400, `Add in Settings first: …`);
+6. the series already has an active run (409);
+7. a book has an active job or is reserved by another series run (409).
 
-**Execution.** Discovery (`scan`, and the first part of `full`) may run on two independent books at once; profiles and direction run one book at a time in reading order. Missing, planned and removed volumes do not run. A failed or allowance-limited book stops new work; queued or running children then end `interrupted` (or `cancelled`), and already finished outputs remain reusable. Full-run phases share each book's run request and token caps, while its dollar allowance includes earlier tracked spend. Outcomes appear in the jobs, not in this response. A run record is retained as a `series_run` artifact on each book.
+Nothing is queued when any check fails. The fingerprint is optimistic scope validation, not a reservation that freezes data between requests. `limits` are optional caps for API callers; the confirmed fingerprint is the authorization, and every paid HTTP attempt is still reserved and recorded by the pipeline runner.
+
+**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with `series_run_id`, `position`, `title`, `plan_fingerprint` (that book's confirmed plan) and `run_id: null`. Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with `listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, single-book runs and accepting versions on them get 409. Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) cancels queued children at once and asks the running child to stop; cancelling a child stops the series at that book.
+
+**Execution.** Books run one at a time in reading order; `concurrency` is the number of model requests in flight inside the running book. Before each book starts, its plan is recomputed; if it no longer matches its confirmed fingerprint, that child fails with nothing sent and the series stops. Each book runs as one pipeline run (with `series_run_id` set), with the same candidates, gates and auto-accept as a run started from the book. The first child that does not complete stops the series with that status (`failed`, `budget_limited`, `quota_limited`, `cancelled` or `interrupted`); children that never started end `cancelled` (after a cancel) or `interrupted`, with `not_started: true`, and never start later. Validated units are cached per book, so running a stopped series again reuses paid work. A run record is retained as a `series_run` artifact on each book.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `series_id` | path | string | yes | Series ID. |
 
-Request body (`application/json`): [SeriesProcessingRequest](#schema-seriesprocessingrequest)
+Request body (`application/json`): [SeriesRunRequest](#schema-seriesrunrequest)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| 200 | [Job](#schema-job) | The queued parent series job. |
-| 400 | [Error](#schema-error) | The provider is not a cloud analysis provider; `expected_plan_fingerprint` does not match the recomputed plan; the series has no supplied active book; no API key is configured for the provider; the series already has an active run; or the series worker could not start (the jobs are then marked failed/interrupted and nothing runs). |
+| 200 | [Job](#schema-job) | The queued parent series job. Not a result: poll it until it is terminal. |
+| 400 | [Error](#schema-error) | `steps` names an unknown step or a `configs` entry is invalid; the series has no supplied active book; neither `expected_fingerprint` nor any limit was sent; a book lacks a required input that is not in this run; a needed API key or server URL is missing; or the series worker could not start (the jobs are then marked `failed`/`interrupted` and nothing runs). |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
 | 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of the books, or another series run holds one of them. |
+| 409 | [Error](#schema-error) | `expected_fingerprint` does not match the recomputed plan (preview again); the series already has an active run; or a book has an active job or is reserved by another series run. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="restoreseries"></a>
@@ -799,7 +816,7 @@ Restores a removed series. Idempotent: restoring an active series succeeds and c
 
 **List recent series runs** · operation `listSeriesRuns` · cost `none`
 
-Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first, each with its child job records embedded as `children`. The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run.
+Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first. Each embeds its child jobs as `children`, in reading order; a child that has started its book also carries `run`, a summary of its pipeline run (`id`, `status`, per-step `outcomes`, `error`). The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run. Read-only.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1207,7 +1224,7 @@ Request body (`application/json`): [AnalysisRequest](#schema-analysisrequest)
 
 Queues an `analyze` job and returns it immediately. Poll `GET /api/jobs` until it is terminal; failures, cancellation and allowance stops (`budget_limited`) appear in the job, not as HTTP errors. Cancel with `POST /api/jobs/{job_id}/cancel`; a remote request already sent can still complete and be billed. To resume after a stop, failure or restart, call this endpoint again (an old job ID is never revived).
 
-Send the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud provider may incur charges; `provider: "local"` never contacts a provider. There is no server-enforced preview fingerprint for per-book runs (series runs have one); the UI invalidates its preview when local inputs change.
+Send the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud provider may incur charges; `provider: "local"` never contacts a provider. There is no server-enforced preview fingerprint for these runs (pipeline and series runs have one); the UI invalidates its preview when local inputs change.
 
 The request body is `AnalysisRequest`. `provider` defaults to the saved analysis provider. Models come from
 runtime settings (`analysis_models_by_provider` for the detailed model, `preprocess_models_by_provider` for
@@ -2714,7 +2731,7 @@ Only validated cloud discovery counts as semantic coverage; local drafts do not.
 <a id="schema-analysislimits"></a>
 ### AnalysisLimits
 
-Allowances reserved before every analysis HTTP attempt, including retries and evidence repairs. When one would be exceeded the run stops as `budget_limited` and keeps its validated work. Request and token caps apply to the run; the dollar guard includes prior tracked analysis for the book. Unknown prices, or earlier attempts of unknown cost, stop a run that has a dollar guard. These limits do not cap narration (TTS) spending and do not represent account credit. For a series run they apply separately to each book, so the possible collection-wide spend grows with the number of books.
+Allowances reserved before every analysis HTTP attempt, including retries and evidence repairs. When one would be exceeded the run stops as `budget_limited` and keeps its validated work. Request and token caps apply to the run; the dollar guard includes prior tracked analysis for the book. Unknown prices, or earlier attempts of unknown cost, stop a run that has a dollar guard. These limits do not cap narration (TTS) spending and do not represent account credit.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2820,7 +2837,8 @@ Checkpoint summary of the classic analysis engine for one book.
 When no checkpoint exists the server synthesizes `status: "not_started"`
 with one pending row per chapter. A checkpoint is written by
 `POST /api/books/{book_id}/analyze` (both the local draft and the cloud
-phases) and by the per-book `analyze` children of a series run. It
+phases), and by the per-book `analyze` children of series runs recorded
+before contract 0.2.0 (newer series runs use the step pipeline). It
 survives failures, so it can describe an older run than the latest job.
 Source text and model responses are never included.
 
@@ -3751,7 +3769,8 @@ it up, and ends in exactly one terminal status:
   and finished audio are kept.
 - `cancelled`: stopped by a cancel request (or never started).
 - `interrupted`: the server stopped or restarted while the job was queued
-  or running, or (series) the collection run stopped before this book.
+  or running, or (series child) the series run stopped before this book
+  started.
 - `budget_limited`: an analysis request allowance or dollar budget was
   reached; saved work is kept.
 - `quota_limited`: the daily Gemini speech request quota was reached;
@@ -3761,18 +3780,17 @@ Treat the first terminal status you observe as final. The server may still
 rewrite `message` afterwards (a job cancelled while queued is settled
 again when its worker slot comes up, and in a shutdown race that can turn
 `cancelled` into `interrupted`). Resuming work uses the original start
-route and creates a new job; old job IDs are never revived. A series
-child that finished discovery and waits for earlier volumes stays
-`running` without doing work.
+route and creates a new job; old job IDs are never revived. A queued
+series child that is cancelled or passed over never starts later.
 
 **Kinds and their extra fields** (a field not listed for a kind is absent):
 
 | kind | started by | extra fields |
 | --- | --- | --- |
 | `render` | enhanced narration | none |
-| `analyze` | classic analysis, or a series run (one per book) | `provider`, `model`, `scan_model`, `phase`; standalone: `chapter_id`; series child: `series_id`, `series_run_id`, `position` |
-| `pipeline` | analysis pipeline run | `run_id`, `steps`, `mode` |
-| `series` | series processing (parent) | `series_id`, `phase`, `provider`, `model`, `scan_model`, `concurrency`, `child_job_ids`, `book_ids`, `limits` (analysis), `plan_fingerprint`, `finished_at` |
+| `analyze` | classic analysis | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
+| `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at` |
+| `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
 | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
 | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `limits` (speech), `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
@@ -3799,27 +3817,34 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
 | `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
-| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
-| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |
-| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. |
-| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. |
-| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. |
+| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `series_id` | string \| null |  | `series` parent and its children: the series. |
+| `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
+| `position` | number \| null |  | Series child: the book's reading-order position in the series. |
+| `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
+| `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
 | `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
-| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
-| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). |
-| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
-| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. |
-| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
+| `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
+| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
+| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` confirmed for that book; the book is not run when its recomputed plan differs. |
+| `estimated_cost_usd` | number \| null |  | `series`: the confirmed plan's `estimated_cost_usd` in USD, or null when any book's cost was unknown. Approximate; not an invoice. |
+| `requests` | integer \| null |  | `series`: the confirmed plan's total model requests, before retries or evidence repairs. |
+| `finished_at` | string \| null |  | `series`: when the series worker settled the run (a parent cancelled while queued gains it when its worker slot comes up). Series child: set only when the child failed because its book changed after the preview. As ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `performance_id` | string \| null |  | `performance`: the saved performance being prepared. |
 | `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. |
 | `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. |
@@ -4971,6 +4996,7 @@ Created with `status: queued`; the job worker adds `started_at`, then
 | `started_at` | string \| null |  | ISO 8601 UTC time the worker began. Absent while queued. |
 | `completed_at` | string \| null |  | ISO 8601 UTC finish time. Absent until the worker finishes. |
 | `outcomes` | map of string → [PipelineRunOutcome](#schema-pipelinerunoutcome) \| null |  | Per-step outcome keyed by step ID. Absent until the worker finishes. |
+| `series_run_id` | string \| null |  | Present only on a run started by a series run: the parent `series` job ID. Absent on runs started from the book. |
 
 <a id="schema-pipelinerunlimits"></a>
 ### PipelineRunLimits
@@ -5603,31 +5629,6 @@ A supplied book (one with an ebook in the library) placed in a series.
 | `author` | string | yes | Current book author; empty when unknown. |
 | `archived` | boolean | yes | True when the book itself is removed (archived). Series listings omit removed books from `books`, so this is false there. |
 
-<a id="schema-seriesbookanalysisplan"></a>
-### SeriesBookAnalysisPlan
-
-The per-book analysis preview inside a series plan.
-
-Same fields as the classic per-book plan (`AnalysisPlan`) except that `limits` is absent: a series plan states
-its limits once, in `limits_per_book`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` | yes | Requested phase. |
-| `provider` | string | yes | Resolved provider: the request value, or the saved default analysis provider. |
-| `scan_model` | string \| null | yes | Configured discovery (fast) model for this provider, or null when none is configured (the run then falls back to the detailed model or the built-in default). |
-| `model` | string \| null | yes | Configured detailed model for this provider, or null (the run then uses the built-in default). |
-| `requests` | integer | yes | Requests that are not already cached. Always 0 for `local`. Excludes retries and evidence repairs. |
-| `cached_units` | integer | yes | Known units that validated cached output would satisfy (only when `resume` is true). |
-| `estimated_input_tokens` | integer | yes | Approximate input tokens of the pending requests (0 for `local`). |
-| `output_token_allowance` | integer | yes | Sum of the pending requests' output caps (0 for `local`). |
-| `estimated_cost_usd` | number \| null | yes | Approximate USD cost of the pending requests; null when a model has no known price; 0 for `local`. Not an invoice. |
-| `steps_by_stage` | [AnalysisPlanStageCounts](#schema-analysisplanstagecounts) | yes | Pending requests by stage. Computed for `local` too, although a local run does not send these requests. |
-| `coverage` | [AnalysisCoverage](#schema-analysiscoverage) | yes | Same body as `GET /api/books/{book_id}/preprocessing`, with profile freshness computed against the plan's working cast. |
-| `future_work_unknown` | boolean | yes | True for `full`: discovery can add profiles and change direction prompts, so the estimate is incomplete. |
-| `note` | string | yes | Interpretation caveat. Display only. |
-| `limits` | [AnalysisPlanLimits](#schema-analysisplanlimits) \| null |  | Never present in a series plan; see `SeriesPlan.limits_per_book`. |
-
 <a id="schema-seriescharacter"></a>
 ### SeriesCharacter
 
@@ -5672,6 +5673,18 @@ Result of removing a book character's series identity link.
 | --- | --- | --- | --- |
 | `character_id` | string | yes | Book-local character ID from the path. |
 | `linked` | `false` | yes | Always false. |
+
+<a id="schema-serieschildrun"></a>
+### SeriesChildRun
+
+A summary of the pipeline run a series child executes.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Pipeline run ID (the child job's `run_id`). |
+| `status` | `"queued"` \| `"running"` \| `"completed"` \| `"failed"` \| `"budget_limited"` \| `"cancelled"` \| `"interrupted"` \| `"quota_limited"` | yes | The run status, as in `PipelineRun.status`. |
+| `outcomes` | map of string → [PipelineRunOutcome](#schema-pipelinerunoutcome) \| null | yes | Per-step outcome keyed by step ID, or null until the run finishes. |
+| `error` | string \| null | yes | Human-readable failure text, or null. Display only. |
 
 <a id="schema-seriescontextcharacter"></a>
 ### SeriesContextCharacter
@@ -5752,12 +5765,13 @@ A confirmed link from one book-local character to this series identity.
 <a id="schema-seriesjoblimits"></a>
 ### SeriesJobLimits
 
-The analysis allowance a series run was started with, applied to each book separately.
+The analysis allowance of a series run recorded before contract 0.2.0, applied to each book separately.
 
-Request and token caps count that book's `analyze` child job (both of its
-stages in a `full` run). The dollar ceiling counts every tracked attempt
-for the book, including earlier runs. Reaching any cap stops the book with
-`budget_limited` and stops the series.
+Newer series runs record `PipelineRunLimits` instead. Request and token
+caps counted that book's `analyze` child job (both of its stages in a
+`full` run). The dollar ceiling counted every tracked attempt for the
+book, including earlier runs. Reaching any cap stopped the book with
+`budget_limited` and stopped the series.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5798,6 +5812,17 @@ A book's series placement. Send both values null (or `{}`) to detach the book.
 | `series_id` | string \| null |  | Target series ID, or null to detach. |
 | `position` | number \| null |  | Reading order as a JSON number (a numeric string is refused with 422): finite, 0 through 1,000,000; decimals allow prequels and side stories. Required when `series_id` is set; must be null when it is not. |
 
+<a id="schema-seriesmissingcredential"></a>
+### SeriesMissingCredential
+
+A provider the planned steps would contact that has no API key or server URL configured.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provider` | `"gemini"` \| `"openai"` \| `"anthropic"` \| `"local_llm"` \| `"booknlp"` \| `"novel_analyzer"` | yes | Pipeline provider ID. |
+| `label` | string | yes | Display name of the provider. |
+| `needs` | `"api_key"` \| `"url"` | yes | What to add in Settings: an API key (cloud provider) or a server URL (self-hosted provider). |
+
 <a id="schema-seriesnamerequest"></a>
 ### SeriesNameRequest
 
@@ -5810,49 +5835,56 @@ A name for a series or a series character identity.
 <a id="schema-seriesplan"></a>
 ### SeriesPlan
 
-A preview of staged analysis over a series' supplied, active books.
+A read-only preview of a series run: each supplied, active book's step-pipeline plan in reading order,
+the summed estimate and the fingerprint that confirms it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `series_id` | string | yes | Series ID. |
 | `name` | string | yes | Series name. |
-| `provider` | `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Cloud analysis provider that would run. |
-| `model` | string | yes | Analysis model for profiles and direction, from runtime settings. |
-| `scan_model` | string | yes | Discovery (scan) model, from runtime settings. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` | yes | Requested phase. |
-| `concurrency` | integer | yes | Discovery workers that would run (1 or 2). Always 1 for `profiles` and `direct`, which run in reading order. |
-| `books` | list of [SeriesPlanBook](#schema-seriesplanbook) | yes | Supplied, active books in reading order. May be empty. |
+| `plan_version` | integer | yes | Version of the series plan format, part of the fingerprint. Currently 2. |
+| `steps` | list of string | yes | Requested step IDs, deduplicated, in pipeline order. |
+| `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) | yes | `{step ID: {provider, model}}` resolved for every requested step: the request's `configs` entry, otherwise the saved step setting. The same configuration applies to every book. |
+| `fresh` | boolean | yes | Echo of the request's `fresh`. Part of the fingerprint. |
+| `books` | list of [SeriesPlanBook](#schema-seriesplanbook) | yes | Supplied, active books in reading order (position, then book ID). Empty when the series has none; starting it is then refused. |
 | `volumes` | list of [SeriesSuppliedVolume](#schema-seriessuppliedvolume) \| [SeriesVolumeSlot](#schema-seriesvolumeslot) | yes | The series' volume slots, as in `Series.volumes`. |
-| `limits_per_book` | [AnalysisPlanLimits](#schema-analysisplanlimits) | yes | Limits applied separately to each book; total possible spend scales with the number of books. |
-| `requests` | integer | yes | Sum of known pending requests across books (excludes retries, evidence repairs and work discovered during a full run). |
-| `estimated_cost_usd` | number \| null | yes | Sum of per-book estimates in USD, or null when any book estimate is unknown. Approximate; not an invoice. |
+| `skipped_volumes` | list of [SeriesSuppliedVolume](#schema-seriessuppliedvolume) \| [SeriesVolumeSlot](#schema-seriesvolumeslot) | yes | The slots that will not run: missing and planned placeholders and removed (archived) supplied books, in reading order. Nothing is inferred about them. |
+| `requests` | integer | yes | Sum of the books' `requests`: model requests to send, before retries or evidence repairs. |
+| `cached_units` | integer | yes | Sum of the books' `cached_units`. |
+| `service_calls` | integer | yes | Sum of the books' `service_calls` (free calls to self-hosted services). |
+| `estimated_input_tokens` | integer | yes | Sum of the books' `estimated_input_tokens`. |
+| `output_token_allowance` | integer | yes | Sum of the books' `output_token_allowance` (output token caps). |
+| `estimated_cost_usd` | number \| null | yes | Sum of the books' `estimated_cost_usd` in USD, rounded to 6 decimals; null when any book's cost is unknown (an unknown price is never counted as zero); 0 when `books` is empty. Approximate; not an invoice. |
+| `known_cost_usd` | number | yes | Sum of the books' known `estimated_cost_usd` in USD, rounded to 6 decimals. A lower bound when `unknown_cost_books` is not empty. |
+| `unknown_cost_books` | list of string | yes | Book IDs whose estimate is unknown (null), in reading order. |
+| `missing_inputs` | map of string → map of string → list of string | yes | `{book ID: {step: [required inputs]}}` for the books whose plan reports `missing_inputs`; books without any are omitted. Starting the run is refused (400) while this is not empty. |
+| `missing_credentials` | list of [SeriesMissingCredential](#schema-seriesmissingcredential) | yes | Providers the requested steps would contact that have no API key or server URL configured, sorted by provider ID. Local steps and offline providers need none. Starting the run is refused (400) while this is not empty. |
 | `notes` | list of string | yes | Human-readable caveats. Display only. |
-| `plan_fingerprint` | string | yes | SHA-256 hex digest over the plan and each book's revision, source hash and series-context fingerprint. Send it as `expected_plan_fingerprint` to start exactly this scope. |
+| `fingerprint` | string | yes | Opaque series plan identity (SHA-256 hex) over the plan version, series, steps, resolved `configs`, `fresh` and every book's ID, position and plan fingerprint. Send it as `expected_fingerprint` to start exactly this plan. |
 
 <a id="schema-seriesplanbook"></a>
 ### SeriesPlanBook
 
-One supplied book in a series plan.
+One supplied, active book in a series plan, with its own step-pipeline plan.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `book_id` | string | yes | Book ID. |
-| `title` | string | yes | Book title. |
+| `title` | string | yes | Book title ("Untitled" when the book has none). |
 | `position` | number | yes | Reading order within the series: a finite number from 0 through 1,000,000, sent and returned as a JSON number (decimals allow prequels and side stories). Unique among supplied books of one series. |
-| `plan` | [SeriesBookAnalysisPlan](#schema-seriesbookanalysisplan) | yes | The per-book analysis preview for this book, computed with `resume` true and no chapter scope. |
+| `fingerprint` | string | yes | This book's plan `fingerprint` (the same as `plan.fingerprint`). The series worker recomputes it before the book starts and does not run the book when it differs. |
+| `plan` | [PipelinePlan](#schema-pipelineplan) | yes | The book's step-pipeline plan for the requested steps, `configs` and `fresh`, over every eligible chapter: exactly what `planBookAnalysisPipelineRun` returns for that book. |
 
-<a id="schema-seriesprocessingrequest"></a>
-### SeriesProcessingRequest
+<a id="schema-seriesplanrequest"></a>
+### SeriesPlanRequest
 
-Scope of a series analysis preview or run. Send the same body to preview and to start, adding the reviewed fingerprint when starting.
+Which steps to preview across the series, with which providers. Send the same `steps`, `configs` and `fresh` to start the run: they are part of the fingerprint.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `provider` | string \| null |  | Cloud analysis provider: `gemini`, `openai` or `anthropic`. Null uses the configured analysis provider, which must itself be a cloud provider. Other values are refused with 400. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` |  | `scan` (default): discovery only. `profiles`: refine character profiles from retained evidence and confirmed earlier-series context. `direct`: performance direction. `full`: all three in order. (default `"scan"`) |
-| `concurrency` | integer |  | Parallel discovery workers, 1 or 2 (default 2). Profiles and direction always run one book at a time in reading order. (≥ `1.0`; ≤ `2.0`; default `2`) |
-| `limits` | [AnalysisLimits](#schema-analysislimits) |  | Per-book analysis limits, applied separately to each supplied book. |
-| `expected_plan_fingerprint` | string \| null |  | The `plan_fingerprint` from the reviewed preview (at most 64 characters). Used only by the start route; when present and different from the recomputed plan, nothing is queued (400). Omitting it skips the check. Ignored by the preview route. |
+| `steps` | list of string | yes | Step IDs to plan in every book (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID is refused with 400. (min items `1`; max items `40`) |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request, applied to every book. Entries for steps not requested are ignored. |
+| `fresh` | boolean |  | When true, cached validated units are not reused in any book: new samples are requested. Part of the fingerprint. Default false. (default `false`) |
 
 <a id="schema-seriesrenamed"></a>
 ### SeriesRenamed
@@ -5867,7 +5899,7 @@ Result of renaming a series.
 <a id="schema-seriesrun"></a>
 ### SeriesRun
 
-A series parent job with its child book jobs.
+A series parent job with its child jobs.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5882,27 +5914,34 @@ A series parent job with its child book jobs.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
 | `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
-| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
-| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |
-| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. |
-| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. |
-| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. |
+| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `series_id` | string \| null |  | `series` parent and its children: the series. |
+| `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
+| `position` | number \| null |  | Series child: the book's reading-order position in the series. |
+| `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
+| `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
 | `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
-| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
-| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). |
-| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
-| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. |
-| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
+| `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
+| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
+| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` confirmed for that book; the book is not run when its recomputed plan differs. |
+| `estimated_cost_usd` | number \| null |  | `series`: the confirmed plan's `estimated_cost_usd` in USD, or null when any book's cost was unknown. Approximate; not an invoice. |
+| `requests` | integer \| null |  | `series`: the confirmed plan's total model requests, before retries or evidence repairs. |
+| `finished_at` | string \| null |  | `series`: when the series worker settled the run (a parent cancelled while queued gains it when its worker slot comes up). Series child: set only when the child failed because its book changed after the preview. As ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `performance_id` | string \| null |  | `performance`: the saved performance being prepared. |
 | `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. |
 | `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. |
@@ -5921,7 +5960,89 @@ A series parent job with its child book jobs.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
 | `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
 | `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
-| `children` | list of [Job](#schema-job) | yes | The child `analyze` jobs, one per supplied book, in reading order. They use real book IDs. |
+| `children` | list of [SeriesRunChild](#schema-seriesrunchild) | yes | The child jobs, one per supplied book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). They use real book IDs. |
+
+<a id="schema-seriesrunchild"></a>
+### SeriesRunChild
+
+A child job of a series run, with a summary of its book's pipeline run.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Job ID (32 hex characters). |
+| `book_id` | string | yes | The book the job works on, or `series:<series id>` for a `series` parent job. Pass this value as `book_id` to `GET /api/jobs` to list a book's or series' jobs. |
+| `kind` | `"render"` \| `"analyze"` \| `"pipeline"` \| `"series"` \| `"listen"` \| `"listen_chapter"` \| `"voice_preview"` \| `"performance"` | yes | What the job does; see the table above. |
+| `status` | `"queued"` \| `"running"` \| `"completed"` \| `"failed"` \| `"cancelled"` \| `"interrupted"` \| `"budget_limited"` \| `"quota_limited"` | yes | `queued` and `running` are active; every other value is terminal. See the lifecycle above. |
+| `progress` | integer | yes | Units completed so far (kind-specific units). |
+| `total` | integer | yes | Units planned; 0 when not yet known. |
+| `message` | string | yes | Human-readable progress or outcome text. Display it; do not parse it. |
+| `error` | string \| null | yes | Human-readable failure text (at most 1,200 characters, credentials redacted), or null. Usually set with `failed`; a series child that stopped also carries it with `budget_limited` or `cancelled`. |
+| `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (and `series` runs recorded before contract 0.2.0): the classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
+| `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
+| `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `series_id` | string \| null |  | `series` parent and its children: the series. |
+| `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
+| `position` | number \| null |  | Series child: the book's reading-order position in the series. |
+| `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
+| `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
+| `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
+| `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
+| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
+| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` confirmed for that book; the book is not run when its recomputed plan differs. |
+| `estimated_cost_usd` | number \| null |  | `series`: the confirmed plan's `estimated_cost_usd` in USD, or null when any book's cost was unknown. Approximate; not an invoice. |
+| `requests` | integer \| null |  | `series`: the confirmed plan's total model requests, before retries or evidence repairs. |
+| `finished_at` | string \| null |  | `series`: when the series worker settled the run (a parent cancelled while queued gains it when its worker slot comes up). Series child: set only when the child failed because its book changed after the preview. As ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `performance_id` | string \| null |  | `performance`: the saved performance being prepared. |
+| `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. |
+| `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. |
+| `preview_id` | string \| null |  | `voice_preview`: the preview ID. |
+| `preview` | [VoicePreview](#schema-voicepreview) \| null |  | `voice_preview`: the preview request being rendered. |
+| `voice` | string \| null |  | `listen_chapter`: the Gemini voice. |
+| `intent` | `"play"` \| `"queue"` \| null |  | `listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`. |
+| `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
+| `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
+| `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
+| `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
+| `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
+| `calibration` | [ChapterListenCalibration](#schema-chapterlistencalibration) \| null |  | `listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish. |
+| `projection` | list of [ChapterListenChunkPlan](#schema-chapterlistenchunkplan) \| null |  | `listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports. |
+| `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
+| `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
+| `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
+| `run` | [SeriesChildRun](#schema-serieschildrun) \| null |  | Present once the child has a `run_id`: the run's `{id, status, outcomes, error}`, or null when that run record no longer exists. Absent while the book has not started, and on children that never started. |
+
+<a id="schema-seriesrunrequest"></a>
+### SeriesRunRequest
+
+A series run to queue: the reviewed preview's `steps`, `configs` and `fresh`, its `fingerprint`, and run options applied to each book's pipeline run. There is no chapter selection; every eligible chapter of each book is planned.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `steps` | list of string | yes | Step IDs to run in every book (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused with 400. (min items `1`; max items `40`) |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model, applied to every book. Entries for steps not requested are ignored. |
+| `fresh` | boolean |  | Request new samples instead of reusing cached validated units (default false). Part of the fingerprint. (default `false`) |
+| `mode` | `"serial"` \| `"parallel"` |  | `serial` (default) runs each book's steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished. Books always run one at a time. (default `"serial"`) |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. With `review`, each book's version waits in that book's Analysis tab. |
+| `concurrency` | integer |  | Maximum model requests in flight inside the running book, 1–4 (default 2). Books run one at a time. Each step also has its own `parallel` cap. (≥ `1.0`; ≤ `4.0`; default `2`) |
+| `limits` | [Limits](#schema-limits) |  | Optional caps applied separately to each book's run; see Limits. Uncapped when omitted. A limit reached stops that book as `budget_limited` and stops the series. |
+| `expected_fingerprint` | string \| null |  | The series plan `fingerprint` the owner confirmed (up to 64 characters). A mismatch with the recomputed plan returns 409 and queues nothing. Required unless a limit is set. |
 
 <a id="schema-seriesruns"></a>
 ### SeriesRuns

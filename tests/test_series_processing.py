@@ -398,3 +398,23 @@ def test_invalid_series_requests_never_create_jobs(client, body):
     series, _ = collection(client, positions=(1,))
     assert client.post(f"/api/series/{series['id']}/process", json=body).status_code in {400, 422}
     assert client.get('/api/jobs').json() == []
+
+
+def test_empty_and_unknown_series_and_invalid_plans_are_refused_without_jobs(client):
+    empty = client.post('/api/series', json={'name': 'Nothing yet'}).json()
+    plan = preview(client, empty)
+    assert plan['books'] == [] and plan['requests'] == 0 and plan['estimated_cost_usd'] == 0
+    assert plan['unknown_cost_books'] == [] and len(plan['fingerprint']) == 64
+    response = process(client, empty, plan)
+    assert response.status_code == 400 and 'Add a book' in response.text
+    for method, route, body in (('post', 'plan', {'steps': ['discovery']}),
+                                ('post', 'process', {'steps': ['discovery'], 'limits': {'max_requests': 1}}),
+                                ('get', 'runs', None)):
+        kwargs = {'json': body} if body is not None else {}
+        missing = getattr(client, method)(f'/api/series/series_missing/{route}', **kwargs)
+        assert missing.status_code == 404 and missing.json()['detail'] == 'Series not found'
+    series, _ = collection(client, positions=(1,))
+    for body in ({'steps': ['unknown']}, {'steps': ['discovery'], 'configs': {'discovery': {'provider': 'local'}}}):
+        assert client.post(f"/api/series/{series['id']}/plan", json=body).status_code == 400
+    assert client.get(f"/api/series/{series['id']}/runs").json() == {'runs': []}
+    assert client.get('/api/jobs').json() == []

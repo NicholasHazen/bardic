@@ -52,7 +52,8 @@ class AnalysisStatus(View):
     When no checkpoint exists the server synthesizes `status: "not_started"`
     with one pending row per chapter. A checkpoint is written by
     `POST /api/books/{book_id}/analyze` (both the local draft and the cloud
-    phases) and by the per-book `analyze` children of a series run. It
+    phases), and by the per-book `analyze` children of series runs recorded
+    before contract 0.2.0 (newer series runs use the step pipeline). It
     survives failures, so it can describe an older run than the latest job.
     Source text and model responses are never included.
     """
@@ -704,7 +705,7 @@ OPS: list[Op] = [
        'revived).\n\n'
        'Send the same body to `POST /api/books/{book_id}/analysis-plan` first. Dispatching it with a cloud '
        'provider may incur charges; `provider: "local"` never contacts a provider. There is no server-enforced '
-       'preview fingerprint for per-book runs (series runs have one); the UI invalidates its preview when local '
+       'preview fingerprint for these runs (pipeline and series runs have one); the UI invalidates its preview when local '
        'inputs change.\n\n'
        + ANALYSIS_BODY_NOTE +
        '\nThe provider and configured models are snapshotted when the job is queued; the job carries `provider`, '
@@ -904,8 +905,7 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                    'one would be exceeded the run stops as `budget_limited` and keeps its validated work. Request and '
                    'token caps apply to the run; the dollar guard includes prior tracked analysis for the book. Unknown '
                    'prices, or earlier attempts of unknown cost, stop a run that has a dollar guard. These limits do not '
-                   'cap narration (TTS) spending and do not represent account credit. For a series run they apply '
-                   'separately to each book, so the possible collection-wide spend grows with the number of books.',
+                   'cap narration (TTS) spending and do not represent account credit.',
         'max_requests': 'Maximum HTTP attempts in this run, 1–1,000 (default 25).',
         'max_input_tokens': 'Maximum input tokens in this run, 1,000–10,000,000 (default 1,000,000). Reported usage '
                             'counts; attempts without reported usage count their conservative reservation.',

@@ -22,6 +22,34 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.2.0 — 2026-09-28
+<!-- contract-sha256: 964700e2e8614b5c6f838ba9f9e066c80268a0617cd3708b12963c477ae9e958 -->
+
+**BREAKING.** Series runs now run the step pipeline instead of the classic phase engine. The owner replaced the engine, so the old shapes cannot be kept alongside the new ones. The operation IDs and paths stay the same. Clients must change the following.
+
+- **`planSeriesProcessing` request** (`POST /api/series/{series_id}/plan`). `SeriesProcessingRequest` is replaced by `SeriesPlanRequest`: `{steps, configs?, fresh?}`, using the same step IDs and `StepConfig` as the book pipeline. `provider`, `phase`, `concurrency`, `limits` and `expected_plan_fingerprint` now get 422. An unknown step ID gets 400 here, where the book pipeline returns 404.
+- **`planSeriesProcessing` response** (`SeriesPlan`).
+  - Removed: `provider`, `model`, `scan_model`, `phase`, `concurrency`, `limits_per_book` and `plan_fingerprint`.
+  - Added: `plan_version`, `steps`, `configs` (resolved per step), `fresh`, `skipped_volumes`, the summed `cached_units`, `service_calls`, `estimated_input_tokens` and `output_token_allowance`, `known_cost_usd`, `unknown_cost_books`, `missing_inputs` (`{book: {step: [inputs]}}`), `missing_credentials` (`[{provider, label, needs}]`, the new `SeriesMissingCredential`) and `fingerprint`.
+  - Each `books[]` entry (`SeriesPlanBook`) gains `fingerprint`. Its `plan` is now the book pipeline's `PipelinePlan` instead of the classic `SeriesBookAnalysisPlan`, which is removed.
+  - `estimated_cost_usd` is still null when any book's cost is unknown, and 0 for a series with no active books.
+- **`startSeriesProcessing` request** (`POST /api/series/{series_id}/process`). `SeriesRunRequest`: the plan fields plus `expected_fingerprint` (renamed from `expected_plan_fingerprint`), `mode`, `gates`, `concurrency` (now 1–4, requests in flight inside the running book) and optional `limits` (the pipeline's `Limits`, all uncapped by default).
+- **`startSeriesProcessing` errors.**
+  - A changed fingerprint now returns **409** instead of 400, and so does an active run of the same series.
+  - New 400s: neither `expected_fingerprint` nor any limit sent, a book lacking a required input, and a missing API key or server URL (`Add in Settings first: …`).
+  - Books still run one at a time in reading order. Each book's plan is checked again before it starts, and a changed book fails with nothing sent and stops the series.
+- **Series jobs** (`Job`, `SeriesRun`).
+  - Series children are `pipeline` jobs, not `analyze` jobs. A child carries `series_id`, `series_run_id`, `position`, `title`, `steps`, `plan_fingerprint` and `run_id` (null until its book starts). A child that never started ends with `not_started: true`.
+  - The parent carries `steps`, `configs`, `gates`, `mode`, `concurrency` (1–4), `fresh`, `limits` (now `PipelineRunLimits`, every value possibly null), `estimated_cost_usd` and `requests` instead of `phase`, `provider`, `model` and `scan_model`.
+  - `plan_fingerprint` is no longer marked internal.
+  - `listSeriesRuns` children are the new `SeriesRunChild`: a job plus `run: {id, status, outcomes, error}` once its book has started.
+  - Series jobs recorded before this version keep their old fields, which stay described as legacy. `SeriesJobLimits` remains for those records.
+
+Additive and documentation changes in the same version:
+
+- `PipelineRun.series_run_id` is present on runs started by a series run. It is returned by `getBookAnalysisPipeline`, which previously failed contract validation after a series run.
+- `PipelineStepConfigView` and `PipelineRunLimits` are unchanged but are now shared by jobs. The descriptions of `cancelJob`, `AnalysisStatus`, `startClassicAnalysis` and `AnalysisLimits` no longer say that series runs use classic `analyze` jobs.
+
 ## 0.1.3 — 2026-09-28
 <!-- contract-sha256: 540a52e82a8f8041918ec5db29114c679637e3abba5d0bad3415deb9c60bc9c1 -->
 

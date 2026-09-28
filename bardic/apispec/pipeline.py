@@ -12,7 +12,7 @@ from typing import Any, Literal, Union
 from pydantic import Field
 
 from .base import Op, View, internal, op
-from .common import Job
+from .common import Job, PipelineRunLimits, PipelineStepConfigView
 
 TAG = 'Analysis pipeline'
 
@@ -214,21 +214,6 @@ class PipelineDecision(View):
     created_at: str = Field(description='ISO 8601 UTC.')
 
 
-class PipelineStepConfigView(View):
-    """The provider and model a run snapshotted for one step."""
-    provider: str = Field(description='Provider ID the run uses for this step: `local` for plain steps, otherwise a '
-                                      'pipeline provider ID.')
-    model: str | None = Field(description='Model ID the run sends, or null for plain steps and service providers.')
-
-
-class PipelineRunLimits(View):
-    """Caps a run was started with; null means uncapped."""
-    max_requests: int | None = Field(description='HTTP attempts allowed in this run.')
-    max_input_tokens: int | None = Field(description='Input tokens (reserved or reported) allowed in this run.')
-    max_output_tokens: int | None = Field(description='Output tokens (reserved or reported) allowed in this run.')
-    budget_usd: float | None = Field(description='Cumulative USD guard across every tracked attempt for the book, including earlier runs.')
-
-
 class PipelineRunOutcome(View):
     """How one requested step ended within a run."""
     status: Literal['completed', 'failed', 'budget_limited', 'cancelled', 'skipped'] = Field(
@@ -272,6 +257,9 @@ class PipelineRun(View):
     completed_at: str | None = Field(None, description='ISO 8601 UTC finish time. Absent until the worker finishes.')
     outcomes: dict[StepId, PipelineRunOutcome] | None = Field(
         None, description='Per-step outcome keyed by step ID. Absent until the worker finishes.')
+    series_run_id: str | None = Field(
+        None, description='Present only on a run started by a series run: the parent `series` job ID. Absent on runs '
+                          'started from the book.')
 
 
 class PipelineRunStarted(View):
