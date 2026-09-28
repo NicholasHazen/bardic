@@ -56,7 +56,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`model_catalog.py`](../bardic/model_catalog.py) | Documented model choices, dated pricing metadata, explicit account inventory refresh, custom model support. Listing a model does not prove generation compatibility. |
 | [`account_checks.py`](../bardic/account_checks.py) | Explicit small text requests that test an account/model and classify errors. Does not retrieve a credit balance. |
 | [`series.py`](../bardic/series.py) | Explicit series membership, confirmed character identities, retained observations, bounded evidence from earlier supplied volumes. |
-| [`series_processing.py`](../bardic/series_processing.py) | Collection plan/fingerprint, parent and child jobs, bounded parallel discovery, ordered later phases, cancellation and failure settlement. |
+| [`series_processing.py`](../bardic/series_processing.py) | Series runs on the step pipeline: per-book pipeline plans and one series fingerprint, a parent job with one `pipeline` child per book in reading order, per-book re-check before start, cancellation and failure settlement. |
 | [`library.py`](../bardic/library.py) | Editable metadata, covers, measured storage, reversible removal/restoration, explicit missing/planned volume slots. |
 | [`artifacts.py`](../bardic/artifacts.py) | Immutable content-addressed versions, mutable current heads, verified dependency edges, projection capture and honest legacy backfill. |
 | [`pipeline/`](../bardic/pipeline/) | Step-based analysis: step contract and registry, built-in steps, runner (planning, bounded parallel units, metered requests, unit cache), candidate versions, accept/reject/rollback with a revision-guarded projection, outside-change capture, HTTP router. Runs never write the book projection. See [the analysis pipeline](ANALYSIS-PIPELINE.md). |
@@ -163,9 +163,9 @@ Books remain independent sources with independent chapter IDs, profiles, coverag
 
 A book can belong to one series at an explicit numeric reading position. Decimal positions support side stories. Series characters are separate identities; a matching name is not enough to link two book characters. User-confirmed links select which earlier-volume observations can influence a later book. Context excludes later books, archived sources, stale source hashes, and mere mention records. Its bounded selection does not imply complete knowledge of every earlier observation.
 
-Missing/planned volume slots are explicit library metadata with no source text. A collection run skips them and processes only supplied active books; gaps remain visible and no knowledge of an absent volume is inferred. A scan does not automatically confirm newly discovered cross-book identities. Reviewing links between scan and profiles is useful when building series continuity.
+Missing/planned volume slots are explicit library metadata with no source text. A collection run skips them and processes only supplied active books; gaps remain visible and no knowledge of an absent volume is inferred. Discovery does not automatically confirm newly discovered cross-book identities. Reviewing links between discovery and profiles is useful when building series continuity.
 
-Collection discovery can use one or two workers. Profiles and direction run in reading order. A parent job reserves all child books until the collection run ends, preventing edits, membership changes, or restoration of an archived member from changing its scope mid-run. The UI submits a plan fingerprint; a changed effective plan is rejected before queuing work. Limits apply per book, so collection cost can scale with the number of supplied books. A failure stops scheduling new books; already running bounded work settles cooperatively.
+A series run applies one set of pipeline steps to each supplied book, one book at a time in reading order ([design](ANALYSIS-PIPELINE.md#series-runs)). A parent job reserves all child books until the run ends, preventing edits, membership changes, version decisions or restoration of an archived member from changing its scope mid-run. Confirming the series fingerprint authorizes the run; a changed plan is refused with 409 before queuing, and each book is re-planned and compared with its confirmed fingerprint before it starts. Optional limits apply per book. A failure stops scheduling new books; already running bounded work settles cooperatively. Accepted pipeline results in one book are not yet read by later books.
 
 ## Audio production
 
@@ -204,7 +204,7 @@ Settings loaded from `.env` remain environment configuration; keys entered throu
 | Area | Current boundary |
 | --- | --- |
 | Import | EPUB/TXT only; retained EPUB containers can have multiple logical sections; no PDF/MOBI/DRM workflow. |
-| Semantic analysis | Structured cloud or self-hosted annotations plus local rules. The self-hosted providers exist only in the step pipeline, not the phase controls or series runs. No automatic identity reconciliation or certainty guarantee after full coverage. |
+| Semantic analysis | Structured cloud or self-hosted annotations plus local rules. The self-hosted providers exist only in the step pipeline (including series runs), not the phase controls. No automatic identity reconciliation or certainty guarantee after full coverage. |
 | Search | Literal-word FTS5 retrieval. No embeddings, vector ranking, or retrieval-driven automatic character linking. |
 | Provenance | Exact inputs are retained for the current progressive path. Legacy data is explicitly incomplete; snapshot edges are not fabricated generation lineage. |
 | Scheduling | Explicit bounded jobs with reusable work. No automatic restart continuation or distributed queue. |

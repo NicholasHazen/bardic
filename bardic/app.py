@@ -43,6 +43,7 @@ from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .pipeline import default_registry
 from .pipeline.api import build_router as pipeline_router
 from .pipeline.repository import PipelineRepository
+from .series_processing import SeriesPlanRequest, SeriesRunRequest
 from .series import SeriesRepository
 from .structure import repair_structure, transform_checkpoint_structure
 from .store import InstanceLock, Store
@@ -91,14 +92,6 @@ class AnalysisRequest(StrictModel):
     resume: bool = True
     phase: Literal["scan", "profiles", "direct", "full"] = "scan"
     limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
-
-
-class SeriesProcessingRequest(StrictModel):
-    provider: str | None = None
-    phase: Literal['scan', 'profiles', 'direct', 'full'] = 'scan'
-    concurrency: int = Field(default=2, ge=1, le=2)
-    limits: AnalysisLimits = Field(default_factory=AnalysisLimits)
-    expected_plan_fingerprint: str | None = Field(default=None, max_length=64)
 
 
 class BookMetadataRequest(StrictModel):
@@ -894,6 +887,8 @@ def create_app(data_dir: Path | None = None):
         app.state.runtime.close()
 
     app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
+    # One step registry for book pipeline routes and series runs.
+    pipeline_registry = default_registry()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver", *allowed_hosts()])
 
     @app.middleware("http")
@@ -1564,26 +1559,19 @@ def create_app(data_dir: Path | None = None):
             return LibraryRepository(runtime.store).remove_volume(series_id, position)
 
     @app.post('/api/series/{series_id}/plan')
-    def plan_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+    def plan_series(series_id: str, body: SeriesPlanRequest, request: Request):
         from .series_processing import plan
-        runtime = rt(request)
-        with runtime.store.lock:
-            return plan(runtime, series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
-                        limits=body.limits.model_dump())
+        return plan(rt(request), pipeline_registry, series_id, body.steps, configs=body.configs, fresh=body.fresh)
 
     @app.post('/api/series/{series_id}/process')
-    def process_series(series_id: str, body: SeriesProcessingRequest, request: Request):
+    def process_series(series_id: str, body: SeriesRunRequest, request: Request):
         from .series_processing import start
-        return start(rt(request), series_id, provider=body.provider, phase=body.phase, concurrency=body.concurrency,
-                     limits=body.limits.model_dump(), expected_plan_fingerprint=body.expected_plan_fingerprint)
+        return start(rt(request), pipeline_registry, series_id, body)
 
     @app.get('/api/series/{series_id}/runs')
     def series_runs(series_id: str, request: Request):
-        from .series_processing import series_view
-        store = rt(request).store
-        series_view(store, series_id)
-        parents = store.jobs('series:' + series_id, limit=20)
-        return {'runs': [{**parent, 'children': [store.job(identifier) for identifier in parent.get('child_job_ids', [])]} for parent in parents]}
+        from .series_processing import runs
+        return runs(rt(request), series_id)
 
     @app.get('/api/series/{series_id}/map')
     def series_map(series_id: str, request: Request):
@@ -1975,7 +1963,7 @@ def create_app(data_dir: Path | None = None):
             shutil.rmtree(temp, ignore_errors=True)
             raise
 
-    app.include_router(pipeline_router(default_registry()))
+    app.include_router(pipeline_router(pipeline_registry))
 
     app.mount("/static", StaticFiles(directory=STATIC), name="assets")
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="studio")

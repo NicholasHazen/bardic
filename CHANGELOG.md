@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Series runs use the Analysis steps.** In **Books & series → Open series**, choose one step (as in the Analysis tab), preview every supplied book's requests and cost in reading order, and confirm; books then run one at a time as ordinary Analysis runs with versions, gates and review. Nothing is capped by default: the confirmed preview is the authorization, and each request is still recorded before it is sent. A book whose plan changed since the preview is not run, cancelling stops waiting books for good, and an unknown price is shown as unknown. The phase/provider/allowance form is gone and `POST /api/series/{id}/plan|process` take `{steps, configs, fresh}` (see the API guide). Accepted results in one volume do not yet feed later volumes.
+
 - **Listening consent and correctness.**
   - Tapping or pressing Enter on the text moves your reading place; it plays from there only when narration is already playing. Play, Space and media keys start listening.
   - New books start with one narrator (unless they already have Studio takes); saved choices, including Full cast, are kept.

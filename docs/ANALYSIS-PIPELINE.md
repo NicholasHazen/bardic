@@ -1,6 +1,6 @@
 # Analysis pipeline
 
-This page describes the step-based analysis pipeline behind the **Analysis** tab, as implemented on 2026-09-27, and the steps planned next. It is the authoritative reference for the step contract. The older phase controls (scan/profiles/direct/full in Studio and series runs) still work; see [how the two coexist](#coexistence-with-the-phase-controls).
+This page describes the step-based analysis pipeline behind the **Analysis** tab, as implemented on 2026-09-27, and the steps planned next. It is the authoritative reference for the step contract. Series runs use the same steps ([series runs](#series-runs), 2026-09-28). The older phase controls (scan/profiles/direct/full in Studio) still work; see [how the two coexist](#coexistence-with-the-phase-controls).
 
 ## What it does
 
@@ -117,7 +117,7 @@ Projectors never delete characters or passages, and never change source text or 
 
 ### Coexistence with the phase controls
 
-The Studio phase controls, the local draft and series runs still write the book directly. Before any pipeline run or decision, and when the overview is read, `sync` compares each capturable step's accepted versions with the projection. It is skipped when a digest of the captured content is unchanged; revision numbers are not relied on. Scopes that differ are recorded and accepted as `external` versions. Outside work therefore appears in history and can be rolled back, and the pipeline never silently reverts it. Discovery and the census are not capturable (their per-chapter output cannot be recovered from the merged projection), so outside discovery work appears only through its effect on the cast.
+The Studio phase controls and the local draft still write the book directly. Series runs no longer do: they run pipeline steps. Before any pipeline run or decision, and when the overview is read, `sync` compares each capturable step's accepted versions with the projection. It is skipped when a digest of the captured content is unchanged; revision numbers are not relied on. Scopes that differ are recorded and accepted as `external` versions. Outside work therefore appears in history and can be rolled back, and the pipeline never silently reverts it. Discovery and the census are not capturable (their per-chapter output cannot be recovered from the merged projection), so outside discovery work appears only through its effect on the cast.
 
 ## The step contract
 
@@ -158,6 +158,53 @@ and implements:
 - **Remove**: delete it from `builtin_steps()`. Its retained versions and decisions stay in artifact history and exports. Fields it owned stay as they are in the projection.
 - **Split** (e.g. attribution out of directing): the new step claims a subset of fields and the old step drops them from `owns`. The registry enforces that no field has two owners.
 
+## Series runs
+
+Rebuilt on the step pipeline on 2026-09-28 (the owner decided to discard the phase engine and its data). Code: [series_processing.py](../bardic/series_processing.py); API: [series preview and execution](API.md#series-preview-and-execution).
+
+### What the phase-engine series run did
+
+- **Phases.** `scan` (discovery), `profiles`, `direct`, or `full` (all three), with one cloud provider and the global analysis and scan models.
+- **Per-book limits.** 25 requests, 1M input and 100K output tokens per book run, and a $1 cumulative dollar guard per book. The possible spend grew with the number of books.
+- **Concurrency.** Discovery ran on one or two books at once. Profiles and direction ran in reading order, one book at a time.
+- **Scope.** Supplied, active books sorted by `(position, book_id)`. Missing and planned volume slots and archived books were skipped. Nothing was inferred about a missing volume.
+- **Series memory.** The phase engine's checkpoints retain `character_observations` (evidence quotes with source hashes). When a later book's profiles are built, `SeriesRepository.context_for_book` reads the observations of characters that the owner has **confirmed** as the same series identity. It reads only volumes at a **strictly earlier** position that are active and whose source still matches, and it skips mention-only records. That context goes into the profile prompt, bounded, as "earlier linked volumes".
+- **Jobs.** A parent `series` job reserved every book until it ended. Its children were `analyze` jobs. The plan fingerprint covered the provider, models, phase, concurrency, limits, book revisions, source hashes and series-context fingerprints. The first failed or allowance-limited book stopped new work.
+
+### How it maps to the step pipeline
+
+| Phase run | Pipeline series run |
+| --- | --- |
+| Phase `scan`/`profiles`/`direct`/`full` | Any registered step. The series panel runs **one step at a time**, as the Analysis tab does (D4). The API accepts several steps; each book then runs them as one pipeline run. |
+| Global provider and models | Each step's saved Analysis-tab settings (provider, model, gate), or `configs` overrides in the request. The same settings apply to every book. |
+| Book plan from `progressive.plan` | Each book's `POST …/analysis-pipeline/plan` result, computed from that book's accepted inputs, with the same `fresh`. |
+| Series fingerprint | A digest over the plan version, series, steps, resolved configs, `fresh` and every book's `(book_id, position, pipeline fingerprint)`. A book's pipeline fingerprint covers its revision and every unit's cache key. The key hashes the full prompt, so it also covers the earlier-volume context in a profile prompt. |
+| Default caps per book | **Consent only.** The confirmed series fingerprint authorizes the run. Optional `limits` still apply to each book's run. The pipeline runner still reserves and records every HTTP attempt before it is sent. |
+| One or two discovery workers | Books run **one at a time**, in reading order. `concurrency` (1–4) is the number of model requests in flight inside the running book, as in the Analysis tab. |
+| `analyze` children | `pipeline` children, one pipeline run per book (`pipeline_runs.series_run_id` is the parent job). Candidates, auto-accept and gates behave as in the Analysis tab. A review gate leaves each book's version waiting in that book's Analysis tab. |
+
+Steps whose required input has no accepted result are refused for the whole series. The response names the books, and nothing is queued. A book with its own active job, or a series with an active run, is refused with 409.
+
+### Consent, reservations and cancellation
+
+1. **Plan** (`POST /api/series/{id}/plan`, read-only) syncs outside changes in each book, plans each active book in reading order and adds up the estimate. An unpriced book makes the series cost `null`. `known_cost_usd` and `unknown_cost_books` say what is priced, and `missing_credentials` names any provider without a key or URL.
+2. **Process** (`POST /api/series/{id}/process`) re-plans under the store lock. It needs `expected_fingerprint` or explicit `limits` (400). A different fingerprint returns 409 and nothing is queued. It then snapshots keys and server URLs, and creates the parent job and one queued child per book. Every book is reserved until the parent ends: edits, membership changes, single-book runs and version decisions get 409.
+3. **Coordinator** (one `series-coordinator` thread). For each child in order, under the store lock, it:
+   - stops if the parent or child was cancelled or the child is no longer queued;
+   - re-plans the book and compares it with the fingerprint confirmed for that book. A mismatch fails the child with nothing sent and stops the series;
+   - otherwise creates the book's pipeline run and marks the child running.
+
+   It then runs the child outside the lock. The first child that does not complete stops the series. Children that never started are marked with `not_started: true`: `cancelled` after a cancel, otherwise `interrupted`. They are never started later.
+4. **Cancel.** Cancelling the parent (`POST /api/jobs/{id}/cancel`) cancels queued children at once and asks the running child to stop after its current request. Cancelling one book's child job stops the series at that book. A server shutdown marks the parent and the unstarted children `interrupted`.
+
+Validated units are cached per book, so re-running a stopped series reuses paid work.
+
+### The gap: pipeline results do not feed later volumes
+
+The step pipeline has no series memory of its own. Accepting discovery or profiles in volume 1 writes no `character_observations` and is not read by volume 2's steps. The only cross-book input today is the observations the phase engine retained earlier. The profiles step reads them through `profile_specs`, with the same confirmed-link and strictly-earlier rules. When the phase engine and its data are discarded, series runs will carry **no** knowledge between volumes. No cross-book context is invented to fill that gap.
+
+Reading order is kept so that a future pipeline-native memory can depend on it. That memory would have profiles read accepted versions from linked earlier volumes and record them as dependencies. It would also change the consent model: a later book's plan would depend on an earlier book's results. Today such a change stops the series at that book, because the book no longer matches its confirmed fingerprint. It would need per-book staged consent or an "inputs pending" estimate across books.
+
 ## HTTP API
 
 See [the API guide](API.md#analysis-pipeline) and [the router](../bardic/pipeline/api.py). Routes live under `/api/analysis-pipeline` (definitions and saved per-step settings) and `/api/books/{id}/analysis-pipeline` (state, plan, runs, versions, preview, accept, reject). `versions/accepted` addresses the currently accepted versions. The version detail diff reports `same/changed/added/removed` and an agreement ratio, which is a cheap signal when comparing models.
@@ -188,5 +235,6 @@ These recommendations came from reviewing the codebase and red-teaming the desig
 - Adding the BookNLP check bumped directing to version 2 with `request_version = 1`: model requests did not change, so validated version-1 units are reused and not paid for again. A step sets `request_version` when only assembly or projection changes.
 - A single failed section (timeout, size limit, rejected result) keeps the whole step from auto-accepting, as for model steps; accept the completed sections from the version view.
 - The services' optional API keys are not supported; a server that requires one answers 401.
-- Pipeline runs are uncapped by default while the Studio phase controls keep their request/token/dollar limits. A phase run's cumulative dollar guard counts pipeline spending too. Pipeline runs are not yet visible in the Studio production summary.
+- Pipeline runs, including series runs, are uncapped by default while the Studio phase controls keep their request/token/dollar limits. A phase run's cumulative dollar guard counts pipeline spending too. Pipeline runs are not yet visible in the Studio production summary.
+- Series runs process one book at a time. They carry no knowledge between volumes beyond observations retained earlier by the phase engine; see [the gap](#the-gap-pipeline-results-do-not-feed-later-volumes).
 - The prerequisite check asks only whether an input has any accepted result. A chapter-scoped step can still run for sections whose input was never accepted; it then works from what the book already has.

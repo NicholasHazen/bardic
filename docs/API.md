@@ -28,7 +28,7 @@ Errors normally contain `{"detail":"human-readable message"}`. FastAPI validatio
 
 | HTTP status | Typical meaning |
 | --- | --- |
-| `400` | Invalid domain operation, unsupported model, missing configured key/device capability, stale series plan, or archived target. |
+| `400` | Invalid domain operation, unsupported model, missing configured key/device capability, or archived target. |
 | `403` | Cross-origin or cross-site write rejected. |
 | `404` | Missing book/item/job/session/artifact, wrong book scope, or unavailable audio. |
 | `409` | Busy book, conflicting in-flight operation, or settings changed during a provider inventory/check operation. |
@@ -185,23 +185,40 @@ Names alone never establish cross-book identity. Context excludes later volumes,
 
 ## Series preview and execution
 
-`POST /api/series/{series_id}/plan` accepts `provider`, `phase`, `concurrency`, and the same `limits` object used for per-book analysis. Providers are cloud analysis providers; concurrency defaults to 2, is limited to 1 or 2, and applies to discovery. The response includes ordered supplied books with nested book plans, models, known requests/cost, volume slots, `limits_per_book`, notes, and `plan_fingerprint`. Limits apply separately to each supplied book, so the possible collection-wide spend grows with the number of books.
+Series runs use the [step pipeline](ANALYSIS-PIPELINE.md#series-runs) (changed 2026-09-28; the earlier `provider`/`phase`/`expected_plan_fingerprint` body is gone and is rejected with 422).
 
-To start, send the same body to `POST /api/series/{series_id}/process`, adding the exact returned fingerprint:
+`POST /api/series/{series_id}/plan` is read-only and sends nothing. It accepts `{steps, configs?, fresh?}` with the same meaning as the [book plan](#analysis-pipeline). `steps` holds 1–40 step IDs; the series panel sends one. `configs` optionally overrides `{provider, model}` per step, otherwise each step's saved settings apply to every book. The response contains:
+
+- `steps`, the resolved `configs` and `fresh`.
+- `books`: active supplied books in reading order, each `{book_id, title, position, fingerprint, plan}`, where `plan` is exactly that book's pipeline plan.
+- `volumes` and `skipped_volumes` (missing, planned or archived slots that will not run).
+- Summed `requests`, `cached_units`, `service_calls`, `estimated_input_tokens` and `output_token_allowance`.
+- `estimated_cost_usd`: `null` when any book's price is unknown. `known_cost_usd` and `unknown_cost_books` say what is priced; unknown is never counted as zero.
+- `missing_inputs` (`{book_id: {step: [inputs]}}`), `missing_credentials` (`[{provider, label, needs: "api_key" | "url"}]`), `notes`, and `fingerprint`: 64 hex characters over every book's plan fingerprint and position, the steps, configs and `fresh`.
+
+To start, send `POST /api/series/{series_id}/process` with the same fields plus the confirmed fingerprint:
 
 ```json
-{
-  "provider":"openai",
-  "phase":"scan",
-  "concurrency":2,
-  "limits":{"max_requests":25,"max_input_tokens":1000000,"max_output_tokens":100000,"budget_usd":1},
-  "expected_plan_fingerprint":"FINGERPRINT_FROM_THE_REVIEWED_PLAN"
-}
+{"steps":["discovery"],"fresh":false,"concurrency":2,"expected_fingerprint":"FINGERPRINT_FROM_THE_REVIEWED_PLAN"}
 ```
 
-The server recomputes the plan under its store lock and compares the supplied fingerprint **before creating jobs**. The fingerprint covers the plan, book revisions/source hashes, and relevant series context. A mismatch returns 400 and queues no processing. Re-preview and review the new scope; do not silently replace the fingerprint and retry. The DTO limits the fingerprint to 64 characters and currently permits omission for direct API clients, but the UI requires a nonempty accepted fingerprint and consumes its preview on dispatch. This is optimistic scope validation, not a reservation that freezes data between requests.
+Optional fields are `mode` (`serial`/`parallel`, for several steps inside each book), `gates` (per-step `auto`/`review` overrides) and `limits` (the [pipeline limits](#analysis-pipeline) object, applied to each book's run; `budget_usd` counts that book's earlier tracked spend too). `concurrency` (1–4) is the number of model requests in flight inside the running book; books run one at a time.
 
-The start response is a parent series job. `GET /api/series/{series_id}/runs` returns `{"runs":[...]}` with up to 20 parent runs and their child job records. The parent uses `book_id: "series:SERIES_ID"`; child jobs use actual book IDs. Discovery may run on two independent books; profiles/direction use reading order. Missing/planned/archived books do not run. A failed or allowance-limited book stops new work; already finished outputs remain reusable. Full-run phases share each book's run request/token caps, while its dollar allowance includes earlier tracked spend.
+The server re-plans under its store lock before creating jobs:
+
+| Status | When |
+| --- | --- |
+| `400` | No `expected_fingerprint` and no limits; no active books; a required step input has no accepted result in some book (the message names the books); a key or server URL is missing; the worker could not start. |
+| `409` | The fingerprint differs from the current plan; the series already has an active run; a book has an active job or is reserved. |
+| `422` | Invalid body (unknown field, `concurrency` outside 1–4, empty `steps`). An unknown step ID returns 400. |
+
+Nothing is queued on any refusal. Re-preview and review the new estimate rather than retrying with a replaced fingerprint.
+
+The start response is the parent job (`kind: "series"`, `book_id: "series:SERIES_ID"`). It carries `steps`, `configs`, `gates`, `concurrency`, `fresh`, `limits`, `book_ids`, `child_job_ids`, `plan_fingerprint`, `requests` and `estimated_cost_usd`. Children are `pipeline` jobs on the real book IDs, with `series_run_id`, `position`, `title`, `plan_fingerprint` and `run_id` (null until the book starts).
+
+Before each book starts, the server re-plans it. If the plan no longer matches, the child fails with nothing sent and the series stops. The first child that does not complete stops the series. Children that never started end `cancelled` (after a cancel) or `interrupted`, with `not_started: true`, and are never started later. Cancelling the parent cancels queued children immediately and stops the running one after its current request.
+
+`GET /api/series/{series_id}/runs` returns `{"runs":[...]}`: up to 20 parent runs with their `children`. A child that started also has `run: {id, status, outcomes, error}` from its pipeline run. A step outcome that is `completed`, has scopes and is not `accepted` is waiting for review in that book's Analysis tab.
 
 Source: [series_processing.py](../bardic/series_processing.py). Contract tests: [test_series_processing.py](../tests/test_series_processing.py), [series UI tests](../tests/series_processing_ui_test.js).
 
