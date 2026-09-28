@@ -7,8 +7,9 @@ SIGTERM to stop it. That launch reads the checkout's `.env` like any other;
 launchd passes no shell settings.
 
 A development server runs the calling checkout's code on its own port with a
-scratch library, a loopback bind and blank provider keys. Each is recorded under
-~/.cache/bardic-dev so any session can list or stop it.
+scratch library, a loopback bind and blank provider keys. `--keys` passes the
+service checkout's provider keys, and nothing else from its `.env`, for a live
+test. Each is recorded under ~/.cache/bardic-dev so any session can list or stop it.
 """
 import argparse
 import fcntl
@@ -38,8 +39,10 @@ READY_TIMEOUT = 90
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
 DEV_PORTS = range(8770, 8800)
 # Blank in development servers: no cloud provider, self-hosted narration server or network exposure.
-DEV_BLANK = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BREEZE_TTS_URL",
-             "BREEZE_API_KEY", "BARDIC_LAN_NAME", "BARDIC_HOST", "BARDIC_ALLOWED_HOSTS")
+# `dev start --keys` fills the providers from the service checkout's `.env`; the network settings stay blank.
+DEV_PROVIDERS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BREEZE_TTS_URL",
+                 "BREEZE_API_KEY")
+DEV_BLANK = (*DEV_PROVIDERS, "BARDIC_LAN_NAME", "BARDIC_HOST", "BARDIC_ALLOWED_HOSTS")
 ACTIVE = {"queued", "running"}  # Same as bardic.app.ACTIVE, without importing the application.
 BARDIC_COMMAND = re.compile(r"\s-m\s+(bardic|spintails)(\s|$)")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -568,13 +571,26 @@ def own_record(args, name: str) -> dict | None:
     return record
 
 
-def dev_environment(base: dict, port: int, library: Path) -> dict:
-    """Empty shell values beat `.env`, so a development server stays keyless and on loopback."""
-    env = {**base, **{name: "" for name in DEV_BLANK},
+def dev_environment(base: dict, port: int, library: Path, providers: dict | None = None) -> dict:
+    """Empty shell values beat `.env`, so a development server stays on loopback and keyless unless given providers."""
+    env = {**base, **{name: "" for name in DEV_BLANK}, **(providers or {}),
            "BARDIC_PORT": str(port), "BARDIC_DATA_DIR": str(library), "PYTHONUNBUFFERED": "1"}
     for alias in ("SPINTAILS_PORT", "SPINTAILS_DATA_DIR"):
         env.pop(alias, None)
     return env
+
+
+def provider_settings(checkout: Path) -> dict:
+    """The provider keys and Breeze server in the service checkout's `.env`, for `dev start --keys`.
+
+    Only that file counts: a shell ANTHROPIC_API_KEY may belong to the calling agent rather than to Bardic.
+    """
+    env_file = checkout / ".env"
+    values = dotenv_values(env_file, interpolate=False) if env_file.is_file() else {}
+    providers = {name: values[name].strip() for name in DEV_PROVIDERS if (values.get(name) or "").strip()}
+    if not providers:
+        raise CommandError(f"--keys found no provider keys in {env_file}.")
+    return providers
 
 
 def dev_port(requested: int | None, previous: int | None, name: str, service_port: int) -> int:
@@ -610,6 +626,9 @@ def start_dev(args, name: str) -> None:
         if previous.get("checkout") != str(PROJECT_ROOT):
             raise CommandError(f"{name} is running from {previous['checkout']}. Stop it first or choose another --name.")
         print(f"{name} is already running (pid {previous['pid']}): http://127.0.0.1:{previous['port']}")
+        if args.keys != bool(previous.get("keys")):
+            print(f"Its keys are {'live' if previous.get('keys') else 'blank'}; "
+                  f"use ./bardicctl dev restart{' --keys' if args.keys else ''} to change that.")
         return
     library = (Path(args.library).expanduser().resolve() if args.library
                else Path(previous["library"]) if previous and previous.get("library") else directory / "library")
@@ -618,6 +637,8 @@ def start_dev(args, name: str) -> None:
         raise CommandError(f"{library} overlaps the service's library {service['library']}. "
                            "Test against a copy restored from a backup.")
     port = dev_port(args.port, (previous or {}).get("port"), name, service["port"])
+    env_file = service_context()[0] / ".env"
+    providers = provider_settings(env_file.parent) if args.keys else {}
     directory.mkdir(parents=True, exist_ok=True)
     library.mkdir(parents=True, exist_ok=True)
     log = directory / "server.log"
@@ -625,10 +646,10 @@ def start_dev(args, name: str) -> None:
         output.write(f"\n==== {datetime.now().isoformat(timespec='seconds')} {PROJECT_ROOT} on port {port}\n".encode())
         output.flush()
         process = subprocess.Popen([sys.executable, "-m", "bardic"], cwd=PROJECT_ROOT,
-                                   env=dev_environment(os.environ, port, library), stdin=subprocess.DEVNULL,
+                                   env=dev_environment(os.environ, port, library, providers), stdin=subprocess.DEVNULL,
                                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
     record = {"name": name, "pid": process.pid, "started": started_at(process.pid), "port": port,
-              "checkout": str(PROJECT_ROOT), "library": str(library), "log": str(log)}
+              "checkout": str(PROJECT_ROOT), "library": str(library), "log": str(log), "keys": sorted(providers)}
     (directory / "instance.json").write_text(json.dumps(record, indent=2) + "\n")
     lsof = shutil.which("lsof")
 
@@ -644,8 +665,10 @@ def start_dev(args, name: str) -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
         raise CommandError(f"{name} did not start (exit {process.poll()}). Log tail:\n{log_tail(log)}")
+    keys = f"{', '.join(sorted(providers))} from {env_file} (real, possibly billed requests)" if providers else "blank"
     print(f"{name}: http://127.0.0.1:{port}  (pid {process.pid})\n  checkout  {PROJECT_ROOT}\n"
-          f"  library   {library}\n  log       {log}\nStop it with ./bardicctl dev stop --name {name}")
+          f"  library   {library}\n  keys      {keys}\n  log       {log}\n"
+          f"Stop it with ./bardicctl dev stop --name {name}")
 
 
 def stop_dev(record: dict) -> None:
@@ -682,12 +705,12 @@ def cmd_dev_list(args) -> None:
     if not records:
         print("No development servers recorded.")
         return
-    print(f"{'NAME':<32} {'STATE':<8} {'PORT':<5} {'PID':<7} CHECKOUT")
+    print(f"{'NAME':<32} {'STATE':<8} {'PORT':<5} {'PID':<7} {'KEYS':<5} CHECKOUT")
     for record in records:
         running = dev_running(record)
         checkout = record.get("checkout", "?") + ("" if Path(record.get("checkout", "")).is_dir() else " (removed)")
         print(f"{record['name']:<32} {'running' if running else 'stopped':<8} {record.get('port', ''):<5} "
-              f"{record.get('pid', '') if running else '':<7} {checkout}")
+              f"{record.get('pid', '') if running else '':<7} {'live' if record.get('keys') else 'blank':<5} {checkout}")
 
 
 def cmd_dev_logs(args) -> None:
@@ -723,7 +746,7 @@ def parser() -> argparse.ArgumentParser:
 
     dev = commands.add_parser("dev", help="isolated development servers for testing a checkout",
                               description="Isolated servers running this checkout: own port, scratch library, "
-                                          "loopback only, provider keys blank.")
+                                          "loopback only, provider keys blank unless --keys.")
     dev_commands = dev.add_subparsers(dest="dev_command", required=True, metavar="COMMAND")
     for name, handler, summary in (("start", cmd_dev_start, "start this checkout's development server"),
                                    ("restart", cmd_dev_restart, "restart it after Python edits, keeping its port and library")):
@@ -731,6 +754,9 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--name", help="instance name (default: this checkout's directory name)")
         sub.add_argument("--port", type=int, help=f"port (default: previous or first free in {DEV_PORTS.start}-{DEV_PORTS.stop - 1})")
         sub.add_argument("--library", help="data directory, e.g. a restored copy (default: previous or a scratch library)")
+        sub.add_argument("--keys", action="store_true",
+                         help="use the provider keys and Breeze URL in the service checkout's .env for a live test "
+                              "(real, possibly billed requests; not kept by a restart without --keys)")
     stop = command(dev_commands, "stop", cmd_dev_stop, "stop a development server")
     stop.add_argument("--name", help="instance name (default: this checkout's directory name)")
     stop.add_argument("--all", action="store_true", help="stop every running development server")
