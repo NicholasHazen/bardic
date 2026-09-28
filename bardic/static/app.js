@@ -1014,6 +1014,62 @@ async function moveSegment(delta, autoplay = !audio.paused, continuation = false
   const next = segments[index + delta];
   if (next) await startSegment(next.id, {autoplay, scroll:true, continuation});
 }
+// The scrubber spans the chapter. Narrated passages contribute their measured
+// clip length; the rest are estimated from text length, as the chapter
+// preparation estimate does, and the total is shown as approximate.
+const textLength = segment => Math.max(0, (segment.end - segment.start) || segment.text?.length || 0);
+function chapterTimeline() {
+  let total = 0, estimated = false;
+  const entries = chapterSegments().map(segment => {
+    const measured = listeningReady(segment) ? passageDuration(segment) : 0;
+    const seconds = measured > 0 ? measured : Math.max(.5, textLength(segment) / 14);
+    if (!(measured > 0)) estimated = true;
+    const entry = {segment, start:total, seconds};
+    total += seconds;
+    return entry;
+  });
+  return {entries, total, estimated};
+}
+function chapterPosition(timeline = chapterTimeline()) {
+  const entry = timeline.entries.find(item => item.segment.id === state.segmentId);
+  if (!entry) return {entry:null, time:0, fraction:0};
+  const passage = state.audioSegmentId === state.segmentId ? passageTime() : state.pendingOffset || 0;
+  const within = Math.min(Math.max(0, passage), entry.seconds);
+  return {entry, time:entry.start + within, fraction:entry.seconds ? within / entry.seconds : 0};
+}
+function chapterPoint(timeline, time) {
+  const entry = timeline.entries.findLast(item => item.start <= time) || timeline.entries[0];
+  if (!entry) return {entry:null, time:0, fraction:0};
+  const within = Math.min(Math.max(0, time - entry.start), entry.seconds);
+  return {entry, time:entry.start + within, fraction:entry.seconds ? within / entry.seconds : 0};
+}
+// Book progress counts source text, since most of a book has no audio yet.
+function bookFraction(segment, passageFraction) {
+  const order = new Map(state.book.chapters.map((chapter, index) => [chapter.id, index]));
+  const current = order.get(segment.chapter_id);
+  let before = 0, total = 0, reached = false;
+  for (const item of state.book.segments) {
+    const length = textLength(item), position = order.get(item.chapter_id);
+    if (position === undefined) continue;
+    total += length;
+    if (item.id === segment.id) { before += length * passageFraction; reached = true; }
+    else if (position < current || (position === current && !reached)) before += length;
+  }
+  return total ? before / total : 0;
+}
+const chapterClock = (seconds, estimated) => `${estimated ? '~' : ''}${formatTime(seconds)}`;
+function seekChapter(time) {
+  const {entry} = chapterPoint(chapterTimeline(), time);
+  if (!entry) return;
+  const segment = entry.segment;
+  // An estimated span has no real audio coordinates; start such a passage at its beginning.
+  const offset = listeningReady(segment) ? Math.max(0, Math.min(time - entry.start, entry.seconds - .05)) : 0;
+  const loaded = state.audioSegmentId === segment.id && state.segmentId === segment.id && Number.isFinite(audio.duration) && audio.getAttribute('src') === listeningAudio(segment)?.url;
+  if (loaded) { audio.currentTime = clipStart(playingMedia()) + offset; saveProgress(); updatePlayer(); return; }
+  const playing = preparingListen || !audio.paused;
+  state.pendingOffset = offset;
+  void startSegment(segment.id, {autoplay:playing, offset, scroll:true});
+}
 function updatePlayer() {
   if (!state.book) return;
   if (state.voicePreview) {
@@ -1039,6 +1095,8 @@ function updatePlayer() {
     $('#audio-progress').max = duration || 1;
     $('#audio-progress').value = hasAudio ? Math.min(audio.currentTime || 0, duration) : 0;
     $('#audio-progress').disabled = !hasAudio || !duration;
+    $('#audio-progress').setAttribute('aria-valuetext', `${formatTime(hasAudio ? audio.currentTime : 0)} of ${formatTime(duration)}`);
+    $('#player-progress').textContent = '';
     return;
   }
   $('#voice-preview-panel').hidden = true;
@@ -1056,13 +1114,20 @@ function updatePlayer() {
   const narrator = window.BardicListen?.getSelection?.(state.book);
   const voiceLabel = simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
   $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
-  const duration = passageDuration(segment);
-  const elapsed = state.audioSegmentId === state.segmentId ? passageTime() : state.pendingOffset || 0;
-  $('#elapsed').textContent = formatTime(elapsed);
-  $('#duration').textContent = formatTime(duration);
-  $('#audio-progress').max = duration || 1;
-  $('#audio-progress').value = Math.min(elapsed, duration || 0);
-  $('#audio-progress').disabled = !listeningReady(segment) || !duration;
+  const timeline = chapterTimeline();
+  const position = chapterPosition(timeline);
+  // While dragging, preview the target position without seeking.
+  const scrubbing = state.scrubTime !== undefined && position.entry;
+  const target = scrubbing ? chapterPoint(timeline, state.scrubTime) : position;
+  const shown = target.time;
+  const chapterPercent = timeline.total ? Math.round(shown / timeline.total * 100) : 0;
+  $('#elapsed').textContent = formatTime(shown);
+  $('#duration').textContent = chapterClock(timeline.total, timeline.estimated);
+  $('#audio-progress').max = timeline.total || 1;
+  if (!scrubbing) $('#audio-progress').value = Math.min(position.time, timeline.total);
+  $('#audio-progress').disabled = !position.entry;
+  $('#audio-progress').setAttribute('aria-valuetext', `${formatTime(shown)} of ${chapterClock(timeline.total, timeline.estimated)} in chapter`);
+  $('#player-progress').textContent = position.entry ? `${chapterPercent}% of chapter · ${Math.round(bookFraction(target.entry.segment, target.fraction) * 100)}% of book` : '';
   const ordered = orderedSegments();
   $('#previous-segment').disabled = ordered.findIndex(s => s.id === state.segmentId) <= 0;
   $('#next-segment').disabled = ordered.findIndex(s => s.id === state.segmentId) >= ordered.length - 1;
@@ -1424,10 +1489,16 @@ $('#playback-speed').addEventListener('change', event => setPlaybackRate(event.t
 $('#audio-progress').addEventListener('input', event => {
   const time = Number(event.target.value);
   if (state.voicePreview) { if (state.voicePreview.audio && Number.isFinite(audio.duration)) audio.currentTime = time; updatePlayer(); return; }
-  if (state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration)) { audio.currentTime = clipStart(playingMedia()) + time; saveProgress(); }
-  else if (listeningReady(segmentById(state.segmentId))) { state.pendingOffset = time; startSegment(state.segmentId,{autoplay:false,offset:time}); }
+  state.scrubTime = time; updatePlayer();
+});
+// Seek once on release so dragging across passages does not start each one.
+$('#audio-progress').addEventListener('change', event => {
+  if (state.voicePreview) return;
+  state.scrubTime = undefined;
+  seekChapter(Number(event.target.value));
   updatePlayer();
 });
+$('#audio-progress').addEventListener('blur', () => { if (state.scrubTime !== undefined) { state.scrubTime = undefined; updatePlayer(); } });
 audio.addEventListener('loadedmetadata', () => {
   const start = state.voicePreview ? 0 : clipStart(playingMedia());
   if (!state.voicePreview && (state.pendingOffset > 0 || start > 0)) { audio.currentTime = Math.min(start + state.pendingOffset, Math.max(0,audio.duration - .01)); state.pendingOffset = 0; }
