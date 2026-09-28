@@ -10,27 +10,32 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import Discriminator, Field, Tag
 
-from .base import View, internal
+from .base import View
 
 Provider = Literal['system', 'gemini', 'breeze']
 
-class AudioTakeUsage(View):
-    """Provider usage measured for the request that produced a take.
 
-    Counts are reported by the provider, never inferred from audio length.
-    Absent or null values are unknown, not zero. Test synthesizers and older
-    takes may carry only some of these fields.
+class AudioRef(View):
+    """The common core of every playable audio object in a response.
+
+    Every object that carries an audio ``url`` has these seven fields, always
+    present, with these names and meanings; a kind-specific view may narrow a
+    field to non-null when that kind always knows it. Kind-specific fields
+    (clip bounds, reuse pointers, provider timing, ...) are added by the
+    subclass. Audio objects carry no constant labels: an object is playable
+    because it is present, and its kind is given by where it appears. Build
+    them with ``bardic.audio_refs.audio_ref`` so the core stays identical.
     """
-    input_tokens: int | None = Field(None, description='Reported input tokens (Gemini).')
-    output_tokens: int | None = Field(None, description='Reported output (audio) tokens (Gemini).')
-    cached_input_tokens: int | None = Field(None, description='Reported cached input tokens (Gemini).')
-    usage_source: str | None = Field(None, description='Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`.')
-    estimated_cost_usd: float | None = Field(None, description='Standard paid-tier list-price estimate in USD, or null when it cannot be priced. '
-                                             'Not an account balance or bill. 0 for self-hosted Breeze.')
-    cost_basis: str | None = Field(None, description='How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`.')
-    price_as_of: str | None = Field(None, description='Date of the price table used (Gemini).')
-    price_source: str | None = Field(None, description='Source of the price table (Gemini).')
-    characters: int | None = Field(None, description='Characters the Breeze server reported synthesizing.')
+    url: str = Field(description='Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not '
+                                 'build audio URLs from other fields.')
+    asset_id: str | None = Field(description='SHA-256 hex of the file the URL serves (content address), or null when the '
+                                             'bytes are not content-addressed (takes recorded before content addressing). '
+                                             'A different `asset_id` means different audio.')
+    duration: float | None = Field(description='Length of this audio in seconds, or null when unknown.')
+    provider: str | None = Field(description='Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown.')
+    model: str | None = Field(description='Speech model that produced the bytes, or null when unknown.')
+    voice: str | None = Field(description='Provider voice actually used, or null when unknown.')
+    created_at: str | None = Field(description='ISO 8601 UTC time the audio was retained, or null when it was not recorded.')
 
 class AudioTakeSentenceSpan(View):
     """One provider-reported sentence inside a take."""
@@ -58,17 +63,6 @@ class AudioTakeVoiceLibrary(View):
     id: str = Field(description='Voice library ID (`vl_…`).')
     version: int | None = Field(description='Library voice version number.')
 
-class ListeningSourceAnchor(View):
-    """The exact source binding a simple take was retained against."""
-    schema_version: int = Field(description='Anchor format version (1).')
-    book_id: str = Field(description='Book ID the take is bound to (the book it was retained in, even when its bytes were reused from another book).')
-    session_id: str = Field(description='Listening (narrator) session ID: 64 hex characters, a hash of the session configuration.')
-    chapter_id: str = Field(description='Chapter ID containing the passage; `start` and `end` index this chapter\'s text.')
-    segment_id: str = Field(description='Passage (segment) ID the take narrates.')
-    start: int = Field(description='Passage start, chapter-local code-point offset.')
-    end: int = Field(description='Passage end (exclusive), chapter-local code-point offset.')
-    fingerprint: str = Field(description='Hash of the passage speech recipe.')
-
 class ListeningReuse(View):
     """Pointer to the original retained take whose bytes were reused for this passage."""
     schema_version: int = Field(description='Pointer format version (1).')
@@ -76,57 +70,47 @@ class ListeningReuse(View):
     book_id: str = Field(description='Book of the original take (reuse can cross books).')
     session_id: str = Field(description='Listening session ID (64 hex) of the original take; may differ from the current session.')
     segment_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
-    recipe: str = Field(description='Source-bound recipe hash of the original take.')
-    fingerprint: str = Field(description='Producer fingerprint of the original take.')
 
-class ListeningPassageAudio(View):
-    """A retained single-passage simple-listening take, ready to play."""
-    mode: Literal['simple'] = Field(description='Always `simple` here.')
-    available: Literal[True] = Field(description='Always true: only playable audio is presented.')
+class ListeningPassageAudio(AudioRef):
+    """A retained single-passage simple-listening take, ready to play.
+
+    Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+    """
     url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the WAV bytes (content address).')
     duration: float = Field(description='Audio length in seconds.')
-    provider: str = Field(description='Provider that produced the bytes.')
+    provider: str = Field(description='Provider that produced the bytes (`system`, `gemini` or `breeze`).')
     model: str = Field(description='Speech model that produced the bytes.')
     voice: str = Field(description='Provider voice actually used (the device voice name after resolution).')
+    created_at: str = Field(description='ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently).')
     session_id: str = Field(description='Listening session the take belongs to.')
     segment_id: str = Field(description='Passage the take narrates.')
-    created_at: str = Field(description='ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently).')
-    cache_hit: bool | None = Field(None, description='Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`.')
-    fingerprint: str = internal('Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint.')
-    recipe: str = internal('Hash of the source-bound identity (`source_anchor`).')
-    synthesis_key: str | None = internal('Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes.', default=None)
-    source_anchor: ListeningSourceAnchor = internal('The source binding this take applies to.')
     reuse: ListeningReuse | None = Field(None, description='Present when the bytes were copied from an equivalent retained take instead of being generated.')
-    resource_usage: AudioTakeUsage | None = Field(None, description='Usage of the generating request; absent for device takes and for reused bytes.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null when the server timing did not validate.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision that performed the take.')
 
-class ListeningChunkClipAudio(View):
+class ListeningChunkClipAudio(AudioRef):
     """One passage's estimated clip inside a multi-passage chunk WAV (Gemini chapter listening).
 
     Play ``url`` from ``clip_start`` to ``clip_end``. Consecutive clips of one
-    chunk share the same file and play gaplessly.
+    chunk share the same file and play gaplessly. Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
     """
-    mode: Literal['simple'] = Field(description='Always `simple` here.')
-    available: Literal[True] = Field(description='Always true.')
-    segment_id: str = Field(description='Passage this clip narrates.')
     url: str = Field(description='Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the chunk WAV.')
-    chunk_id: str = Field(description='ID of the retained chunk.')
-    clip_start: float = Field(description='Clip start within the chunk WAV, seconds.')
-    clip_end: float = Field(description='Clip end within the chunk WAV, seconds.')
     duration: float = Field(description='Clip length in seconds (`clip_end - clip_start`, rounded to ms).')
-    chunk_duration: float = Field(description='Length of the whole chunk WAV in seconds.')
-    timing: Literal['estimated'] = Field(description='Clip boundaries are estimated from pauses, not measured.')
     provider: str = Field(description='Speech provider that produced the chunk, for example `gemini`.')
     model: str = Field(description='Speech model that produced the chunk, for example `gemini-3.8-flash-tts`.')
     voice: str = Field(description='Provider voice actually used for the chunk.')
-    session_id: str = Field(description='Listening session ID (64 hex) the chunk belongs to.')
     created_at: str = Field(description='ISO 8601 UTC time the chunk was retained.')
+    segment_id: str = Field(description='Passage this clip narrates.')
+    chunk_id: str = Field(description='ID of the retained chunk.')
+    clip_start: float = Field(description='Clip start within the chunk WAV, seconds.')
+    clip_end: float = Field(description='Clip end within the chunk WAV, seconds.')
+    chunk_duration: float = Field(description='Length of the whole chunk WAV in seconds.')
+    timing: Literal['estimated'] = Field(description='Clip boundaries are estimated from pauses, not measured.')
+    session_id: str = Field(description='Listening session ID (64 hex) the chunk belongs to.')
     flags: list[str] = Field(description='Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause).')
-    cache_hit: bool | None = Field(None, description='Present (true) only on a cache-hit result from `POST /listen`.')
 
 def _simple_audio_kind(value: Any) -> str:
     return 'clip' if isinstance(value, dict) and 'chunk_id' in value else 'passage'
@@ -219,24 +203,20 @@ class VoicePreviewReuse(View):
     take_id: str = Field(description='ID of the original retained audition take whose bytes were reused (64 hex).')
     preview_id: str = Field(description='Preview ID of the original audition request that produced the reused bytes.')
 
-class VoicePreviewAudio(View):
-    """A retained audition take."""
-    mode: Literal['preview'] = Field(description='Always `preview`.')
-    available: Literal[True] = Field(description='Always true: only playable audio is presented.')
+class VoicePreviewAudio(AudioRef):
+    """A retained audition take.
+
+    Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+    """
     url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/voice-preview/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the WAV bytes.')
     duration: float = Field(description='Seconds.')
     provider: str = Field(description='Provider that produced the bytes: `system`, `gemini` or `breeze`.')
     model: str = Field(description='Speech model that produced the bytes.')
     voice: str = Field(description='Provider voice actually used.')
+    created_at: str = Field(description='ISO 8601 UTC time the take was retained.')
     preview_id: str = Field(description='ID of the audition request (`VoicePreview.id`) this take was retained for.')
-    schema_version: int = Field(description='Take record format version (1).')
-    created_at: str = Field(description='ISO 8601 UTC.')
-    cache_hit: bool | None = Field(None, description='Present (true) only on a cache-hit result.')
-    fingerprint: str = internal('Hash of the speech recipe that produced the bytes.')
-    source_anchor: VoicePreviewSourceAnchor | None = internal('Copy of the preview source anchor.')
     reuse: VoicePreviewReuse | None = Field(None, description='Present when bytes were reused from an equivalent audition (for example after a character rename).')
-    resource_usage: AudioTakeUsage | None = Field(None, description='Usage of the generating request; absent for device takes and reused bytes.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision used.')

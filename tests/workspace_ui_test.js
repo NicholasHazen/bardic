@@ -291,16 +291,13 @@ test('playing an unnarrated passage opens the narrator sheet without generating 
   assert.equal(calls.requests, 0);
 });
 
-test('passive unnarrated selection keeps setup closed; stale takes point to Script & record', async () => {
-  const {workspace, state, node, media, sheet} = environment();
+test('passive unnarrated selection keeps setup closed', async () => {
+  // The server presents an out-of-date take as null audio, so no staleness flag is read here.
+  const {workspace, state, media, sheet} = environment();
   const segment = {id:'s1', chapter_id:'c1', text:'An original short line.'};
   state.book.segments = [segment];
   await workspace.startSegment('s1', {autoplay:false});
   assert.equal(sheet.opened, 0);
-  segment.audio = {url:'/saved-take.wav', stale:true};
-  await workspace.startSegment('s1');
-  assert.equal(sheet.opened, 0);
-  assert.match(node('#toast').textContent, /out of date.*Script & record/);
   assert.equal(media.generations, 0);
   assert.equal(media.plays, 0);
 });

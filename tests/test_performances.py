@@ -147,7 +147,7 @@ def test_device_simple_performance_prepares_only_selected_chapters_and_replays_w
     assert {call['segment']['id'] for call in calls} == {segment['id'] for segment in selected}
     ready = audio(client, book, performance)
     assert set(ready) == {segment['id'] for segment in selected}
-    assert all(item['mode'] == 'performance' and item['performance_id'] == performance['id'] for item in ready.values())
+    assert all(item['session_id'] == performance['session_id'] for item in ready.values())
     assert client.get(next(iter(ready.values()))['url']).status_code == 200
     again = client.post(f"/api/books/{book['id']}/performances/{performance['id']}/prepare").json()
     assert again['job'] is None and len(calls) == len(selected)
@@ -354,7 +354,7 @@ def test_preview_is_local_and_reports_problems_notes_and_request_estimates(clien
     assert local['expected_seconds'] > 0 and [c['id'] for c in local['chapters']] == [c['id'] for c in book['chapters']]
     cloud = request(book, book['chapters'], provider='gemini', voice='Kore', model=DEFAULT_TTS_MODEL)
     missing_key = client.post(url, json=cloud).json()
-    assert any('Gemini API key' in problem for problem in missing_key['problems'])
+    assert any('Gemini API key' in problem['detail'] for problem in missing_key['problems'])
     refused = client.post(f"/api/books/{book['id']}/performances", json=cloud)
     assert refused.status_code == 400 and 'Gemini API key' in refused.json()['detail']
     client.app.state.runtime.api_key = 'offline-key'
@@ -363,13 +363,56 @@ def test_preview_is_local_and_reports_problems_notes_and_request_estimates(clien
     assert 1 <= chunked['requests_estimate'] < chunked['passages_to_generate']
     assert chunked['quota']['rpd'] == 1000 and chunked['quota']['requests_today'] == 0 and chunked['quota']['resets_at']
     monkeypatch.setattr('bardic.performances.shutil.which', lambda _name: None)
-    assert any('say and ffmpeg' in p for p in client.post(url, json=request(book, book['chapters'])).json()['problems'])
+    assert any('say and ffmpeg' in p['detail'] for p in client.post(url, json=request(book, book['chapters'])).json()['problems'])
     unknown = client.post(url, json={**request(book, book['chapters']), 'chapter_ids': ['chapter_missing']})
     assert unknown.status_code == 400
     assert client.post(url, json={**request(book, book['chapters']), 'chapter_ids': []}).status_code == 422
     breeze = client.post(url, json={**request(book, book['chapters']), 'provider': 'breeze', 'voice': None}).json()
     assert breeze['problems']
     assert client.app.state.runtime.store.jobs(book['id']) == []
+
+
+def test_preview_problems_are_coded_so_clients_can_offer_a_fix(client, monkeypatch):
+    book = import_book(client)
+    url = f"/api/books/{book['id']}/performances/preview"
+    cloud = request(book, book['chapters'], provider='gemini', voice='Kore', model=DEFAULT_TTS_MODEL)
+    problems = client.post(url, json=cloud).json()['problems']
+    assert problems == [{'code': 'gemini_key_missing', 'detail': 'No Gemini API key is configured.'}]
+    breeze = client.post(url, json={**request(book, book['chapters']), 'provider': 'breeze', 'voice': None}).json()
+    assert [problem['code'] for problem in breeze['problems']] == ['breeze_url_missing', 'narrator_voice_invalid']
+    assert all(set(problem) == {'code', 'detail'} and problem['detail'] for problem in breeze['problems'])
+    monkeypatch.setattr('bardic.performances.shutil.which', lambda _name: None)
+    device_problems = client.post(url, json=request(book, book['chapters'])).json()['problems']
+    assert [problem['code'] for problem in device_problems] == ['device_narration_unavailable']
+
+
+def test_editing_a_performance_of_an_archived_book_is_refused(client, monkeypatch):
+    device(monkeypatch)
+    book = import_book(client)
+    created = create(client, book, [book['chapters'][0]])
+    wait_job(client, created['job']['id'])
+    assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
+    url = f"/api/books/{book['id']}/performances/{created['performance']['id']}"
+    for body in ({'name': 'Renamed'}, {'archived': True}):
+        response = client.patch(url, json=body)
+        assert response.status_code == 409 and response.json()['code'] == 'book_archived', response.text
+    assert client.get(url).json()['performance']['name'] == created['performance']['name']
+
+
+def test_a_dangling_listening_session_is_a_server_defect_not_a_missing_resource(client, monkeypatch):
+    from bardic.performances import PerformanceRepository
+    device(monkeypatch)
+    book = import_book(client)
+    created = create(client, book, [book['chapters'][0]])
+    wait_job(client, created['job']['id'])
+    performance_id = created['performance']['id']
+    PerformanceRepository(client.app.state.runtime.store).update(book['id'], performance_id, session_id='f' * 64)
+    base = f"/api/books/{book['id']}/performances"
+    import conftest  # its contract wrapper rejects every 500; these expect one, so they are sent unchecked
+    for method, url in (('GET', f'{base}/{performance_id}'), ('GET', f'{base}/{performance_id}/audio'),
+                        ('GET', base), ('POST', f'{base}/{performance_id}/prepare')):
+        response = conftest._send(client, client.build_request(method, url))
+        assert response.status_code == 500 and response.json()['code'] == 'internal_error', (url, response.text)
 
 
 def test_rename_and_archive_are_label_changes_that_keep_audio(client, monkeypatch):

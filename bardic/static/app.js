@@ -31,6 +31,15 @@ function toast(message, error = false) {
   $('#toast').hidden = false;
   toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 8500 : 4800);
 }
+const ERROR_HINTS = {
+  breeze_voice_unavailable:'Check Breeze voices in Providers & settings.',
+  breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',
+  book_archived:'It is listed under Removed items.',
+  job_active:'Let it finish or cancel it first.',
+  series_run_active:'Wait for the series run to finish or stop it.',
+};
+// Panels with their own request helpers show the same hints.
+globalThis.BardicErrorHints = ERROR_HINTS;
 async function request(path, options = {}) {
   const headers = {...options.headers};
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
@@ -41,7 +50,10 @@ async function request(path, options = {}) {
   else body = await response.text();
   if (!response.ok) {
     const detail = body?.detail ?? body?.error ?? body;
-    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(x => x.msg || JSON.stringify(x)).join('; ') : JSON.stringify(detail) || `Request failed (${response.status})`);
+    const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(x => x.msg || JSON.stringify(x)).join('; ') : JSON.stringify(detail) || `Request failed (${response.status})`;
+    // Error details describe the condition; where to fix it in this UI is added here, keyed on the stable code.
+    const hint = ERROR_HINTS[body?.code];
+    throw Object.assign(new Error(hint ? `${message} ${hint}` : message), {code:body?.code ?? null, status:response.status});
   }
   return body;
 }
@@ -51,7 +63,7 @@ const currentChapter = () => state.book?.chapters.find(c => c.id === state.chapt
 const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === state.chapterId) || [];
 const segmentById = (id) => state.book?.segments.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
-const playable = (segment) => Boolean(segment?.audio?.url && segment.audio.available !== false && !segment.audio.stale && !segment.audio.is_stale);
+const playable = (segment) => Boolean(segment?.audio?.url);
 const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
 const listeningAudio = segment => previewEnhanced ? (playable(segment) ? segment.audio : null) : (window.BardicListen?.resolve(state.book, segment) || (!simpleActive() && playable(segment) ? segment.audio : null));
 const listeningReady = segment => Boolean(listeningAudio(segment)?.url);
@@ -61,7 +73,7 @@ const analysisLabels = {local:'Local draft', gemini:'Gemini', openai:'OpenAI', a
 const cloudProviders = ['gemini','openai','anthropic'];
 const providerField = (name, provider) => $(`#${name}${provider === 'gemini' ? '' : `-${provider}`}`);
 const analysisProvider = (id) => state.status?.analysis_providers?.find(provider => provider.id === id);
-const providerHasKey = (id) => analysisProvider(id)?.has_api_key ?? (id === 'gemini' && Boolean(state.status?.has_api_key));
+const providerHasKey = (id) => Boolean(analysisProvider(id)?.has_api_key);
 function fillSettings() {
   $('#settings-analysis-provider').value = state.status?.analysis_provider || 'local';
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
@@ -72,7 +84,7 @@ function fillSettings() {
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
-      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || (provider === 'gemini' ? state.status?.analysis_model : '') || '',
+      analysis: state.status?.analysis_models_by_provider?.[provider] || info?.model || '',
       preprocess: state.status?.preprocess_models_by_provider?.[provider] || '',
     });
   }
@@ -100,6 +112,10 @@ function narrationLimitValues() {
   const ramp = text ? text.split(/[,\s]+/).filter(Boolean).map(Number) : [];
   if (ramp.some(value => !Number.isFinite(value) || value < 10 || value > 470) || ramp.length > 6) throw new Error('Quick-start steps must be up to six numbers from 10 to 470 seconds, separated by commas.');
   const whole = id => Number($(id).value);
+  for (const [id, name, max] of [['#tts-rpm', 'Requests per minute', 10000], ['#tts-tpm', 'Input tokens per minute', 100000000], ['#tts-rpd', 'Requests per day', 10000000]]) {
+    const value = whole(id);
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`${name} must be a whole number from 1 to ${max.toLocaleString('en-US')}.`);
+  }
   return {tts_limits:{[$('#tts-model').value.trim()]:{rpm:whole('#tts-rpm'),tpm:whole('#tts-tpm'),rpd:whole('#tts-rpd')}},
     listen_chunking:{ramp_seconds:ramp,target_seconds:whole('#tts-target'),concurrency:whole('#tts-concurrency')}};
 }
@@ -149,7 +165,7 @@ function modelValue(role, provider) {
   return (select.value === '__custom__' ? modelCustom(role, provider).value : select.value).trim();
 }
 function providerModels(provider) {
-  return state.status?.model_catalogs?.[provider]?.models || analysisProvider(provider)?.models || (provider === 'gemini' ? state.status?.analysis_models : []) || [];
+  return state.status?.model_catalogs?.[provider]?.models || analysisProvider(provider)?.models || [];
 }
 function modelPickerChanged(role, provider) {
   const select = modelPicker(role, provider);
@@ -377,7 +393,7 @@ function startVoicePreview(config, label) {
   void window.BardicVoicePreview?.start(state.book, config, label);
 }
 // One cast voice per narration provider. Characters carry a normalized
-// `voices` map; older records may still only have the legacy fields. Choices
+// `voices` map (the server folds older single-provider fields into it). Choices
 // are encoded as "" (Default), "library:<id>" or "id:<provider voice>" by the
 // shared helpers in voices.js; the voice library comes from /api/voices.
 const NARRATION_LABELS = {system:'Mac voices', gemini:'Gemini', breeze:'Breeze'};
@@ -1068,14 +1084,18 @@ async function selectBook(id) {
 function applyBook(book) {
   if (book.id !== state.book?.id) return;
   const previous = segmentById(state.segmentId);
+  // References are derived from the current book, so any new revision can change them.
+  const referencesStale = book.revision !== state.book?.revision;
+  if (referencesStale) { state.referenceCache.clear(); state.referenceVersion++; }
   state.book = book;
   const next = segmentById(state.segmentId);
-  if (!simpleActive() && state.audioSegmentId && (!playable(next) || (next?.audio?.asset_id || next?.audio?.fingerprint) !== (previous?.audio?.asset_id || previous?.audio?.fingerprint))) stopAudio({clear:true});
+  if (!simpleActive() && state.audioSegmentId && (!playable(next) || next?.audio?.url !== previous?.audio?.url)) stopAudio({clear:true});
   if (!book.chapters.some(c => c.id === state.chapterId)) state.chapterId = book.chapters[0]?.id;
   if (!next) state.segmentId = chapterSegments()[0]?.id;
   const index = state.books.findIndex(b => b.id === book.id);
   if (index >= 0) state.books[index] = book;
   renderBook();
+  if (referencesStale) $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences));
 }
 function renderBook() {
   const book = state.book;
@@ -1249,7 +1269,7 @@ function referenceContent(character) {
   if (entry.error) return `<p class="field-help">${escapeHTML(entry.error)}</p><button type="button" class="button text-button" data-retry-references="${escapeHTML(character.id)}">Try again</button>`;
   if (!entry.references.length) {
     const evidence = character.evidence || [];
-    return `<p class="field-help">No chapter references saved yet. Analyze a chapter to collect appearances and source evidence.</p>${evidence.length ? `<p class="field-help">Earlier profile evidence:</p>${evidence.map(item => `<blockquote>${escapeHTML(typeof item === 'string' ? item : item.quote || item.text || '')}</blockquote>`).join('')}` : ''}`;
+    return `<p class="field-help">No references to this character in the text yet.</p>${evidence.length ? `<p class="field-help">Earlier profile evidence:</p>${evidence.map(item => `<blockquote>${escapeHTML(typeof item === 'string' ? item : item.quote || item.text || '')}</blockquote>`).join('')}` : ''}`;
   }
   const shown = Math.min(entry.references.length, entry.shown || 100);
   const chapters = new Map(state.book.chapters.map(chapter => [chapter.id, chapter]));
@@ -1511,11 +1531,9 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
     stopAudio({clear:true});
     updatePlayer(); saveProgress();
     if (!simple && autoplay) {
-      if (segment.audio) toast('This recording is out of date. Record it again in Script & record.');
-      else {
-        openListeningSettings();
-        toast('Choose a narrator to start listening.');
-      }
+      // An out-of-date take is presented as null audio, so there is nothing to play here yet.
+      openListeningSettings();
+      toast('Choose a narrator to start listening.');
     }
     return;
   }
@@ -2205,6 +2223,8 @@ $('#import-form').addEventListener('submit', async event => {
   event.preventDefault();
   const file = $('#book-file').files[0];
   if (!file) return;
+  // The server refuses larger uploads before reading them; say so without sending the file.
+  if (file.size > 30 * 1024 * 1024) { showInlineError('#import-error', 'Choose an EPUB or TXT of at most 30 MB.'); return; }
   const button = $('#import-submit'); button.disabled = true; button.textContent = 'Opening your book…'; $('#import-error').hidden = true;
   try {
     const data = new FormData(); data.append('file', file);

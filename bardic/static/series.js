@@ -16,6 +16,8 @@
     if (!response.ok) {
       let detail = data?.detail;
       if (Array.isArray(detail)) detail = detail.map(item => item.msg || 'Invalid value').join('; ');
+      // Server details describe the condition; where to fix it is keyed on the error code.
+      if (typeof detail === 'string' && data?.code === 'series_archived') detail += ' Restore it from Removed items in the library.';
       throw new Error(typeof detail === 'string' ? detail : `Request failed (${response.status}). Try again.`);
     }
     return data;

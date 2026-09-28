@@ -84,11 +84,12 @@ test('a partly voiced book counts voices for the record service, with Default on
   assert.equal(byId(withDefault).cast.state, 'complete');
   assert.match(byId(withDefault).cast.detail, /\(2 on the default voice\)/);
   assert.equal(withDefault.next.target, 'script', 'the next open stage is the script');
+  // The presented book has no legacy single-provider voice fields: a stray one is not read.
   const legacy = life.compute({book:{...book(), characters:book().characters.map(c => ({id:c.id, name:c.name, voice:'Kore'}))}, overview:analyzed(), recordProvider:'gemini', defaultVoice:false});
-  assert.equal(byId(legacy).cast.state, 'complete', 'the legacy Gemini voice field still counts');
+  assert.notEqual(byId(legacy).cast.state, 'complete', 'the legacy Gemini voice field is not a contract field');
 });
 
-test('a recorded book: every stage done, stale takes do not count, Next is Export', () => {
+test('a recorded book: every stage done, a take presented as null does not count, Next is Export', () => {
   const take = {url:'/take.wav'};
   const everyVoice = {narrator:all, unassigned:all, wren:all, odo:all};
   const audio = Object.fromEntries(Array.from({length:6}, (_, i) => [`s${i}`, take]));
@@ -96,9 +97,10 @@ test('a recorded book: every stage done, stale takes do not count, Next is Expor
   assert.ok(done.stages.every(stage => stage.state === 'complete'), JSON.stringify(done.stages.map(s => s.state)));
   assert.deepEqual(plain(done.next), {label:'Export the audiobook', tab:'studio', target:'export'});
   assert.equal(done.current, null);
-  const stale = life.compute({book:book({voices:everyVoice, audio:{...audio, s2:{url:'/old.wav', stale:true}}, unassigned:0}), overview:analyzed()});
+  // The server presents an out-of-date take as null audio.
+  const stale = life.compute({book:book({voices:everyVoice, audio:{...audio, s2:null}, unassigned:0}), overview:analyzed()});
   assert.equal(byId(stale).record.stateLabel, '5 of 6');
-  assert.match(byId(stale).record.detail, /1 is out of date/);
+  assert.match(byId(stale).record.detail, /5 of 6 passages have a Studio recording\./);
   assert.deepEqual(plain(stale.next), {label:'Record the rest', tab:'studio', target:'record'});
 });
 

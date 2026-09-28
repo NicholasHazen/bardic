@@ -33,7 +33,7 @@ function story() {
       {id:'s3', chapter_id:'c1', scene_id:'sc1', kind:'dialogue', text:'“Only me.”', speaker_id:'ada', confidence:.65, direction:'', cues:[],
         speaker_check:{source:'booknlp', result:'differs', speaker_id:'ben'}},
       {id:'s4', chapter_id:'c1', scene_id:'sc1', kind:'dialogue', text:'“Good.”', speaker_id:'ben', confidence:.66, direction:'Warm', cues:[],
-        edited:true, edited_fields:['direction'], audio:{url:'/a.wav', duration:3, provider:'system'}},
+        manual_fields:['direction'], audio:{url:'/a.wav', duration:3, provider:'system'}},
       {id:'s5', chapter_id:'c2', scene_id:'sc2', kind:'dialogue', text:'“Light it.”', speaker_id:'unassigned', confidence:.1, direction:'', cues:[]},
       {id:'s6', chapter_id:'c2', scene_id:'sc2', kind:'narration', text:'She did.', speaker_id:'narrator', confidence:.2, direction:'', cues:[]},
       {id:'s7', chapter_id:'c3', scene_id:'sc3', kind:'narration', text:'Morning.', speaker_id:'narrator', confidence:1, direction:'', cues:[]},
@@ -70,7 +70,8 @@ function environment({book = story(), patch} = {}) {
       const next = JSON.parse(JSON.stringify(state.book));
       const item = next[kind].find(entry => entry.id === id);
       Object.assign(item, body);
-      item.edited_fields = [...new Set([...(item.edited_fields || []), ...Object.keys(body)])];
+      // Passages present the fields a person set as `manual_fields` (scenes carry no lock state).
+      if (kind === 'segments') item.manual_fields = [...new Set([...(item.manual_fields || []), ...Object.keys(body)])].sort();
       if ('speaker_id' in body) item.confidence = 1;
       next.revision++;
       return next;

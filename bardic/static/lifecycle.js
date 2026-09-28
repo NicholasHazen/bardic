@@ -29,17 +29,14 @@
   const count = value => Number(value) || 0;
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString('en-US')} ${n === 1 ? one : many}`;
   const joined = labels => labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}` : labels[0] || '';
-  const playable = segment => Boolean(segment?.audio?.url && segment.audio.available !== false && !segment.audio.stale && !segment.audio.is_stale);
+  // The server presents an out-of-date take as null audio, so a take with a URL is playable.
+  const playable = segment => Boolean(segment?.audio?.url);
 
-  // The explicit voice a character has for one service (the same fields voices.js encodes).
+  // The explicit voice a character has for one service (the same fields voices.js encodes). The server
+  // folds the legacy single-provider fields into `voices` and does not present them.
   function explicitVoice(character, provider) {
     const selection = character?.voices?.[provider];
-    if (selection && typeof selection === 'object') return Boolean(selection.library || selection.id);
-    if (selection === undefined) {
-      const legacy = provider === 'gemini' ? character?.voice : provider === 'system' ? character?.system_voice : undefined;
-      return typeof legacy === 'string' && Boolean(legacy);
-    }
-    return false;
+    return Boolean(selection && typeof selection === 'object' && (selection.library || selection.id));
   }
 
   function analyzeStage(overview) {
@@ -121,9 +118,8 @@
   function recordStage(book) {
     const segments = book?.segments || [];
     const recorded = segments.filter(playable).length;
-    const outdated = segments.filter(segment => segment.audio && !playable(segment)).length;
     const base = {id:'record', label:'Record', tab:'studio', target:'record', uses:['Studio recordings (Export packages these)']};
-    const detail = `${recorded} of ${plural(segments.length, 'passage')} ${recorded === 1 ? 'has' : 'have'} a Studio recording${outdated ? `; ${outdated} ${outdated === 1 ? 'is' : 'are'} out of date` : ''}.`;
+    const detail = `${recorded} of ${plural(segments.length, 'passage')} ${recorded === 1 ? 'has' : 'have'} a Studio recording.`;
     if (segments.length && recorded >= segments.length) {
       return {...base, state:'complete', stateLabel:'Done', done:true, known:true, detail, next:{label:'Export the audiobook', tab:'studio', target:'export'}};
     }

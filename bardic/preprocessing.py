@@ -15,14 +15,30 @@ def eligible_chapters(book):
     return [c for c in book['chapters'] if c.get('kind') not in {'front_matter', 'back_matter'}]
 
 
-def census(book, store):
+# Census bookkeeping that stays in the cache and the retained artifact but is not presented to clients.
+INTERNAL_FIELDS = ('fingerprint', 'source_hash')
+
+
+def census(book, store, *, retain=True):
+    """The whole-book census, from the per-book cache when its inputs are unchanged.
+
+    ``book_preprocessing`` is a disposable derived cache: deleting it loses
+    nothing, and the census is recomputed on demand. ``retain=True`` (analysis
+    runs and the plan preview) also retains the census as a ``census`` artifact
+    and measures fresh work in the resource ledger. ``retain=False`` (GET views)
+    writes the cache only: no artifact and no ledger row.
+    """
     repository = ProcessingStore(store)
     identity = digest([VERSION, source_hash(book), [(c['id'], c.get('kind'), c['title']) for c in book['chapters']],
                        [(c['id'], c['name'], c.get('aliases', [])) for c in book['characters']],
                        [(s['id'], s['chapter_id'], s['kind'], s.get('speaker_id'), s.get('confidence')) for s in book['segments']]])
     cached = repository.preprocessing(book['id'], identity)
     if cached:
+        if retain:
+            _retain(store, book['id'], cached)
         return cached
+    if not retain:
+        return _compute_census(book, repository, identity, retain=False)
     from .resources import ResourceLedger, operation_active
     if operation_active():
         return _compute_census(book, repository, identity)
@@ -30,7 +46,17 @@ def census(book, store):
         return _compute_census(book, repository, identity)
 
 
-def _compute_census(book, repository, identity):
+def _retain(store, book_id, value):
+    """Retain a cached census (possibly computed by a GET view) unless it is already the current artifact."""
+    from .artifacts import _json, output_head, record
+    with store.lock, store.connect() as conn:
+        head = output_head(conn, book_id, 'census', 'book')
+        row = conn.execute('SELECT payload FROM artifact_versions WHERE id=?', (head,)).fetchone() if head else None
+        if row is None or row[0] != _json(value):
+            record(conn, book_id, 'census', 'book', value, label='Whole-book local census', stage='census', provider='local')
+
+
+def _compute_census(book, repository, identity, *, retain=True):
     eligible = eligible_chapters(book)
     eligible_ids = {c['id'] for c in eligible}
     candidates, names = {}, {}
@@ -97,5 +123,5 @@ def _compute_census(book, repository, identity):
               'eligible_chapters': len(eligible), 'chapters': chapters, 'characters': stats,
               'words': sum(c['words'] for c in chapters), 'estimated_source_tokens': sum(c['estimated_tokens'] for c in chapters if c['eligible']),
               'note': 'Free local census. Name mentions, speech tags and spread guide effort; they do not prove identity, presence, or narrative importance. Unknown pronouns and rare speakers still require review.'}
-    repository.save_preprocessing(book['id'], identity, result)
+    repository.save_preprocessing(book['id'], identity, result, retain=retain)
     return result

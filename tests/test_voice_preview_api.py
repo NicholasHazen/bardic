@@ -38,7 +38,7 @@ def test_bounded_preview_preserves_other_audio_and_cached_replay_needs_no_provid
     assert result['job']['kind'] == 'voice_preview' and result['job']['total'] == 1
     job = wait_job(client, result['job']['id'])
     assert job['status'] == 'completed' and job['progress'] == 1
-    assert job['audio']['mode'] == 'preview' and job['preview'] == result['preview']
+    assert job['audio']['preview_id'] == result['preview']['id'] and job['preview'] == result['preview']
     assert client.get(job['audio']['url']).status_code == 200
     assert production_snapshot(runtime.store) == before and len(calls) == 1
     runtime.api_key = ''
@@ -106,7 +106,7 @@ def test_duplicate_active_requests_join_but_other_auditions_and_book_edits_confl
         same = begin(client, book).json()
         assert same['job']['id'] == first['job']['id']
         assert begin(client, book, voice='Puck').status_code == 409
-        assert client.patch(f"/api/books/{book['id']}/characters/{book['characters'][0]['id']}", json={'voice': 'Puck'}).status_code == 409
+        assert client.patch(f"/api/books/{book['id']}/characters/{book['characters'][0]['id']}", json={'voices': {'gemini': {'id': 'Puck'}}}).status_code == 409
     finally:
         release.set()
     assert wait_job(client, first['job']['id'])['status'] == 'completed'
@@ -205,9 +205,10 @@ def test_preview_input_constraints_and_availability_errors(client, renderer, mon
     assert begin(client, book, voice='x' * 257).status_code == 422
     assert begin(client, book, direction='No character').status_code == 400
     assert begin(client, book, segment_direction='No character').status_code == 400
-    assert begin(client, book, character_id='missing').status_code == 404
+    assert begin(client, book, character_id='missing').json()['code'] == 'unknown_character'
     other = import_text(client, 'A wholly different source.')
-    assert begin(client, book, segment_id=other['segments'][0]['id']).status_code == 404
+    unknown = begin(client, book, segment_id=other['segments'][0]['id'])
+    assert unknown.status_code == 400 and unknown.json()['code'] == 'unknown_passage'
     runtime.api_key = 'offline-key'
     runtime.stopping.set()
     assert begin(client, book).status_code == 503
@@ -227,7 +228,8 @@ def test_series_reservation_and_archived_book_prevent_generation(client, rendere
     runtime.store.update_job(parent['id'], status='completed')
     from bardic.library import LibraryRepository
     LibraryRepository(runtime.store).archive_book(book['id'])
-    assert begin(client, book).status_code == 400
+    archived = begin(client, book)
+    assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
 
 
 def test_executor_failure_and_cancelled_future_settle_job(client, renderer, monkeypatch):
@@ -280,3 +282,12 @@ def test_restart_marks_unfinished_preview_interrupted_and_keeps_saved_audio(clie
     assert restored.job(queued['id'])['status'] == 'interrupted'
     audio = VoicePreviewRepository(restored).cached(book['id'], response['preview']['id'])
     assert audio['asset_id'] == job['audio']['asset_id']
+
+
+def test_presented_audition_take_keeps_usage_and_format_version_in_storage():
+    from bardic.voice_previews import present_take
+    audio = present_take('b', {'asset_id': 'a' * 64, 'duration': 1.0, 'provider': 'gemini', 'model': DEFAULT_TTS_MODEL,
+                               'voice': 'Kore', 'created_at': '2026-09-28T00:00:00Z', 'preview_id': 'p' * 64,
+                               'schema_version': 1, 'fingerprint': 'f' * 64, 'resource_usage': {'output_tokens': 7}})
+    assert not {'schema_version', 'resource_usage', 'fingerprint'} & set(audio)
+    assert audio['preview_id'] == 'p' * 64 and present_take('b', audio) == audio

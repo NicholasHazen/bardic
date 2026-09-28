@@ -1,4 +1,10 @@
-"""Read-only views and portable exports of durable pipeline knowledge."""
+"""Read-only views and portable exports of durable pipeline knowledge.
+
+Nothing here creates domain records (artifacts, decisions, ledger rows, jobs)
+or changes a book. Legacy data is retained as artifacts once, at startup
+(:func:`bardic.artifacts.backfill_library`), not by these views. The only
+writes are disposable derived caches (the census cache).
+"""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -8,23 +14,50 @@ import zipfile
 from .artifacts import ArtifactRepository
 from .processing import ProcessingStore
 from .series import SeriesRepository
-from .store import now
+from .store import now, public_job
+
+
+# The public fields of a stored analysis attempt, shared by the inspector and the export.
+# Stored rows also hold process IDs and anything older versions saved. The price rates stay public:
+# they explain `charged_estimate_usd`.
+ATTEMPT_FIELDS = ('id', 'book_id', 'run_id', 'stage', 'unit_key', 'chapter_id', 'provider', 'model', 'status', 'created_at',
+                  'completed_at', 'http_status', 'input_tokens', 'output_tokens', 'cached_input_tokens',
+                  'cache_write_input_tokens', 'reserved_input_tokens', 'reserved_output_tokens', 'charged_estimate_usd',
+                  'cost_basis', 'input_rate', 'output_rate', 'price_as_of', 'price_source', 'elapsed_seconds',
+                  'input_artifact_id')
 
 
 def prepare(store, book_id):
-    """One-time legacy retention; normal writes capture subsequent revisions."""
-    repository = ArtifactRepository(store)
-    with store.lock:
-        done = getattr(store, '_artifact_backfilled', set())
-        if book_id not in done:
-            repository.backfill(book_id)
-            done.add(book_id)
-            store._artifact_backfilled = done
-    return repository
+    """The artifact repository. Read-only: legacy retention happens at startup."""
+    return ArtifactRepository(store)
+
+
+def attempt_validation(conn, book_id):
+    """Output validation per attempt ID, from all retained events (not a bounded preview)."""
+    validation = {}
+    for (body,) in conn.execute('SELECT body FROM pipeline_events WHERE book_id=? ORDER BY rowid', (book_id,)):
+        event = json.loads(body)
+        if event.get('attempt_id') and event['event'] in {'accepted', 'validation_rejected'}:
+            validation[event['attempt_id']] = 'accepted' if event['event'] == 'accepted' else 'rejected'
+    return validation
+
+
+def public_attempt(attempt, validation, active_runs):
+    """One attempt through the allowlist, with its validation state.
+
+    A ``reserved`` attempt whose run is not active has an unknown outcome
+    (``interrupted_unknown``); ``active_runs`` is the set of queued or running job IDs.
+    """
+    item = {k: attempt[k] for k in ATTEMPT_FIELDS if k in attempt}
+    item['validation_state'] = validation.get(attempt.get('id'), 'unknown')
+    if item.get('status') == 'reserved' and item.get('run_id') not in active_runs:
+        item['status'] = 'interrupted_unknown'
+    return item
 
 
 def story_map(store, book):
     repository = prepare(store, book['id'])
+    cast = {c['id'] for c in book['characters']}
     passages = defaultdict(list)
     for passage in book['segments']:
         passages[passage['chapter_id']].append(passage)
@@ -44,8 +77,9 @@ def story_map(store, book):
                 continue
             members = [p for p in passages[chapter['id']] if p.get('scene_id') == scene['id']]
             spans = [p for p in members if type(p.get('start')) is int and type(p.get('end')) is int]
+            # Only cast members: a stale speaker ID no longer in the cast names no character.
             speakers = sorted({p['speaker_id'] for p in members if p.get('kind') == 'dialogue'
-                               and p.get('speaker_id') not in {None, 'narrator', 'unassigned'}})
+                               and p.get('speaker_id') in cast - {'narrator', 'unassigned'}})
             scenes.append({'id': scene['id'], 'title': scene.get('title', ''),
                            'start': min((p['start'] for p in spans), default=None),
                            'end': max((p['end'] for p in spans), default=None),
@@ -69,7 +103,8 @@ def story_map(store, book):
             edges.append({'from': parent, 'to': passage_node, 'type': 'contains', 'order': index})
             if index:
                 edges.append({'from': node_id('passage', passages[chapter['id']][index - 1]['id']), 'to': passage_node, 'type': 'next'})
-            if passage.get('kind') == 'dialogue' and passage.get('speaker_id') not in {None, 'unassigned'}:
+            # Every edge ends at a node: an attribution to a speaker no longer in the cast is omitted.
+            if passage.get('kind') == 'dialogue' and passage.get('speaker_id') in cast - {'unassigned'}:
                 edges.append({'from': passage_node, 'to': node_id('character', passage['speaker_id']),
                               'type': 'attributed_speaker', 'confidence': passage.get('confidence')})
     for character in book['characters']:
@@ -121,7 +156,7 @@ def pipeline(store, book, valid_audio, registry):
         status = latest.get('status') if latest.get('status') in ACTIVE else 'stale' if stale else None
         unit = 'eligible sections' if step.chapter_scoped else UNIT_LABELS.get(step.scope, 'results')
         waiting = item['pending_versions']
-        note = step.summary + (f" {waiting} {'versions wait' if waiting != 1 else 'version waits'} for review in Analyze." if waiting else '')
+        note = step.summary + (f" {waiting} {'versions wait' if waiting != 1 else 'version waits'} for review." if waiting else '')
         stage(step.id, step.label, item['accepted_scopes'], item['total_scopes'], unit, list(step.inputs) or ['import'],
               note, status=status, stale=stale, candidates=waiting)
     cast = [c for c in book['characters'] if c['id'] != 'unassigned']
@@ -140,41 +175,30 @@ def pipeline(store, book, valid_audio, registry):
     # Look up validation for displayed attempts across all history, not just the
     # event preview. HTTP success alone never means an output passed validation.
     attempts = processing.attempts(book['id'])[-100:]
-    validation = {}
     with store.lock, store.connect() as conn:
-        for (body,) in conn.execute('SELECT body FROM pipeline_events WHERE book_id=? ORDER BY rowid', (book['id'],)):
-            event = json.loads(body)
-            if event.get('attempt_id') and event['event'] in {'accepted', 'validation_rejected'}:
-                validation[event['attempt_id']] = 'accepted' if event['event'] == 'accepted' else 'rejected'
-    attempt_fields = ('id', 'run_id', 'stage', 'unit_key', 'provider', 'model', 'status', 'created_at', 'completed_at',
-                      'http_status', 'input_tokens', 'output_tokens', 'reserved_input_tokens', 'reserved_output_tokens',
-                      'charged_estimate_usd', 'input_artifact_id')
-    public_attempts = []
-    for attempt in attempts:
-        item = {k: attempt[k] for k in attempt_fields if k in attempt}
-        item['validation_state'] = validation.get(attempt['id'], 'unknown')
-        if item.get('status') == 'reserved' and not any(j['id'] == item.get('run_id') and j['status'] in ACTIVE for j in jobs):
-            item['status'] = 'interrupted_unknown'
-        public_attempts.append(item)
-    job_fields = ('id', 'kind', 'status', 'phase', 'progress', 'total', 'message', 'error', 'created_at', 'updated_at')
+        validation = attempt_validation(conn, book['id'])
+    active_runs = {j['id'] for j in store.jobs(book['id'], limit=None, active=True)}
+    public_attempts = [public_attempt(attempt, validation, active_runs) for attempt in attempts]
     return {'schema_version': 1, 'book_id': book['id'], 'stages': stages,
-            'jobs': [{k: j[k] for k in job_fields if k in j} for j in jobs],
+            'jobs': [public_job(j) for j in jobs],
             'usage': processing.usage(book['id']), 'attempts': public_attempts, 'events': events,
             'capabilities': {'word_alignment': False}, 'artifact_kinds': counts['kinds'], 'artifact_counts': counts,
-            'notes': ['Step counts are accepted results. Run, review and accept steps in Analyze.',
+            'notes': ['Step counts are accepted results of the analysis pipeline.',
                       'Historical records imported from older versions may lack exact request provenance. Lost versions cannot be reconstructed.',
                       'These are stage-specific counts, not a single percentage for an unknown amount of future work.',
                       'Dependency cards describe the pipeline. The artifact browser records actual retained input dependencies.']}
 
 
 def write_analysis_export(store, book_id, path):
-    """Portable JSON with full transitive artifact dependencies, no audio prerequisite."""
+    """Portable JSON with full transitive artifact dependencies, no audio prerequisite. Writes only ``path``."""
     repository = prepare(store, book_id)
+    active_runs = {j['id'] for j in store.jobs(book_id, limit=None, active=True)}
     with store.lock, store.connect() as conn:
         book = store.book(book_id)
         graph = story_map(store, book)
         series = SeriesRepository(store)
         processing = ProcessingStore(store)
+        validation = attempt_validation(conn, book_id)
         rows = conn.execute('''WITH RECURSIVE included(id) AS (
             SELECT id FROM artifact_versions WHERE book_id=? UNION
             SELECT d.dependency_id FROM artifact_dependencies d JOIN included i ON d.artifact_id=i.id)
@@ -184,8 +208,9 @@ def write_analysis_export(store, book_id, path):
         member = series.membership(book_id)
         identity = {'membership': member, 'links': series.links_for_book(book_id),
                     'series_characters': series.list_characters(member['series_id']) if member else []}
-        # Version 1 keeps its original wire identifier across the product rename.
-        manifest = {'schema_version': 1, 'format': 'spintails-analysis', 'exported_at': now(), 'book_id': book_id,
+        # The format identifier predates the product rename and is kept. Version 2: analysis-attempts.json
+        # holds allowlisted attempts (the inspector's PipelineAttempt shape), not raw stored rows.
+        manifest = {'schema_version': 2, 'format': 'spintails-analysis', 'exported_at': now(), 'book_id': book_id,
                     'artifact_count': len(artifacts), 'external_book_dependencies': sorted({owner for owner, _ in rows if owner != book_id}),
                     'audio_files_included': False, 'source_text_included': True, 'word_alignment': False,
                     'coordinate_system': 'Python Unicode character offsets, end exclusive, chapter-local',
@@ -195,7 +220,8 @@ def write_analysis_export(store, book_id, path):
                               'Audio asset IDs identify separately stored files. This bundle does not include audio binaries.']}
         files = {'manifest.json': manifest, 'book.json': book, 'story-map.json': graph, 'series.json': identity,
                  'observations.json': series.observations(book_id), 'references.json': store.character_references(book_id),
-                 'analysis-attempts.json': processing.attempts(book_id)}
+                 'analysis-attempts.json': [public_attempt(attempt, validation, active_runs)
+                                            for attempt in processing.attempts(book_id)]}
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table, name in [('resource_operations', 'resource-operations.json'), ('listening_sessions', 'listening-sessions.json'),
                             ('listening_takes', 'listening-takes.json'), ('listening_chunks', 'listening-chunks.json')]:

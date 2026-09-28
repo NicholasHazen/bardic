@@ -218,12 +218,6 @@ function environment(ensure,previewRequest){
   assert.equal(referenced.calls.ensures.length,0);
   assert.equal(referenced.calls.plays,0);
 
-  // Rejected/stale enhanced takes cannot be played even for a studio preview.
-  const stale=environment(async()=>null);
-  stale.state.book.segments[0].audio.stale=true;
-  await stale.player.startSegment('s1',{enhanced:true});
-  assert.equal(stale.calls.plays,0);
-
   // A delayed media-play rejection after Stop does not raise a stale error in the new player state.
   let rejectPlay;
   const media=environment(async()=>({url:'/simple.wav',duration:1}));
@@ -304,7 +298,7 @@ function environment(ensure,previewRequest){
   // Voice auditions use the production controller and the same media element.
   // Their timestamps and selected passage must never become reading progress.
   const example={id:'preview-1',source:'passage',text:'One.',segment_id:'s1',character_id:'narrator'};
-  const exampleAudio={url:'/example.wav',duration:2,available:true};
+  const exampleAudio={url:'/example.wav',duration:2};
   const sampleResponse=()=>({data:{preview:example,audio:exampleAudio,cached:true}});
   const audition=environment(async(_book,segment)=>({url:`/simple-${segment.id}.wav`,duration:2}),sampleResponse);
   await audition.player.startSegment('s1');
@@ -442,7 +436,7 @@ function environment(ensure,previewRequest){
   // Audition helpers read unsaved form choices and use source scope without
   // mutating the saved character or passage assignments.
   const casting=environment(async()=>null,sampleResponse);
-  const character={id:'mara',name:'Mara',voice:'Kore',system_voice:'Samantha',direction:'Saved delivery.'};
+  const character={id:'mara',name:'Mara',voices:{gemini:{id:'Kore'},system:{id:'Samantha'}},direction:'Saved delivery.'};
   casting.state.book.characters.push(character);
   casting.state.book.segments[1].speaker_id='mara';
   casting.state.segmentId='s2';

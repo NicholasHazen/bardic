@@ -133,7 +133,10 @@ def test_earlier_evidence_from_a_changed_source_is_excluded_until_rebuilt(client
     book['chapters'][0]['text'] += '\n\nAn appended line.'  # every stored quote still matches its slice
     store.save_book(book)
     assert entries(context(client, second)) == []
-    client.get(f"/api/books/{first['id']}/analysis-pipeline")  # the next sync rebuilds and revalidates
+    client.get(f"/api/books/{first['id']}/analysis-pipeline")  # a GET records nothing
+    assert entries(context(client, second)) == []
+    # The next pipeline write syncs, rebuilds and revalidates.
+    assert client.post(f"/api/books/{first['id']}/analysis-pipeline/plan", json={'steps': ['census']}).status_code == 200
     assert entries(context(client, second))
 
 
@@ -277,7 +280,7 @@ def test_review_gate_pauses_until_reviewed_then_resume_completes(client):
     # Unreviewed candidates are never read, and resuming is refused until the review is done.
     assert 'Reviewed reading.' not in {o['description'] for o in entries(context(client, second))}
     refused = client.post(f"/api/series/{series['id']}/runs/{parent['id']}/resume")
-    assert refused.status_code == 409 and 'waiting for your review' in refused.text
+    assert refused.status_code == 409 and refused.json()['code'] == 'review_pending' and 'waiting for review' in refused.text
     # Every reservation except the waiting book's decisions still holds.
     for book in (first, second):
         assert client.patch(f"/api/books/{book['id']}/metadata", json={'title': 'Blocked', 'author': ''}).status_code == 409

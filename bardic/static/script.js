@@ -47,7 +47,7 @@
   // ---- Checks ------------------------------------------------------------------------------------
   const isUnassigned = (segment, book) => !segment.speaker_id || segment.speaker_id === UNASSIGNED
     || !(book.characters || []).some(character => character.id === segment.speaker_id);
-  const editedFields = segment => Array.isArray(segment.edited_fields) ? segment.edited_fields : segment.edited ? ['*'] : [];
+  const editedFields = segment => Array.isArray(segment.manual_fields) ? segment.manual_fields : [];
   const FILTERS = [
     {id:'unassigned', label:'Unassigned speaker', short:'unassigned', test:(segment, book) => isUnassigned(segment, book)},
     {id:'low-confidence', label:'Low confidence', short:'low confidence',
@@ -58,7 +58,7 @@
     {id:'edited', label:'Your edits', short:'your edits', test:segment => editedFields(segment).length > 0},
     {id:'not-recorded', label:'Not recorded', short:'not recorded', test:(segment, book, playable) => !playable(segment)},
   ];
-  const playableOf = () => api?.playable || (segment => Boolean(segment?.audio?.url && !segment.audio.stale));
+  const playableOf = () => api?.playable || (segment => Boolean(segment?.audio?.url));
   const filtersFor = book => FILTERS.filter(filter => !filter.available || filter.available(book));
   /** The chips a passage matches, by id. */
   function flags(segment, book, playable = playableOf()) {

@@ -80,11 +80,14 @@
     try { value = await response.json(); } catch { value = null; }
     if (!response.ok) {
       const detail = value?.detail;
-      const text = typeof detail === 'string' ? detail
+      // Server details describe the condition; where to fix it is keyed on the error code.
+      const hint = {api_key_missing:' Add it in Providers & settings.', server_url_missing:' Add it in Providers & settings.'}[value?.code] || '';
+      const text = typeof detail === 'string' ? detail + hint
         : Array.isArray(detail) ? detail.map(item => item?.msg || JSON.stringify(item)).join('; ')
         : `Request failed (${response.status}). Try again.`;
       const error = new Error(text);
       error.status = response.status;
+      error.code = value?.code;
       throw error;
     }
     return value;
@@ -161,8 +164,8 @@
   // Self-hosted providers are "ready" when a server URL is set; cloud ones when a key is.
   // Status is refreshed after Settings saves, so a newly entered URL counts without reloading the tab.
   const providerHasKey = (panel, id) => providerDef(panel, id)?.self_hosted
-    ? Boolean(panel.status?.local_service_urls ? panel.status.local_service_urls[id] : providerDef(panel, id)?.configured ?? providerDef(panel, id)?.has_api_key)
-    : panel.status?.analysis_providers?.find(p => p.id === id)?.has_api_key ?? providerDef(panel, id)?.has_api_key ?? false;
+    ? Boolean(panel.status?.local_service_urls ? panel.status.local_service_urls[id] : providerDef(panel, id)?.configured)
+    : panel.status?.analysis_providers?.find(p => p.id === id)?.has_api_key ?? providerDef(panel, id)?.configured ?? false;
   // A provider the step reads results from instead of calling (BookNLP on Speakers & delivery).
   const offline = (def, id) => Array.isArray(def?.offline_providers) && def.offline_providers.includes(id);
   // Chapter services (BookNLP, Novel Analyzer) run on the owner's server and take no model.
@@ -841,10 +844,7 @@
     return panel.segments.map;
   }
   const characterName = (panel, id) => (panel.book?.characters || []).find(item => item.id === id)?.name || id || '';
-  const speakerEdited = segment => {
-    const fields = Array.isArray(segment.edited_fields) ? segment.edited_fields : segment.edited ? ['*'] : [];
-    return fields.includes('speaker_id') || fields.includes('*');
-  };
+  const speakerEdited = segment => Array.isArray(segment.manual_fields) && segment.manual_fields.includes('speaker_id');
   const quotesOf = value => Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()) : [];
 
   // Exact evidence quotes, never reconstructed. A row may carry its version's own quotes (evidence_quotes). Otherwise
@@ -1326,7 +1326,7 @@
       paint(panel);
       return;
     }
-    const body = {...plan.body, gates:plan.gates, mode:'serial',
+    const body = {...plan.body, gates:plan.gates, scheduling:'serial',
       concurrency:Number(panel.run.concurrency) || 1, expected_fingerprint:plan.value.fingerprint};
     const bookId = panel.bookId;
     const seq = panel.seq.plan;
@@ -1340,7 +1340,7 @@
     } catch (error) {
       if (panel.bookId !== bookId || panel.seq.plan !== seq || !panel.plan) return;
       panel.plan.starting = false;
-      if (error.status === 409) { panel.plan.value = null; panel.plan.stale = true; panel.plan.error = error.message; }
+      if (error.code === 'plan_stale') { panel.plan.value = null; panel.plan.stale = true; panel.plan.error = error.message; }
       else panel.plan.error = `Could not start the run: ${error.message}`;
       paint(panel);
       return;

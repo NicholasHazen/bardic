@@ -27,11 +27,13 @@ from .audio import (BREEZE_MODEL, SYSTEM_MODEL, TTS_MODELS, AudioError, RateLimi
                     synthesize, validate_audio, voice_id, voice_selection)
 from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
-from .listening import ListeningRepository
+from .listening import ListeningRepository, require_active_book
 from .resources import ResourceLedger
-from .store import now
+from .store import now, public_job
 from .take_archive import produce_take
 from .tts_limits import DEFAULT_LIMITS, LIMITER, quota_day, requests_today, seconds_until_reset
+from .audio_refs import audio_ref
+from .errors import ApiError, Invalid, NotFound, Unavailable
 
 SCHEMA_VERSION = 1
 SOURCE_KEY_VERSION = 1
@@ -59,6 +61,9 @@ def source_key(segment: dict) -> str:
 class PerformanceRepository:
     def __init__(self, store):
         self.store = store
+        # Schema setup runs once per store, never on each request.
+        if getattr(store, '_performance_schema_ready', False):
+            return
         with store.lock, store.connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS performances (
                 book_id TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
@@ -80,6 +85,7 @@ class PerformanceRepository:
                 conn.execute(f'''CREATE TRIGGER IF NOT EXISTS performance_takes_no_{operation.lower()}
                     BEFORE {operation} ON performance_takes BEGIN
                     SELECT RAISE(ABORT, 'Performance takes are immutable'); END''')
+        store._performance_schema_ready = True
 
     def create(self, record: dict) -> dict:
         with self.store.lock, self.store.connect() as conn:
@@ -92,7 +98,7 @@ class PerformanceRepository:
             row = conn.execute('SELECT body FROM performances WHERE book_id=? AND id=?',
                                (book_id, performance_id)).fetchone()
         if not row:
-            raise KeyError('Performance not found')
+            raise NotFound('performance_not_found', 'Performance not found')
         return json.loads(row[0])
 
     def list(self, book_id: str, include_archived: bool = False) -> list[dict]:
@@ -150,11 +156,11 @@ def resolve_model(provider: str, model: str | None, runtime) -> str:
     if provider == 'gemini':
         model = model or runtime.preferences['tts_model']
         if model not in TTS_MODELS:
-            raise ValueError('Choose a Gemini speech model listed in Settings.')
+            raise Invalid('model_unsupported', 'The Gemini speech model is not a supported TTS model.')
         return model
     fixed = SYSTEM_MODEL if provider == 'system' else BREEZE_MODEL
     if model not in (None, '', fixed):
-        raise ValueError(f'{PROVIDER_LABELS[provider]} narration uses the {fixed} model.')
+        raise Invalid('model_unsupported', f'{PROVIDER_LABELS[provider]} narration uses the {fixed} model.')
     return fixed
 
 
@@ -227,25 +233,38 @@ def default_name(label: str, chapters: list[dict], book: dict) -> str:
     return f'{label} · {scope}'[:200]
 
 
-def provider_problems(runtime, provider: str) -> list[str]:
+def provider_problems(runtime, provider: str) -> list[tuple[str, str]]:
+    """Provider conditions that block generation, as (error code, neutral sentence) pairs."""
     if provider == 'gemini' and not runtime.api_key:
-        return ['Add a Gemini API key in Settings first, or choose another narrator.']
+        return [('gemini_key_missing', 'No Gemini API key is configured.')]
     if provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
-        return ['Device narration requires macOS say and ffmpeg.']
-    if provider == 'breeze' and not runtime.preferences.get('breeze_url'):
-        return ['Add the Breeze server URL in Settings first, or choose another narrator.']
+        return [('device_narration_unavailable', 'Device narration requires macOS say and ffmpeg on the server.')]
+    if provider == 'breeze' and not runtime.breeze_url():
+        return [('breeze_url_missing', 'No Breeze server URL is configured.')]
     return []
+
+
+def refuse(problems: list[tuple[str, str]]) -> Invalid:
+    """One 400 for blocking problems: the first problem's code, every problem's sentence."""
+    return Invalid(problems[0][0], ' '.join(text for _, text in problems))
 
 
 # Ready audio ------------------------------------------------------------------
 
-def _with_performance(audio: dict, performance_id: str) -> dict:
-    return {**audio, 'mode': 'performance', 'performance_id': performance_id}
+def stored_session(repository, book_id: str, session_id: str) -> dict:
+    """The listening session a performance record pinned. Sessions are never deleted, so a missing one
+    is damaged stored data (a server defect, 500), not a resource the request named."""
+    try:
+        return repository.get_session(book_id, session_id)
+    except NotFound:
+        raise KeyError(session_id) from None  # a bare KeyError is a 500 internal_error
 
 
 def simple_ready(store, book_id: str, session_id: str, wanted: set[str]) -> dict[str, dict]:
     """Session audio for the wanted passages that matches their current source. Local, no WAV rereads."""
-    takes = ListeningRepository(store).takes(book_id, session_id)['takes']
+    repository = ListeningRepository(store)
+    stored_session(repository, book_id, session_id)
+    takes = repository.takes(book_id, session_id)['takes']
     return {take['segment_id']: take['audio'] for take in takes if take['segment_id'] in wanted}
 
 
@@ -266,14 +285,14 @@ def cast_ready(runtime, record: dict, segments: list[dict], rows=None, *, valida
             except (ValueError, TypeError, KeyError):
                 present = False
             if present:
-                ready[segment['id']] = {
-                    'url': f'/api/books/{quote(book_id, safe="")}/audio-assets/{body["asset_id"]}',
-                    'duration': body.get('duration'), 'asset_id': body['asset_id'],
-                    'fingerprint': body.get('fingerprint'), 'provider': body.get('provider'),
-                    'model': body.get('model'), 'voice': body.get('voice'),
-                    'speaker_id': body.get('speaker_id'), 'character_id': body.get('character_id'),
-                    'fallback': bool(body.get('fallback')), 'created_at': body.get('created_at'),
-                    'available': True}
+                # A reused legacy Studio take is stored under its recipe fingerprint: not a content address.
+                content = body['asset_id'] if body['asset_id'] != body.get('fingerprint') else None
+                ready[segment['id']] = audio_ref(
+                    f'/api/books/{quote(book_id, safe="")}/audio-assets/{body["asset_id"]}',
+                    asset_id=content, duration=body.get('duration'), provider=body.get('provider'),
+                    model=body.get('model'), voice=body.get('voice'), created_at=body.get('created_at'),
+                    speaker_id=body.get('speaker_id'), character_id=body.get('character_id'),
+                    fallback=bool(body.get('fallback')))
                 break
     return ready
 
@@ -286,7 +305,7 @@ def ready_audio(runtime, record: dict, book: dict | None = None) -> dict[str, di
         ready = simple_ready(runtime.store, record['book_id'], record['session_id'], {s['id'] for s in segments})
     else:
         ready = cast_ready(runtime, record, segments)
-    return {segment_id: _with_performance(audio, record['id']) for segment_id, audio in ready.items()}
+    return ready
 
 
 def progress(book: dict, record: dict, ready: dict) -> dict:
@@ -307,12 +326,9 @@ def job_summary(store, job_id: str | None) -> dict | None:
     if not job_id:
         return None
     try:
-        job = store.job(job_id)
+        return public_job(store.job(job_id))
     except KeyError:
         return None
-    summary = {field: job.get(field) for field in ('id', 'status', 'progress', 'total', 'message', 'error', 'resume_after')}
-    summary['child_job_id'] = job.get('child_job_id')
-    return summary
 
 
 def cast_summary(runtime, record: dict, book: dict) -> list[dict]:
@@ -363,25 +379,23 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
     """Resolve and estimate a performance without contacting any provider.
 
     ``record`` plans the resume of an existing performance with its pinned
-    session or cast snapshot. Invalid requests raise ValueError; conditions the
-    user can fix are returned as ``problems``.
+    session or cast snapshot. Invalid requests raise ``Invalid``; conditions the
+    user can fix are returned as ``problems``: (error code, sentence) pairs, public as ``{code, detail}``.
     """
-    from fastapi import HTTPException
-
     store = runtime.store
     book = store.book(book_id)
     mode, provider = request['mode'], request['provider']
     if mode not in ('simple', 'cast'):
-        raise ValueError('Choose a simple or cast performance.')
+        raise Invalid('mode_unsupported', 'The performance mode must be simple or cast.')
     if provider not in PROVIDER_LABELS:
-        raise ValueError('Choose system, Gemini or Breeze narration.')
+        raise Invalid('provider_unsupported', 'The narration provider must be system, gemini or breeze.')
     requested = list(request.get('chapter_ids') or [])
     if not requested:
-        raise ValueError('Choose at least one chapter.')
+        raise Invalid('no_chapters_selected', 'A performance needs at least one chapter.')
     known = {chapter['id'] for chapter in book['chapters']}
     unknown = [chapter_id for chapter_id in requested if chapter_id not in known]
     if unknown and record is None:
-        raise ValueError('Choose chapters from this book.')
+        raise Invalid('unknown_chapter', 'A chapter ID is not in this book.')
     chapters, passages = selection(book, requested)
     chapter_ids = [chapter['id'] for chapter in chapters]
     problems = provider_problems(runtime, provider)
@@ -392,15 +406,13 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
     if mode == 'simple':
         repository = ListeningRepository(store)
         if record:
-            session = repository.get_session(book_id, record['session_id'])
+            session = stored_session(repository, book_id, record['session_id'])
         else:
             try:
                 voice, pinned = runtime.narrator_choice(provider, request.get('voice'))
                 session = repository.session(book_id, provider, voice, model, selection=pinned)
-            except HTTPException as error:
-                problems.append(str(error.detail))
-            except ValueError as error:
-                problems.append(str(error))
+            except ApiError as error:
+                problems.append((error.code, error.detail))
         ready = simple_ready(store, book_id, session['id'], wanted) if session else {}
         if ready and not record:
             notes.append(f'{len(ready)} passage{"s" if len(ready) != 1 else ""} already have audio from '
@@ -409,7 +421,7 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         snapshot = record['cast_snapshot'] if record else snapshot_cast(runtime, book)
         narrator = snapshot.get(NARRATOR)
         if narrator is None or not _renders(narrator, provider, model):
-            problems.append(f'The narrator has no usable {VOICE_NOUNS[provider]} voice. Choose one in Cast first.')
+            problems.append(('narrator_voice_missing', f'The narrator has no usable {VOICE_NOUNS[provider]} voice.'))
         ready = cast_ready(runtime, record, [s for segs in passages.values() for s in segs], validate=validate) if record else {}
         speakers = [segment['speaker_id'] for segs in passages.values() for segment in segs]
         voiceless = [snapshot.get(speaker, {}).get('name') or speaker for speaker in dict.fromkeys(speakers)
@@ -477,26 +489,25 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         'chapters': [{'id': chapter['id'], 'title': chapter.get('title', ''),
                       'passages_total': len(passages[chapter['id']]),
                       'passages_ready': len(passages[chapter['id']]) - len(missing[chapter['id']])} for chapter in chapters],
-        'problems': problems, 'notes': notes, 'quota': quota,
+        'problems': [{'code': code, 'detail': text} for code, text in problems], 'notes': notes, 'quota': quota,
         'narrator_label': narrator_label(runtime, record or label_record),
     }
-    return {'public': public, 'book': book, 'session': session, 'snapshot': snapshot, 'model': model,
-            'chapters': chapters, 'to_generate': to_generate}
+    return {'public': public, 'problems': problems, 'book': book, 'session': session, 'snapshot': snapshot,
+            'model': model, 'chapters': chapters, 'to_generate': to_generate}
 
 
 # Creation and jobs ------------------------------------------------------------
 
 def create(runtime, book_id: str, request: dict) -> dict:
     """Validate, record and start a performance. Call under the store lock."""
-    from fastapi import HTTPException
-
+    require_active_book(runtime.store, book_id)
     runtime.require_idle(book_id)
     if runtime.stopping.is_set():
-        raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
+        raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
     planned = plan(runtime, book_id, request)
     public = planned['public']
-    if public['problems']:
-        raise HTTPException(400, ' '.join(public['problems']))
+    if planned['problems']:
+        raise refuse(planned['problems'])
     book, stamp = planned['book'], now()
     name = (request.get('name') or '').strip() or default_name(public['narrator_label'], planned['chapters'], book)
     record = {'id': 'pf_' + uuid4().hex, 'book_id': book_id, 'schema_version': SCHEMA_VERSION,
@@ -519,27 +530,25 @@ def create(runtime, book_id: str, request: dict) -> dict:
 
 def prepare(runtime, book_id: str, performance_id: str) -> dict:
     """Resume missing work with the same narrator session or cast snapshot. Call under the store lock."""
-    from fastapi import HTTPException
-
     repository = PerformanceRepository(runtime.store)
+    runtime.store.book(book_id)
     record = repository.get(book_id, performance_id)
+    require_active_book(runtime.store, book_id)
     runtime.require_idle(book_id)
     if runtime.stopping.is_set():
-        raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
+        raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
     problems = provider_problems(runtime, record['provider'])
     if problems:
-        raise HTTPException(400, ' '.join(problems))
+        raise refuse(problems)
     planned = plan(runtime, book_id, record, record=record, validate=True)
-    if planned['public']['problems']:
-        raise HTTPException(400, ' '.join(planned['public']['problems']))
+    if planned['problems']:
+        raise refuse(planned['problems'])
     job = start(runtime, record, planned['to_generate']) if planned['to_generate'] else None
     record = repository.get(book_id, performance_id)
     return {'performance': present(runtime, record, planned['book']), 'job': job}
 
 
 def start(runtime, record: dict, total: int) -> dict:
-    from fastapi import HTTPException
-
     store = runtime.store
     book_id, provider = record['book_id'], record['provider']
     # Snapshot credentials and server configuration for this queued job.
@@ -558,7 +567,7 @@ def start(runtime, record: dict, total: int) -> dict:
     except RuntimeError:
         store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                          message='No narration was started. Restart Bardic and try again.')
-        raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+        raise Unavailable('shutting_down', 'The narration worker is stopping and accepted no work. No narration was started.') from None
 
     def settle_cancelled(future):
         if future.cancelled():
@@ -580,7 +589,7 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
     store = runtime.store
     book_id, provider = record['book_id'], record['provider']
     repository = ListeningRepository(store)
-    session = repository.get_session(book_id, record['session_id'])
+    session = stored_session(repository, book_id, record['session_id'])
     book = store.book(book_id)
     chapters, passages = selection(book, record['chapter_ids'])
     wanted = {segment['id'] for segments in passages.values() for segment in segments}
@@ -608,7 +617,7 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
                     child['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                     model=model, voice=session['voice'], intent='queue',
                     scope_start_segment_id=first['id'], focus_segment_id=first['id'],
-                    chunking=options, limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
                     calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id)
                 parent = store.job(job_id)
                 store.update_job(job_id, child_job_id=child['id'],
@@ -643,12 +652,14 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
             with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job_id, unit_key=segment['id'],
                                                  chapter_id=chapter['id'], provider=provider, model=session['model'],
                                                  kind='narration') as metrics:
-                audio = repository.render_passage(book_id, session['id'], segment['id'], key, synthesizer=synthesize,
-                                                   check_cancel=lambda: runtime.check_cancel(job_id))
+                audio = repository.cached(book_id, session['id'], segment['id'])
+                if audio is not None:
+                    metrics['cached'] = True
+                else:
+                    audio = repository.generate_passage(book_id, session['id'], segment['id'], key, synthesizer=synthesize,
+                                                        check_cancel=lambda: runtime.check_cancel(job_id))
                 metrics.update(audio_seconds=audio['duration'],
                                output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
-                if audio.get('cache_hit'):
-                    metrics['cached'] = True
             done += 1
             store.update_job(job_id, progress=done)
 

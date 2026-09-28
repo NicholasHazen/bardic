@@ -12,7 +12,7 @@ Each stage is its own pull request.
 | --- | --- | --- | --- |
 | 1. Untangle (**done**) | Live code stops importing the engine. Shared code moves out of it. | None. Prompts and cache keys are byte-identical. | Full suite; [prompt identity test](../tests/test_prompt_identity.py); [isolation test](../tests/test_legacy_isolation.py) |
 | 2. Evidence projection (**done**) | Accepted step evidence becomes `character_references`. The checkpoint stops being their only writer. Series memory (contract 0.3.0) then made series context read those rows. | Cast references and series context come from accepted pipeline versions. | [Series memory plan](SERIES-MEMORY-PLAN.md) |
-| 3. Delete code paths (**done**) | Delete the engine files, their routes and their tests. Rebuild the Details explorer from the step pipeline. | The Classic routes are no longer served. Existing data is still readable where noted below. | Stage 2 merged; contract 0.4.0 |
+| 3. Delete code paths (**done**) | Delete the engine files, their routes and their tests. Rebuild the Details explorer from the step pipeline. | The Classic routes are no longer served. Existing data is still readable where noted below. | Stage 2 merged; contract 0.3.0 |
 | 4. Drop data | A migration drops the legacy tables and legacy rows, after a verified backup and backfill. | Legacy rows are gone. Everything listed under "keep" is intact. | **Owner go**; [operations](OPERATIONS.md) backup |
 
 ## Stage 1: what moved
@@ -38,7 +38,7 @@ Nothing was renamed on the wire, and no table schema changed.
 
 ## Stage 3: what was removed
 
-Stage 3 landed on 2026-09-28 with contract **0.4.0 (BREAKING)**. It was written against 0.2.3 as 0.3.0 and renumbered when series memory took 0.3.0 first. The owner answered the three open questions first:
+Stage 3 landed on 2026-09-28. It was drafted as contract 0.4.0 on the UI-redesign branch; when that branch was combined with `main`'s contract 0.2.0, every unpublished draft version collapsed into one release, contract **0.3.0 (BREAKING)**. The owner answered the three open questions first:
 
 1. **Keep the Details explorer.** `GET /api/books/{id}/pipeline` stays, with its stage cards rebuilt from the step pipeline.
 2. **Delete the in-memory cloud path.** `analysis._cloud` and `_reconcile_known_aliases` had no caller left. The demo's no-store local draft stays.
@@ -63,7 +63,7 @@ Stage 3 landed on 2026-09-28 with contract **0.4.0 (BREAKING)**. It was written 
 - One card per registered step, in pipeline order: `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing`. The counts come from `pipeline.api.step_states`, which the Analyze overview (`GET /analysis-pipeline`) also uses, so both surfaces show the same numbers. `completed`/`total` are the accepted and total scopes. `stale_count` is the number of accepted scopes whose inputs changed. `candidate_count` is the number of versions waiting for review. Status is `queued`/`running` while the latest step version runs, `stale` when anything accepted is out of date, and otherwise follows the counts.
 - `voices`, `narration`, `alignment` and `export`.
 
-Like the overview, the explorer first records outside changes (`projection.sync`). The artifact counts, the artifact browser, attempts, events, usage, source search, the story map and the analysis export are unchanged. Artifact counts include Classic-era versions whose stage has the same name.
+Like the overview, the explorer takes outside changes into account without recording them: `step_states` runs `projection.sync` in a transaction it rolls back (contract 0.2.0's rule that a GET records nothing). The artifact counts, the artifact browser, attempts, events, usage, source search, the story map and the analysis export are unchanged. Artifact counts include Classic-era versions whose stage has the same name.
 
 ### Tests
 
@@ -74,7 +74,7 @@ Rewritten to drive the pipeline:
 | Test | Now |
 | --- | --- |
 | `test_provider_settings.py`, 5 tests | Key and model isolation, explicit override, no fallback when a key is missing, queued-run snapshot and key redaction after rotation. Each runs a Discovery run with the real plan and fingerprint and a fake adapter per provider. |
-| `test_library_api.py` archive test | An archived book refuses `POST …/analysis-pipeline/runs` (400). |
+| `test_library_api.py` archive test | An archived book refuses `POST …/analysis-pipeline/runs` (409 `book_archived`). |
 | `test_analysis_pipeline.py` outside change | The local draft written straight to the store is recorded as `external`, and accepting `baseline` restores the speakers. New tests: a manual passage edit is a lock, not an outside change; the explorer's step cards match the overview; stale and waiting counts. |
 | `test_identity_resolution.py`, 2 tests | Against `pipeline.prompts.profile_specs` and stage 2's `evidence.refresh`. |
 | `test_analysis.py`, `test_analysis_providers.py` | The cloud-path tests became direct `_apply_annotations` checks (invented IDs, speakers and evidence are rejected; reviewed passages and scenes are kept) and an adapter-level transport redaction test. |
@@ -88,12 +88,35 @@ Rewritten to drive the pipeline:
 
 A grep for `progressive`, `staged_analysis`, `legacy_phase`, `analysis_units` and `/analyze` in `bardic/` finds only these:
 
-- `artifacts.backfill` reads `analysis_units` and `analysis_checkpoints` if they exist.
+- `artifacts.backfill` reads `analysis_units` and `analysis_checkpoints` if they exist. Since the merge with `main`, it runs once per book at server start (`backfill_library`, recorded in `artifact_backfills`), not from a GET.
 - `library._payload_bytes` lists `analysis_units` and `analysis_checkpoints`.
 - `/v1/analyze` (in `local_services.py` and `pipeline/runner.py`) is the self-hosted service path and is unrelated.
 - "progressive-disclosure" in `style.css` names a UI pattern and is unrelated.
 
 The same grep, re-run after merging series memory, finds the same list. Legacy `character_observations` rows have their own readers; see the [data rules](#stage-4-data-rules).
+
+## Fixes from main after removal
+
+`main` fixed 31 commits' worth of API known issues (contract 0.2.0, PR #25) while stage 3 was in review, several of them in code that stage 3 deleted. When the two were combined (contract 0.3.0), each such fix was ported to the surviving path or dropped. The tests named here run offline.
+
+| Main's fix | Where it landed on main | Decision | Where, and why |
+| --- | --- | --- | --- |
+| GET views record nothing: `discoveries`/`profile_specs`/`profile_status` gained `persist=False`, `coverage` and `census` gained `retain=False` | `progressive.py`, `preprocessing.coverage`, `GET /preprocessing` | **Ported** (intent) | The surviving GETs roll back their sync: `getBookAnalysisPipeline` (main's own change), the Details explorer (`pipeline.api.step_states`) and `listCharacterReferences` (`projection.current_references`). `census(retain=...)` survives unchanged. The Classic readers are deleted. Test: `test_inspection_api.py::test_inspection_gets_create_no_domain_records` now covers 12 GETs, including the overview, references, series context and suggestions, with the `pipeline_*` tables in the snapshot. |
+| Character references derived from the current book on every read (`staged_analysis.current_references`) | `staged_analysis.py`, `listCharacterReferences` | **Ported** | `projection.current_references` computes stage 2's projection of accepted evidence from the current book in a rolled-back transaction, so a manual edit shows at once and the GET records nothing. Tests: `test_evidence_projection.py` (manual speaker, legacy checkpoint write). |
+| A speaker confirmed before per-field locks (`edited` with confidence 1.0) stays `reviewed` | `staged_analysis._references` | **Ported** | `pipeline.evidence.reviewed_speaker` sets dialogue provenance to `reviewed`, and the presented passage lists `speaker_id` in `manual_fields`. Tests: `test_red_team_library_pipeline.py::test_main_era_confirmed_speaker_is_still_reviewed` and `..._in_character_references`. |
+| Outside writers record the projection they replace (`record_before_outside_write`) | Classic `analyze`, Classic series start, structure repair, manual edits | **Ported** where the writer survives | Structure repair and manual edits keep main's calls. Classic analysis is gone. Series runs are pipeline runs: each child's plan and run sync before they write, so the capture happens without the extra call. Test: `test_red_team_library_pipeline.py::test_manual_edits_structure_repair_and_series_runs_record_the_prior_projection` (series part rewritten). |
+| Series error codes: 409 `series_archived`, `plan_stale`, `series_run_active`; 400 `series_empty`, `api_key_missing`; 503 `shutting_down` | Classic `series_processing.plan`/`start` | **Ported** | The pipeline series `plan`, `start` and `resume` raise the same codes, plus `unknown_step`, `run_unconfirmed`, `step_inputs_missing`, `server_url_missing`, `series_run_not_found`, `series_run_not_waiting`, `series_run_not_resumable` and `review_pending`. `provider_not_cloud`, `phase_invalid` and `concurrency_invalid` are dropped: those request fields no longer exist (422). Tests: `test_series_known_issues.py` (rewritten for step bodies), `test_series_processing.py`. |
+| Series job fields: `limits` → `analysis_limits`, `plan_fingerprint` off the wire, `mode` means only simple/cast | Classic series parent, `store.upgrade_job` | **Ported** | Pipeline series parents write `scheduling` and `analysis_limits` (`PipelineRunLimits`); `upgrade_job` also reads series parents stored with `mode`/`limits`. Every series route presents jobs through `public_job`. Tests: `test_job_lifecycle.py` (rewritten), including the stored-name upgrade. |
+| `listSeriesRuns` and `cancelJob` skip a dangling child job ID | Classic runs route | **Ported** | `series_processing.runs` skips it. Test: `test_series_known_issues.py::test_series_runs_list_existing_children_when_a_child_id_dangles`. |
+| A terminal job status and message are final | `store.update_job` | **Kept, and our code adapted** | Series children used to rewrite their message after completing ("Waiting for your review: …"). That message is now written with the completion (`Runtime.run(completed_message=...)`); the "Reviewed; results are in use" rewrite on resume is dropped because a terminal message cannot change. |
+| Error details name the condition, not a UI location; UIs add hints keyed on `code` | Classic messages, `production.js` hint helper | **Ported** | `production.js` is deleted; the hint map lives in `app.js` (`BardicErrorHints`) and the panels' own request helpers, phrased with the glossary's "Providers & settings". Our own server messages (the missing-credentials and missing-inputs errors, the inspector's step notes and `local_services`' missing-URL error) were made neutral too. |
+| Classic analysis error codes (`unknown_chapter`, `unknown_provider`, `gemini_key_missing`, `api_key_missing`, 409s, 503) | `POST /analyze` | **Dropped** (route removed) | The pipeline run route has the equivalent codes. Test: `test_inspection_api.py::test_pipeline_run_errors_have_codes` replaces the Classic test. |
+| `previewClassicAnalysis` refuses archived books (409) | `POST /analysis-plan` | **Dropped** (route removed) | `planBookAnalysisPipelineRun` still plans a removed book, as main's own contract states. Test: `test_red_team_library_pipeline.py::test_removed_classic_routes_are_not_served_and_record_nothing`. |
+| A cancelled Classic run shows `cancelled` on its inspector stage (checkpoint `run_id`) | `progressive.run`, `pipeline_view` | **Dropped** | The inspector's cards come from the step pipeline and no longer read a checkpoint. The three checkpoint tests are removed from `test_inspection_api.py`. |
+| Checkpoint and census fingerprints off the wire (`AnalysisStatus`, `AnalysisCensus`) | Classic schemas | **Dropped** | The schemas are removed. `preprocessing.INTERNAL_FIELDS` stays for any future presentation. |
+| Neutral missing-key message in `analysis._cloud` | `analysis.py` | **Dropped** | `_cloud` was deleted in stage 3. |
+| `processing.initialize_schema` at startup | `processing.py` | **Adapted** | Main's one-time schema setup is kept, without `analysis_units`: a new library still never creates the Classic table. `test_legacy_isolation.py` covers it. |
+| Removed schema field `SeriesBookAnalysisPlan.limits` | Classic series plan | **Dropped** | The whole schema is removed; a series book's `plan` is a `PipelinePlan`. |
 
 ## Stage 4 inventory: code
 
@@ -131,7 +154,7 @@ Run this as a one-time maintenance migration with the owner's go. It is not part
 
 ### Stage 4 data rules
 
-Re-checked against the code after series memory (contract 0.3.0) and stage 3 (0.4.0), 2026-09-28.
+Re-checked against the code after series memory and stage 3 (both in contract 0.3.0), 2026-09-28.
 
 1. **Series context sources its entries from `character_references`, not from observations.** `SeriesRepository.context_for_book` (used by the Profiles step and `getBookSeriesContext`) reads each earlier volume's current `character_references` rows. Stage 3 wrote "series context still reads observations"; that is no longer true as a source.
 2. **The observation rows are still read, though.** A grep of `bardic/` for `character_observations` finds these readers:
@@ -145,7 +168,7 @@ Re-checked against the code after series memory (contract 0.3.0) and stage 3 (0.
 3. **Delete the rows, keep the table.** Do not `DROP` it. The next startup would recreate it and seed it from the current references, which would write the pipeline's projection rows as observations. That is the append `RETAIN_OBSERVATIONS = False` rules out. The table also stays as the series-memory history table: `retain_history` is tested and can be switched on by the owner.
 4. **Run `ArtifactRepository.backfill` for every book before deleting** (step 2 above). It retains every observation as a `character_observation` artifact, which carries its `source_hash`. Count the rows per book and show the counts to the owner.
 5. **Decide what happens to Classic-written references in series context.** Once their observations are gone, `_SourceCheck` drops them. The rows affected are all rows of a book with no accepted discovery, profiles or directing version, and the carried `profile_evidence` rows of a book with no accepted discovery version. Before deleting, count them per linked book and show the owner. Then choose one of these:
-   - **Sync every book first.** Run `projection.sync` for every book, as opening it in Analyze does. This records baseline profiles and directing and rebuilds dialogue and mention rows with provenance. Carried discovery evidence still leaves series context until that book accepts a discovery version.
+   - **Sync every book first.** Run `projection.sync` for every book and commit it, as any pipeline write does (a plan, run, preview or decision; the GET views only compute it). This records baseline profiles and directing and rebuilds dialogue and mention rows with provenance. Carried discovery evidence still leaves series context until that book accepts a discovery version.
    - **Check against the artifact.** In the same pull request, change `_SourceCheck` to compare a Classic-written row with its retained `character_observation` artifact instead of the table row.
 
    Do not fabricate observations, projection fields or step provenance for these rows.

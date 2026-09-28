@@ -6,7 +6,9 @@
   const books = new Map();
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const encode = value => encodeURIComponent(value);
-  const valid = audio => Boolean(audio?.url && audio.available !== false && !audio.stale && !audio.is_stale);
+  const valid = audio => Boolean(audio?.url);
+  // Server details state the condition; the hint says where to fix it.
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.'};
   const builtInVoices = ['Kore','Puck','Charon','Aoede','Fenrir','Leda','Orus','Zephyr','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
   const PROVIDERS = ['system','gemini','breeze'];
@@ -123,8 +125,10 @@
     let result;
     try { result = await response.json(); } catch { result = null; }
     if (!response.ok) {
-      const error = new Error(typeof result?.detail === 'string' ? result.detail : `Listening request failed (${response.status}).`);
+      const detail = typeof result?.detail === 'string' ? result.detail : `Listening request failed (${response.status}).`;
+      const error = new Error(HINTS[result?.code] ? `${detail} ${HINTS[result.code]}` : detail);
       error.status = response.status;
+      error.code = result?.code;
       throw error;
     }
     return result;
@@ -856,8 +860,9 @@
       })
       .catch(error => {
         report(state,'listen_request_failed',error,'request',target.id);
-        // A busy book (409) sent nothing; try again shortly instead of giving up.
-        if (error.status === 409) { intent.queued.delete(target.chapter_id); state.chapter.retryAt = Date.now() + 20000; }
+        // A busy book (409) sent nothing; try again shortly instead of giving up. An archived book stays
+        // archived until the owner restores it, so retrying would only repeat the refusal.
+        if (error.status === 409 && error.code !== 'book_archived') { intent.queued.delete(target.chapter_id); state.chapter.retryAt = Date.now() + 20000; }
         if (state.intent === intent) state.message = `The next chapter could not be prepared: ${error.message}`;
       })
       .finally(() => { state.chapter.autoStarting = null; paint(state.panel); });
@@ -967,7 +972,7 @@
     const active = job && !CHAPTER_TERMINAL.has(job.status);
     let quotaBlocked = false, requestsLeft = null;
     if (active) {
-      const concurrency = job.chunking?.concurrency || 2, rpm = job.limits?.rpm || 10;
+      const concurrency = job.chunking?.concurrency || 2, rpm = job.speech_limits?.rpm || 10;
       const sends = (job.chunks || []).map(entry => Date.parse(entry.started_at)/1000).filter(Number.isFinite);
       const running = (job.chunks || []).filter(entry => entry.status === 'requesting');
       const slots = running.map(entry => Math.max(now+1,Date.parse(entry.started_at)/1000 + (entry.expected_latency || latency(entry.expected_seconds))));
@@ -1231,7 +1236,7 @@
     const breeze = status.providers?.find(provider => provider.id === 'breeze');
     // Breeze needs a chosen voice or a default voice before anything can be requested.
     const breezeVoiceReady = Boolean(state.voices.breeze || state.library?.defaults?.breeze);
-    const availability = {system:system?.available !== false,breeze:breeze?.available === true,gemini:Boolean(status.has_api_key || gemini?.available)};
+    const availability = {system:system?.available !== false,breeze:breeze?.available === true,gemini:gemini?.available === true};
     const available = state.provider === 'breeze' ? availability.breeze && breezeVoiceReady : availability[state.provider];
     const defaultName = breezeDefaultName(state);
     const mac = macVoices(status.system_voices,{language:bookLanguage(state.book),showAll:Boolean(state.showAllVoices),keep:state.voices.system});

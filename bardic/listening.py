@@ -16,11 +16,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .alignment import align_file
-from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .audio import (AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, TTS_MODELS, render_fingerprint,
+                    validate_audio)
 from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SECONDS
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from .audio_refs import audio_ref
+from .errors import Conflict, Invalid, NotFound
 
 
 VERSION = 1
@@ -49,9 +52,61 @@ def _hash(value):
                                      separators=(',', ':')).encode()).hexdigest()
 
 
+# Optional public extras of a single-passage take, copied when the stored record has them.
+# Provider usage is served by the resources routes, not with the audio.
+_PASSAGE_EXTRAS = ('provider_timing', 'breeze', 'voice_revision')
+# Public fields of a reuse pointer; its recipe and producer fingerprint stay in storage.
+_REUSE_FIELDS = ('schema_version', 'take_id', 'book_id', 'session_id', 'segment_id')
+
+
+def present_take(book_id, metadata):
+    """The public audio object (contract ``ListeningPassageAudio``) for a retained take.
+
+    A whitelist: recipe hashes (also those of a reuse pointer), provider usage,
+    source anchors, lookup keys and any transient marker stay in storage. It is
+    idempotent, so it also cleans an audio object presented by an earlier
+    version (for example inside a stored job).
+    """
+    reuse = metadata.get('reuse')
+    extras = {key: metadata[key] for key in _PASSAGE_EXTRAS if key in metadata}
+    if isinstance(reuse, dict):
+        extras['reuse'] = {key: reuse.get(key) for key in _REUSE_FIELDS}
+    return audio_ref(f'/api/books/{quote(book_id, safe="")}/listen/audio/{metadata["asset_id"]}',
+                     asset_id=metadata['asset_id'], duration=metadata.get('duration'),
+                     provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
+                     created_at=metadata.get('created_at'), session_id=metadata.get('session_id'),
+                     segment_id=metadata.get('segment_id'), **extras)
+
+
+def present_clip(book_id, clip):
+    """The public audio object (contract ``ListeningChunkClipAudio``) for one passage's chunk clip."""
+    return audio_ref(f'/api/books/{quote(book_id, safe="")}/listen/audio/{clip["asset_id"]}',
+                     asset_id=clip['asset_id'], duration=clip.get('duration'), provider=clip.get('provider'),
+                     model=clip.get('model'), voice=clip.get('voice'), created_at=clip.get('created_at'),
+                     segment_id=clip.get('segment_id'), chunk_id=clip['chunk_id'], clip_start=clip.get('clip_start'),
+                     clip_end=clip.get('clip_end'), chunk_duration=clip.get('chunk_duration'),
+                     timing=clip.get('timing', 'estimated'), session_id=clip.get('session_id'),
+                     flags=list(clip.get('flags') or []))
+
+
+def require_active_book(store, book_id):
+    """404 ``book_not_found`` for an unknown book, 409 ``book_archived`` for an archived one."""
+    store.book(book_id)
+    if store.is_archived(book_id):
+        raise Conflict('book_archived', 'This book is archived.')
+
+
+def present_audio(book_id, audio):
+    """Re-present any simple-listening audio object, including one stored by an earlier version."""
+    return present_clip(book_id, audio) if 'chunk_id' in audio else present_take(book_id, audio)
+
+
 class ListeningRepository:
     def __init__(self, store):
         self.store = store
+        # Schema setup runs once per store, never on each request.
+        if getattr(store, '_listening_schema_ready', False):
+            return
         with store.lock, store.connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS listening_sessions (
                 book_id TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
@@ -87,6 +142,7 @@ class ListeningRepository:
                     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {name}
                         BEFORE {operation} ON {table} BEGIN
                         SELECT RAISE(ABORT, 'Listening takes are immutable'); END''')
+        store._listening_schema_ready = True
 
     def session(self, book_id, provider, voice=None, model=None, *, selection=None):
         """Resolve a narrator choice. ``selection`` is the pinned Breeze voice
@@ -94,20 +150,20 @@ class ListeningRepository:
         voice changed on the server starts a new session and keeps old takes."""
         self.store.book(book_id)
         if provider not in PROVIDERS:
-            raise ValueError('Choose system, Gemini or Breeze narration.')
+            raise Invalid('provider_unsupported', 'The narration provider must be system, gemini or breeze.')
         if voice is not None and (not isinstance(voice, str) or len(voice) > 256):
-            raise ValueError('Choose a valid narrator voice.')
+            raise Invalid('narrator_voice_invalid', 'The narrator voice is not a valid voice value.')
         voice = voice.strip() if voice else ''
         pinned = {}
         if provider == 'system':
             if model not in (None, '', SYSTEM_MODEL):
-                raise ValueError('Device narration uses the installed macOS voice model.')
+                raise Invalid('model_unsupported', f'Device narration uses the {SYSTEM_MODEL} model.')
             model = SYSTEM_MODEL
         elif provider == 'breeze':
             if model not in (None, '', BREEZE_MODEL):
-                raise ValueError('Breeze narration uses the breeze-tts-2 model.')
+                raise Invalid('model_unsupported', f'Breeze narration uses the {BREEZE_MODEL} model.')
             if not isinstance(selection, dict) or (voice and selection.get('id') != voice):
-                raise ValueError('Choose a Breeze voice from the last voice check.')
+                raise Invalid('narrator_voice_invalid', 'The Breeze voice is not in the last Breeze voice check.')
             voice, model = selection['id'], BREEZE_MODEL
             # Only speech-affecting pins; Gemini and device sessions keep their original identity.
             pinned = {'voice_revision': selection.get('revision'), 'seed': selection.get('seed'),
@@ -115,10 +171,15 @@ class ListeningRepository:
         else:
             voice = voice or 'Kore'
             model = model or DEFAULT_TTS_MODEL
+            if model not in TTS_MODELS:
+                raise Invalid('model_unsupported', 'The Gemini speech model is not a supported TTS model.')
         config = {'schema_version': VERSION, 'book_id': book_id, 'provider': provider,
                   'voice': voice, 'model': model, **pinned}
         # Provider validation is pure; it neither queries installed voices nor calls a model.
-        self._audio_recipe({'id': 'configuration-check', 'text': 'Voice configuration'}, config)
+        try:
+            self._audio_recipe({'id': 'configuration-check', 'text': 'Voice configuration'}, config)
+        except AudioError as error:
+            raise Invalid('narrator_voice_invalid', str(error)) from None
         config['id'] = _hash(config)
         with self.store.lock, self.store.connect() as conn:
             conn.execute('INSERT OR IGNORE INTO listening_sessions VALUES (?,?,?)',
@@ -131,7 +192,7 @@ class ListeningRepository:
             row = conn.execute('SELECT body FROM listening_sessions WHERE book_id=? AND id=?',
                                (book_id, session_id)).fetchone()
         if not row:
-            raise KeyError('Listening session not found')
+            raise NotFound('listening_session_not_found', 'Listening session not found')
         return json.loads(row[0])
 
     @staticmethod
@@ -210,7 +271,7 @@ class ListeningRepository:
         book = self.store.book(book_id)
         segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
         if segment is None:
-            raise KeyError('Passage not found in this book')
+            raise Invalid('unknown_passage', 'No passage with this ID is in the book.')
         chapter = next((c for c in book['chapters'] if c['id'] == segment['chapter_id']), None)
         return self._source_inputs(book_id, session, segment, chapter, pronunciation.book_lexicon(book))
 
@@ -218,7 +279,7 @@ class ListeningRepository:
         start, end = segment.get('start'), segment.get('end')
         if (chapter is None or type(start) is not int or type(end) is not int or
                 not 0 <= start < end <= len(chapter['text']) or chapter['text'][start:end] != segment['text']):
-            raise ValueError('This passage does not match its original source. Repair its source mapping before listening.')
+            raise Invalid('passage_source_mismatch', 'The passage text does not match its original source coordinates.')
         passage, narrator, fingerprint = self._audio_recipe(segment, session, lexicon)
         identity = {'schema_version': VERSION, 'book_id': book_id, 'session_id': session['id'],
                     'chapter_id': chapter['id'], 'segment_id': segment['id'],
@@ -227,9 +288,9 @@ class ListeningRepository:
 
     def _path(self, book_id, asset_id):
         if not isinstance(book_id, str) or re.fullmatch(r'[a-zA-Z0-9_-]+', book_id) is None:
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         if not isinstance(asset_id, str) or re.fullmatch(r'[a-f0-9]{64}', asset_id) is None:
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         return self.store.root / 'listen-audio' / book_id / f'{asset_id}.wav'
 
     def asset_path(self, book_id, asset_id):
@@ -241,18 +302,15 @@ class ListeningRepository:
                      conn.execute('SELECT 1 FROM listening_chunks WHERE book_id=? AND asset_id=? LIMIT 1',
                                   (book_id, asset_id)).fetchone())
         if not found or not target.is_file():
-            raise KeyError('Listening audio not found')
+            raise NotFound('audio_not_found', 'Listening audio not found')
         return target
 
-    def _present(self, book_id, metadata):
-        return {**metadata, 'available': True, 'mode': 'simple',
-                'url': f'/api/books/{quote(book_id, safe="")}/listen/audio/{metadata["asset_id"]}'}
-
     def cached(self, book_id, session_id, segment_id):
+        """Retained audio for the passage (public shape), or None. Never contacts a provider."""
         session, passage, _, identity, recipe = self._inputs(book_id, session_id, segment_id)
         clip = self.chunk_clips(book_id, session_id, verify=True).get(segment_id)
         if clip:
-            return {**clip, 'cache_hit': True}
+            return clip
         content_key = self._synthesis_key(passage, session)
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('''SELECT id,body FROM listening_takes WHERE book_id=? AND session_id=?
@@ -267,7 +325,7 @@ class ListeningRepository:
             except (OSError, EOFError, ValueError, KeyError):
                 continue
             self._index(content_key, take_id)
-            return {**self._present(book_id, {**metadata, 'duration': duration}), 'cache_hit': True}
+            return present_take(book_id, {**metadata, 'duration': duration})
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('''SELECT t.id,t.book_id,t.body FROM listening_synthesis_cache c
                 JOIN listening_takes t ON t.id=c.take_id
@@ -278,7 +336,14 @@ class ListeningRepository:
                 duration = self._validated_asset(source_book_id, original['asset_id'])
             except (OSError, EOFError, ValueError, KeyError):
                 continue
-            self._copy_asset(source_book_id, book_id, original['asset_id'])
+            try:
+                self._copy_asset(source_book_id, book_id, original['asset_id'])
+            except (EOFError, ValueError):
+                # The source changed while copying, or this book already holds a damaged file
+                # under that asset ID (never overwritten). Damaged stored data is skipped like
+                # a damaged source, so the passage can be generated. An OSError (for example a
+                # full disk) still propagates: it must not start a paid fallback.
+                continue
             # The producer fingerprint remains the real original fingerprint.
             # The target source-bound recipe is recorded in source_anchor;
             # reuse explicitly points to the actual retained input take.
@@ -288,7 +353,7 @@ class ListeningRepository:
                           'segment_id': original['segment_id'], 'recipe': original['recipe'],
                           'fingerprint': original['fingerprint']})
             metadata = self._retain(book_id, session_id, segment_id, identity, recipe, content_key, reused)
-            return {**self._present(book_id, metadata), 'cache_hit': True}
+            return present_take(book_id, metadata)
         return None
 
     def takes(self, book_id, session_id):
@@ -318,7 +383,7 @@ class ListeningRepository:
                 # samples. Assets were fully validated when archived; the
                 # per-passage cache path validates again before synthesis reuse.
                 if self._path(book_id, metadata['asset_id']).is_file():
-                    takes.append({'segment_id': segment['id'], 'audio': self._present(book_id, metadata)})
+                    takes.append({'segment_id': segment['id'], 'audio': present_take(book_id, metadata)})
                     break
         return {'session': session, 'takes': takes}
 
@@ -375,15 +440,14 @@ class ListeningRepository:
             return False
         return bool(chunk.get('segments'))
 
-    def _present_clip(self, chunk, clip):
-        return {'mode': 'simple', 'available': True, 'segment_id': clip['segment_id'],
-                'url': f'/api/books/{quote(chunk["book_id"], safe="")}/listen/audio/{chunk["asset_id"]}',
-                'asset_id': chunk['asset_id'], 'chunk_id': chunk['id'],
-                'clip_start': clip['start'], 'clip_end': clip['end'],
-                'duration': round(clip['end'] - clip['start'], 3), 'chunk_duration': chunk['duration'],
-                'timing': 'estimated', 'provider': chunk['provider'], 'model': chunk['model'],
-                'voice': chunk['voice'], 'session_id': chunk['session_id'], 'created_at': chunk['created_at'],
-                'flags': chunk.get('flags', [])}
+    @staticmethod
+    def _present_clip(chunk, clip):
+        return present_clip(chunk['book_id'], {
+            'segment_id': clip['segment_id'], 'asset_id': chunk['asset_id'], 'chunk_id': chunk['id'],
+            'clip_start': clip['start'], 'clip_end': clip['end'], 'duration': round(clip['end'] - clip['start'], 3),
+            'chunk_duration': chunk['duration'], 'timing': 'estimated', 'provider': chunk['provider'],
+            'model': chunk['model'], 'voice': chunk['voice'], 'session_id': chunk['session_id'],
+            'created_at': chunk['created_at'], 'flags': chunk.get('flags', [])})
 
     def _chunk_clips(self, book, session, *, verify=False):
         with self.store.lock, self.store.connect() as conn:
@@ -409,7 +473,7 @@ class ListeningRepository:
     def chapter_segments(self, book, chapter_id):
         chapter = next((c for c in book['chapters'] if c['id'] == chapter_id), None)
         if chapter is None:
-            raise KeyError('Chapter not found in this book')
+            raise NotFound('chapter_not_found', 'Chapter not found in this book')
         return chapter, [segment for segment in book['segments'] if segment['chapter_id'] == chapter_id]
 
     def render_chunk(self, book_id, session_id, chapter_id, segment_ids, api_key=None, *,
@@ -488,10 +552,16 @@ class ListeningRepository:
         return body
 
     def render_passage(self, book_id, session_id, segment_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
+        """Retained audio for the passage, generating it only when none is retained. Public shape."""
         check_cancel()
         existing = self.cached(book_id, session_id, segment_id)
         if existing:
             return existing
+        return self.generate_passage(book_id, session_id, segment_id, api_key, synthesizer=synthesizer,
+                                     check_cancel=check_cancel)
+
+    def generate_passage(self, book_id, session_id, segment_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
+        """Synthesize and retain a new take without consulting the cache. Public shape."""
         session, passage, narrator, identity, recipe = self._inputs(book_id, session_id, segment_id)
         check_cancel()
         metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
@@ -504,4 +574,4 @@ class ListeningRepository:
                                 self._synthesis_key(passage, session), metadata)
         # Completed audio is retained even if Stop was pressed during the call.
         # The worker's cancellation check controls whether playback resumes.
-        return self._present(book_id, metadata)
+        return present_take(book_id, metadata)

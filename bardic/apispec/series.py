@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import Field
 
-from .base import Op, View, internal, op
+from .base import Op, View, op
 from .common import Job, PipelineStepConfigView
 from .pipeline import PipelinePlan, PipelineProviderId, PipelineRunOutcome, RunStatus, StepId
 
@@ -67,9 +67,9 @@ class Series(View):
     id: str = Field(description='Series ID (opaque, currently `series_<hex>`).')
     name: str = Field(description='Display name, 1–200 characters, whitespace-collapsed. Unique ignoring case.')
     created_at: str = Field(description='ISO 8601 UTC creation time.')
-    archived: bool = Field(description='True when the series is removed. Series routes list only active series, so '
-                                       'this is false there; the library snapshot with `include_archived=true` can '
-                                       'include removed ones.')
+    archived: bool = Field(description='True when the series is removed. `listSeries` lists only active series, so '
+                                       'this is false there; `getSeriesMap` and the library snapshot with '
+                                       '`include_archived=true` can return removed ones.')
     books: list[SeriesBook] = Field(
         description='Supplied, non-removed books in reading order (position, then book ID).')
     volumes: list[SeriesVolume] = Field(
@@ -206,7 +206,6 @@ class SeriesContextObservation(View):
         description='How that version or row came about: `run` (a pipeline run), `baseline`/`external` (recorded from '
                     'existing work; producer unknown), `manual` (a speaker chosen by hand), `book` (attributed outside '
                     'any accepted version); null for rows the removed Classic engine wrote.')
-    source_hash: str = internal('SHA-256 of the chapter text the observation was validated against.')
     book_title: str = Field(description='Title of the earlier book.')
     position: float = Field(description="The earlier book's reading order.")
     chapter_title: str = Field(description='Title of the chapter in the earlier book.')
@@ -235,8 +234,10 @@ class BookSeriesContext(View):
         description='Valid observations found before the per-character cap and the size bound.')
     included_observations: int = Field(description='Observations included in `characters`.')
     truncated: bool = Field(description='True when `included_observations` < `available_observations`.')
-    context_chars: int = Field(description='Length in characters of the JSON-serialized `characters` array; at most '
-                                           '12,000 with the current server bound.')
+    context_chars: int = Field(description='Length in characters of the JSON-serialized `characters` array as '
+                                           'analysis receives it; at most 12,000 with the current server bound. '
+                                           'Analysis also receives validation bookkeeping that this response omits, '
+                                           'so the returned array serializes slightly shorter.')
     fingerprint: str = Field(
         description='Stable SHA-256 hex digest of the dependencies (membership, links, earlier sources) and the '
                     'included context. It changes when anything that would change the context changes; it does not '
@@ -421,109 +422,124 @@ class SeriesMap(View):
     note: str = Field(description='Fixed explanatory sentence about identity links and absent volumes. Display only.')
 
 
-# ------------------------------------------------------------------ shared error text
-
-SERIES_404 = ('The series does not exist, or it is removed (archived): removed series are reported as not found '
-              'here. Detail: "Series not found".')
-SERIES_BUSY_409 = ('A job is active on one of its supplied books, a series run reserves one of its books, or this '
-                   'series has an active run. Wait for it or cancel it.')
+# ------------------------------------------------------------------ shared error codes
 
 SERIES_ID = 'Series ID.'
 BOOK_ID = 'Book ID.'
+
+NO_SERIES = {'series_not_found': 'No series has this ID.'}
+STEP_ERRORS = {'unknown_step': '`steps`, `configs` or `gates` names a step that is not registered.',
+               'step_config_invalid': 'A `configs` entry names a provider or model its step does not take.',
+               'step_model_missing': 'A model step has no saved model for its provider and none in `configs`.'}
+NO_BOOK = {'book_not_found': 'No book has this ID.'}
+ARCHIVED = {'series_archived': 'The series is removed (archived). Restore it first; reads still work.'}
+RUN_ACTIVE = {'series_run_active': 'This series has an active processing run, or an active series run reserves one '
+                                   'of its books. Wait for it or cancel it.'}
+MEMBER_BUSY = {'job_active': 'A job is working on one of its books (including a removed one). Wait for it or cancel it.'}
+BOOK_BUSY = {'book_archived': 'The book is removed (archived). Restore it first.',
+             'job_active': 'A job is working on this book. Wait for it or cancel it.',
+             'series_run_active': 'An active series run reserves this book, or the target series has an active run.'}
+NAME_INVALID = {'name_invalid': 'The name is blank after whitespace is trimmed, or longer than 200 characters.'}
+NAME_TAKEN = {'series_name_taken': 'Another series (active or removed) already has this name, ignoring case.'}
+IDEMPOTENT = ('Idempotent: when the series is already in the requested state, the call returns that state and changes '
+              'nothing, performs no checks and records nothing.')
 
 OPS: list[Op] = [
     op('GET', '/api/series', 'listSeries', TAG, 'List active series',
        'Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied '
        'books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. '
-       'Removed series are omitted; use `GET /api/library?include_archived=true` to see them.',
+       'Removed series are omitted; use `GET /api/library?include_archived=true` to list them. A removed series can '
+       'still be read by ID through `getSeriesMap`, `listSeriesRuns` and `listSeriesCharacters`.',
        response=list[Series]),
 
     op('POST', '/api/series', 'createSeries', TAG, 'Create a series',
-       'Creates an empty series. Whitespace in the name is collapsed. Names are unique ignoring case, including '
+       'Creates an empty series. Whitespace in the name is collapsed. The name is validated as for a rename '
+       '(control characters other than tab and newlines are refused). Names are unique ignoring case, including '
        'against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than '
        '`Series` (no `archived` or `volumes`).',
        response=SeriesCreated,
-       errors={400: 'The name is blank after whitespace is trimmed, or another series (active or removed) already '
-                    'has that name ignoring case.'}),
+       errors={400: {**NAME_INVALID, **NAME_TAKEN,
+                     'text_invalid': 'The name contains control characters other than tab and newlines.'}}),
 
     op('PATCH', '/api/series/{series_id}', 'renameSeries', TAG, 'Rename a series',
-       'Renames the series when its work is idle: no job on any supplied active book, no series run holding one of '
-       'its books, and no active run of this series. Whitespace is collapsed. The change is recorded in each '
-       "member book's series provenance. Returns only `{id, name}`.",
+       'Renames an active series when its work is idle: no active run of this series, no job on any of its books '
+       '(removed ones included), and no series run holding one of its books. Whitespace is collapsed. The change is '
+       "recorded in each member book's series provenance. Returns only `{id, name}`.",
        response=SeriesRenamed,
        params={'series_id': SERIES_ID},
-       errors={400: 'The name is blank or contains control characters, another series already has it ignoring case, '
-                    'or a removed member book still has an active job.',
-               404: SERIES_404,
-               409: SERIES_BUSY_409}),
+       errors={400: {**NAME_INVALID, **NAME_TAKEN,
+                     'text_invalid': 'The name contains control characters other than tab and newlines.'},
+               404: NO_SERIES,
+               409: {**ARCHIVED, **RUN_ACTIVE, **MEMBER_BUSY}}),
 
     op('POST', '/api/series/{series_id}/archive', 'archiveSeries', TAG, 'Remove a series',
        'Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities '
        'and history are retained for restoration, and member books remain independently available in the library. '
-       'While removed, the series is refused by the series routes that look it up (404) and by membership changes '
-       '(400). Records a library-visibility artifact on each member book. Removing an already removed series '
-       'returns 404. No request body.',
+       'While removed, series edits, processing and membership or identity-link changes are refused with 409 '
+       '`series_archived`; reads (`getSeriesMap`, `listSeriesRuns`, `listSeriesCharacters`) still work. Removing '
+       'requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each '
+       f'member book. {IDEMPOTENT} No request body.',
        response=SeriesArchiveState,
        params={'series_id': SERIES_ID},
-       errors={400: 'A member book (including a removed one) has an active job.',
-               404: SERIES_404,
-               409: SERIES_BUSY_409}),
+       errors={404: NO_SERIES,
+               409: {**RUN_ACTIVE, **MEMBER_BUSY}}),
 
     op('POST', '/api/series/{series_id}/restore', 'restoreSeries', TAG, 'Restore a removed series',
-       'Restores a removed series. Idempotent: restoring an active series succeeds and changes nothing (a '
-       'library-visibility artifact is still recorded on each member book). Unlike the other series edits it does '
-       'not check for an active series run; it only requires that no member book has an active job. No request '
-       'body.',
+       'Restores a removed series. Restoring requires the series to be idle (as for `renameSeries`) and records a '
+       f'library-visibility artifact on each member book. {IDEMPOTENT} No request body.',
        response=SeriesArchiveState,
        params={'series_id': SERIES_ID},
-       errors={400: 'A member book (including a removed one) has an active job.',
-               404: 'The series does not exist.'}),
+       errors={404: NO_SERIES,
+               409: {**RUN_ACTIVE, **MEMBER_BUSY}}),
 
     op('PUT', '/api/series/{series_id}/volumes', 'putSeriesVolume', TAG, 'Add or update a volume placeholder',
        'Creates a placeholder for a volume the library does not have, or replaces the title and status of the '
        'placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it '
        'never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a '
-       'real book to the same position later replaces the placeholder. Requires the series to be idle.',
+       'real book to the same position later replaces the placeholder. Requires an active, idle series (as for '
+       '`renameSeries`).',
        response=SeriesVolumeSlot,
        params={'series_id': SERIES_ID},
-       errors={400: 'A supplied book (including a removed one) already occupies that position, or the title '
-                    'contains control characters.',
-               404: SERIES_404,
-               409: SERIES_BUSY_409}),
+       errors={400: {'position_taken': 'A supplied book (including a removed one) already has this position.',
+                     'text_invalid': 'The title contains control characters other than tab and newlines.'},
+               404: NO_SERIES,
+               409: {**ARCHIVED, **RUN_ACTIVE, **MEMBER_BUSY}}),
 
     op('DELETE', '/api/series/{series_id}/volumes/{position}', 'deleteSeriesVolume', TAG, 'Remove a volume placeholder',
        'Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns '
-       '`removed: true` even when no placeholder was at that position. Requires the series to be idle.',
+       '`removed: true` even when no placeholder was at that position. Requires an active, idle series (as for '
+       '`renameSeries`).',
        response=SeriesVolumeRemoval,
        params={'series_id': SERIES_ID,
                'position': 'Placeholder position as a decimal number, for example `3` or `2.5`. It must equal the '
                            'stored number exactly.'},
-       errors={400: 'The position is negative, above 1,000,000 or not finite.',
-               404: SERIES_404,
-               409: SERIES_BUSY_409}),
+       errors={400: {'position_invalid': 'The position is negative, above 1,000,000 or not finite.'},
+               404: NO_SERIES,
+               409: {**ARCHIVED, **RUN_ACTIVE, **MEMBER_BUSY}}),
 
     op('GET', '/api/series/{series_id}/characters', 'listSeriesCharacters', TAG, 'List series character identities',
        'Returns the explicit cross-book identities of a series, ordered by name (case-insensitive) then ID, each '
        'with its confirmed book-character links. Works for removed series too.',
        response=list[SeriesCharacter],
        params={'series_id': SERIES_ID},
-       errors={404: 'The series does not exist.'}),
+       errors={404: NO_SERIES}),
 
     op('POST', '/api/series/{series_id}/characters', 'createSeriesCharacter', TAG, 'Create a series character identity',
        'Creates a series-level identity without linking or merging any book character; link book characters with '
        '`linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not '
-       'idempotent. Not refused for removed series or during series runs.',
+       'idempotent. Refused for a removed series and while the series has an active run.',
        response=SeriesCharacter,
        params={'series_id': SERIES_ID},
-       errors={400: 'The name is blank after whitespace is trimmed.',
-               404: 'The series does not exist.'}),
+       errors={400: NAME_INVALID,
+               404: NO_SERIES,
+               409: {**ARCHIVED, 'series_run_active': 'This series has an active processing run.'}}),
 
     op('GET', '/api/books/{book_id}/series', 'getBookSeries', TAG, "Get a book's series placement",
        'Returns `{membership, series, links, characters}`. `membership` and `series` are null when the book is in '
        'no series or when the book or its series is removed.',
        response=BookSeries,
        params={'book_id': BOOK_ID},
-       errors={404: 'The book does not exist.'}),
+       errors={404: NO_BOOK}),
 
     op('PUT', '/api/books/{book_id}/series', 'setBookSeries', TAG, "Set or clear a book's series",
        "Places the book in a series at a reading order, moves it, or detaches it, and returns the refreshed "
@@ -536,15 +552,16 @@ OPS: list[Op] = [
        "- Detaching, or moving to another series, deletes the book's identity links. Moving within the same series "
        'keeps them.\n'
        '- Removed (archived) membership and history are retained for restoration.\n\n'
-       'Refused while the book has an active job, while a series run holds the book, or while the target series has '
-       'an active run. Each change is recorded in the book\'s series provenance.',
+       'Refused while the book is removed, has an active job or is held by a series run, and while the target '
+       "series is removed or has an active run. Each change is recorded in the book's series provenance.",
        response=BookSeries,
        params={'book_id': BOOK_ID},
-       errors={400: 'The book is removed; the target series is removed; `series_id` is given without a valid '
-                    '`position`; `position` is given without `series_id`; or another supplied book already has that '
-                    'position.',
-               404: 'The book or the target series does not exist.',
-               409: 'A job is active on this book, a series run holds it, or the target series has an active run.'}),
+       errors={400: {'unknown_series': 'No series has the `series_id` in the body.',
+                     'position_invalid': '`series_id` is given without a finite `position` from 0 through 1,000,000.',
+                     'position_without_series': '`position` is given without `series_id`.',
+                     'position_taken': 'Another supplied book of the series already has that position.'},
+               404: NO_BOOK,
+               409: {**BOOK_BUSY, 'series_archived': 'The target series is removed (archived). Restore it first.'}}),
 
     op('PUT', '/api/books/{book_id}/series/characters/{character_id}', 'linkSeriesCharacter', TAG,
        'Link or unlink a book character to a series identity',
@@ -553,16 +570,19 @@ OPS: list[Op] = [
        'original `confirmed_at`. With `{"series_character_id": null}` (or an empty body `{}`), removes any link and '
        'returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character '
        'exists.\n\n'
-       "The book must be in an active series and the identity must belong to that series. Narrator and unassigned "
-       'cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. '
-       'Refused while the book has an active job or is held by a series run. Each change is recorded in the '
-       "book's series provenance.",
+       "The book must be in a series, the series must not be removed (for unlinking too: removal retains links "
+       'for restoration), and the identity must belong to that series. Narrator and unassigned cannot become series '
+       'identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book '
+       "is removed, has an active job or is held by a series run. Each change is recorded in the book's series "
+       'provenance.',
        response=Union[SeriesCharacterLinkState, SeriesCharacterUnlinked],
        params={'book_id': BOOK_ID, 'character_id': 'Book-local character ID.'},
-       errors={400: 'The book is removed; the character is `narrator` or `unassigned`; the book is in no active '
-                    'series; or the identity belongs to another series.',
-               404: 'The book, the book character (when linking) or the series character does not exist.',
-               409: 'A job is active on this book, or a series run holds it.'}),
+       errors={400: {'character_not_linkable': 'The character is `narrator` or `unassigned`.',
+                     'book_not_in_series': 'Linking: the book is in no series.',
+                     'unknown_series_character': 'No series character has the `series_character_id` in the body.',
+                     'series_character_mismatch': "The identity belongs to another series than the book's."},
+               404: {**NO_BOOK, 'character_not_found': 'Linking: the book has no character with `character_id`.'},
+               409: {**BOOK_BUSY, 'series_archived': "The book's series is removed (archived). Restore it first."}}),
 
     op('GET', '/api/books/{book_id}/series/context', 'getBookSeriesContext', TAG,
        'Preview earlier-volume context for a book',
@@ -578,7 +598,7 @@ OPS: list[Op] = [
        '`fingerprint` is stable while the inputs are unchanged.',
        response=BookSeriesContext,
        params={'book_id': BOOK_ID},
-       errors={404: 'The book does not exist.'}),
+       errors={404: NO_BOOK}),
 
     op('GET', '/api/books/{book_id}/series/suggestions', 'listSeriesLinkSuggestions', TAG,
        'Suggest identity links for a book',
@@ -590,7 +610,7 @@ OPS: list[Op] = [
        'never proposed. Read-only.',
        response=BookSeriesSuggestions,
        params={'book_id': BOOK_ID},
-       errors={404: 'The book does not exist.'}),
+       errors={404: NO_BOOK}),
 
     op('POST', '/api/series/{series_id}/plan', 'planSeriesProcessing', TAG, 'Preview a series analysis run',
        "Previews a series run: the step-pipeline plan of every supplied, active book of the series, in reading order, "
@@ -611,35 +631,40 @@ OPS: list[Op] = [
        '- Missing and planned placeholders and removed books are listed in `skipped_volumes` and never run.\n'
        '- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book\'s ID, '
        "position and `consent_fingerprint` (the book revision, and each step's version, provider, model and unit "
-       'set, plus the exact requests of steps that are not context-pending). It does not cover `mode`, `gates`, '
+       'set, plus the exact requests of steps that are not context-pending). It does not cover `scheduling`, `gates`, '
        '`concurrency` or `limits`.\n\n'
        'The plan can be empty when the series has no active books. Not purely read-only: for each book the server '
-       'first records outside changes as the book pipeline overview does (`projection.sync`), and building units may '
+       'first records outside changes as the book pipeline plan does (`projection.sync`), and building units may '
        'store free local census caches.',
        response=SeriesPlan,
        params={'series_id': SERIES_ID},
-       errors={400: '`steps` names an unknown step ID (400 here, where the book pipeline returns 404), or a `configs` '
-                    'entry is invalid for its step.',
-               404: SERIES_404}),
+       errors={400: STEP_ERRORS,
+               404: NO_SERIES,
+               409: ARCHIVED}),
 
     op('POST', '/api/series/{series_id}/process', 'startSeriesProcessing', TAG, 'Start a series analysis run',
        'Queues a series run and returns its parent job immediately. Send the same `steps`, `configs` and `fresh` as '
        'the reviewed preview, with its `fingerprint` as `expected_fingerprint`.\n\n'
        '**Checks, in order.** The server recomputes the plan under its store lock, then refuses the run when:\n\n'
-       '1. the series has no supplied active book (400);\n'
-       '2. neither `expected_fingerprint` nor any `limits` value was sent (400);\n'
-       '3. `expected_fingerprint` differs from the recomputed plan (409; preview again and review the new scope rather '
+       '1. the server is shutting down (503 `shutting_down`);\n'
+       '2. the series is removed (409 `series_archived`), or `steps`, `configs` or `gates` names an unknown step, '
+       'or a step has no valid provider and model (400);\n'
+       '3. the series has no supplied active book (400 `series_empty`);\n'
+       '4. neither `expected_fingerprint` nor any `limits` value was sent (400 `run_unconfirmed`);\n'
+       '5. `expected_fingerprint` differs from the recomputed plan (409 `plan_stale`; preview again and review the new scope rather '
        'than replacing the fingerprint and retrying);\n'
-       "4. any book's plan has `missing_inputs` (400; the message names the steps, inputs and books);\n"
-       '5. a provider the steps contact has no API key or server URL configured (400, `Add in Settings first: …`);\n'
-       '6. the series already has an active run (409);\n'
-       '7. a book has an active job or is reserved by another series run (409).\n\n'
+       "6. any book's plan has `missing_inputs` (400 `step_inputs_missing`; the message names the steps, inputs and books);\n"
+       '7. a provider the steps contact has no API key or server URL configured (400 `api_key_missing` or '
+       '`server_url_missing`);\n'
+       '8. the series already has an active run (409 `series_run_active`);\n'
+       '9. a book has an active job (409 `job_active`) or is reserved by another series run (409 '
+       '`series_run_active`).\n\n'
        'Nothing is queued when any check fails. The fingerprint is optimistic scope validation, not a reservation '
        'that freezes data between requests. `limits` are optional caps for API callers; the confirmed fingerprint is '
        'the authorization, and every paid HTTP attempt is still reserved and recorded by the pipeline runner.\n\n'
        '**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number '
        'of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with '
-       '`series_run_id`, `position`, `title`, `plan_fingerprint` (that book\'s plan), `consent_fingerprint`, '
+       '`series_run_id`, `position`, `title`, `consent_fingerprint`, '
        '`context_pending`, `context_sources` and `run_id: null`. '
        'Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with '
        '`listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, '
@@ -668,49 +693,63 @@ OPS: list[Op] = [
        response=Job,
        response_description='The queued parent series job. Not a result: poll it until it is terminal.',
        params={'series_id': SERIES_ID},
-       errors={400: '`steps` names an unknown step or a `configs` entry is invalid; the series has no supplied active '
-                    'book; neither `expected_fingerprint` nor any limit was sent; a book lacks a required input that is '
-                    'not in this run; a needed API key or server URL is missing; or the series worker could not start '
-                    '(the jobs are then marked `failed`/`interrupted` and nothing runs).',
-               404: SERIES_404,
-               409: '`expected_fingerprint` does not match the recomputed plan (preview again); the series already has '
-                    'an active run; or a book has an active job or is reserved by another series run.'},
+       errors={400: {**STEP_ERRORS,
+                     'series_empty': 'The series has no supplied, active book.',
+                     'run_unconfirmed': 'Neither `expected_fingerprint` nor any limit was sent.',
+                     'step_inputs_missing': 'A book lacks accepted results of a required input step that is not in '
+                                            'this run.',
+                     'api_key_missing': 'A cloud provider the steps use has no API key configured.',
+                     'server_url_missing': 'A self-hosted service or Local LLM the steps use has no server URL '
+                                           'configured (and no cloud key is missing).'},
+               404: NO_SERIES,
+               409: {**ARCHIVED,
+                     'plan_stale': '`expected_fingerprint` does not match the recomputed plan. Nothing was queued.',
+                     'series_run_active': 'This series already has an active run, or another series run holds one of '
+                                          'its books.',
+                     'job_active': 'A job is working on one of its supplied books.'},
+               503: {'shutting_down': 'The series worker is not accepting work because the server is shutting down. '
+                                      'Nothing runs; jobs just created are marked failed or interrupted.'}},
        cost='may_charge'),
 
     op('POST', '/api/series/{series_id}/runs/{job_id}/resume', 'resumeSeriesProcessing', TAG,
        'Resume a series run paused for review',
        "Continues a series run that paused for the owner's review (`waiting_for_review` on the parent job). Refused "
        'with 409 while the waiting book still has a version from this run waiting for a decision: accept it or set it '
-       "aside in that book's Analysis tab first. The run keeps the provider keys, server URLs and settings "
+       'aside first. The run keeps the provider keys, server URLs and settings '
        'snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it '
        'starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent '
        'job with `waiting_for_review: null`. No request body.',
        response=Job,
        response_description='The parent series job, still running. Poll it until it is terminal.',
        params={'series_id': SERIES_ID, 'job_id': 'The parent `series` job ID.'},
-       errors={400: 'The series worker could not resume (the run is then marked `failed` and nothing more runs).',
-               404: SERIES_404 + ' Also when the job is not a run of this series: "Series run not found".',
-               409: 'The run is not waiting for review (never paused, already resumed, or ended), it was cancelled, '
-                    'the waiting book still has a version waiting for a decision, or the server restarted since '
-                    'it paused.'},
+       errors={404: {**NO_SERIES,
+                     'series_run_not_found': 'The job is not a series run of this series.'},
+               409: {'series_run_not_waiting': 'The run is not waiting for review (never paused, already resumed, '
+                                               'ended, or cancelled).',
+                     'series_run_not_resumable': 'The server restarted since the run paused; start the series again.',
+                     'review_pending': 'The waiting book still has a version from this run waiting for a decision.'},
+               503: {'shutting_down': 'The series worker is not accepting work because the server is shutting down. '
+                                      'The run is marked failed and nothing more runs.'}},
        cost='may_charge'),
 
     op('GET', '/api/series/{series_id}/runs', 'listSeriesRuns', TAG, 'List recent series runs',
        'Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first. Each embeds its child '
        'jobs as `children`, in reading order; a child that has started its book also carries `run`, a summary of its '
        'pipeline run (`id`, `status`, per-step `outcomes`, `error`). The parent uses `book_id: "series:SERIES_ID"`; '
-       'children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run. Read-only.',
+       'children use real book IDs. A dangling child job ID in stored data is skipped. Poll this route (or '
+       '`GET /api/jobs`) to follow a run. Works for removed series too. Read-only.',
        response=SeriesRuns,
        params={'series_id': SERIES_ID},
-       errors={404: SERIES_404}),
+       errors={404: NO_SERIES}),
 
     op('GET', '/api/series/{series_id}/map', 'getSeriesMap', TAG, 'Get the series map',
        'Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its '
        'explicit identities with confirmed links. Only confirmed identity links join characters across supplied '
-       'titles; absent volumes contribute no inferred evidence.',
+       'titles; absent volumes contribute no inferred evidence. Works for removed series too (`series.archived` is '
+       'then true).',
        response=SeriesMap,
        params={'series_id': SERIES_ID},
-       errors={404: SERIES_404}),
+       errors={404: NO_SERIES}),
 ]
 
 
@@ -718,7 +757,7 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
     'SeriesNameRequest': {
         '__doc__': 'A name for a series or a series character identity.',
         'name': '1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is '
-                'blank after trimming is refused with 400.',
+                'blank after trimming is refused (400 `name_invalid`).',
     },
     'SeriesVolumeRequest': {
         '__doc__': 'A placeholder for a volume the library does not have.',
@@ -759,16 +798,16 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'configs': '`{step ID: StepConfig}` overriding the saved provider/model, applied to every book. Entries for steps '
                    'not requested are ignored.',
         'fresh': 'Request new samples instead of reusing cached validated units (default false). Part of the fingerprint.',
-        'mode': '`serial` (default) runs each book\'s steps one after another in pipeline order. `parallel` starts every '
+        'scheduling': '`serial` (default) runs each book\'s steps one after another in pipeline order. `parallel` starts every '
                 'step whose in-run inputs have finished. Books always run one at a time.',
         'gates': '`{step ID: "auto" | "review"}` overriding the saved gate for this run. With `review`, each book\'s '
-                 "version waits in that book's Analysis tab, and the series pauses after a book that a later book "
-                 'reads until it is reviewed and the run resumed.',
+                 'version waits for a decision in that book, and the series pauses after a book that a later book '
+                 'reads until it is decided and the run resumed.',
         'concurrency': 'Maximum model requests in flight inside the running book, 1–4 (default 2). Books run one at a '
                        'time. Each step also has its own `parallel` cap.',
         'limits': 'Optional caps applied separately to each book\'s run; see Limits. Uncapped when omitted. A limit '
                   'reached stops that book as `budget_limited` and stops the series.',
         'expected_fingerprint': 'The series plan `fingerprint` the owner confirmed (up to 64 characters). A mismatch '
-                                'with the recomputed plan returns 409 and queues nothing. Required unless a limit is set.',
+                                'with the recomputed plan returns 409 `plan_stale` and queues nothing. Required unless a limit is set.',
     },
 }

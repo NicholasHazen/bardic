@@ -51,18 +51,19 @@ def test_presets_default_to_empty_and_round_trip_through_status(tmp_path):
         assert again.post("/api/settings", json={"analysis_step_presets": []}).json()["analysis_step_presets"] == []
 
 
-@pytest.mark.parametrize("item, fragment", [
-    (preset(step="nope"), "Unknown analysis step"),
-    (preset(config={"provider": "local", "model": None}), "Choose"),
-    (preset(config={"model": "bad model id"}), "valid model ID"),
-    (preset(step="census"), "runs locally"),
-    (preset(config={"provider": "booknlp", "model": None}), "Choose"),
+@pytest.mark.parametrize("item, code, fragment", [
+    (preset(step="nope"), "unknown_step", "Unknown pipeline step"),
+    (preset(config={"provider": "local", "model": None}), "step_config_invalid", "accepts only these providers"),
+    (preset(config={"model": "bad model id"}), "step_config_invalid", "valid model ID"),
+    (preset(step="census"), "step_config_invalid", "runs locally"),
+    (preset(config={"provider": "booknlp", "model": None}), "step_config_invalid", "accepts only these providers"),
 ])
-def test_presets_reject_steps_providers_and_models_the_step_does_not_accept(client, item, fragment):
+def test_presets_reject_steps_providers_and_models_the_step_does_not_accept(client, item, code, fragment):
     before = client.get("/api/status").json()["analysis_step_presets"]
     response = client.post("/api/settings", json={"analysis_step_presets": [item]})
     assert response.status_code == 400
-    assert fragment in response.json()["detail"]
+    assert response.json()["code"] == code and fragment in response.json()["detail"]
+    assert "Settings" not in response.json()["detail"]  # the condition, not a UI location
     assert client.get("/api/status").json()["analysis_step_presets"] == before
 
 
@@ -71,7 +72,8 @@ def test_presets_reject_steps_providers_and_models_the_step_does_not_accept(clie
     [preset(), preset(id="p_two", name="cheap SCAN")],    # duplicate name for one step
 ])
 def test_presets_need_unique_ids_and_names(client, items):
-    assert client.post("/api/settings", json={"analysis_step_presets": items}).status_code == 400
+    response = client.post("/api/settings", json={"analysis_step_presets": items})
+    assert response.status_code == 400 and response.json()["code"] == "step_preset_invalid"
 
 
 @pytest.mark.parametrize("item", [

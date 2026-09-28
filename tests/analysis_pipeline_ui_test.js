@@ -53,7 +53,7 @@ function definitions() {
     version:1, parallel:1, default_gate:'auto', default_model_role:'analysis', chapter_scoped:false,
     settings:method === 'plain' ? {provider:'local', model:null, gate:'auto', saved:false} : {provider:'openai', model:'gpt-b', gate:'auto', saved:true}, ...extra});
   return {schema_version:1,
-    providers:[{id:'gemini', label:'Gemini', has_api_key:false}, {id:'openai', label:'OpenAI', has_api_key:true}, {id:'anthropic', label:'Anthropic', has_api_key:false}],
+    providers:[{id:'gemini', label:'Gemini', configured:false}, {id:'openai', label:'OpenAI', configured:true}, {id:'anthropic', label:'Anthropic', configured:false}],
     steps:[
       step('structure', 'Chapters & titles', 'plain', 'book'),
       step('census', 'Name census', 'plain', 'book'),
@@ -289,7 +289,7 @@ test('Run this step previews a plan and runs only after Confirm, with the plan f
   const run = env.calls.find(call => call.url.endsWith('/runs'));
   assert.equal(run.method, 'POST');
   assert.deepEqual(run.body, {steps:['discovery'], chapter_ids:['c1'], configs:{discovery:{provider:'openai', model:'gpt-a'}},
-    gates:{discovery:'auto'}, mode:'serial', concurrency:3, fresh:true, expected_fingerprint:'fp-123'});
+    gates:{discovery:'auto'}, scheduling:'serial', concurrency:3, fresh:true, expected_fingerprint:'fp-123'});
   assert.deepEqual(started.map(job => job.id), ['job-1']);
   assert.equal(container.regions.plan.innerHTML, '');
   assert.equal(env.calls.filter(call => call.url.endsWith('/runs')).length, 1);
@@ -301,7 +301,7 @@ test('Run this step previews a plan and runs only after Confirm, with the plan f
 });
 
 test('a changed setting closes an open preview; a stale fingerprint asks for a new preview', async () => {
-  const env = environment(call => call.url.endsWith('/runs') ? {ok:false, status:409, data:{detail:'The plan changed since the preview.'}} : ordinary(call));
+  const env = environment(call => call.url.endsWith('/runs') ? {ok:false, status:409, data:{detail:'The plan changed since the preview.', code:'plan_stale'}} : ordinary(call));
   const container = new Container();
   await env.render(container, book, {status});
   await settle();
@@ -661,11 +661,11 @@ test('responses arriving after the tab was left leave no message or preview behi
 test('self-hosted providers: per-step choices, no model for services, URL wording and free service calls', async () => {
   const selfHosted = () => {
     const value = definitions();
-    value.providers.push({id:'local_llm', label:'Local LLM', kind:'model', self_hosted:true, needs:'url', has_api_key:true,
+    value.providers.push({id:'local_llm', label:'Local LLM', kind:'model', self_hosted:true, needs:'url', configured:true,
                           models:[{id:'qwen-local', label:'Qwen <local>', tier:'balanced', roles:['analysis', 'preprocess'],
                                    input_usd_per_million:0, output_usd_per_million:0}]},
-                         {id:'booknlp', label:'BookNLP', kind:'service', self_hosted:true, needs:'url', has_api_key:true},
-                         {id:'novel_analyzer', label:'Novel Analyzer', kind:'service', self_hosted:true, needs:'url', has_api_key:false});
+                         {id:'booknlp', label:'BookNLP', kind:'service', self_hosted:true, needs:'url', configured:true},
+                         {id:'novel_analyzer', label:'Novel Analyzer', kind:'service', self_hosted:true, needs:'url', configured:false});
     for (const step of value.steps) if (step.method === 'llm') step.providers = ['gemini', 'openai', 'anthropic', 'local_llm'];
     const directing = value.steps.find(step => step.id === 'directing');
     directing.providers = [...directing.providers, 'novel_analyzer', 'booknlp'];
@@ -1081,7 +1081,7 @@ test('Try again opens the usual preview with the failed run\'s settings, and onl
   await settle();
   const run = env.calls.find(call => call.url.endsWith('/runs'));
   assert.deepEqual(run.body, {steps:['discovery'], configs:{discovery:{provider:'openai', model:'gpt-b'}}, fresh:true, chapter_ids:['c1'],
-    gates:{discovery:'review'}, mode:'serial', concurrency:3, expected_fingerprint:'fp-123'});
+    gates:{discovery:'review'}, scheduling:'serial', concurrency:3, expected_fingerprint:'fp-123'});
 });
 
 test('Try again refuses sections that are gone and needs the provider\'s key', async () => {
@@ -1207,7 +1207,7 @@ test('evidence shows exact quotes where they are recorded and says so where they
     {id:'q1', chapter_id:'c1', speaker_id:'mira', evidence:['book quote']},
     {id:'q2', chapter_id:'c1', speaker_id:'mira', evidence:['Mira <i>spoke</i> first', 42]},
     {id:'q3', chapter_id:'c1', speaker_id:'mira', evidence:['belongs to Mira']},
-    {id:'q4', chapter_id:'c1', speaker_id:'mira', evidence:['old evidence'], edited_fields:['speaker_id']},
+    {id:'q4', chapter_id:'c1', speaker_id:'mira', evidence:['old evidence'], manual_fields:['speaker_id']},
     {id:'q5', chapter_id:'c1', speaker_id:'mira', evidence:['ignored: the version has none']},
     {id:'q6', chapter_id:'c1', speaker_id:'mira', evidence:[]},
     {id:'q7', chapter_id:'c1', speaker_id:'mira'},

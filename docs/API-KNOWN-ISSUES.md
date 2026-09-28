@@ -1,59 +1,61 @@
 # API known issues
 
-Tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). Recorded September 28, 2026, while the complete HTTP contract was written (contract 0.1.0). Describing every operation from the code surfaced these defects and inconsistencies. None of them was changed: the contract describes the current behavior, and each item that affects clients is also noted in its operation's description.
+This file records issues found in the HTTP contract, and the keep-or-fix decision for each one. Record new issues here before a replacement server is built: the port must know whether to reproduce a behavior or fix it.
 
-Each item needs a decision, and many would be a breaking contract change. Before a replacement server is built, decide for each whether it keeps the behavior or fixes it. When an item is fixed, remove it here, tick it in the issue, and record the fix in [the contract changelog](../contract/CHANGELOG.md). Line numbers refer to commit `1089a07` and may drift.
+## Resolved in contract 0.2.0 (issue #17)
 
-## Defects
+Describing every route for contract 0.1.0 surfaced 28 defects and six groups of inconsistencies ([issue #17](https://github.com/NicholasHazen/bardic/issues/17)). The owner decided to fix all of them in one breaking release, contract 0.2.0. The [changelog](../contract/CHANGELOG.md) lists every client-visible change. A regression test covers each fixed defect.
 
-| Area | Issue | Where |
+### Defects
+
+| Area | Issue in 0.1.0 | Resolution in 0.2.0 |
 | --- | --- | --- |
-| Voices | After a failed Gemini voice refresh, the saved `voices: null` makes `GET /api/voices` and the refresh itself return a plain-text 500 until a later refresh succeeds or the key changes. | `bardic/voice_routes.py:305`, `:124`, `:199` |
-| Voices | Deleting a library voice is not atomic. If one provider voice fails to delete, the earlier ones are already gone and the library voice is not tombstoned. | `bardic/voice_routes.py:359-373` |
-| Voices | Draft save and Breeze clone upload the server voice before the library record is validated or created. A failure afterwards (blank name, deleted base voice, unknown book or character) leaves an orphaned server voice, which a later Breeze check imports. | `bardic/voice_routes.py:642-660`, `:720` |
-| Voices | Single-voice responses never compare against provider checks, so their `server_state` is always `unknown` or `other_project`. Only `GET /api/voices` reports real states. | `bardic/voice_routes.py:330,340,681,728` |
-| Narration | `POST /render` does not check for shutdown. A pool submission during shutdown is an undocumented 500; the listening routes return 503 in the same case. | `bardic/app.py:843` |
-| Listening | The chapter-start 429 covers only an in-process daily block, not a library already over its daily request limit. That case is accepted, and the job then ends `quota_limited`. | `bardic/app.py` (chapter listen start) |
-| Listening | `cache_hit` is meant to be transient but is persisted into the job's `audio`. | `bardic/app.py` listen job update |
-| Settings | Any `POST /api/settings` resets every in-process Gemini daily quota block. `tts_limits` replaces a model's limits as a whole, so omitted limits reset to their defaults. | `bardic/app.py:1051,1073`, `bardic/tts_limits.py:95-100` |
-| Settings | A `BREEZE_TTS_URL` from the environment is persisted to the library on the next settings save. | `bardic/app.py:299,1071` |
-| Diagnostics | Passage, session or job IDs sent without a `book_id` pass validation, then are silently dropped (`recorded:false`) instead of being rejected. The custom 422 message is also applied to a bad `limit` on the GET. | `bardic/app.py:923,936`, `bardic/diagnostics.py:47` |
-| Library | `POST /books/{id}/refresh-metadata` and `POST /books/{id}/repair-structure` write a resource-ledger row before checking that the book exists, even for unknown IDs. | `bardic/app.py:1132,1500` |
-| Library | A metadata edit locks both title and author against refresh, even when only one changed. | `bardic/library.py` `update_book` |
-| Library | `audio_count` counts stored takes that are no longer current, so it can exceed the number of playable passages. | `bardic/library.py` |
-| Library | The cover `ETag` is not quoted, `If-None-Match` is ignored, and the middleware overrides the route's `Cache-Control` with `no-store`, so the content-hash `?v=` does not help caching. | `bardic/app.py:906-909,1504-1510` |
-| Library | The 413 size check runs after the whole upload is received. A failed save after the original is written leaves an orphaned `originals/{id}/` directory. | `bardic/app.py:1089-1103` |
-| Books | Any edit request, even an empty or unchanged one, marks the item edited and increments `revision`. | `bardic/app.py:1263` |
-| Books | A blank Breeze voice ID falls back to the default voice, while Gemini and device store the blank. `VoiceChoice.seed` is ignored for library choices and non-Breeze providers. `SegmentEdit.seed` cannot be cleared. | `bardic/app.py:684`, `bardic/breeze.py:246` |
-| Books | `addCharacter` never assigns a device voice, unlike imported characters. | `bardic/app.py` add character |
-| Books | A book whose stored data has a dangling reference returns 404, via the global `KeyError` handler, instead of a server error. | `bardic/app.py:912-914` |
-| Series | Most series routes on a removed series answer 404 "Series not found", so the intended 400 "Restore this series" is unreachable and archiving is not idempotent. | `bardic/app.py:1511`, `bardic/series_processing.py:13`, `bardic/library.py:127` |
-| Series | Listing and creating series characters ignore removal, and creating one ignores an active series run. `restoreSeries` does not check for active series runs. | `bardic/app.py:1192-1198,1535` |
-| Pipeline | An unknown step ID in a request body returns 404, not 400. Saved or default step settings are not revalidated, so an LLM step can run with a null model. A saved config that no longer validates falls back to defaults while `saved` stays true. | `bardic/pipeline/api.py:148-154,299-306,319,332` |
-| Pipeline | Reject does not check that the book exists or is active. A `same_as_accepted` candidate cannot be rejected. | `bardic/pipeline/api.py:531-543` |
-| Pipeline | The returned `run` is the object the worker mutates, so a response can be serialized mid-change. | `bardic/pipeline/api.py:392` |
-| Jobs | A job cancelled while queued is settled again when its worker slot comes up. In a shutdown race, `cancelled` can become `interrupted`. | `bardic/app.py:697,714` |
-| Inspection | Story-map `attributed_speaker` edges can point at a missing character node. | `bardic/pipeline_view.py:74` |
-| Inspection | The analysis export dumps raw attempt rows, while the pipeline view filters them through an allowlist. | `bardic/pipeline_view.py:142,198` |
+| Voices | A failed Gemini voice refresh left `GET /api/voices` and the refresh answering a plain-text 500. | The refresh returns 502 `provider_error`. The listing returns 200 with `providers.gemini.state: "error"`. |
+| Voices | Deleting a library voice was not atomic. | Each provider deletion is recorded as it happens. A partial failure is 502, and a retry resumes. |
+| Voices | Draft save and Breeze clone uploaded before validating, which could orphan a server voice. | Everything is validated before the upload. A record failure after the upload removes the uploaded voice. One case remains: a request that times out after the server created the voice is not cleaned up. |
+| Voices | Single-voice responses never compared against provider checks. | Every voice response uses the saved Breeze and Gemini checks, with no network call. |
+| Narration | `POST /render` during shutdown gave an undocumented 500. | 503 `shutting_down`, and nothing is queued. |
+| Listening | The chapter-start 429 ignored a library already over its daily limit. | 429 `daily_quota_reached` with `Retry-After`, and nothing is queued. |
+| Listening | `cache_hit` was persisted into the job's audio. | Never stored. The POST envelope's `cached` reports it. |
+| Settings | Every settings save lifted all daily quota blocks, and `tts_limits` replaced a model's limits as a whole. | A block is lifted only when that model's limits or the key change. `tts_limits` merges per field. |
+| Settings | An environment `BREEZE_TTS_URL` was saved to the library. | Only values the client sends are saved. The environment value stays a runtime fallback. |
+| Diagnostics | IDs without `book_id` were silently dropped, and the custom 422 applied to the GET. | 422 on the POST. The GET uses the standard 422 and clamps `limit`. |
+| Library | Refresh-metadata and repair-structure recorded a ledger row before checking the book. | Preconditions come first, and a refused request records nothing. |
+| Library | A metadata edit locked both title and author. | Only the fields that changed are locked. |
+| Library | `audio_count` counted takes that were no longer current. | Counts current, playable takes, on every route. |
+| Library | The cover `ETag`, `If-None-Match` and caching were broken. | Quoted strong `ETag`, 304, and `immutable` at the content-addressed URL. |
+| Library | The 413 check ran after the whole upload, and a failed save left an orphaned original. | Refused before reading, and cleaned up on any failure. |
+| Books | Any edit, even an empty one, marked the item edited and bumped `revision`. | A no-op edit saves nothing, and a real edit marks only the changed fields. |
+| Books | Blank voice IDs and `seed` behaved differently per provider, and a passage seed could not be cleared. | One rule for every provider: blank clears the choice, an inapplicable `seed` is 400, and `seed: null` clears it. |
+| Books | `addCharacter` never assigned a device voice. | Assigned the same way import does. |
+| Books | Character references went stale after manual edits and pipeline acceptance. | The projection of accepted evidence (contract 0.3.0), computed from the current book on every read without recording anything. |
+| Books | A dangling stored reference answered 404. | 500 `internal_error`. Only a resource named by the request can be 404. |
+| Series | A removed series answered 404, and archiving was not idempotent. | 409 `series_archived` for changes, reads still work, and archive and restore are idempotent. |
+| Series | Series characters and restore ignored removal and active runs. | 409 `series_archived` or `series_run_active`. |
+| Pipeline | An unknown body step was 404, settings were not revalidated, and `saved` was misleading. | 400 `unknown_step`, 400 `step_model_missing`, and `saved: false` with `saved_invalid`. |
+| Pipeline | Reject skipped the book check, and a `same_as_accepted` candidate could not be rejected. | Both are checked, and rejecting that candidate declines it. |
+| Pipeline | The returned `run` was the object the worker mutates. | A snapshot is returned. |
+| Jobs | A job cancelled while queued was settled again, and could become `interrupted`. | A terminal status is final at the storage level. |
+| Inspection | Cancelled stages showed `interrupted`, and story-map edges could dangle. | Edges always end at a node. Since contract 0.3.0 the inspector's stage cards come from the step pipeline and no longer read a Classic checkpoint. |
+| Inspection | The analysis export dumped raw attempt rows. | One allowlist for the inspector and the export (export `schema_version: 2`). |
 
-## Inconsistencies a client will notice
+### Inconsistencies
 
-- **Status codes for the same condition differ:**
-  - A stale series plan fingerprint and "series already running" are 400; the pipeline's stale fingerprint is 409 (`bardic/series_processing.py:74,80`).
-  - Restoring a book with an active job is 400; archive, metadata and refresh return 409 for the same case.
-  - Provider failures on voice deletion or Gemini refresh are 400, from the global `ValueError` handler, not 502.
-  - Out-of-range artifact paging is 400; resources and search clamp instead.
-- **The same concept has several shapes:**
-  - Audio objects with a `url` are built in about seven places, with different optional fields (`bardic/app.py:649`, `bardic/listening.py:246,376`, `bardic/performances.py:269`, `bardic/voice_previews.py:190`, `bardic/voice_routes.py:136,169`).
-  - Jobs appear in full and as two subsets.
-  - Some fields have aliases: search `items`/`results`, library `segment_count`/`passage_count`, pipeline `configured`/`has_api_key`, and `Status.analysis_models`, which duplicates `model_catalogs.gemini`.
-  - `Job.limits` has two shapes. `Job.mode` means serial/parallel for pipeline jobs and simple/cast for performances.
-- **Internal data reaches the wire.** Examples: take fingerprints, recipes, synthesis keys and `resource_usage`; edit tracking; `data_directory`; census and context hashes; `process_id`. The contract marks each with `x-bardic-internal`. The audiobook export's `production.json` is the raw stored book.
-- **Some GET routes write local state:**
-  - census caches and artifacts (preprocessing, pipeline, and the plan POST);
-  - the search index;
-  - resource-ledger rows (search, export);
-  - analysis-pipeline decisions (`GET /api/books/{id}/analysis-pipeline`);
-  - a table initializer on each pipeline request.
-- **Error bodies.** There are no machine-readable error codes, and many `detail` sentences refer to UI locations ("in Settings").
-- **Ordering.** Library lists are ordered by most recent save, not by import time, because a save replaces the row.
+| Issue in 0.1.0 | Resolution in 0.2.0 |
+| --- | --- |
+| Status codes differed for the same condition. | One meaning per status, stated in the contract introduction and [API.md](API.md#errors). State conflicts are 409, unknown body IDs 400, provider failures 502, shutdown 503, and paging clamps. |
+| The same concept had several shapes. | One audio core (`AudioRef`, built by `bardic/audio_refs.py`), one `Job`, unambiguous job fields, and no aliases. |
+| Internal data reached the wire. | Every `x-bardic-internal` field is removed. The export's `production.json` is the presented book. |
+| Some GET routes wrote local state. | GETs write no records. Only disposable caches (census, search index) may be written. Schema setup and legacy retention run at startup. |
+| Error bodies had no machine-readable codes and named UI locations. | Every error has a documented `code`, and `detail` describes the condition. |
+| Library lists were ordered by the most recent save. | Ordered by import time. A save keeps its row. |
+
+## Kept, by decision
+
+- **Classic analysis treated an edited item as wholly reviewed.** The owner removed the Classic engine instead of building per-field locking for it (contract 0.3.0). The step pipeline uses per-field locks.
+- **Provider-state checks return 200.** Account checks, model refresh and Breeze refresh report a provider's failure inside a 200 body, because reporting that state is their purpose.
+- **Pipeline history is captured at write time, not by viewing.** Before 0.2.0, opening the Analysis tab (a GET) recorded the current projection as a pipeline version. Now every outside writer (structure repair and manual edits; Classic analysis and Classic series runs until they were removed in contract 0.3.0) records the projection it replaces before it writes. Series runs are pipeline runs since contract 0.3.0.
+
+## Open
+
+None known. Record new issues here with a keep-or-fix decision.

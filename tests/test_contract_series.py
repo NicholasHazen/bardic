@@ -81,11 +81,13 @@ def test_series_characters_and_map_list_confirmed_identities_and_all_volumes(cli
     assert unlinked.json() == {'character_id': 'mira', 'linked': False}
 
 
-def test_removed_series_is_not_found_on_the_map_but_keeps_its_identities(client):
+def test_removed_series_stays_readable_on_the_map_and_keeps_its_identities(client):
     series, identity = linked_series(client)
     assert client.post(f"/api/series/{series['id']}/archive").status_code == 200
 
-    assert client.get(f"/api/series/{series['id']}/map").status_code == 404
+    removed = client.get(f"/api/series/{series['id']}/map")
+    assert removed.status_code == 200 and removed.json()['series']['archived'] is True
+    assert [c['id'] for c in removed.json()['characters']] == [identity['id']]
     response = client.get(f"/api/series/{series['id']}/characters")
     assert response.status_code == 200 and response.json()[0]['id'] == identity['id']
     assert client.get('/api/books/one/series').json()['membership'] is None

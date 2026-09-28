@@ -6,10 +6,12 @@ applying a step's accepted versions through the step's own projector, inside
 one short transaction guarded by the book revision.
 
 Anything that changes the projection outside the pipeline (older analysis
-controls, series runs, structure repair) is recorded by :func:`sync` as an
-``external`` version before the next pipeline decision, so it can be restored
-later. The first sync of a book records ``baseline`` versions of its existing
-state. Both are marked as legacy provenance: their producer is not known.
+controls, series runs, structure repair, manual edits) first records the state
+it replaces (:func:`record_before_outside_write`), and its own result is
+recorded by :func:`sync` as an ``external`` version before the next pipeline
+decision, so both can be restored later. The first sync of a book records
+``baseline`` versions of its existing state. Both are marked as legacy
+provenance: their producer is not known.
 
 Every sync also refreshes the book's character references from the accepted
 evidence steps (:mod:`bardic.pipeline.evidence`), in the same transaction as
@@ -22,6 +24,7 @@ from copy import deepcopy
 from ..processing import digest
 from . import evidence
 from .repository import PipelineRepository
+from ..errors import Conflict, Invalid, NotFound
 
 
 class RevisionConflict(ValueError):
@@ -94,6 +97,44 @@ def _record_outside_changes(repository, registry, conn, book, force):
     return recorded
 
 
+def record_before_outside_write(store, book_id, registry=None):
+    """Record the stored projection before a writer outside the pipeline replaces it.
+
+    Classic analysis, series runs, structure repair and manual edits call this
+    (under the store lock) before they change the book, so the state they replace
+    stays restorable as a ``baseline`` or ``external`` version. It is a no-op
+    when the pipeline already explains the stored projection.
+    """
+    from . import default_registry
+    with store.lock:
+        book = store.book(book_id)
+        with store.connect() as conn:
+            return sync(PipelineRepository(store), registry or default_registry(), conn, book)
+
+
+def current_references(store, registry, book, character_id=None):
+    """The book's character references as the next sync would record them. Records nothing.
+
+    Outside changes (a manual edit, for example) are captured and the references
+    rebuilt in a transaction that is rolled back, so a read always reflects the
+    current book. A book with no accepted evidence step keeps its stored rows.
+    """
+    with store.lock:
+        conn = store.connect()
+        try:
+            sync(PipelineRepository(store), registry, conn, book)
+            query = 'SELECT body FROM character_references WHERE book_id=?'
+            args = (book['id'],)
+            if character_id is not None:
+                query += ' AND character_id=?'
+                args += (character_id,)
+            import json
+            return [json.loads(row[0]) for row in conn.execute(query + ' ORDER BY rowid', args)]
+        finally:
+            conn.rollback()
+            conn.close()
+
+
 def stale_scopes(repository, registry, conn, book_id):
     """{step_id: [scope, ...]} whose accepted version read superseded inputs.
 
@@ -144,7 +185,7 @@ def preview(repository, registry, conn, book, step, versions, valid_audio=None, 
     for scope, identifier in versions.items():
         payload = payloads.get(identifier)
         if not payload or payload.get('step_id') != step.id or payload.get('scope') != scope:
-            raise ValueError('A selected version does not belong to this step and scope.')
+            raise Invalid('version_incompatible', 'A selected version does not belong to this step and scope.')
         accepted[scope] = payload['result']
     if step.accumulative:
         # Additive steps (discovery) only apply what changes; re-merging every
@@ -174,7 +215,7 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
     with store.lock, store.connect() as conn:
         book = store._hydrate(_book_row(conn, book_id), conn)
         if expected_revision is not None and book.get('revision', 0) != expected_revision:
-            raise RevisionConflict('The book changed since this preview. Review the impact again before accepting.')
+            raise RevisionConflict('The book changed since this preview (its revision differs from `expected_revision`).')
         # References are rebuilt once, by the sync after the decision below.
         sync(repository, registry, conn, book, references=False)
         impact = preview(repository, registry, conn, book, step, versions, valid_audio, prepare)
@@ -193,10 +234,19 @@ def accept(store, repository, registry, book_id, step, versions, *, mode='user',
 
 
 def reject(store, repository, book_id, step, versions, *, step_run_id=None, registry=None):
+    """Decline a step version. Heads, the book and retained results do not change.
+
+    Acceptance is a decision, not content equality. A version whose results merely equal the
+    accepted content (``same_as_accepted``, content-addressed to the same artifact) can be
+    declined; the identical accepted content stays accepted through the version that was
+    accepted. Refused only for scopes this very version made current.
+    """
     with store.lock, store.connect() as conn:
         heads = repository.heads(conn, book_id, step.id)
-        if any(heads.get(scope) == identifier for scope, identifier in versions.items()):
-            raise ValueError('An accepted version cannot be rejected. Accept another version to replace it.')
+        current = [scope for scope, identifier in versions.items() if heads.get(scope) == identifier]
+        if current and repository.was_accepted(conn, book_id, step.id, step_run_id):
+            raise Conflict('version_accepted', 'This version is the accepted one for a selected scope. '
+                                               'Accept another version to replace it.')
         decision = repository.decide(conn, book_id, step.id, 'reject', versions, mode='user', step_run_id=step_run_id)
         # Setting aside changes no accepted version, so this only records outside changes and
         # repairs references another writer replaced; it never adds the set-aside evidence.
@@ -212,5 +262,5 @@ def _book_row(conn, book_id):
     import json
     row = conn.execute('SELECT body FROM books WHERE id=?', (book_id,)).fetchone()
     if not row:
-        raise KeyError('Book not found')
+        raise NotFound('book_not_found', 'Book not found')
     return json.loads(row[0])

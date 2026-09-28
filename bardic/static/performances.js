@@ -16,14 +16,18 @@
     if (value < 3600) return `${Math.max(1, Math.round(value / 60))} min`;
     return `${Math.floor(value / 3600)} h ${Math.round(value % 3600 / 60)} min`;
   }
+  // Server details state the condition; the hint says where to fix it.
+  const HINTS = {gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
   async function request(url, {method = 'GET', body} = {}) {
     const response = await fetch(url, {method, headers:{Accept:'application/json', ...(body === undefined ? {} : {'Content-Type':'application/json'})},
       ...(body === undefined ? {} : {body:JSON.stringify(body)})});
     let result = null;
     try { result = await response.json(); } catch { /* No body. */ }
     if (!response.ok) {
-      const error = new Error(typeof result?.detail === 'string' ? result.detail : `Performance request failed (${response.status}).`);
+      const detail = typeof result?.detail === 'string' ? result.detail : `Performance request failed (${response.status}).`;
+      const error = new Error(HINTS[result?.code] ? `${detail} ${HINTS[result.code]}` : detail);
       error.status = response.status;
+      error.code = result?.code;
       throw error;
     }
     return result;
@@ -156,7 +160,7 @@
       <p class="performance-summary" role="status">${escape(summary)}</p>
       ${quota ? `<p class="field-help">${escape(quota)}</p>` : ''}
       ${(result?.notes || []).map(note => `<p class="field-help">${escape(note)}</p>`).join('')}
-      ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem)}</p>`).join('')}
+      ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem.detail)}${HINTS[problem.code] ? ` ${escape(HINTS[problem.code])}` : ''}</p>`).join('')}
       ${panel.formError ? `<p class="inline-error" role="alert">${escape(panel.formError)}</p>` : ''}
       <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : provider === 'gemini' && result?.passages_to_generate ? `Record performance · about ${escape(plural(result.requests_estimate, 'paid request'))} · cost unknown` : 'Record performance'}</button></div>
     </form>`;

@@ -18,7 +18,7 @@ function environment({book=story(),duration=12,handler,records,continuous}={}) {
   const calls=[], container=new Container(), storage=new Map();
   if (continuous !== undefined) storage.set(`bardic:listen:${book.id}`,JSON.stringify({continuous}));
   let plays=0;
-  const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id,available:true});
+  const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id});
   const normal=call=>call.url.endsWith('/cancel') ? {status:'cancelled'} : {
     session:{id:'session-buffer'},audio:audio(call.body.segment_id),cached:false,
   };
@@ -34,7 +34,7 @@ function environment({book=story(),duration=12,handler,records,continuous}={}) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen.js'),'utf8'),scope);
   const api=scope.window.BardicListen;
   const options={chapterId:'chapter-a',segmentId:'p0',playbackRate:2.5,
-    status:{has_api_key:true,providers:[{id:'system',available:true}]},onPlay:()=>plays++};
+    status:{providers:[{id:'system',available:true},{id:'gemini',available:true}]},onPlay:()=>plays++};
   const click=action=>container.listeners.click({target:{closest:()=>({dataset:{listenAction:action}})}});
   const change=(field,value)=>container.listeners.change({target:{dataset:{listenField:field},value}});
   async function init() { await api.render(container,book,options); change('mode','simple'); }

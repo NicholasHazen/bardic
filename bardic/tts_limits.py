@@ -27,9 +27,14 @@ MAX_PACED_WAIT = 120.0
 CANCEL_CHECK: ContextVar = ContextVar('tts_cancel_check', default=None)
 
 
+LIMIT_MAXIMUMS = {'rpm': 10_000, 'tpm': 100_000_000, 'rpd': 10_000_000}
+
+
 def normalize_limits(value: dict | None) -> dict:
+    """Complete, validated limits: given values over the defaults. Settings merge a partial
+    update over the saved limits before calling this, so an omitted limit keeps its value."""
     limits = dict(DEFAULT_LIMITS)
-    for name, maximum in (('rpm', 10_000), ('tpm', 100_000_000), ('rpd', 10_000_000)):
+    for name, maximum in LIMIT_MAXIMUMS.items():
         if value and name in value:
             number = value[name]
             if type(number) is not int or not 1 <= number <= maximum:
@@ -92,12 +97,17 @@ class RateLimiter:
         self._daily: dict[str, float] = {}
         self._limits: dict[str, dict] = {}
 
-    def configure(self, limits_by_model: dict[str, dict]):
-        """Apply limits. Saving limits is an explicit user decision, so it
-        also lifts a daily block (for example after a quota tier upgrade)."""
+    def configure(self, limits_by_model: dict[str, dict], *, lift=()):
+        """Apply limits, and lift the daily block of each model in ``lift``.
+
+        Settings lift a model's block only when something that decides it
+        changed: that model's limits (for example after a quota tier upgrade)
+        or the Gemini key (possibly another project). Other settings keep it.
+        """
         with self._lock:
             self._limits = {model: normalize_limits(limits) for model, limits in limits_by_model.items()}
-            self._daily.clear()
+            for model in lift:
+                self._daily.pop(model, None)
 
     def block_day(self, model: str, seconds: float):
         """Stop every sender for this model until the quota day resets."""

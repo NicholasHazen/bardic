@@ -86,3 +86,57 @@ def test_discard_marks_a_breeze_preview_and_deletes_a_gemini_candidate(client, s
     assert gone.status_code == 200, gone.text
     assert gone.json()["candidates"][0]["discarded"] and fake_gemini.deleted == [made]
     assert library(client)["drafts"][0]["id"] == gemini["id"]  # still open
+
+
+def code(response, status):
+    assert response.status_code == status, response.text
+    return response.json()["code"]
+
+
+def test_voice_errors_carry_their_documented_codes(client, servers):
+    runtime = client.app.state.runtime
+    book = import_text(client)
+    # Without a Breeze URL or a Gemini key.
+    breeze_draft = client.post("/api/voices/drafts", json={"provider": "breeze", "description": "Calm pilot."}).json()
+    assert code(client.post(f"/api/voices/drafts/{breeze_draft['id']}/generate", json={}), 400) == "breeze_url_missing"
+    assert code(client.post("/api/voices/gemini/refresh"), 400) == "gemini_key_missing"
+    gemini_draft = client.post("/api/voices/drafts", json={"provider": "gemini", "description": "A calm pilot."}).json()
+    generate = f"/api/voices/drafts/{gemini_draft['id']}/generate"
+    assert code(client.post(generate, json={"book_id": book["id"]}), 400) == "cost_not_confirmed"
+    assert code(client.post(generate, json={"confirm_cost": True}), 400) == "book_id_required"
+    assert code(client.post(generate, json={"confirm_cost": True, "book_id": book["id"]}), 400) == "gemini_key_missing"
+    runtime.api_keys["gemini"] = "gemini-test-key"
+    assert code(client.post(generate, json={"confirm_cost": True, "book_id": "missing"}), 400) == "unknown_book"
+    assert code(client.post(generate, json={"confirm_cost": True, "book_id": book["id"], "language_code": "English"}),
+                400) == "voice_design_invalid"
+    short = client.post("/api/voices/drafts", json={"provider": "breeze", "description": "a"}).json()
+    assert code(client.post(f"/api/voices/drafts/{short['id']}/generate", json={}), 400) == "description_too_short"
+    # Unknown IDs in a request body are 400; unknown IDs in the path are 404.
+    for body, expected in (({"book_id": "missing", "character_id": "narrator"}, "unknown_book"),
+                           ({"book_id": book["id"], "character_id": "nobody"}, "unknown_character"),
+                           ({"base_voice_id": "vl_0000000000000000"}, "unknown_voice")):
+        assert code(client.post("/api/voices/drafts", json={"provider": "breeze", **body}), 400) == expected
+    assert code(client.post("/api/voices/defaults", json={"provider": "breeze", "voice_id": "vl_0000000000000000"}),
+                400) == "unknown_voice"
+    assert code(client.get("/api/voices/vl_0000000000000000/versions/1/audition"), 404) == "voice_not_found"
+    assert code(client.get(f"/api/voices/drafts/{short['id']}/candidates/c1/audio"), 404) == "candidate_not_found"
+    assert code(client.post("/api/voices/drafts/vd_0000000000000000/abandon"), 404) == "voice_draft_not_found"
+    save = f"/api/voices/drafts/{short['id']}/save"
+    assert code(client.post(save, json={"candidate_id": "c1", "name": "X"}), 400) == "unknown_candidate"
+    # A busy or finished draft.
+    runtime.voice_busy.add(short["id"])
+    assert code(client.post(f"/api/voices/drafts/{short['id']}/abandon"), 409) == "draft_busy"
+    runtime.voice_busy.discard(short["id"])
+    client.post(f"/api/voices/drafts/{short['id']}/abandon")
+    assert code(client.patch(f"/api/voices/drafts/{short['id']}", json={"name": "Late"}), 409) == "draft_finished"
+    # Clone form checks.
+    recording = ("mara.wav", b"RIFF", "audio/wav")
+    form = {"name": "Mara", "reference_text": "Hello there.", "consent": "true"}
+    assert code(client.post("/api/voices/breeze/clone", data={**form, "consent": "yes"},
+                            files={"reference_audio": recording}), 400) == "consent_required"
+    assert code(client.post("/api/voices/breeze/clone", data={**form, "reference_text": " "},
+                            files={"reference_audio": recording}), 400) == "reference_text_missing"
+    assert code(client.post("/api/voices/breeze/clone", data=form,
+                            files={"reference_audio": ("mara.wav", b"", "audio/wav")}), 400) == "recording_empty"
+    assert code(client.post("/api/voices/breeze/clone", data=form, files={"reference_audio": recording}),
+                400) == "breeze_url_missing"

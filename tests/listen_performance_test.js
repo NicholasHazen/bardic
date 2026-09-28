@@ -13,7 +13,7 @@ class Container { constructor() { this.innerHTML = ''; this.listeners = {}; } ad
 const book = () => ({id:'book-p',revision:1,
   chapters:[{id:'c1',kind:'chapter'},{id:'c2',kind:'chapter'},{id:'c3',kind:'chapter'}],
   segments:['c1','c1','c2','c2','c3','c3'].map((chapter,i) => ({id:`p${i}`,chapter_id:chapter,start:i*10,end:i*10+8,text:`Passage ${i}.`}))});
-const clip = id => ({url:`/api/books/book-p/audio-assets/${id}`,duration:2,asset_id:id,available:true,mode:'performance',performance_id:'pf_1'});
+const clip = id => ({url:`/api/books/book-p/audio-assets/${id}`,duration:2,asset_id:id});
 const record = (job = {id:'job-p',status:'completed'}) => ({id:'pf_1',name:'Evening reading',mode:'simple',chapter_ids:['c1','c3'],
   narrator_label:'Kore · Gemini',job,progress:{passages_total:4,passages_ready:4,seconds_ready:8,chapters:[]}});
 

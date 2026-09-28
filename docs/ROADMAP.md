@@ -44,7 +44,7 @@ The project goal remains a local application that turns supplied fiction ebooks 
 | Durable analysis and replay | Implemented: bounded transport/evidence retries, per-attempt reservations, validated-unit caches, interrupted-run recovery, rejected-response inspection and immutable artifact lineage. Lost pre-history outputs cannot be reconstructed. | [Storage](ARTIFACTS-AND-STORAGE.md), [processing](../bardic/processing.py) |
 | Search and graphs | Partial: literal lexical FTS5 search, earlier-volume filtering before result limits, typed story graph and artifact dependency graph. No vector index, learned semantic retrieval, interactive world timeline or separate graph database. | [Search](../bardic/search.py), [storage decision](ARTIFACTS-AND-STORAGE.md#storage-decision) |
 | Step pipeline with review | Implemented foundation (2026-09-27): **Analysis** tab with steps for chapters & titles, census, discovery, profiles and speakers & delivery; per-step provider/model (the thoroughness choice) and review gate; plan preview with fingerprint; one step per run in the UI (the API also runs several steps, serially or side by side) with bounded parallel units; candidate versions per scope, diff/agreement between versions, accept, reject and rollback; per-field manual edit locks; outside changes captured as versions. Self-hosted providers (2026-09-28): a Local LLM for every model step, a read-only BookNLP **Quote attribution** step whose result checks every directing provider's speakers (raising or capping confidence), and a Novel Analyzer or BookNLP as alternative directing providers. Status coherence (2026-09-28): each step shows one state from a tested function (staleness is a note, not a state), the tab opens on the first actionable step, a disabled **Run this step** says why and links to Providers & settings, the preview scrolls into view, a completed run offers **Next**, and versions read Accept / Set aside / Restore. Planned steps are listed in R14. | [Analysis pipeline](ANALYSIS-PIPELINE.md), [pipeline package](../bardic/pipeline/) |
-| Legacy phase ("Classic") engine removal | Stages 1–3 of 4 done (2026-09-28). Stage 1 untangled the step pipeline from the engine and moved the request builders to `pipeline/prompts.py` byte for byte. Stage 2 made Cast references a projection of accepted step evidence. Stage 3 deleted the engine, its four book routes (contract 0.4.0, breaking) and its panel, and rebuilt the Details explorer's stage cards from the step pipeline. Stage 4 (drop the legacy tables after a verified backup and backfill) waits for the owner's go. | [Classic removal](CLASSIC-REMOVAL.md), [isolation test](../tests/test_legacy_isolation.py), [prompt identity test](../tests/test_prompt_identity.py) |
+| Legacy phase ("Classic") engine removal | Stages 1–3 of 4 done (2026-09-28). Stage 1 untangled the step pipeline from the engine and moved the request builders to `pipeline/prompts.py` byte for byte. Stage 2 made Cast references a projection of accepted step evidence. Stage 3 deleted the engine, its four book routes (contract 0.3.0, breaking) and its panel, and rebuilt the Details explorer's stage cards from the step pipeline. Stage 4 (drop the legacy tables after a verified backup and backfill) waits for the owner's go. | [Classic removal](CLASSIC-REMOVAL.md), [isolation test](../tests/test_legacy_isolation.py), [prompt identity test](../tests/test_prompt_identity.py) |
 | Resource visibility | Implemented: per-stage/run attempts, retries, cache reuse, reported tokens, measured elapsed/local-thread CPU, audio/file volume, estimates and explicit unknowns. No account-wide invoice reconciliation or narration spending guard. | [Resource ledger](LIBRARY-LISTENING-RESOURCES.md#resource-ledger), [resources](../bardic/resources.py) |
 | Playback troubleshooting | Implemented: allowlisted browser/server events, job/passage correlation, bounded local retention and a Settings JSON download. Best-effort diagnostics are a rotating log, not a complete immutable audit. Older unrecorded errors remain unknown. | [Playback diagnostics](LIBRARY-LISTENING-RESOURCES.md#playback-diagnostics), [diagnostics](../bardic/diagnostics.py) |
 | Portable output | Partial: analysis JSON/JSONL ZIP with lineage and source, plus enhanced-audio ZIP with takes, complete chapter WAVs and timeline. No M4B, EPUB Media Overlays, analysis-bundle import or full take-comparison editor. | [Export contents](ARTIFACTS-AND-STORAGE.md#visibility-and-portability), [operations](OPERATIONS.md#exports-are-not-a-complete-backup) |
@@ -221,22 +221,22 @@ Acceptance criteria: keep locked dependencies and offline regression tests repro
 ### R15. Published API contract, dedicated clients and a portable server — partial (2026-09-28)
 
 The owner intends to move the server off Python eventually and to build dedicated clients. Implemented so far:
-- a complete, checked-in OpenAPI contract ([contract/](../contract/)) covering all 100 operations as of contract 0.1.2;
+- a complete, checked-in OpenAPI contract ([contract/](../contract/)) covering all 100 operations as of contract 0.2.0;
 - a readable reference and a versioned changelog;
-- test-suite validation of every API response against the contract;
+- test-suite validation of every API response against the contract, including its error codes;
+- machine-readable error codes and one meaning per status across operations (contract 0.2.0);
+- the resolution of every known issue found while writing the contract ([issue #17](https://github.com/NicholasHazen/bardic/issues/17), contract 0.2.0): defects fixed, duplicated shapes consolidated, bookkeeping removed from the wire and GET routes made free of record writes;
 - agent rules for keeping it current ([API workflow](API-WORKFLOW.md)).
 
-The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). Defects found while writing the contract are in [API known issues](API-KNOWN-ISSUES.md), tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
+The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). The decisions on the issues found while writing the contract are recorded in [API known issues](API-KNOWN-ISSUES.md). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
 
 Acceptance criteria for the remaining work:
-- machine-readable error codes;
 - a contract-version handshake in `/api/status`;
 - `GET /api/jobs/{id}`;
 - a single client HTTP module, with Node tests that check requests against the contract;
 - authentication, CORS and a threat model before any client is served from another origin;
 - a black-box HTTP conformance suite, runnable against any base URL, as the acceptance test for a replacement server;
-- a decision on each known issue (keep or fix) before the port;
-- consolidation of duplicated response shapes through the changelog's breaking-change rules.
+- any issue found later is recorded in [API known issues](API-KNOWN-ISSUES.md) with a keep-or-fix decision before the port.
 
 ## Decisions deliberately left open
 

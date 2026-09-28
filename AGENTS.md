@@ -74,7 +74,7 @@ Python 3.11+ is supported by project metadata; the recorded development environm
 
 Use `./bardicctl dev start` rather than a hand launch for a development server; [development](docs/DEVELOPMENT.md) also shows the equivalent key-free command. `python -m bardic` loads only the repository-root `.env`; existing shell variables win. Running the ASGI app directly does not invoke that loader.
 
-The old `python -m spintails` launcher and `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain compatibility paths. New libraries use `.bardic/`; an existing `.spintails/` is reused in place when no directory is configured and `.bardic/` is absent. Use `bardic.config.data_directory()` when resolving the default in tooling. Preserve the version-1 `spintails-analysis` export format identifier; a product rename is not a schema change. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
+The old `python -m spintails` launcher and `SPINTAILS_PORT` / `SPINTAILS_DATA_DIR` settings remain compatibility paths. New libraries use `.bardic/`; an existing `.spintails/` is reused in place when no directory is configured and `.bardic/` is absent. Use `bardic.config.data_directory()` when resolving the default in tooling. Keep the `spintails-analysis` export format identifier; a product rename is not a schema change. Its `schema_version` changes only when the exported content changes (version 2 since contract 0.2.0). See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).
 
 ## Completion and review
 

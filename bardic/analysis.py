@@ -561,7 +561,7 @@ def _local_llm_request(client, model, base_url, prompt, schema, cancelled):
     from .local_services import TIMEOUTS, normalize_url
     base_url = normalize_url(base_url or "", "local_llm")
     if not base_url:
-        raise ValueError("Add the Local LLM server URL in Settings first.")
+        raise ValueError("No Local LLM server URL is configured.")
     # A low temperature, as for Gemini: the same request should give much the same cast.
     body = {"model": model, "instructions": DIRECTOR_INSTRUCTION,
             "input": [{"role": "user", "content": prompt}], "store": False,

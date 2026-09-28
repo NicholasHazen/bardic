@@ -39,17 +39,18 @@ import hashlib
 import json
 from typing import Literal
 
-from fastapi import HTTPException
 from pydantic import Field
 
 from .artifacts import record
 from .pipeline import projection
 from .pipeline.api import (LABELS, PROVIDER_LABELS, Limits, StepConfig, Strict, _versions_view, credentials_needed,
-                           execute_run, resolve_configs, setup_message, step_settings)
+                           execute_run, missing_credentials_error, resolve_configs, step_settings)
 from .pipeline.repository import ACTIVE, PipelineRepository
 from .pipeline.runner import plan as book_plan
 from .series import EVIDENCE_STEPS, SeriesRepository, evidence_inputs
-from .store import now
+from .store import now, public_job
+from .errors import Conflict, Invalid, NotFound, Unavailable
+from .series import SERIES_ARCHIVED
 
 PLAN_VERSION = 3
 CONSENT_VERSION = 1
@@ -76,7 +77,7 @@ class SeriesPlanRequest(Strict):
 
 
 class SeriesRunRequest(SeriesPlanRequest):
-    mode: Literal['serial', 'parallel'] = 'serial'
+    scheduling: Literal['serial', 'parallel'] = 'serial'
     gates: dict[str, Literal['auto', 'review']] | None = None
     # Model requests in flight inside the running book. Books run one at a time.
     concurrency: int = Field(default=2, ge=1, le=4)
@@ -89,18 +90,20 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def series_view(store, series_id):
-    series = next((s for s in SeriesRepository(store).list_series() if s['id'] == series_id), None)
-    if series is None:
-        raise KeyError('Series not found')
+def series_view(store, series_id, *, active=False):
+    """The series entry, removed or not (404 when unknown). ``active`` refuses a removed one (409)."""
+    series = SeriesRepository(store).series(series_id)
+    if active and series['archived']:
+        raise Conflict('series_archived', SERIES_ARCHIVED)
     return series
 
 
-def _steps(registry, step_ids):
-    try:
-        return registry.closure(step_ids)
-    except KeyError as exc:
-        raise ValueError(str(exc).strip("'")) from None
+def _steps(registry, step_ids, configs=None, gates=None):
+    """The requested steps and their inputs; 400 ``unknown_step`` when ``steps``, ``configs`` or ``gates`` names an unknown one."""
+    unknown = sorted({s for s in [*step_ids, *(configs or {}), *(gates or {})] if s not in registry})
+    if unknown:
+        raise Invalid('unknown_step', f'Unknown pipeline step: {", ".join(unknown)}.')
+    return registry.closure(step_ids)
 
 
 def _book_plan(runtime, registry, book_id, step_ids, configs, fresh, *, consent=False):
@@ -150,14 +153,18 @@ def _up_to(preview, upper, pending):
     return {**figures, 'estimated_cost_usd': None if cost is None else round(cost, 6)}
 
 
-def plan(runtime, registry, series_id, steps, *, configs=None, fresh=False):
-    """Read-only (apart from free census caches, outside-change capture and context provenance) series preview."""
-    selected = _steps(registry, steps)
+def plan(runtime, registry, series_id, steps, *, configs=None, fresh=False, gates=None):
+    """Read-only (apart from free census caches, outside-change capture and context provenance) series preview.
+
+    404 for an unknown series, 409 ``series_archived`` for a removed one.
+    """
+    series_view(runtime.store, series_id, active=True)
+    selected = _steps(registry, steps, configs, gates)
     step_ids = [s.id for s in selected]
     reads_context = [s.id for s in selected if s.reads_series_context]
     configs = resolve_configs(runtime, registry, selected, configs)
     with runtime.store.lock:
-        series = series_view(runtime.store, series_id)
+        series = series_view(runtime.store, series_id, active=True)
         members = sorted(series['books'], key=lambda b: (b['position'], b['book_id']))
         run_book_ids = [item['book_id'] for item in members]
         entries = []
@@ -220,7 +227,7 @@ def _missing_inputs_message(registry, preview):
     for (step_id, inputs), books in needed.items():
         labels = ' and '.join(registry.get(i).label for i in inputs)
         parts.append(f"{registry.get(step_id).label} needs accepted results from {labels} in {', '.join(books)}.")
-    return ' '.join(parts) + ' Run and accept those steps for the series first, or include them in this run.'
+    return ' '.join(parts) + ' Those steps have no accepted results in these books, and this run does not include them.'
 
 
 def _record_run(store, book_ids, job):
@@ -246,20 +253,23 @@ def start(runtime, registry, series_id, body: SeriesRunRequest):
     store = runtime.store
     limits = body.limits.model_dump()
     with store.lock:
-        preview = plan(runtime, registry, series_id, body.steps, configs=body.configs, fresh=body.fresh)
+        if runtime.stopping.is_set():
+            raise Unavailable('shutting_down', 'The series worker is not accepting work (the server is shutting down).')
+        preview = plan(runtime, registry, series_id, body.steps, configs=body.configs, fresh=body.fresh, gates=body.gates)
         if not preview['books']:
-            raise ValueError('Add a book to this series before processing it.')
+            raise Invalid('series_empty', 'The series has no supplied, active book to process.')
         if not body.expected_fingerprint and all(v is None for v in limits.values()):
-            raise ValueError('Preview the series run and confirm it (send expected_fingerprint), or set limits.')
+            raise Invalid('run_unconfirmed', 'The series run is not authorized: send `expected_fingerprint` from a plan, '
+                                             'or set a limit.')
         if body.expected_fingerprint and body.expected_fingerprint != preview['fingerprint']:
-            raise HTTPException(409, 'The series plan changed since the preview. Review the new estimate before running.')
+            raise Conflict('plan_stale', 'The series plan changed since the preview. Nothing was queued.')
         if preview['missing_inputs']:
-            raise ValueError(_missing_inputs_message(registry, preview))
+            raise Invalid('step_inputs_missing', _missing_inputs_message(registry, preview))
         needed, credentials, missing = credentials_needed(runtime, registry, preview['configs'])
         if missing:
-            raise ValueError(setup_message(missing))
+            raise missing_credentials_error(missing)
         if any(j['status'] in ACTIVE for j in store.jobs('series:' + series_id, limit=None)):
-            raise HTTPException(409, 'This series already has an active run.')
+            raise Conflict('series_run_active', 'This series already has an active processing run.')
         book_ids = [b['book_id'] for b in preview['books']]
         for book_id in book_ids:
             runtime.require_idle(book_id)
@@ -280,14 +290,15 @@ def start(runtime, registry, series_id, body: SeriesRunRequest):
                                              context_sources=entry['context_sources'], run_id=None,
                                              message='Waiting for earlier volumes'))
         parent = store.update_job(parent['id'], series_id=series_id, steps=steps, configs=preview['configs'], gates=gates,
-                                  mode=body.mode, concurrency=body.concurrency, fresh=body.fresh, limits=limits,
+                                  scheduling=body.scheduling, concurrency=body.concurrency, fresh=body.fresh,
+                                  analysis_limits=limits,
                                   book_ids=book_ids, child_job_ids=[c['id'] for c in children],
                                   plan_fingerprint=preview['fingerprint'], estimated_cost_usd=preview['estimated_cost_usd'],
                                   requests=preview['requests'], context_pending_books=preview['context_pending_books'],
                                   message='Series queued. Books run one at a time in reading order.')
         _record_run(store, book_ids, parent)
 
-    options = {'steps': steps, 'configs': preview['configs'], 'gates': gates, 'mode': body.mode,
+    options = {'steps': steps, 'configs': preview['configs'], 'gates': gates, 'scheduling': body.scheduling,
                'concurrency': body.concurrency, 'fresh': body.fresh, 'limits': limits}
     try:
         runtime.series_pool.submit(coordinate, runtime, registry, parent, children, secrets, options)
@@ -300,7 +311,8 @@ def start(runtime, registry, series_id, body: SeriesRunRequest):
                              message='The series worker could not start. No analysis was started.')
             _settle_waiting(store, children, 'interrupted', 'The series worker could not start. Nothing ran for this book.')
             _record_run(store, book_ids, store.job(parent['id']))
-        raise ValueError('The series worker could not start. No analysis was started; try again.') from None
+        raise Unavailable('shutting_down', 'The series worker is not accepting work (the server is shutting down). '
+                                           'No analysis was started.') from None
     return store.job(parent['id'])
 
 
@@ -388,7 +400,8 @@ def coordinate(runtime, registry, parent, children, secrets, options, start_inde
                                      message='Plan changed since the preview; not run.')
                     stopped = ('failed', f"{child.get('title') or 'A book'} changed after the preview. Preview the series again.")
                     break
-                run = repository.create_run(child['book_id'], job_id=child['id'], steps=options['steps'], mode=options['mode'],
+                run = repository.create_run(child['book_id'], job_id=child['id'], steps=options['steps'],
+                                            scheduling=options['scheduling'],
                                             chapter_ids=None, configs=options['configs'], gates=options['gates'],
                                             concurrency=options['concurrency'], fresh=options['fresh'], limits=options['limits'],
                                             series_run_id=parent['id'])
@@ -396,18 +409,21 @@ def coordinate(runtime, registry, parent, children, secrets, options, start_inde
                 job = store.update_job(child['id'], status='running', run_id=run['id'], message='Starting…')
                 store.update_job(parent['id'], progress=index,
                                  message=f"Book {index + 1} of {len(children)}: {child.get('title') or child['book_id']}")
+            def outcome_message(book_id=child['book_id'], run_id=run['id']):
+                # A terminal message is final, so the review state is written with the completion.
+                labels = [registry.get(s).label for s in waiting_steps(runtime, registry, book_id, run_id)]
+                return 'Waiting for your review: ' + ', '.join(labels) if labels else 'Done; results are in use.'
+
             execute_run(runtime, registry, job, run, secrets, limits=options['limits'],
                         concurrency=options['concurrency'], fresh=options['fresh'],
-                        cancelled=lambda child_id=child['id']: runtime.cancelled(child_id) or runtime.cancelled(parent['id']))
+                        cancelled=lambda child_id=child['id']: runtime.cancelled(child_id) or runtime.cancelled(parent['id']),
+                        completed_message=outcome_message)
             outcome = store.job(child['id'])['status']
             if outcome != 'completed':
                 stopped = ((outcome if outcome in {'cancelled', 'interrupted', 'budget_limited', 'quota_limited'} else 'failed'),
                            f"Stopped at {child.get('title') or 'a book'} ({outcome.replace('_', ' ')}).")
                 break
             waiting = waiting_steps(runtime, registry, child['book_id'], run['id'])
-            labels = [registry.get(s).label for s in waiting]
-            store.update_job(child['id'], message='Waiting for your review: ' + ', '.join(labels) if labels
-                             else 'Done; results are in use.')
             store.update_job(parent['id'], progress=index + 1)
             if waiting and _pause_after(store, children, index, waiting):
                 with store.lock:
@@ -465,10 +481,10 @@ def _parent(runtime, series_id, job_id):
     series_view(runtime.store, series_id)
     try:
         job = runtime.store.job(job_id)
-    except KeyError:
-        raise KeyError('Series run not found') from None
-    if job.get('kind') != 'series' or job.get('series_id') != series_id:
-        raise KeyError('Series run not found')
+    except NotFound:
+        job = None
+    if job is None or job.get('kind') != 'series' or job.get('series_id') != series_id:
+        raise NotFound('series_run_not_found', 'This series has no run with this ID.')
     return job
 
 
@@ -479,22 +495,21 @@ def resume(runtime, registry, series_id, job_id):
         parent = _parent(runtime, series_id, job_id)
         wait = parent.get('waiting_for_review')
         if parent['status'] not in ACTIVE or not wait:
-            raise HTTPException(409, 'This series run is not waiting for your review.')
+            raise Conflict('series_run_not_waiting', 'This series run is not waiting for review.')
         if parent.get('cancel_requested'):
-            raise HTTPException(409, 'This series run was cancelled.')
+            raise Conflict('series_run_not_waiting', 'This series run was cancelled.')
         state = _paused(runtime).get(job_id)
         if state is None:
-            raise HTTPException(409, 'This series run can no longer resume. Preview and start the series again; '
-                                     'saved results are reused.')
+            raise Conflict('series_run_not_resumable', 'This series run can no longer resume (the server restarted '
+                                                       'since it paused). Start the series again; saved results are reused.')
         child = store.job(wait['child_job_id'])
         waiting = waiting_steps(runtime, registry, wait['book_id'], child.get('run_id')) if child.get('run_id') else []
         if waiting:
             labels = ', '.join(registry.get(s).label for s in waiting)
-            raise HTTPException(409, f"{wait.get('title') or 'The book'} still has results waiting for your review "
-                                     f'({labels}). Accept or set them aside first.')
+            raise Conflict('review_pending', f"{wait.get('title') or 'The book'} still has results waiting for review "
+                                             f'({labels}). Accept them or set them aside first.')
         children, secrets, options, index = _paused(runtime).pop(job_id)
         parent = store.update_job(job_id, waiting_for_review=None, message='Resuming after your review.')
-        store.update_job(child['id'], message='Reviewed; results are in use.')
         for later in children[index:]:
             if store.job(later['id'])['status'] == 'queued':
                 store.update_job(later['id'], message='Waiting for earlier volumes')
@@ -505,7 +520,8 @@ def resume(runtime, registry, series_id, job_id):
                              message='The series worker could not resume. Nothing more was started.')
             _settle_waiting(store, children, 'interrupted', 'The series worker could not resume. Nothing ran for this book.')
             _record_run(store, [c['book_id'] for c in children], store.job(job_id))
-            raise ValueError('The series worker could not resume. Nothing more was started; start the series again.') from None
+            raise Unavailable('shutting_down', 'The series worker is not accepting work (the server is shutting down). '
+                                               'Nothing more was started.') from None
         return store.job(job_id)
 
 
@@ -535,7 +551,10 @@ def runs(runtime, series_id, limit=20):
     for parent in store.jobs('series:' + series_id, limit=limit):
         children = []
         for identifier in parent.get('child_job_ids', []):
-            child = store.job(identifier)
+            try:
+                child = public_job(store.job(identifier))
+            except NotFound:
+                continue  # A dangling child job ID in stored data: skip it, as cancelJob does.
             if child.get('run_id'):
                 try:
                     run = repository.run(child['run_id'])
@@ -543,5 +562,5 @@ def runs(runtime, series_id, limit=20):
                 except KeyError:
                     child['run'] = None
             children.append(child)
-        result.append({**parent, 'children': children})
+        result.append({**public_job(parent), 'children': children})
     return {'runs': result}

@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.4.0
+# Bardic 0.3.0
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -20,7 +20,10 @@ reference is `contract/API-REFERENCE.md`.
   another browser origin (`Origin` differs from `Host`, or
   `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such
   as command-line clients, are accepted. There is no CORS support.
-- Every `/api/` response carries `Cache-Control: no-store`.
+- Every `/api/` response carries `Cache-Control: no-store`, except a
+  successful cover image (`getBookCover`), which sets its own caching
+  headers: a strong `ETag`, and `immutable` at its content-addressed `?v=`
+  URL.
 - URLs returned inside responses (audio, covers, auditions) are
   root-relative. Resolve them against the server's base URL.
 
@@ -34,19 +37,52 @@ reference is `contract/API-REFERENCE.md`.
   offsets into the chapter text, with an exclusive end. They are not UTF-8
   byte offsets or JavaScript UTF-16 indices.
 - "Passage" and "segment" name the same reader unit.
-- GET requests never start paid generation. Some build local caches or
-  record local measurements; `x-bardic-cost` on each operation says whether
-  it can reach a provider: `none`, `network` (contacts a provider or
-  self-hosted server without billed generation) or `may_charge`.
+- GET requests never start paid generation and never create or change
+  library records (books, jobs, runs, artifacts, decisions or resource
+  measurements). A few write a disposable derived cache, such as the
+  analysis census cache or the passage search index, which can be deleted
+  without loss; those operations say so. `x-bardic-cost` on each operation
+  says whether it can reach a provider: `none`, `network` (contacts a
+  provider or self-hosted server without billed generation) or
+  `may_charge`.
+- Out-of-range paging parameters are clamped to the allowed range; the
+  response reports the values used.
 
 ## Work and errors
 
 - Long work is queued as a job and returned immediately. A queued or
   running job is not a result: poll `GET /api/jobs` until the job reaches a
   terminal status. Failures, cancellations and allowance stops appear in the
-  job, while polling itself still returns 200.
-- Errors are JSON `{"detail": ...}`. `detail` is an English sentence, or a
-  list of issues for 422 request validation. Display it; do not parse it.
+  job, while polling itself still returns 200. A terminal status is final.
+- Statuses mean the same thing on every operation:
+  - 400: the request is well-formed but cannot be carried out as asked,
+    because of its content or the library's data. Examples are an unknown
+    ID inside a request body, an empty selection, a missing original file,
+    or a name or position already taken. An operation that deliberately
+    ignores an unknown body ID says so.
+  - 404: a resource named in the path, or a session named in the query,
+    does not exist.
+  - 409: a conflict with current state that waiting, restoring or
+    previewing again resolves: an active job or series run, a stale
+    previewed plan, or an archived book or series.
+  - 413: the body is too large.
+  - 429: a request or quota limit applies.
+  - 502: a provider or self-hosted server failed or refused the work.
+    Operations whose purpose is to report a provider's state (account
+    checks, model refresh, Breeze refresh) return 200 with the classified
+    state instead.
+  - 503: the server is shutting down; nothing was queued.
+  - Archiving or restoring something already in that state succeeds
+    without change.
+- Errors are JSON `{"detail": ..., "code": ...}`. `detail` is an English
+  sentence, or a list of issues for 422 request validation. Display it; do
+  not parse it. `code` is a stable snake_case identifier: branch on it.
+  Each operation lists its codes per status (`x-bardic-error-codes`). Any
+  operation can also return these global codes:
+  - `validation_error` (422): the request failed validation.
+  - `cross_origin_write` (403): the write guard rejected a browser write.
+  - `internal_error` (500): an unexpected server defect.
+  - `route_not_found` (404, 405): no route matches the method and path.
 
 ## Compatibility rules for clients
 
@@ -60,8 +96,8 @@ reference is `contract/API-REFERENCE.md`.
   default. Configure generators accordingly (openapi-typescript:
   `defaultNonNullable: false`). Response schemas carry no defaults; a response
   field is always present exactly when it is listed in `required`.
-- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later
-  version may remove.
+- Avoid any field marked `x-bardic-internal`: bookkeeping that a later
+  version may remove. This version has none.
 - `info.version` follows the rules in `contract/CHANGELOG.md`.
 
 ## Operations
@@ -92,7 +128,7 @@ Runtime status, settings, provider catalogs and explicit provider checks.
 
 Sends one tiny text-generation request (at most 128 output tokens, no book content, never retried) to the selected analysis model of `provider` with the loaded key, and returns the classified result. **This can incur a small charge.** It is not a balance check: providers do not expose a balance through an inference key, so `balance` is always null; open `billing_url` instead.
 
-An identical check (same key and model) from the last 30 seconds is returned with `cached: true` and no request. Without a key it returns `missing_key` without a request. The result is remembered in memory for the current key and model and appears in `GET /api/status` under `account_checks`. Provider error text is never returned.
+The provider's answer, including a refusal (`invalid_key`, `billing_blocked`, `rate_limited`, …) or an unreachable provider (`network_error`), is the result of the check: it is returned in `state` with HTTP 200, never as an HTTP error. An identical check (same key and model) from the last 30 seconds is returned with `cached: true` and no request. Without a key it returns `missing_key` without a request. The result is remembered in memory for the current key and model and appears in `GET /api/status` under `account_checks`. Provider error text is never returned.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -101,17 +137,18 @@ An identical check (same key and model) from the last 30 seconds is returned wit
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [AccountCheck](#schema-accountcheck) | Success. |
-| 400 | [Error](#schema-error) | The provider is not gemini, openai or anthropic ("Choose gemini, openai, or anthropic"). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 409 | [Error](#schema-error) | A check for this provider is already running, or the key or model changed in Settings while the check was running (its result is discarded; check again). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 409 | [Error](#schema-error) | - `account_check_running`: A check for this provider is already running. - `settings_changed`: The key or analysis model changed while the check was running; its result was discarded. Check again. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshprovidermodels"></a>
 ### `POST /api/models/{provider}/refresh`
 
 **Refresh a provider model list** · operation `refreshProviderModels` · cost `network`
 
-Asks the provider which models the loaded key can see (a model-listing request; no text is generated and no credit is established) and merges the result with the curated list. Failures are reported in `state` and `message` with HTTP 200, and the curated choices remain usable.
+Asks the provider which models the loaded key can see (a model-listing request; no text is generated and no credit is established) and merges the result with the curated list. A failed or refused listing is reported in `state` and `message` with HTTP 200, never as an HTTP error: the response is still the usable (curated) catalog.
 
 Results are cached in memory per key: a successful listing is reused for an hour and a failed one for 30 seconds (`cached: true`). Without a key, or with a key containing whitespace or non-ASCII characters, no request is sent. A second concurrent refresh returns `state: refreshing`. The latest result appears in `GET /api/status` under `model_catalogs`.
 
@@ -122,10 +159,11 @@ Results are cached in memory per key: a successful listing is reused for an hour
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [AnalysisModelCatalog](#schema-analysismodelcatalog) | Success. |
-| 400 | [Error](#schema-error) | The provider is not gemini, openai or anthropic ("Choose gemini, openai, or anthropic"). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 409 | [Error](#schema-error) | The key changed in Settings during the refresh ("The key changed during the refresh…"); refresh again. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `cloud_provider_unknown`: The provider is not `gemini`, `openai` or `anthropic`. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 409 | [Error](#schema-error) | - `settings_changed`: The key changed during the refresh; its result was discarded. Refresh again. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshbreeze"></a>
 ### `POST /api/narration/breeze/refresh`
@@ -134,16 +172,17 @@ Results are cached in memory per key: a successful listing is reused for an hour
 
 Explicitly checks the configured Breeze server: its health, its voice list and the reference clip of each cloned voice, pinning each voice's revision. It never generates speech. The result is saved (it survives restarts, so pinned voices and cached audio resolve while the server is offline) and returned as the `breeze` status object.
 
-Check failures are reported as `state` and `message` with HTTP 200, not as errors; a failed check keeps the previously saved voices for the same URL.
+An unreachable or failing server is the result of the check: it is reported as `state` and `message` with HTTP 200, not as an HTTP error, and a failed check keeps the previously saved voices for the same URL.
 
 After a `ready` check, every usable server voice that no library voice version uses yet (including voices behind deleted library voices, which are not re-imported) is imported as a library voice, with its reference clip as the audition when it can be downloaded. If no Breeze default library voice exists, one is set: the server's default voice when it is in the library, otherwise the first Breeze library voice. The import is skipped when another import is already running.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryBreezeStatus](#schema-voicelibrarybreezestatus) | Success. |
-| 400 | [Error](#schema-error) | No Breeze server URL is configured ("Add the Breeze server URL in Settings first."). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 409 | [Error](#schema-error) | Another Breeze check is running, or the Breeze URL or key changed during the check ("Breeze settings changed during the check…"); check again. |
+| 400 | [Error](#schema-error) | - `breeze_url_missing`: No Breeze server URL is configured (neither saved nor from the server's environment). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 409 | [Error](#schema-error) | - `breeze_check_running`: Another Breeze check is running. - `settings_changed`: The Breeze URL or key changed during the check; its result was discarded. Check again. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatesettings"></a>
 ### `POST /api/settings`
@@ -152,20 +191,21 @@ After a `ready` check, every usable server voice that no library voice version u
 
 Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted fields stay unchanged; the request is idempotent.
 
-**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. API keys (`api_key`, `api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.
+**Persistence.** Preferences (models, analysis provider, speech limits, chunking, `breeze_url`, `local_service_urls`) are saved in the library. Only values sent in a request are saved: a Breeze or self-hosted server URL that comes from the server's environment is used but never saved. API keys (`api_keys`, `breeze_api_key`) are kept in memory only: they last until the server restarts, when keys come from the environment again. An empty key string clears that runtime key.
 
-**Validation.** The whole request is checked before anything is saved; any 400 leaves every setting unchanged. `api_key` and `analysis_model` are compatibility aliases for the Gemini entries of `api_keys` and `analysis_models_by_provider`; sending an alias and its map entry with different values is refused. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status.
+**Validation.** The whole request is checked before anything is saved; any 400 or 422 leaves every setting unchanged. Analysis model IDs may be any syntactically valid ID (the provider decides support when used). TTS models are limited to `tts_models` from status. Speech limits out of range, of the wrong type or with an unknown name are request validation errors (422).
 
-**Side effects.** Every successful call re-applies the speech limits, which also lifts any daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`). Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.
+**Side effects.** A daily Gemini quota block recorded by this server (see `tts_rate.daily_block_seconds`) is lifted for a model only when that model's speech limits change, and for every model when the Gemini key changes (it may belong to another project). Other changes, and re-sending the current values, keep the blocks. Account-check results whose key or model changed are discarded. Model catalogs are keyed by key, so a new key shows the curated list until refreshed.
 
 Request body (`application/json`): [SettingsRequest](#schema-settingsrequest)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Status](#schema-status) | Success. |
-| 400 | [Error](#schema-error) | A value is invalid: conflicting alias and map values ("Conflicting Gemini API key fields", "Conflicting Gemini analysis model fields"), a provider key other than gemini/openai/anthropic in a map ("Unknown cloud analysis provider"), a malformed model ID, an unknown `analysis_provider`, an unsupported `tts_model` or `tts_limits` model, a speech limit outside its range, an invalid Breeze or self-hosted server URL, or an unknown self-hosted service ID. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`. - `model_id_invalid`: An analysis or preprocessing model ID is malformed. - `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`. - `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`. - `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials. - `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`. - `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials. - `unknown_step`: An `analysis_step_presets` entry names a step that is not registered. - `step_config_invalid`: An `analysis_step_presets` entry has a provider or model its step does not take. - `step_preset_invalid`: An `analysis_step_presets` entry has an empty name, repeats another entry's `id`, or repeats a name already used for the same step (ignoring case). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getstatus"></a>
 ### `GET /api/status`
@@ -174,11 +214,12 @@ Request body (`application/json`): [SettingsRequest](#schema-settingsrequest)
 
 Runtime preferences, narration and analysis provider availability, whether keys are loaded (never their values), model catalogs, the last account-check state per provider, the last Breeze check, installed macOS voices, Gemini speech models and live rate-limiter state.
 
-Read-only and local: it never contacts a provider or the Breeze server. Prefer the lists it returns over assuming fixed model or voice lists.
+Read-only and local: it never contacts a provider or the Breeze server, and never writes. Prefer the lists it returns over assuming fixed model or voice lists; the analysis model choices per provider are in `model_catalogs`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Status](#schema-status) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Jobs
 
@@ -189,11 +230,11 @@ Durable background work: listing, polling and cancellation.
 
 **List jobs** · operation `listJobs` · cost `none`
 
-Returns jobs newest first, as a bare JSON array.
+Returns jobs newest first, as a bare JSON array of full `Job` objects. Read-only.
 
 Without `active`, at most the 100 most recent jobs are returned (after the `book_id` filter). With `active=true`, every `queued` or `running` job is returned, with no bound. There is no paging and no single-job GET: select a job from the list by `id` (or use the series runs route for series jobs).
 
-Poll this route to follow queued work until the job reaches a terminal status. Failures, cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` calls `GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape and on `kind` and `status`.
+Poll this route to follow queued work until the job reaches a terminal status, which is final. Failures, cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` calls `GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape and on `kind` and `status`.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -203,7 +244,8 @@ Poll this route to follow queued work until the job reaches a terminal status. F
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [Job](#schema-job) | Success. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="canceljob"></a>
 ### `POST /api/jobs/{job_id}/cancel`
@@ -213,7 +255,7 @@ Poll this route to follow queued work until the job reaches a terminal status. F
 Requests cancellation and returns the updated job. The body is ignored (send `{}` or nothing).
 
 - A job that is already terminal is returned unchanged (idempotent).
-- A `queued` job becomes `cancelled` immediately.
+- A `queued` job becomes `cancelled` immediately, and stays `cancelled`: its worker never starts it, and a later server shutdown does not turn it into `interrupted`.
 - A `running` job keeps `status: running` with `cancel_requested: true` and stops at the next safe boundary; poll until it ends. Requests already sent to a provider can still finish and be billed; validated outputs and finished audio are kept.
 - Cancelling a `series` parent also cancels its queued child jobs and flags a running one.
 - Cancelling a `performance` also cancels its queued `listen_chapter` child and flags a running one.
@@ -227,9 +269,10 @@ Cancelled work is resumed through the original start route, which creates a new 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No job has this ID ("Job not found"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `job_not_found`: No job has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Diagnostics
 
@@ -242,7 +285,7 @@ Best-effort, allowlisted operational events for troubleshooting playback.
 
 Stores one best-effort operational event for troubleshooting playback. It sends no model requests. The body is a strict allowlist: free-form messages, stacks, URLs, source text, credentials and unknown fields are refused with 422, and the rejected input is never echoed.
 
-Use real IDs from API responses; identifiers are format-checked. `segment_id`, `session_id` and `job_id` require `book_id`; without it the event is dropped with `recorded: false, reason: "unavailable"` (HTTP 200). Numeric fields are strict JSON numbers (no strings or booleans).
+Use real IDs from API responses; identifiers are format-checked. `segment_id`, `session_id` and `job_id` belong to a book and require `book_id` (422 without it). Numeric fields are strict JSON numbers (no strings or booleans).
 
 An identical event within 2 seconds is coalesced (`reason: "duplicate"`, with the earlier `id`). At most 120 client events are accepted per rolling minute across the server (`reason: "rate_limited"`). Storage failure returns `reason: "unavailable"`. Each accepted event keeps only the newest 5,000 events. A missing record does not mean playback succeeded; never retry paid work because of it. (The browser client additionally suppresses identical reports for ten seconds before sending.)
 
@@ -253,28 +296,30 @@ Request body (`application/json`): [DiagnosticRequest](#schema-diagnosticrequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [DiagnosticRecordResult](#schema-diagnosticrecordresult) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation. For this path the body is always `{"detail": "Invalid diagnostic event fields."}` (a string, not a list): rejected input is never echoed. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The body failed validation: an unknown or free-form field, a malformed identifier, a number out of range or of the wrong JSON type, or `segment_id`, `session_id` or `job_id` without `book_id`. For this operation the body is always `{"detail": "Invalid diagnostic event fields.", "code": "validation_error"}` (a string, not a list): rejected input is never echoed. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listdiagnostics"></a>
 ### `GET /api/diagnostics`
 
 **List diagnostic events** · operation `listDiagnostics` · cost `none`
 
-Newest stored events first (client and server), with the retention limit. The Settings screen downloads `?limit=5000` as `bardic-diagnostics.json`.
+Newest stored events first (client and server), with the retention limit. Read-only. The Settings screen downloads `?limit=5000` as `bardic-diagnostics.json`.
 
 Events contain only allowlisted fields. An empty result does not establish that playback had no errors: logging is best effort, older events are pruned, and unrecorded events cannot be recovered. This rotating log is separate from analysis provenance and resource accounting. Server events for listen and voice-preview worker failures, stops and submission failures carry the `job_id` (and book, passage and session IDs) so they can be correlated with the saved job; they never copy its error text.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | query | string \| null |  | Only events for this book. Must be a book UUID (lowercase hex with hyphens). |
-| `limit` | query | integer |  | Maximum events to return, 1–5000. Default 100. (default `100`) |
+| `limit` | query | integer |  | Maximum events to return. Default 100; values below 1 are treated as 1 and values above 5000 as 5000. (default `100`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [DiagnosticEvents](#schema-diagnosticevents) | Success. |
-| 400 | [Error](#schema-error) | Malformed `book_id` ("Invalid diagnostic identifier.") or `limit` outside 1–5000 ("Choose a diagnostic limit from 1 to 5000."). |
-| 422 | [Error](#schema-error) | `limit` is not an integer. For this path the body is always `{"detail": "Invalid diagnostic event fields."}` (a string, not a list): rejected input is never echoed. |
+| 400 | [Error](#schema-error) | - `book_id_invalid`: `book_id` is not a book UUID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Library
 
@@ -285,13 +330,14 @@ Importing books, the library snapshot, metadata, covers, removal and restoration
 
 **List active books** · operation `listBooks` · cost `none`
 
-Summaries of every book that is not removed: counts, cover metadata, series membership and measured storage. This is not the prose projection; fetch `GET /api/books/{book_id}` for that. Books are ordered most recently saved first: any save of the book (a metadata edit, an analysis result, a manual edit) moves it to the front. Removed books are never listed here; use `GET /api/library?include_archived=true`.
+Summaries of every book that is not removed: counts, cover metadata, series membership and measured storage. This is not the prose projection; fetch `GET /api/books/{book_id}` for that. Books are ordered by import time, most recently imported first (`created_at` descending). Saving a book (a metadata edit, an analysis result, a manual edit) does not change its place. Books stored without `created_at` come last, in a stable order. Removed books are never listed here; use `GET /api/library?include_archived=true`.
 
-Each call measures the book's media folders on disk and its database payload, so it is proportionally slower for large libraries. Counts distinguish narrative chapters (`chapter_count`) from other sections (`section_count`); see docs/STRUCTURE.md.
+Read-only. Each call measures the book's media folders on disk and its database payload, and checks which takes are still current (`audio_count`), so it is proportionally slower for large libraries. Counts distinguish narrative chapters (`chapter_count`) from other sections (`section_count`); see docs/STRUCTURE.md.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| 200 | list of [LibraryBookSummary](#schema-librarybooksummary) | Book summaries, most recently saved first. |
+| 200 | list of [LibraryBookSummary](#schema-librarybooksummary) | Book summaries, most recently imported first. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="importbook"></a>
 ### `POST /api/books`
@@ -301,10 +347,11 @@ Each call measures the book's media folders on disk and its database payload, so
 Imports a DRM-free EPUB or UTF-8 TXT uploaded as multipart form data with the single field `file`, and returns the new book as the full presented book document (the same shape as `GET /api/books/{book_id}`).
 
 - The format is chosen by the uploaded **file name's extension** (`.epub` or `.txt`, any case); the part's content type is ignored. A part without a file name is treated as `book.txt`.
-- Upload maximum is 30 MiB (31,457,280 bytes); a larger upload is rejected with 413 (the whole request body is still received first). EPUBs are additionally limited to 100 MB / 5,000 files when expanded.
+- Upload maximum is 30 MiB (31,457,280 bytes) of file content. A request whose `Content-Length` exceeds that limit plus 64 KiB of multipart framing is refused with 413 before its body is read; a body sent without `Content-Length` is read only up to that limit. EPUBs are additionally limited to 100 MB / 5,000 files when expanded.
 - The title comes from EPUB metadata, or for TXT from the file name (without extension, underscores as spaces); the author from EPUB creators, or an empty string. An EPUB cover image becomes a JPEG thumbnail.
 - The book starts with a free local draft (`analysis.provider` `local`, status `draft`): chapters, scenes and passages are split locally; dialogue passages are `unassigned` until analysis. The narrator and `unassigned` entries get installed device (macOS) voices when available. No provider is contacted.
-- The original bytes are saved in the data directory (`originals/{book_id}/source.{ext}`) for later `refreshBookMetadata` and structure repair. A resource record (stage `import`) is written.
+- The original bytes are saved in the data directory (`originals/{book_id}/source.{ext}`) for later `refreshBookMetadata` and structure repair. A resource record (stage `import`) measures the import.
+- A failed import leaves nothing behind: no book, no saved original and no resource record.
 - Not idempotent and not deduplicated: every call creates a new book with a new ID, even for the same file.
 
 Example (synthetic file): `curl --fail --request POST http://127.0.0.1:8765/api/books --form 'file=@/absolute/path/to/synthetic-story.txt;type=text/plain'`
@@ -314,10 +361,11 @@ Request body (`multipart/form-data`): [ImportBookForm](#schema-importbookform)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | The newly imported book, presented like `GET /api/books/{book_id}`. |
-| 400 | [Error](#schema-error) | The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary data, unreadable/unsafe/encrypted EPUB, or no readable text. `detail` explains which. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 413 | [Error](#schema-error) | The upload is larger than 30 MiB. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `book_file_invalid`: The file could not be imported: empty file, unsupported extension, TXT not UTF-8 or containing binary data, unreadable, unsafe or encrypted EPUB, or no readable text. `detail` says which. - `cover_unreadable`: The EPUB's cover image could not be read safely. - `invalid_request`: The multipart body could not be parsed. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 413 | [Error](#schema-error) | - `upload_too_large`: The upload is larger than 30 MiB. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="archivebook"></a>
 ### `POST /api/books/{book_id}/archive`
@@ -326,9 +374,9 @@ Request body (`multipart/form-data`): [ImportBookForm](#schema-importbookform)
 
 Reversibly removes the book from normal library views (`listBooks`, the default `getLibrary`, series `books` lists) and returns `{id, archived: true, retained: true}`. No request body.
 
-There is no destructive book-delete endpoint. Removal (archiving) changes visibility only: the original upload, analysis, audio, series links and history are retained and remain readable (for example `GET /api/books/{book_id}`, the cover and the export keep working), and no disk space is reclaimed. Active processing and most edits reject a removed book with 400 until it is restored. Removal of a series member leaves the series intact; the book appears in the series' `volumes` with status `archived`.
+There is no destructive book-delete endpoint. Removal (archiving) changes visibility only: the original upload, analysis, audio, series links and history are retained and remain readable (for example `GET /api/books/{book_id}`, the cover and the export keep working), and no disk space is reclaimed. Active processing and most edits reject a removed book with 409 `book_archived` until it is restored. Removal of a series member leaves the series intact; the book appears in the series' `volumes` with status `archived`.
 
-Each successful call records a `library_state` artifact in the book's history. Removing an already removed book is refused with 400 (not idempotent). Refused while any job is queued or running for the book or an active series run has reserved it.
+Idempotent: removing an already removed book succeeds with the same response and changes nothing. A call that removes the book records a `library_state` artifact in its history. Refused while any job is queued or running for the book or an active series run has reserved it.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -337,20 +385,20 @@ Each successful call records a `library_state` artifact in the book's history. R
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | The book is already removed. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is working on this book, or an active series run has reserved it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookcover"></a>
 ### `GET /api/books/{book_id}/cover`
 
 **Download the cover thumbnail** · operation `getBookCover` · cost `none`
 
-The saved cover thumbnail bytes. Covers are always stored as JPEG (at most 240 x 360 pixels, at most 256 KiB), so the content type is `image/jpeg`. Works for removed books too. Use the `cover.url` from a summary, which appends `?v={sha256}` as a cache-busting token; the server ignores any query parameters.
+The saved cover thumbnail bytes. Covers are always stored as JPEG (at most 240 x 360 pixels, at most 256 KiB), so the content type is `image/jpeg`. Works for removed books too. Read-only.
 
-Caching, as actually sent: the response has an `ETag` header whose value is the SHA-256 hex of the bytes **without the quotes** HTTP requires, and `Cache-Control: no-store` (the route asks for `private, max-age=300`, but the `/api/` middleware overrides it). Conditional requests are not supported: `If-None-Match` is ignored and the full image is always returned with 200.
+Caching: the response has a strong `ETag`, the quoted SHA-256 hex of the bytes (`"{sha256}"`, where `sha256` is `cover.sha256` in a summary). A request whose `If-None-Match` lists that tag (weak comparison, or `*`) gets 304 Not Modified with an empty body. With `?v=` equal to the current `sha256` (the summary's `cover.url`), the response carries `Cache-Control: private, max-age=31536000, immutable`, because that URL always names these bytes; any other URL gets `Cache-Control: private, no-cache` (revalidate with the `ETag`). Errors are `no-store` like every other `/api/` response. Other query parameters are ignored.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -359,8 +407,10 @@ Caching, as actually sent: the response has an `ETag` header whose value is the 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | `image/jpeg` | JPEG image bytes. |
-| 404 | [Error](#schema-error) | No book has this ID (`Book not found`), or the book has no saved cover (`Cover not found`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 304 |  | Not modified: `If-None-Match` matched the current `ETag` (empty body). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `cover_not_found`: The book has no saved cover. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="exportaudiobook"></a>
 ### `GET /api/books/{book_id}/export`
@@ -369,11 +419,11 @@ Caching, as actually sent: the response has an `ETag` header whose value is the 
 
 Builds and downloads an audiobook ZIP from the book's valid enhanced (cast) takes. Requires at least one valid take; a take is valid when it still matches the passage's current text, speaker, voice, scene direction and provider/model, and its WAV file exists. Simple-listening and voice-example audio are not included. Works for removed books and does not require the book to be idle.
 
-The response is `application/zip` with `Content-Disposition: attachment` and a file name derived from the title (characters other than letters, digits, underscore, space, `.` and `-` removed; at most 80 characters; `audiobook` if nothing remains) plus `.zip`. The archive is assembled synchronously in a temporary folder before the response starts, so a large book takes a while. A resource record (stage `audio_export`) is written: this GET writes local bookkeeping but never contacts a provider.
+The response is `application/zip` with `Content-Disposition: attachment` and a file name derived from the title (characters other than letters, digits, underscore, space, `.` and `-` removed; at most 80 characters; `audiobook` if nothing remains) plus `.zip`. The archive is assembled synchronously in a temporary folder before the response starts, so a large book takes a while. Read-only: it records nothing and never contacts a provider; the temporary folder is deleted after the response.
 
-Archive contents:
+Archive layout:
 
-- `production.json`: the raw stored book JSON (pretty-printed UTF-8), not the presented document: no `leading_text`/`trailing_text` or audio URLs, and each passage's `audio` is its stored take metadata (or null), including takes that are no longer current. Treat its fields as storage, not as a contract.
+- `production.json`: the book exactly as `GET /api/books/{book_id}` presents it at export time (the `Book` schema, pretty-printed UTF-8), including `leading_text`/`trailing_text`; each passage's `audio` is its current take or null. Its audio `url` values point at this server, not into the archive; use `takes/`.
 - `README.txt`: a short plain-text explanation.
 - `takes/{segment_id}.wav`: one file per passage with a valid take, even when its chapter is incomplete.
 - `chapters/NNN.txt`: the text of every section, numbered from `001` in book order (all sections, not only narrative chapters).
@@ -388,19 +438,20 @@ Archive contents:
 | --- | --- | --- |
 | 200 | `application/zip` | The audiobook ZIP archive. |
 | 206 | `application/zip` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 400 | [Error](#schema-error) | No passage has a valid enhanced take (`Generate some audio before exporting`), or a take file is not a readable mono 24 kHz 16-bit PCM WAV. |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 400 | [Error](#schema-error) | - `export_audio_missing`: No passage has a current enhanced take. - `take_unreadable`: A take file is not a readable mono 24 kHz 16-bit PCM WAV. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatebookmetadata"></a>
 ### `PATCH /api/books/{book_id}/metadata`
 
 **Edit display title and author** · operation `updateBookMetadata` · cost `none`
 
-Sets the display title and author and returns the updated summary. Whitespace is normalized (runs of spaces, tabs and newlines become one space; leading and trailing whitespace is removed). Title is required (1–500 characters); author defaults to an empty string (maximum 500).
+Sets the display title and author and returns the updated summary. Whitespace is normalized (runs of spaces, tabs and newlines become one space; leading and trailing whitespace is removed). Title is required (1–500 characters); author defaults to an empty string (maximum 500). A missing `title`, a value longer than 500 characters or an unknown field is a 422 validation error.
 
-Both fields are then marked as reviewed: a later `refreshBookMetadata` never overwrites either of them, even the author when it was sent empty. The edit increments the book's `revision`, retains the previous projection in history, and moves the book to the front of the library order. It does not rename the original file or change the text.
+Each field whose value this edit changes is marked as reviewed: a later `refreshBookMetadata` never overwrites it. A field sent with its current value is not marked, and earlier marks are kept. An edit that changes a field increments the book's `revision` and retains the previous projection in history; an edit that changes nothing saves nothing. It does not rename the original file, change the text, or change the book's place in the library order.
 
 Refused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.
 
@@ -413,11 +464,12 @@ Request body (`application/json`): [BookMetadataRequest](#schema-bookmetadatareq
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryBookSummary](#schema-librarybooksummary) | Success. |
-| 400 | [Error](#schema-error) | The book is removed (restore it first), or the normalized title is empty, or a value contains control characters. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is working on this book, or an active series run has reserved it. |
-| 422 | [Error](#schema-error) | Missing `title`, a title or author longer than 500 characters, or an unknown field. |
+| 400 | [Error](#schema-error) | - `metadata_invalid`: The normalized title is empty, or a value contains control characters. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. - `book_archived`: The book is removed (archived); restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="refreshbookmetadata"></a>
 ### `POST /api/books/{book_id}/refresh-metadata`
@@ -426,11 +478,11 @@ Request body (`application/json`): [BookMetadataRequest](#schema-bookmetadatareq
 
 Re-parses the saved original EPUB or TXT (locally; it does not download metadata from the web) and returns the updated summary. No request body.
 
-- Title and author are replaced by the values parsed from the original, except a field that was set by `updateBookMetadata` (reviewed display metadata is preserved; that edit marks both fields).
+- Title and author are replaced by the values parsed from the original, except a field that an `updateBookMetadata` call changed (reviewed display metadata is preserved per field).
 - If the original yields a cover thumbnail, it replaces the saved cover. A missing cover in the original does not remove an existing one.
 - Chapters, passages, analysis and audio are not changed; use `POST /api/books/{book_id}/repair-structure` for structure.
 - Always increments the book's `revision` and retains the previous projection in history, even when nothing changed.
-- A resource record (stage `metadata_refresh`) is written for every attempt, including failed ones (also for an unknown ID).
+- A resource record (stage `metadata_refresh`) measures each refresh that reaches the original, including one that fails to parse it. A refused request (unknown, removed or busy book) records nothing.
 
 Refused while any job is queued or running for the book, while an active series run has reserved it, or while the book is removed.
 
@@ -441,11 +493,12 @@ Refused while any job is queued or running for the book, while an active series 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryBookSummary](#schema-librarybooksummary) | Success. |
-| 400 | [Error](#schema-error) | The book is removed; the saved original is unavailable (for example the demo book, which has none) or larger than the import limit; or it can no longer be parsed or its cover read. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is working on this book, or an active series run has reserved it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `original_unavailable`: The book has no readable saved original (for example the demo book). - `original_too_large`: The saved original is larger than the import limit. - `original_unreadable`: The saved original can no longer be parsed. `detail` says why. - `cover_unreadable`: The original's cover image could not be read safely. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run has reserved this book. - `book_archived`: The book is removed (archived); restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="restorebook"></a>
 ### `POST /api/books/{book_id}/restore`
@@ -454,7 +507,7 @@ Refused while any job is queued or running for the book, while an active series 
 
 Restores a removed book to normal library views and returns `{id, archived: false, retained: true}`. No request body. Everything retained during removal becomes usable again.
 
-Idempotent in effect: restoring a book that is not removed succeeds with the same response (and, like every successful call, records a `library_state` artifact in the book's history). Respects series-run guards: refused while a run of the book's series is queued or running (even if the series itself is removed). Restoring a book does not restore its removed series.
+Idempotent: restoring a book that is not removed succeeds with the same response and changes nothing. A call that restores the book records a `library_state` artifact in its history. Refused while a job is queued or running for the book, or while a run of the book's series is queued or running (even if the series itself is removed). Restoring a book does not restore its removed series.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -463,11 +516,11 @@ Idempotent in effect: restoring a book that is not removed succeeds with the sam
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | A job is queued or running for this book. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A run of the book's series is queued or running. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: A run of the book's series is queued or running. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createdemobook"></a>
 ### `POST /api/demo`
@@ -476,12 +529,13 @@ Idempotent in effect: restoring a book that is not removed succeeds with the sam
 
 Creates the built-in original sample story ("The Last Light") with a free local heuristic draft analysis (explicit speech tags only; `analysis.provider` `local`) and returns it as the full presented book document. No request body and no provider contact.
 
-Not idempotent: every call creates another copy with a new ID. The demo has no saved original file, so `refreshBookMetadata` on it fails with 400 and its `storage.original_bytes` is 0.
+Not idempotent: every call creates another copy with a new ID. The demo has no saved original file, so `refreshBookMetadata` on it fails with 400 `original_unavailable` and its `storage.original_bytes` is 0.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | The new demo book, presented like `GET /api/books/{book_id}`. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getlibrary"></a>
 ### `GET /api/library`
@@ -490,9 +544,9 @@ Not idempotent: every call creates another copy with a new ID. The demo has no s
 
 The library-management view: `{books, series, storage}` with book summaries (the `listBooks` shape), series entries with their books and volume placeholders, and library-wide measured storage.
 
-Books are ordered most recently saved first: any save of the book (a metadata edit, an analysis result, a manual edit) moves it to the front. With `include_archived=true`, removed books and removed series are included (each flagged `archived`); otherwise both are omitted. A series' `volumes` always include its removed books (status `archived`).
+Books are ordered by import time, most recently imported first (`created_at` descending). Saving a book (a metadata edit, an analysis result, a manual edit) does not change its place. Books stored without `created_at` come last, in a stable order. With `include_archived=true`, removed books and removed series are included (each flagged `archived`); otherwise both are omitted. A series' `volumes` always include its removed books (status `archived`).
 
-Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or free space exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. Removed items retain their files and data. Every call walks the data directory to measure sizes.
+Read-only. Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pages, indexes or free space exactly; the shared database, WAL and SHM file sizes are reported separately in `storage`. Removed items retain their files and data. Every call walks the data directory to measure sizes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -501,7 +555,8 @@ Storage caveats: per-book `database_payload_bytes` does not apportion SQLite pag
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibrarySnapshot](#schema-librarysnapshot) | Success. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Series
 
@@ -521,8 +576,9 @@ Returns `{membership, series, links, characters}`. `membership` and `series` are
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="setbookseries"></a>
 ### `PUT /api/books/{book_id}/series`
@@ -538,7 +594,7 @@ Send `{"series_id": "SERIES_ID", "position": 9}` with a JSON number, not a numer
 - Detaching, or moving to another series, deletes the book's identity links. Moving within the same series keeps them.
 - Removed (archived) membership and history are retained for restoration.
 
-Refused while the book has an active job, while a series run holds the book, or while the target series has an active run. Each change is recorded in the book's series provenance.
+Refused while the book is removed, has an active job or is held by a series run, and while the target series is removed or has an active run. Each change is recorded in the book's series provenance.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -549,11 +605,12 @@ Request body (`application/json`): [SeriesMembershipRequest](#schema-seriesmembe
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeries](#schema-bookseries) | Success. |
-| 400 | [Error](#schema-error) | The book is removed; the target series is removed; `series_id` is given without a valid `position`; `position` is given without `series_id`; or another supplied book already has that position. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or the target series does not exist. |
-| 409 | [Error](#schema-error) | A job is active on this book, a series run holds it, or the target series has an active run. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_series`: No series has the `series_id` in the body. - `position_invalid`: `series_id` is given without a finite `position` from 0 through 1,000,000. - `position_without_series`: `position` is given without `series_id`. - `position_taken`: Another supplied book of the series already has that position. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The target series is removed (archived). Restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="linkseriescharacter"></a>
 ### `PUT /api/books/{book_id}/series/characters/{character_id}`
@@ -562,7 +619,7 @@ Request body (`application/json`): [SeriesMembershipRequest](#schema-seriesmembe
 
 With `{"series_character_id": "ID"}`, confirms that the book character is that series identity (replacing any previous link for the character) and returns the link. Re-linking the same identity keeps the original `confirmed_at`. With `{"series_character_id": null}` (or an empty body `{}`), removes any link and returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character exists.
 
-The book must be in an active series and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book has an active job or is held by a series run. Each change is recorded in the book's series provenance.
+The book must be in a series, the series must not be removed (for unlinking too: removal retains links for restoration), and the identity must belong to that series. Narrator and unassigned cannot become series identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book is removed, has an active job or is held by a series run. Each change is recorded in the book's series provenance.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -574,11 +631,12 @@ Request body (`application/json`): [SeriesCharacterLinkRequest](#schema-seriesch
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCharacterLinkState](#schema-seriescharacterlinkstate) \| [SeriesCharacterUnlinked](#schema-seriescharacterunlinked) | Success. |
-| 400 | [Error](#schema-error) | The book is removed; the character is `narrator` or `unassigned`; the book is in no active series; or the identity belongs to another series. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book, the book character (when linking) or the series character does not exist. |
-| 409 | [Error](#schema-error) | A job is active on this book, or a series run holds it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `character_not_linkable`: The character is `narrator` or `unassigned`. - `book_not_in_series`: Linking: the book is in no series. - `unknown_series_character`: No series character has the `series_character_id` in the body. - `series_character_mismatch`: The identity belongs to another series than the book's. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: Linking: the book has no character with `character_id`. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `job_active`: A job is working on this book. Wait for it or cancel it. - `series_run_active`: An active series run reserves this book, or the target series has an active run. - `series_archived`: The book's series is removed (archived). Restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookseriescontext"></a>
 ### `GET /api/books/{book_id}/series/context`
@@ -596,8 +654,9 @@ The bound (at most 12,000 serialized characters and 8 entries per character) is 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeriesContext](#schema-bookseriescontext) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listserieslinksuggestions"></a>
 ### `GET /api/books/{book_id}/series/suggestions`
@@ -613,42 +672,45 @@ Proposes series identities for this book's characters that have no link yet. A p
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BookSeriesSuggestions](#schema-bookseriessuggestions) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseries"></a>
 ### `GET /api/series`
 
 **List active series** · operation `listSeries` · cost `none`
 
-Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to see them.
+Returns every active (non-removed) series ordered by name (case-insensitive), then ID, each with its supplied books in reading order, all volume slots (supplied, missing and planned) and its character-identity count. Removed series are omitted; use `GET /api/library?include_archived=true` to list them. A removed series can still be read by ID through `getSeriesMap`, `listSeriesRuns` and `listSeriesCharacters`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [Series](#schema-series) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createseries"></a>
 ### `POST /api/series`
 
 **Create a series** · operation `createSeries` · cost `none`
 
-Creates an empty series. Whitespace in the name is collapsed. Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).
+Creates an empty series. Whitespace in the name is collapsed. The name is validated as for a rename (control characters other than tab and newlines are refused). Names are unique ignoring case, including against removed series. Not idempotent: each call creates a new ID. The response is a shorter shape than `Series` (no `archived` or `volumes`).
 
 Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCreated](#schema-seriescreated) | Success. |
-| 400 | [Error](#schema-error) | The name is blank after whitespace is trimmed, or another series (active or removed) already has that name ignoring case. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. - `text_invalid`: The name contains control characters other than tab and newlines. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="renameseries"></a>
 ### `PATCH /api/series/{series_id}`
 
 **Rename a series** · operation `renameSeries` · cost `none`
 
-Renames the series when its work is idle: no job on any supplied active book, no series run holding one of its books, and no active run of this series. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.
+Renames an active series when its work is idle: no active run of this series, no job on any of its books (removed ones included), and no series run holding one of its books. Whitespace is collapsed. The change is recorded in each member book's series provenance. Returns only `{id, name}`.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -659,18 +721,19 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesRenamed](#schema-seriesrenamed) | Success. |
-| 400 | [Error](#schema-error) | The name is blank or contains control characters, another series already has it ignoring case, or a removed member book still has an active job. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. - `series_name_taken`: Another series (active or removed) already has this name, ignoring case. - `text_invalid`: The name contains control characters other than tab and newlines. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="archiveseries"></a>
 ### `POST /api/series/{series_id}/archive`
 
 **Remove a series** · operation `archiveSeries` · cost `none`
 
-Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, the series is refused by the series routes that look it up (404) and by membership changes (400). Records a library-visibility artifact on each member book. Removing an already removed series returns 404. No request body.
+Removes (archives) the series from normal views. Nothing is deleted: memberships, placeholders, identities and history are retained for restoration, and member books remain independently available in the library. While removed, series edits, processing and membership or identity-link changes are refused with 409 `series_archived`; reads (`getSeriesMap`, `listSeriesRuns`, `listSeriesCharacters`) still work. Removing requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -679,11 +742,11 @@ Removes (archives) the series from normal views. Nothing is deleted: memberships
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | A member book (including a removed one) has an active job. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseriescharacters"></a>
 ### `GET /api/series/{series_id}/characters`
@@ -699,15 +762,16 @@ Returns the explicit cross-book identities of a series, ordered by name (case-in
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [SeriesCharacter](#schema-seriescharacter) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createseriescharacter"></a>
 ### `POST /api/series/{series_id}/characters`
 
 **Create a series character identity** · operation `createSeriesCharacter` · cost `none`
 
-Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Not refused for removed series or during series runs.
+Creates a series-level identity without linking or merging any book character; link book characters with `linkSeriesCharacter`. Duplicate names are allowed because a shared name is not a shared identity. Not idempotent. Refused for a removed series and while the series has an active run.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -718,17 +782,19 @@ Request body (`application/json`): [SeriesNameRequest](#schema-seriesnamerequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesCharacter](#schema-seriescharacter) | Success. |
-| 400 | [Error](#schema-error) | The name is blank after whitespace is trimmed. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `name_invalid`: The name is blank after whitespace is trimmed, or longer than 200 characters. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getseriesmap"></a>
 ### `GET /api/series/{series_id}/map`
 
 **Get the series map** · operation `getSeriesMap` · cost `none`
 
-Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence.
+Returns `{series, characters, note}`: the series with its supplied, missing and planned volumes, and its explicit identities with confirmed links. Only confirmed identity links join characters across supplied titles; absent volumes contribute no inferred evidence. Works for removed series too (`series.archived` is then true).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -737,8 +803,9 @@ Returns `{series, characters, note}`: the series with its supplied, missing and 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesMap](#schema-seriesmap) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="planseriesprocessing"></a>
 ### `POST /api/series/{series_id}/plan`
@@ -753,9 +820,9 @@ Previews a series run: the step-pipeline plan of every supplied, active book of 
 - `estimated_cost_usd` is null when any book's cost is unknown; `known_cost_usd` and `unknown_cost_books` say what is priced. Estimates cover known work before retries or evidence repairs.
 - `missing_inputs` (per book) and `missing_credentials` do not fail the preview; starting the run is refused while either is not empty.
 - Missing and planned placeholders and removed books are listed in `skipped_volumes` and never run.
-- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book's ID, position and `consent_fingerprint` (the book revision, and each step's version, provider, model and unit set, plus the exact requests of steps that are not context-pending). It does not cover `mode`, `gates`, `concurrency` or `limits`.
+- The `fingerprint` covers the plan version, series, steps, resolved `configs`, `fresh` and each book's ID, position and `consent_fingerprint` (the book revision, and each step's version, provider, model and unit set, plus the exact requests of steps that are not context-pending). It does not cover `scheduling`, `gates`, `concurrency` or `limits`.
 
-The plan can be empty when the series has no active books. Not purely read-only: for each book the server first records outside changes as the book pipeline overview does (`projection.sync`), and building units may store free local census caches.
+The plan can be empty when the series has no active books. Not purely read-only: for each book the server first records outside changes as the book pipeline plan does (`projection.sync`), and building units may store free local census caches.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -766,10 +833,12 @@ Request body (`application/json`): [SeriesPlanRequest](#schema-seriesplanrequest
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesPlan](#schema-seriesplan) | Success. |
-| 400 | [Error](#schema-error) | `steps` names an unknown step ID (400 here, where the book pipeline returns 404), or a `configs` entry is invalid for its step. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, `configs` or `gates` names a step that is not registered. - `step_config_invalid`: A `configs` entry names a provider or model its step does not take. - `step_model_missing`: A model step has no saved model for its provider and none in `configs`. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startseriesprocessing"></a>
 ### `POST /api/series/{series_id}/process`
@@ -780,17 +849,19 @@ Queues a series run and returns its parent job immediately. Send the same `steps
 
 **Checks, in order.** The server recomputes the plan under its store lock, then refuses the run when:
 
-1. the series has no supplied active book (400);
-2. neither `expected_fingerprint` nor any `limits` value was sent (400);
-3. `expected_fingerprint` differs from the recomputed plan (409; preview again and review the new scope rather than replacing the fingerprint and retrying);
-4. any book's plan has `missing_inputs` (400; the message names the steps, inputs and books);
-5. a provider the steps contact has no API key or server URL configured (400, `Add in Settings first: …`);
-6. the series already has an active run (409);
-7. a book has an active job or is reserved by another series run (409).
+1. the server is shutting down (503 `shutting_down`);
+2. the series is removed (409 `series_archived`), or `steps`, `configs` or `gates` names an unknown step, or a step has no valid provider and model (400);
+3. the series has no supplied active book (400 `series_empty`);
+4. neither `expected_fingerprint` nor any `limits` value was sent (400 `run_unconfirmed`);
+5. `expected_fingerprint` differs from the recomputed plan (409 `plan_stale`; preview again and review the new scope rather than replacing the fingerprint and retrying);
+6. any book's plan has `missing_inputs` (400 `step_inputs_missing`; the message names the steps, inputs and books);
+7. a provider the steps contact has no API key or server URL configured (400 `api_key_missing` or `server_url_missing`);
+8. the series already has an active run (409 `series_run_active`);
+9. a book has an active job (409 `job_active`) or is reserved by another series run (409 `series_run_active`).
 
 Nothing is queued when any check fails. The fingerprint is optimistic scope validation, not a reservation that freezes data between requests. `limits` are optional caps for API callers; the confirmed fingerprint is the authorization, and every paid HTTP attempt is still reserved and recorded by the pipeline runner.
 
-**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with `series_run_id`, `position`, `title`, `plan_fingerprint` (that book's plan), `consent_fingerprint`, `context_pending`, `context_sources` and `run_id: null`. Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with `listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, single-book runs and accepting versions on them get 409 (except the book a paused run waits on, below). Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) cancels queued children at once and asks the running child to stop; cancelling a child stops the series at that book.
+**Jobs.** The parent job has `kind: "series"`, `book_id: "series:SERIES_ID"` and `total` equal to the number of books. One child job of kind `pipeline` per book uses the real book ID and is created queued with `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources` and `run_id: null`. Provider keys and server URLs, per-step provider/model and gates are snapshotted now. Follow the run with `listSeriesRuns` or `GET /api/jobs`. Until the parent ends every book is reserved: edits, membership changes, single-book runs and accepting versions on them get 409 (except the book a paused run waits on, below). Cancelling the parent (`POST /api/jobs/{job_id}/cancel`) cancels queued children at once and asks the running child to stop; cancelling a child stops the series at that book.
 
 **Execution.** Books run one at a time in reading order; `concurrency` is the number of model requests in flight inside the running book. Before each book starts, its plan is recomputed; if its `consent_fingerprint` changed, that child fails with nothing sent and the series stops. Earlier books' newly accepted results change a context-pending book's prompts but not its consent. Each book runs as one pipeline run (with `series_run_id` set), with the same candidates, gates and auto-accept as a run started from the book.
 
@@ -807,18 +878,20 @@ Request body (`application/json`): [SeriesRunRequest](#schema-seriesrunrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued parent series job. Not a result: poll it until it is terminal. |
-| 400 | [Error](#schema-error) | `steps` names an unknown step or a `configs` entry is invalid; the series has no supplied active book; neither `expected_fingerprint` nor any limit was sent; a book lacks a required input that is not in this run; a needed API key or server URL is missing; or the series worker could not start (the jobs are then marked `failed`/`interrupted` and nothing runs). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | `expected_fingerprint` does not match the recomputed plan (preview again); the series already has an active run; or a book has an active job or is reserved by another series run. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, `configs` or `gates` names a step that is not registered. - `step_config_invalid`: A `configs` entry names a provider or model its step does not take. - `step_model_missing`: A model step has no saved model for its provider and none in `configs`. - `series_empty`: The series has no supplied, active book. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. - `step_inputs_missing`: A book lacks accepted results of a required input step that is not in this run. - `api_key_missing`: A cloud provider the steps use has no API key configured. - `server_url_missing`: A self-hosted service or Local LLM the steps use has no server URL configured (and no cloud key is missing). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `plan_stale`: `expected_fingerprint` does not match the recomputed plan. Nothing was queued. - `series_run_active`: This series already has an active run, or another series run holds one of its books. - `job_active`: A job is working on one of its supplied books. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The series worker is not accepting work because the server is shutting down. Nothing runs; jobs just created are marked failed or interrupted. |
 
 <a id="restoreseries"></a>
 ### `POST /api/series/{series_id}/restore`
 
 **Restore a removed series** · operation `restoreSeries` · cost `none`
 
-Restores a removed series. Idempotent: restoring an active series succeeds and changes nothing (a library-visibility artifact is still recorded on each member book). Unlike the other series edits it does not check for an active series run; it only requires that no member book has an active job. No request body.
+Restores a removed series. Restoring requires the series to be idle (as for `renameSeries`) and records a library-visibility artifact on each member book. Idempotent: when the series is already in the requested state, the call returns that state and changes nothing, performs no checks and records nothing. No request body.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -827,17 +900,18 @@ Restores a removed series. Idempotent: restoring an active series succeeds and c
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesArchiveState](#schema-seriesarchivestate) | Success. |
-| 400 | [Error](#schema-error) | A member book (including a removed one) has an active job. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listseriesruns"></a>
 ### `GET /api/series/{series_id}/runs`
 
 **List recent series runs** · operation `listSeriesRuns` · cost `none`
 
-Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first. Each embeds its child jobs as `children`, in reading order; a child that has started its book also carries `run`, a summary of its pipeline run (`id`, `status`, per-step `outcomes`, `error`). The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. Poll this route (or `GET /api/jobs`) to follow a run. Read-only.
+Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newest first. Each embeds its child jobs as `children`, in reading order; a child that has started its book also carries `run`, a summary of its pipeline run (`id`, `status`, per-step `outcomes`, `error`). The parent uses `book_id: "series:SERIES_ID"`; children use real book IDs. A dangling child job ID in stored data is skipped. Poll this route (or `GET /api/jobs`) to follow a run. Works for removed series too. Read-only.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -846,15 +920,16 @@ Returns `{"runs": [...]}` with up to 20 parent series jobs of this series, newes
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesRuns](#schema-seriesruns) | Success. |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="resumeseriesprocessing"></a>
 ### `POST /api/series/{series_id}/runs/{job_id}/resume`
 
 **Resume a series run paused for review** · operation `resumeSeriesProcessing` · cost `may_charge`
 
-Continues a series run that paused for the owner's review (`waiting_for_review` on the parent job). Refused with 409 while the waiting book still has a version from this run waiting for a decision: accept it or set it aside in that book's Analysis tab first. The run keeps the provider keys, server URLs and settings snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent job with `waiting_for_review: null`. No request body.
+Continues a series run that paused for the owner's review (`waiting_for_review` on the parent job). Refused with 409 while the waiting book still has a version from this run waiting for a decision: accept it or set it aside first. The run keeps the provider keys, server URLs and settings snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent job with `waiting_for_review: null`. No request body.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -864,18 +939,19 @@ Continues a series run that paused for the owner's review (`waiting_for_review` 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The parent series job, still running. Poll it until it is terminal. |
-| 400 | [Error](#schema-error) | The series worker could not resume (the run is then marked `failed` and nothing more runs). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". Also when the job is not a run of this series: "Series run not found". |
-| 409 | [Error](#schema-error) | The run is not waiting for review (never paused, already resumed, or ended), it was cancelled, the waiting book still has a version waiting for a decision, or the server restarted since it paused. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. - `series_run_not_found`: The job is not a series run of this series. |
+| 409 | [Error](#schema-error) | - `series_run_not_waiting`: The run is not waiting for review (never paused, already resumed, ended, or cancelled). - `series_run_not_resumable`: The server restarted since the run paused; start the series again. - `review_pending`: The waiting book still has a version from this run waiting for a decision. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The series worker is not accepting work because the server is shutting down. The run is marked failed and nothing more runs. |
 
 <a id="putseriesvolume"></a>
 ### `PUT /api/series/{series_id}/volumes`
 
 **Add or update a volume placeholder** · operation `putSeriesVolume` · cost `none`
 
-Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires the series to be idle.
+Creates a placeholder for a volume the library does not have, or replaces the title and status of the placeholder already at that position (upsert keyed by position). A placeholder holds reading order only; it never contributes text or knowledge, and missing or planned volumes do not block a series run. Assigning a real book to the same position later replaces the placeholder. Requires an active, idle series (as for `renameSeries`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -886,18 +962,19 @@ Request body (`application/json`): [SeriesVolumeRequest](#schema-seriesvolumereq
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesVolumeSlot](#schema-seriesvolumeslot) | Success. |
-| 400 | [Error](#schema-error) | A supplied book (including a removed one) already occupies that position, or the title contains control characters. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `position_taken`: A supplied book (including a removed one) already has this position. - `text_invalid`: The title contains control characters other than tab and newlines. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deleteseriesvolume"></a>
 ### `DELETE /api/series/{series_id}/volumes/{position}`
 
 **Remove a volume placeholder** · operation `deleteSeriesVolume` · cost `none`
 
-Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires the series to be idle.
+Removes the placeholder at `position`. It never removes or detaches a supplied book. Idempotent: returns `removed: true` even when no placeholder was at that position. Requires an active, idle series (as for `renameSeries`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -907,11 +984,12 @@ Removes the placeholder at `position`. It never removes or detaches a supplied b
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [SeriesVolumeRemoval](#schema-seriesvolumeremoval) | Success. |
-| 400 | [Error](#schema-error) | The position is negative, above 1,000,000 or not finite. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The series does not exist, or it is removed (archived): removed series are reported as not found here. Detail: "Series not found". |
-| 409 | [Error](#schema-error) | A job is active on one of its supplied books, a series run reserves one of its books, or this series has an active run. Wait for it or cancel it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `position_invalid`: The position is negative, above 1,000,000 or not finite. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `series_not_found`: No series has this ID. |
+| 409 | [Error](#schema-error) | - `series_archived`: The series is removed (archived). Restore it first; reads still work. - `series_run_active`: This series has an active processing run, or an active series run reserves one of its books. Wait for it or cancel it. - `job_active`: A job is working on one of its books (including a removed one). Wait for it or cancel it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Books
 
@@ -922,7 +1000,7 @@ The book document and manual edits to its characters, passages and scenes.
 
 **Get the full book document** · operation `getBook` · cost `none`
 
-Returns the full reader projection: chapters with canonical text, scenes, passages with source offsets, the cast with voice choices, `revision`, and the analysis summary. Valid enhanced audio has a playback URL; an unavailable or stale selected take is presented as `null`. Read-only. Works for archived books.
+Returns the full reader projection: chapters with canonical text, scenes, passages with source offsets, the cast with voice choices, `revision`, and the analysis summary. Valid enhanced audio has a playback URL; an unavailable or stale selected take is presented as `null`. Server bookkeeping (edit locks, metadata locks, cache keys, single-provider voice fields of older versions) is not included. Read-only. Works for archived books. A book whose stored data is inconsistent (for example a passage naming a missing chapter) is a server defect (500 `internal_error`), never 404.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -931,15 +1009,18 @@ Returns the full reader projection: chapters with canonical text, scenes, passag
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="addcharacter"></a>
 ### `POST /api/books/{book_id}/characters`
 
 **Add a character** · operation `addCharacter` · cost `none`
 
-Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty; voices start as `{"gemini": {"id": "Kore"}}` plus any `voices` sent. The new character has `edited: true` and `edited_fields` listing only the fields sent (always including `name`), so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Rejected while a job or series run holds the book (409) or when it is archived (400). Returns the full, presented book.
+Adds a human-reviewed cast member with a new ID (`character-` + 12 hex). The body is the same `CharacterEdit` as editing, but `name` is required. Omitted fields start empty. Voices start as `{"gemini": {"id": "Kore"}}` plus a device (`system`) voice chosen from the installed voices the same way imported characters get one (none when no suitable voice is installed), then any `voices` sent are applied; sending `system: null` keeps the device choice at Default. Only the fields sent (always including `name`) are locked against generated analysis, so generated profile text may still fill the rest. Increments `revision`. Nothing is re-attributed; assign passages with the passage edit. Requires a non-archived, idle book (409). Returns the full, presented book.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -950,26 +1031,31 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | The book is archived; `name` is missing ("A character name is required"); or a `voices` choice is invalid (see editCharacter). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `character_name_required`: `name` is missing. - `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`. - `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider. - `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice. - `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editcharacter"></a>
 ### `PATCH /api/books/{book_id}/characters/{character_id}`
 
 **Edit a character** · operation `editCharacter` · cost `none`
 
-Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` for the forms. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.
+Updates any of `name`, `aliases`, `description`, `direction` and `voices` (body `CharacterEdit`). Renaming records the previous name in `former_names`, so later discovery still resolves it to this character. `voices` changes only the providers it names; see `CharacterEdit.voices` and `VoiceChoice` for the forms. For every provider, `null` or a blank `id` clears the choice, so Default applies. Choosing a Breeze voice by `id` pins it to the revision from the last Breeze check, from saved state only (no server request). Changing a voice or direction deselects that character's now-stale takes.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
+A manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. Lock state is server bookkeeping and is not part of the book document.
 
-Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
+A request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.
 
-After the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+Edits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.
 
-The review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.
+After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+
+Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -981,18 +1067,19 @@ Request body (`application/json`): [CharacterEdit](#schema-characteredit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | The book is archived; `voices` names a provider other than system, gemini or breeze; a `library` voice does not exist, is deleted or belongs to another provider; or a Breeze `id` is not in the last Breeze check or is not a usable (cloned) voice. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID, or no item of that kind has this ID in the book ("Item not found"). |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `voice_provider_unknown`: `voices` names a provider other than `system`, `gemini` or `breeze`. - `library_voice_unavailable`: A `library` voice does not exist, is deleted, or belongs to another provider. - `breeze_voice_unavailable`: A Breeze `id` is not in the last Breeze voice check, or is not a usable (cloned) voice. - `seed_not_applicable`: A choice has a `seed` but is not a Breeze voice chosen by a nonblank `id`. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: No character in this book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listcharacterreferences"></a>
 ### `GET /api/books/{book_id}/characters/{character_id}/references`
 
 **List source references to a character** · operation `listCharacterReferences` · cost `none`
 
-Returns every reference to this current cast member, unpaginated, in insertion order: attributed dialogue passages, name/alias mentions, and evidence quotations, each with a source anchor. The references are a projection of the accepted analysis-pipeline versions (discovery, profiles, directing). They are rebuilt when a version is accepted, rolled back or set aside, and when the pipeline overview or the inspector records outside changes, so a manual edit appears after the next such call. Rows retained from the removed Classic engine are carried until a discovery version is accepted; structure repair carries them over. An empty list means nothing has been projected (for example after import or the demo). Read-only: this call never rebuilds them. Works for archived books.
+Returns every source reference to this current cast member, unpaginated, in reading order (chapter, then offset): dialogue passages currently attributed to it, mentions of its name or aliases, and evidence quotations, each with a source anchor. The references are the projection of the accepted analysis-pipeline versions (discovery, profiles, directing) onto the current book, computed on every call as the next pipeline write would record it, so manual edits and acceptance show at once. A name or alias that another cast member shares is not counted as a mention. Rows retained from the removed Classic engine are carried until a discovery version is accepted. A book with no accepted discovery, profiles or directing version (and none that the current book implies) lists its stored rows unchanged, which may be empty. `narrator` and `unassigned` have no references. Read-only; nothing is recorded. Works for archived books.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1002,17 +1089,20 @@ Returns every reference to this current cast member, unpaginated, in insertion o
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | list of [CharacterReference](#schema-characterreference) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID, or the character is not in its current cast ("Character not found"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `character_not_found`: No character in the book's current cast has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="repairbookstructure"></a>
 ### `POST /api/books/{book_id}/repair-structure`
 
 **Refresh structure metadata from the saved original** · operation `repairBookStructure` · cost `none`
 
-Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; edited scenes are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.
+Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, `title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed to the new titles in the same transaction. Increments `revision`.
 
-Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400). Requires an idle, non-archived book. Runs locally with no provider request; every attempt, including a refused one, records a local `structure_repair` resource measurement. Returns the full, presented book.
+Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; these preconditions are checked first and a refused precondition records nothing. Runs locally with no provider request; every attempt that passes them, including one refused with 400, records a local `structure_repair` resource measurement. Returns the full, presented book.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1021,11 +1111,12 @@ Refused, with existing work preserved, unless the re-parsed original has the sam
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | The book is archived; it has no saved original EPUB/TXT; the original is missing, larger than 30 MiB (the import limit) or an unreadable EPUB; or the re-parsed source does not match the saved chapters or checkpoint. Existing work is preserved. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `original_missing`: The book has no saved original EPUB or TXT, or the saved file is missing. - `original_too_large`: The saved original is larger than 30 MiB (the import limit). - `original_unreadable`: The saved original could not be parsed (for example an unreadable EPUB). - `structure_mismatch`: The re-parsed source does not match the saved chapters or the saved analysis checkpoint. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editscene"></a>
 ### `PATCH /api/books/{book_id}/scenes/{scene_id}`
@@ -1034,13 +1125,17 @@ Refused, with existing work preserved, unless the re-parsed original has the sam
 
 Updates any of `title`, `summary`, `tone` and `direction` of one scene (body `SceneEdit`). Scene tone and direction are part of every enhanced narration recipe of the scene's passages, so changing them deselects those takes. Scene boundaries cannot be edited here.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
+A manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. Lock state is server bookkeeping and is not part of the book document.
 
-Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
+A request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.
 
-After the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+Edits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.
 
-The review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.
+After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+
+Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1052,26 +1147,30 @@ Request body (`application/json`): [SceneEdit](#schema-sceneedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | The book is archived. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID, or no item of that kind has this ID in the book ("Item not found"). |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `scene_not_found`: No scene in this book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="editpassage"></a>
 ### `PATCH /api/books/{book_id}/segments/{segment_id}`
 
 **Edit a passage** · operation `editPassage` · cost `none`
 
-Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`) and marks the passage edited. Sending `speaker_id` (even unchanged) sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take; like other performance edits it deselects the current take while retaining its history.
+Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending `speaker_id` sets `confidence` to 1.0; changing it also drops the passage's `speaker_check`. The text and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` clears it so the speaker's voice seed applies; like other performance edits this deselects the current take while retaining its history.
 
-Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing.
+A manual edit locks each field whose value it actually changes, so generated analysis never overwrites it (editors may resend a whole form; unchanged values are not locked). Confirming a passage's current speaker (sending the same `speaker_id` while its `confidence` is below 1.0) is a change: it sets `confidence` to 1.0 and locks the speaker. Lock state is server bookkeeping and is not part of the book document.
 
-Edits are rejected while any job is queued or running for the book, or while an active series run reserves it (409); archived books must be restored first (400). There is no optimistic concurrency check: the last write wins, and every successful edit increments the book `revision` by 1.
+A request that changes nothing (an empty body, only omitted or `null` fields, or values equal to the current ones) is a no-op: nothing is saved or locked, `revision` does not change, and the current book is returned.
 
-After the change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+Edits require a book that is not archived (409 `book_archived`) and that no queued or running job (409 `job_active`) or active series run (409 `series_run_active`) holds. There is no optimistic concurrency check: the last write wins, and every edit that changes something increments the book `revision` by 1.
 
-The review endpoints ignore omitted or `null` fields; send an empty string or array to clear a value. Returns the full, presented book document.
+After a change, every passage's selected enhanced take is re-validated against its render recipe (passage text, speaker voice and direction, scene notes, provider, model). A take whose recipe no longer matches is deselected (the passage's `audio` becomes null). Its WAV bytes are kept, so restoring the previous values and rendering again reuses the archived take without a provider request. Every scene's `character_ids` is then recomputed (sorted) from its passages' speakers.
+
+Omitted and `null` fields are ignored (except a passage `seed`, where `null` clears it); send an empty string or array to clear a value. Returns the full, presented book document.
+
+Before it changes the book, the current projection is recorded in the step pipeline's version history (as `baseline` or `external` versions of the capturable steps) when the history does not already explain it, so the replaced state stays restorable.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1083,11 +1182,12 @@ Request body (`application/json`): [SegmentEdit](#schema-segmentedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Book](#schema-book) | Success. |
-| 400 | [Error](#schema-error) | The book is archived, or `speaker_id` is not a character in this book's cast ("Choose a character in this book's cast"). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID, or no item of that kind has this ID in the book ("Item not found"). |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `character_not_in_cast`: `speaker_id` is not a character in this book's cast. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `passage_not_found`: No passage in this book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Pronunciations
 
@@ -1098,7 +1198,7 @@ Per-book respellings sent to narrators in place of a word; book text never chang
 
 **List the book's pronunciations** · operation `listPronunciations` · cost `none`
 
-Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many of those have a current Studio take, and up to three examples. Nothing is generated; the usage is computed from the current text on each call.
+Every entry with its use in the book: whole-word matches in chapter text, the passages containing it, how many of those have a current Studio take, and up to three examples. Nothing is generated or written; the usage is computed from the current text on each call.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1107,8 +1207,9 @@ Every entry with its use in the book: whole-word matches in chapter text, the pa
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PronunciationList](#schema-pronunciationlist) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="addpronunciation"></a>
 ### `POST /api/books/{book_id}/pronunciations`
@@ -1119,7 +1220,7 @@ Changing pronunciations requires an idle book. A render recipe records only the 
 
 Limits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.
 
-Adds one entry; only `term` and `respelling` are required, and the server assigns `id` (an `id` in the body is ignored). At most 500 entries per book.
+Adds one entry; only `term` and `respelling` are required, and the server assigns `id` (an `id` in the body is ignored). At most 500 entries per book. Requires a non-archived, idle book (409).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1130,11 +1231,12 @@ Request body (`application/json`): [PronunciationEntry](#schema-pronunciationent
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (restore it first); the entry is invalid (see the field rules); the term already has a pronunciation; the book has 500 entries; or `character_id` is not in the cast ("Choose a character in this book's cast"). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`). - `pronunciation_duplicate`: Another entry already has this term (under the case rules). - `pronunciation_limit_reached`: The book already has 500 entries. - `character_not_in_cast`: `character_id` is not a character in the book's current cast. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatepronunciation"></a>
 ### `PATCH /api/books/{book_id}/pronunciations/{entry_id}`
@@ -1145,23 +1247,24 @@ Changing pronunciations requires an idle book. A render recipe records only the 
 
 Limits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.
 
-The body has the same fields as for adding. Fields left out keep their saved values; `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling`, and is validated like a new one.
+A partial update (body `PronunciationPatch`): every field is optional, fields left out keep their saved values, and `null` (or `{}` for `providers`) clears one. The merged entry must still have a `term` and a `respelling` (so `null` for either is 400), and is validated like a new one. A change that leaves the entry as it was saves nothing and does not change the book `revision`. Requires a non-archived, idle book (409).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
 | `entry_id` | path | string | yes | Pronunciation entry ID (`pr_…`). |
 
-Request body (`application/json`): [PronunciationEntry](#schema-pronunciationentry)
+Request body (`application/json`): [PronunciationPatch](#schema-pronunciationpatch)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
-| 400 | [Error](#schema-error) | The book is archived; the merged entry is invalid; the term now duplicates another entry; or `character_id` is not in the cast. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID, or no entry has this ID ("Pronunciation not found"). |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `pronunciation_invalid`: The entry breaks a field rule (see the fields of `PronunciationEntry`). - `pronunciation_duplicate`: Another entry already has this term (under the case rules). - `pronunciation_limit_reached`: The book already has 500 entries. - `character_not_in_cast`: `character_id` is not a character in the book's current cast. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `pronunciation_not_found`: No entry in this book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deletepronunciation"></a>
 ### `DELETE /api/books/{book_id}/pronunciations/{entry_id}`
@@ -1172,7 +1275,7 @@ Changing pronunciations requires an idle book. A render recipe records only the 
 
 Limits: a multi-word term split across two passages is respelled in chapter chunks (one request spans both) but not in single-passage takes. Provider sentence timing (Breeze) stays in sent-text offsets; nothing maps it back to source offsets for clients yet.
 
-Removes the entry. Removing the last one removes the book's `pronunciations` field.
+Removes the entry. Removing the last one removes the book's `pronunciations` field. Requires a non-archived, idle book (409).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1182,11 +1285,11 @@ Removes the entry. Removing the last one removes the book's `pronunciations` fie
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PronunciationSaved](#schema-pronunciationsaved) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (restore it first). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | No book has this ID, or no entry has this ID ("Pronunciation not found"). |
-| 409 | [Error](#schema-error) | A job is queued or running for this book, or an active series run reserves it. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `pronunciation_not_found`: No entry in this book has this ID. |
+| 409 | [Error](#schema-error) | - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `book_archived`: The book is archived; restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Analysis pipeline
 
@@ -1197,13 +1300,14 @@ The step pipeline: step settings, previewed runs, and versioned results to accep
 
 **List pipeline steps, providers and saved step settings** · operation `getAnalysisPipeline` · cost `none`
 
-Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured`/`has_api_key` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.
+Step definitions in pipeline order, each listing its allowed `providers` and its effective `settings` (`{provider, model, gate, saved, saved_invalid}`), and every provider with `kind` (`model` or `service`), `self_hosted`, `needs` (`api_key` or `url`) and `configured` (a key or URL is set; not a reachability check). The Local LLM entry lists curated `models`. Service providers take `model: null`.
 
 Read-only; contacts no server.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineDefinitions](#schema-pipelinedefinitions) | Success. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="saveanalysispipelinestepsettings"></a>
 ### `PUT /api/analysis-pipeline/steps/{step_id}/settings`
@@ -1214,17 +1318,18 @@ Saves the library-wide default provider/model and gate (`auto` or `review`) for 
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 
 Request body (`application/json`): [StepSettings](#schema-stepsettings)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineStepSettingsView](#schema-pipelinestepsettingsview) | Success. |
-| 400 | [Error](#schema-error) | The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The step ID is unknown (`Unknown pipeline step: …`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `step_config_invalid`: The provider is not allowed for this step, a local step was given a model or another provider, a service provider was given a model, or the model ID is missing or malformed. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `step_not_found`: The step ID in the path is unknown. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookanalysispipeline"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline`
@@ -1233,7 +1338,7 @@ Request body (`application/json`): [StepSettings](#schema-stepsettings)
 
 Per-step accepted and total scopes, `has_accepted` (any accepted version), accepted origins, stale scopes, pending candidates and the latest version; the active run and the 5 most recent runs; and the chapter list.
 
-**This GET writes.** Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Contacts no server.
+Read-only: it records nothing and contacts no server. When the book changed outside the pipeline since the pipeline last recorded it, the accepted counts, origins and stale scopes already reflect those changes as the next plan, run, preview or accept will record them (as `baseline`/`external` versions). Those capture versions are not listed in `latest` or the version history until they are recorded.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1242,8 +1347,9 @@ Per-step accepted and total scopes, `has_accepted` (any accepted version), accep
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineBookOverview](#schema-pipelinebookoverview) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist (`Book not found`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="planbookanalysispipelinerun"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/plan`
@@ -1252,11 +1358,11 @@ Per-step accepted and total scopes, `has_accepted` (any accepted version), accep
 
 Builds each requested step's units from the currently accepted inputs (steps run in pipeline order whatever the request order) and reports units, cached units, model `requests`, `service_calls` (free calls to self-hosted services, not counted as model requests), token and cost estimates, `inputs_pending`, `missing_inputs` (per step, and `{step: [inputs]}` overall) and a `fingerprint`. No model or service calls. Estimates cover known work before retries or evidence repairs; a step whose input is in the same request is estimated from the input's current accepted result.
 
-Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings.
+Missing inputs do not fail the plan (they are reported); a run with them is refused. Omitted `configs` entries use the saved step settings, which are revalidated: an LLM step whose saved or default settings name no model is refused. A removed book can be planned. Checks, in order: every step ID in `steps` and `configs` must be known (400 `unknown_step`), the book must exist (404), then `configs` and `chapter_ids` are validated (400).
 
-The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `mode`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.
+The `fingerprint` covers the book revision, the chapter selection, `fresh`, and each step's version, provider, model and exact unit identities. It does not cover `scheduling`, `gates`, `concurrency`, `limits` or which units are cached. Send the same `steps`, `chapter_ids`, `configs` and `fresh` to the run, because they are part of the fingerprint.
 
-Not purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.
+Not purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed, but its character references are rebuilt from the accepted evidence when their inputs changed. This is skipped cheaply when a digest of the captured content is unchanged. Building units may also store free local census caches.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1267,21 +1373,22 @@ Request body (`application/json`): [PlanRequest](#schema-planrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelinePlan](#schema-pipelineplan) | Success. |
-| 400 | [Error](#schema-error) | A `configs` entry is invalid for its step, `chapter_ids` is empty or names a chapter not in this book, or a step could not plan its units. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book does not exist, or `steps` names an unknown step (an unknown step ID in the body is a 404, not a 400). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startbookanalysispipelinerun"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/runs`
 
 **Queue a pipeline run** · operation `startBookAnalysisPipelineRun` · cost `may_charge`
 
-Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped.
+Queues one job of kind `pipeline` running the requested steps and returns `{job, run}` immediately. Follow the job through `GET /api/jobs` and cancel it through the jobs API; the run record appears in this book's pipeline overview. A run never writes the book: it records candidate versions, and a step whose gate is `auto` is accepted when it completes (decision mode `auto`). Steps in the same run that require a step left for review, failed or without an accepted result are skipped. The returned `run` is a snapshot taken when the run was queued (`status: queued`, empty `step_run_ids`); poll for progress.
 
-Checks, in order: every step ID must be known (404 otherwise, before anything else); the book must exist, not be removed, and have no active job (and not be reserved by an active series run); `chapter_ids` and `configs` must be valid; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
+Checks, in order: every step ID in `steps`, `configs` and `gates` must be known (400 `unknown_step`, before anything else); the worker must not be stopping; the book must exist, not be removed, have no active job and not be reserved by an active series run; `chapter_ids` and `configs` must be valid, and each step's saved or default settings must name a model when its provider needs one; every provider the run contacts must have an API key or server URL configured (local steps and `offline_providers` need none); every step's required inputs must have an accepted result or be in the same run; and the run must be authorized by either `expected_fingerprint` (a confirmed plan) or at least one explicit limit. When `expected_fingerprint` is sent, the plan is recomputed and must match.
 
-Provider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.
+Provider keys and server URLs, per-step provider/model and gates are snapshotted now; later settings changes do not affect queued work. `limits` is optional and uncapped by default: the confirmed plan is the authorization. Every paid attempt is reserved and recorded either way; each unit has at most four HTTP attempts (two transport attempts for each of at most two generations), and validated units are cached and reused unless `fresh`. Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed, but its character references are rebuilt from the accepted evidence when their inputs changed. This is skipped cheaply when a digest of the captured content is unchanged.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1292,30 +1399,33 @@ Request body (`application/json`): [RunRequest](#schema-runrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineRunStarted](#schema-pipelinerunstarted) | The queued job and run. Not a result: poll the job until it is terminal. |
-| 400 | [Error](#schema-error) | The book is removed (restore it first); `chapter_ids` is empty or names a chapter not in this book; a `configs` entry is invalid; a needed API key or server URL is missing (`Add in Settings first: …`); a step's required input has no accepted result and is not in this run; or neither `expected_fingerprint` nor any limit was sent. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book does not exist, or `steps` names an unknown step. |
-| 409 | [Error](#schema-error) | A job is already working on this book, the book is reserved by an active series run, or the plan changed since the preview (`expected_fingerprint` does not match; preview again). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_step`: `steps`, or a key of `configs` (or of `gates`, for a run), is a step ID the server does not know. - `step_config_invalid`: A `configs` entry does not fit its step: a local step was given a provider other than `local` or a model, the provider is not one of the step's `providers`, a service provider was given a model, or the model ID is missing or malformed. - `step_model_missing`: A step without a `configs` entry uses its saved or default settings, and they name no model for an LLM provider. Save a model for the step, or send one in `configs`. - `chapter_ids_empty`: `chapter_ids` is an empty list (send null for every eligible chapter). - `unknown_chapter`: `chapter_ids` names a chapter that is not in this book. - `api_key_missing`: A cloud provider the run contacts has no API key configured (the detail lists every missing key and server URL). - `server_url_missing`: Only self-hosted providers are missing: a server URL the run contacts is not configured. - `step_inputs_missing`: A step's required input has no accepted result and is not in this run. - `run_unconfirmed`: Neither `expected_fingerprint` nor any limit was sent. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book. - `job_active`: A job is already working on this book. - `plan_stale`: The plan changed since the preview (`expected_fingerprint` does not match). Preview again; nothing was queued. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The local worker is stopping and accepts no new runs. |
 
 <a id="listanalysispipelinestepversions"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions`
 
 **List a step's versions and decisions** · operation `listAnalysisPipelineStepVersions` · cost `none`
 
-Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes `baseline`/`external` captures. Read-only (does not record outside changes).
+Version history, newest first, with each version's review `state` (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and the 50 most recent decisions. Includes recorded `baseline`/`external` captures. Read-only (does not record outside changes).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `limit` | query | integer |  | Maximum versions to return. Default 50; values are clamped to 1–200 (never an error). (default `50`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineVersionHistory](#schema-pipelineversionhistory) | Success. |
-| 404 | [Error](#schema-error) | The book does not exist, or the step ID is unknown. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getanalysispipelinestepversion"></a>
 ### `GET /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}`
@@ -1324,25 +1434,26 @@ Version history, newest first, with each version's review `state` (`candidate`, 
 
 The step's generic result table (`stats`, `columns`, paged `rows`) for a version, diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{version_id}` may be `accepted`. With a comparison, each row gains `_diff` (`added`, `changed` or `same`) and, unless added, `_changed` (changed column keys) and `_previous` (the compared values of those keys); rows only in the compared version are counted as `removed` but not returned. `diff` reports `same/changed/added/removed` and an `agreement` ratio, a cheap signal when comparing models. No comparison happens when `compare` is `none`, equals `{version_id}`, or resolves to no results (for example `accepted` when nothing is accepted); then `diff.compared_with` is null and rows carry no diff fields.
 
-Rows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Read-only.
+Rows are summarized against the book's current state (current names and passage text). A version still running has no scopes yet and returns an empty table. Paging is clamped, never an error. Read-only.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 | `compare` | query | string |  | What to diff against: `accepted` (default), another step version ID of this step, or `none`. (default `"accepted"`) |
 | `scope` | query | string \| null |  | Return only rows of this scope (a chapter ID, character ID or `book`). Filters rows, not `diff` counts. |
 | `changed_only` | query | boolean |  | When true, return only rows whose `_diff` is `changed` or `added` (none without a comparison). Default false. (default `false`) |
-| `offset` | query | integer |  | Rows to skip (default 0, must be nonnegative). (default `0`) |
-| `limit` | query | integer |  | Page size, 1–1000 (default 200). (default `200`) |
+| `offset` | query | integer |  | Rows to skip (default 0), clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
+| `limit` | query | integer |  | Page size (default 200), clamped to 1–1000. (default `200`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineVersionDetail](#schema-pipelineversiondetail) | Success. |
-| 400 | [Error](#schema-error) | The offset is negative or the page size is outside 1–1000. |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. Also when `compare` names a version that does not exist or belongs to another step. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_version`: `compare` names a version that does not exist, or belongs to another book or another step. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="acceptanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/accept`
@@ -1356,7 +1467,7 @@ Send `expected_revision` (from preview) to refuse the accept when the book chang
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1364,11 +1475,12 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineAcceptResult](#schema-pipelineacceptresult) | Success. |
-| 400 | [Error](#schema-error) | The book is removed (restore it first); the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected result does not fit the book. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
-| 409 | [Error](#schema-error) | The version is still running; another (non-pipeline) job is changing this book; the book is reserved by an active series run (unless that run is paused waiting for your review of this book); or the book revision differs from `expected_revision` (review the impact again). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. - `version_incompatible`: A selected result does not fit the book. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `series_run_active`: An active series run reserves this book, unless that run is paused waiting for review of this book (see `SeriesReviewWait`). - `job_active`: Another job (not a pipeline run) is changing this book. - `plan_stale`: The book revision differs from `expected_revision`: the book changed after the preview. Preview again. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="previewanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/preview`
@@ -1377,12 +1489,12 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 
 `{scopes?}` → changed and unchanged scopes, `conflicts` with manual edits (generated values that will not be applied because a person edited the field), narration takes that would be invalidated, downstream steps with accepted versions, and the book `revision` to send as `expected_revision` when accepting. `expected_revision` is ignored here. Omitted `scopes` means every scope of the version. For an accumulative step (discovery) only changed scopes are applied. Allowed on a running or empty version (the result is then empty) and on a removed book.
 
-Not purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed. This is skipped cheaply when a digest of the captured content is unchanged.
+Not purely read-only: Before answering, the server records outside changes (`projection.sync`): when the capturable content of the book no longer matches what the accepted versions explain, it stores the current state as new `baseline` (first time) or `external` versions and accepts them (decision modes `baseline`/`external`). The book itself is not changed, but its character references are rebuilt from the accepted evidence when their inputs changed. This is skipped cheaply when a digest of the captured content is unchanged.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1390,22 +1502,25 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineAcceptImpact](#schema-pipelineacceptimpact) | Success. |
-| 400 | [Error](#schema-error) | `scopes` is empty or names a scope this version does not contain, or a selected result does not fit the book (for example a structure version for different chapters). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book or step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_incompatible`: A selected result does not fit the book (for example a structure version for different chapters). |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="rejectanalysispipelinestepversion"></a>
 ### `POST /api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/reject`
 
 **Reject a candidate version** · operation `rejectAnalysisPipelineStepVersion` · cost `none`
 
-`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, accepted versions and retained results are unchanged, and the version remains inspectable. An accepted version cannot be rejected; accept another version to replace it. Because identical results share one artifact, a candidate whose selected scopes equal the accepted content (`same_as_accepted`) cannot be rejected either. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run or when the book is removed; the book's existence is not checked separately.
+`{scopes?}` → the appended `reject` decision (mode `user`). Records a decision only; the book, the accepted versions and retained results are unchanged, and the version remains inspectable (its state becomes `rejected`). The book must exist and not be removed. Omitted `scopes` means every scope of the version; `expected_revision` is ignored. Not refused while jobs run.
+
+Acceptance is a decision, not content equality: a version that was accepted and is still current for a selected scope cannot be rejected (accept another version to replace it), but a never-accepted version whose results equal the accepted content (`same_as_accepted`) can be. Rejecting it declines that run; the identical accepted content stays accepted through the version that was accepted.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID. |
-| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404. |
+| `step_id` | path | string | yes | Step ID: one of `structure`, `census`, `discovery`, `quotes`, `profiles` and `directing` (in pipeline order; the list is defined by the server and may grow). An unknown ID returns 404 `step_not_found`. |
 | `version_id` | path | string | yes | A step version ID from the version history, or `accepted` to address the currently accepted version of every scope. |
 
 Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
@@ -1413,11 +1528,12 @@ Request body (`application/json`): [DecisionRequest](#schema-decisionrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineDecision](#schema-pipelinedecision) | Success. |
-| 400 | [Error](#schema-error) | `{version_id}` is `accepted`; the version has no results; `scopes` is empty or names a scope this version does not contain; or a selected scope is the currently accepted version. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The step is unknown, or the version does not exist, belongs to another book or belongs to another step. |
-| 409 | [Error](#schema-error) | The version is still running. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `scopes_empty`: `scopes` is an empty list (send null for every scope of the version). - `unknown_scope`: `scopes` names a scope this version does not contain. - `version_empty`: The version has no results. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `step_not_found`: The step ID in the path is unknown. - `step_version_not_found`: The version does not exist, or belongs to another book or another step. |
+| 409 | [Error](#schema-error) | - `version_running`: The version is still running. - `book_archived`: The book is removed (archived). Restore it first. - `version_accepted`: `{version_id}` is `accepted`, or this version was accepted and is still the accepted version of a selected scope. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Inspection
 
@@ -1434,21 +1550,21 @@ Contents:
 
 | File | Content |
 | --- | --- |
-| `manifest.json` | `{schema_version: 1, format: "spintails-analysis", exported_at, book_id, artifact_count, external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, coordinate_system, notes}`. Start here. |
+| `manifest.json` | `{schema_version: 2, format: "spintails-analysis", exported_at, book_id, artifact_count, external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, coordinate_system, notes}`. Start here. |
 | `README.txt` | Plain-text guide to the bundle. |
 | `book.json` | The stored book document, including chapter text, passage IDs and stored take metadata (not the API presentation of `GET /api/books/{book_id}`). |
 | `story-map.json` | Same body as `GET /api/books/{book_id}/story-map`. |
 | `series.json` | `{membership, links, series_characters}` for the book's series (nulls/empty when none). |
 | `observations.json` | Retained character observations of the book. |
 | `references.json` | Saved character references (as in the story map). |
-| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, as stored. |
+| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, oldest first, each in the `PipelineAttempt` shape of `GET /api/books/{book_id}/pipeline` (the same field allowlist, with `validation_state`). |
 | `artifacts.jsonl` | One artifact per line, as `GET …/artifacts/{artifact_id}` returns it (metadata, `dependency_links`, `payload`), oldest first. |
 | `pipeline-events.jsonl` | Every analysis event of the book, one per line, oldest first. |
 | `resource-operations.json`, `listening-sessions.json`, `listening-takes.json`, `listening-chunks.json` | The book's saved rows, when those tables exist (possibly empty arrays). |
 
 The ZIP includes all retained versions belonging to the selected book and the transitive artifact dependencies needed by them, which can include source excerpts and observations from earlier books. Take metadata identifies separately stored audio assets; the ZIP excludes all audio binaries (enhanced takes, simple-listening WAVs and voice-preview audio), API keys and settings credentials. Voice-preview records are not included. Some legacy outputs lack original prompts or exact attempt provenance; the export marks that absence (`legacy_provenance`) rather than reconstructing it.
 
-Retains legacy data as artifacts on first use in a server process and records an `analysis_export` resource operation. No provider is contacted. For audio, use the audiobook export (`GET /api/books/{book_id}/export`).
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. For audio, use the audiobook export (`GET /api/books/{book_id}/export`).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1458,9 +1574,10 @@ Retains legacy data as artifacts on first use in a server process and records an
 | --- | --- | --- |
 | 200 | `application/zip` | The analysis bundle as a ZIP attachment. |
 | 206 | `application/zip` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | No book has this ID. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listbookartifacts"></a>
 ### `GET /api/books/{book_id}/artifacts`
@@ -1469,7 +1586,7 @@ Retains legacy data as artifacts on first use in a server process and records an
 
 `{items, total, offset, limit}` page of artifact metadata owned by the book, newest first. Payloads are not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. Historical or rejected outputs remain inspectable without becoming accepted knowledge.
 
-The first artifact request for a book in a server process retains legacy data as artifacts (marked `legacy_provenance`). No provider is contacted.
+`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1); an offset past the end returns an empty page. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data is retained as artifacts (marked `legacy_provenance`) once, when the server starts.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1477,22 +1594,22 @@ The first artifact request for a book in a server process retains legacy data as
 | `kind` | query | string \| null |  | Only this artifact kind (exact match). Optional. |
 | `stage` | query | string \| null |  | Only this artifact stage (exact match). Optional. |
 | `current` | query | boolean \| null |  | `true` for current selections only, `false` for non-current versions only; omit for all versions. |
-| `limit` | query | integer |  | Page size; default 30, must be 1–200. (default `30`) |
-| `offset` | query | integer |  | Versions to skip; default 0, must be nonnegative. (default `0`) |
+| `limit` | query | integer |  | Page size; default 30, clamped to 1–200. (default `30`) |
+| `offset` | query | integer |  | Versions to skip; default 0, clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ArtifactPage](#schema-artifactpage) | Success. |
-| 400 | [Error](#schema-error) | `limit` is outside 1–200 or `offset` is negative. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookartifact"></a>
 ### `GET /api/books/{book_id}/artifacts/{artifact_id}`
 
 **Get one artifact version with its payload** · operation `getBookArtifact` · cost `none`
 
-Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id, book_id}]`. An artifact owned by another book returns 404 under this book's path: follow the recorded owner in `dependency_links` to inspect earlier-book inputs. Has the same one-time legacy retention as the list. No provider is contacted.
+Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id, book_id}]`. An artifact owned by another book returns 404 under this book's path: follow the recorded owner in `dependency_links` to inspect earlier-book inputs. No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1502,8 +1619,9 @@ Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ArtifactDetail](#schema-artifactdetail) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID, or this book owns no artifact with this ID (including artifacts owned by another book). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `artifact_not_found`: This book owns no artifact with this ID (including an artifact owned by another book). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getpipelineinspector"></a>
 ### `GET /api/books/{book_id}/pipeline`
@@ -1514,9 +1632,9 @@ Versioned envelope with stage IDs, status, counts and dependencies; retained art
 
 The pipeline is an inspector, not a generic dependency scheduler. Its stage counts have different units and must not be summed into a global completion percentage. An HTTP 200 attempt does not mean its output passed validation: use `validation_state`.
 
-Step cards count the step pipeline's accepted, out-of-date (`stale_count`) and waiting (`candidate_count`) results, as `GET /api/books/{book_id}/analysis-pipeline` does. Artifact counts include retained versions from the removed Classic engine.
+Step cards count the step pipeline's accepted, out-of-date (`stale_count`) and waiting (`candidate_count`) results, as `GET /api/books/{book_id}/analysis-pipeline` does: outside changes are taken into account as the next pipeline write would record them, but nothing is recorded. Artifact counts include retained versions from the removed Classic engine.
 
-**This GET writes.** Like the pipeline overview, it first records outside changes as `baseline` or `external` step versions (see `GET /api/books/{book_id}/analysis-pipeline`). The first inspection of a book in a server process also retains legacy data as artifacts (marked `legacy_provenance`). No provider is contacted, and the book itself is not changed.
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. Legacy data from versions before artifacts existed is retained as artifacts (marked `legacy_provenance`) once, when the server starts, not by this request.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1525,8 +1643,9 @@ Step cards count the step pipeline's accepted, out-of-date (`stale_count`) and w
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PipelineInspector](#schema-pipelineinspector) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getbookresourceusage"></a>
 ### `GET /api/books/{book_id}/resources`
@@ -1535,33 +1654,34 @@ Step cards count the step pipeline's accepted, out-of-date (`stale_count`) and w
 
 Recorded work for the book: analysis HTTP attempts (the analysis ledger), local and narration operations (which supplement it without double-counting), and cache reuse. Returns `schema_version`, the book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, `total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source URLs and interpretation notes.
 
-`limit` and `offset` are clamped (to 1–200 and at least 0), unlike the artifact endpoint's strict out-of-range rejection. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
+`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1), as for every paged operation. Aggregates cover the entire selected scope, not just the current page. The run summary list is bounded to 100; the total run count is reported separately.
 
-Operations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Never contacts a provider or backfills guessed usage.
+Operations distinguish request count, reported tokens and cache tokens, retained estimates and reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs can exist without measurements. Costs are dated estimates, not provider invoices or available credits. CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts a provider or backfills guessed usage. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `book_id` | path | string | yes | Book ID, from the library or the import response. |
 | `limit` | query | integer |  | Page size for `operations`; default 100, clamped to 1–200. (default `100`) |
-| `offset` | query | integer |  | Rows to skip in `operations`; default 0, negative values become 0. (default `0`) |
+| `offset` | query | integer |  | Rows to skip in `operations`; default 0, clamped to 0–9007199254740991 (2^53 − 1). (default `0`) |
 | `run_id` | query | string \| null |  | Only rows (and the run) with this job ID. Optional. |
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ResourceSummary](#schema-resourcesummary) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="searchbookpassages"></a>
 ### `GET /api/books/{book_id}/search`
 
 **Search passages by words** · operation `searchBookPassages` · cost `none`
 
-`{available, query, scope, results, note, items}`. Each result identifies book, chapter and passage, the exact source text, range and chapter hash, and lexical rank. `items` remains as an alias of `results` in the current response.
+`{available, query, scope, items, note}`. Each item identifies book, chapter and passage, the exact source text, range and chapter hash, and lexical rank.
 
 Search words (runs of letters, digits and underscores) are combined with AND; this is not an exact-phrase or operator query language, or semantic embedding search. A query with no words returns no matches with a note. If SQLite lacks FTS5, `available: false` explains that limitation; it does not start a fallback model call. Lower lexical rank means a stronger text match, not identity or speaker confidence. Only passages whose text matches their source offsets are searchable.
 
-Builds or refreshes a local full-text index for each searched book when its passages changed, and records a `source_search` resource operation. No provider is contacted.
+No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes. It may write one disposable derived cache: a local full-text index of each searched book's passages, refreshed when the passages changed. The index can be deleted without loss and is rebuilt on demand.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1573,18 +1693,19 @@ Builds or refreshes a local full-text index for each searched book when its pass
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PassageSearchResult](#schema-passagesearchresult) | Success. |
-| 400 | [Error](#schema-error) | `q` is empty, whitespace-only or longer than 300 characters, or `scope` is not `book` or `earlier`. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `search_query_invalid`: `q` is empty, whitespace-only or longer than 300 characters. - `search_scope_invalid`: `scope` is not `book` or `earlier`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getstorymap"></a>
 ### `GET /api/books/{book_id}/story-map`
 
 **Get the story map graph** · operation `getStoryMap` · cost `none`
 
-Versioned typed nodes and edges, chapters/scenes/passages, character IDs, source references and counts, and notes about interpretation. Node identities include the owning book. Verified source anchors refer to retained source artifacts; unavailable or unverified anchors remain null. Scene characters are attributed speakers, not verified physical presence; mentions and profile evidence remain separate references; scene boundaries may be local drafts.
+Versioned typed nodes and edges, chapters/scenes/passages, character IDs, source references and counts, and notes about interpretation. Node identities include the owning book, and every edge ends at a node. Verified source anchors refer to retained source artifacts; unavailable or unverified anchors remain null. Scene characters are attributed speakers, not verified physical presence; mentions and profile evidence remain separate references; scene boundaries may be local drafts. A dialogue passage whose speaker ID is no longer in the cast has no `attributed_speaker` edge and adds no scene character.
 
-The response is unpaginated and grows with the book (every passage is a node). Has the same one-time legacy retention as the artifact list. No provider is contacted.
+The response is unpaginated and grows with the book (every passage is a node). No provider is contacted. This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or book changes.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1593,8 +1714,9 @@ The response is unpaginated and grows with the book (every passage is a node). H
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [StoryMap](#schema-storymap) | Success. |
-| 404 | [Error](#schema-error) | No book has this ID. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Narration
 
@@ -1619,9 +1741,10 @@ server ignores. Local read.
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `This passage needs audio generation`: unknown passage, no take, or the take is stale or missing. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `passage_not_found`: The book has no passage with this ID. - `audio_not_found`: The passage has no take, or its take is stale or its file is missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getretainedaudioasset"></a>
 ### `GET /api/books/{book_id}/audio-assets/{asset_id}`
@@ -1641,9 +1764,10 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Audio asset not found`: malformed ID (32-128 lower-case hex) or no such file. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (32-128 lower-case hex) or no such file. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startenhancedrender"></a>
 ### `POST /api/books/{book_id}/render`
@@ -1665,7 +1789,7 @@ word-perfect speech.
 
 Returns the queued job; poll it. Progress counts passages; the message reports reused passages. For
 Breeze and Gemini every selected speaker must have a usable voice, otherwise 400 before queueing.
-Unlike the listening routes, this route does not check for server shutdown.
+Refused with 503 while the server is shutting down.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1676,11 +1800,13 @@ Request body (`application/json`): [RenderRequest](#schema-renderrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [Job](#schema-job) | The queued `render` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: provider is not `system`, `gemini` or `breeze`; the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL; `No passages selected`; or a selected speaker has no usable Breeze/Gemini voice (`Fix the … voice for …`). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `provider_unsupported`: `provider` is not `system`, `gemini` or `breeze`. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_scene`: The body names a scene (`scene_id`) that is not in this book. - `no_passages_selected`: The named passage is not in the named scene. - `cast_voice_unusable`: A selected speaker has no usable Breeze or Gemini voice; the detail names up to five speakers. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Listening
 
@@ -1708,19 +1834,23 @@ Order of checks, all under the store lock:
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
    passages and books. Cross-passage reuse validates the WAV and its content hash, copies the file into
-   this book and retains a new source-bound record whose `reuse` points at the original take; the
-   original producer `fingerprint` is kept and the new `recipe`/`source_anchor` describe the new binding.
-   A cache hit records a cached resource operation (stage `simple_listen`).
+   this book and retains a new source-bound take whose `reuse` points at the original take. A candidate
+   whose copy fails its integrity check (for example this book already holds a damaged file under that
+   asset ID, which is never overwritten) is skipped, so the passage can be generated instead. A cache hit
+   records a cached resource operation (stage `simple_listen`); it may also add the take to the
+   equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
    request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.
-3. **Queue.** Otherwise requires an idle book (409), a running worker (503) and an available provider
-   (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
+3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an
+   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
 
-Poll the job: when completed, its `audio` is the take (`mode: "simple"`, `url`, duration,
-provider/model/voice, asset and recipe identity). Failure and cancellation are job outcomes; audio
-finished during a Stop is still retained and can be found in `/listen/takes`. There is no narration
-budget or dollar cap. Do not automatically repeat this POST after an uncertain network response;
-retry only read-only polling.
+Poll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when
+chapter listening finished the passage meanwhile). The job worker checks the cache again before
+synthesis, so equivalent audio retained while the job waited is reused without a provider request; the
+job does not report whether that happened (its resource operation is marked `cached`). Failure and
+cancellation are job outcomes; audio finished during a Stop is still retained and can be found in
+`/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
+after an uncertain network response; retry only read-only polling.
 
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
@@ -1737,12 +1867,13 @@ Request body (`application/json`): [ListenRequest](#schema-listenrequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ListenCached](#schema-listencached) \| [ListenQueued](#schema-listenqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `listen` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); the passage no longer matches its source text; or (only when synthesis is needed) the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
-| 409 | [Error](#schema-error) | Only when synthesis is needed: Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getlisteningaudio"></a>
 ### `GET /api/books/{book_id}/listen/audio/{asset_id}`
@@ -1762,9 +1893,10 @@ For a chunk clip, play from `clip_start` to `clip_end`. Local read.
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Listening audio not found`: malformed ID (64 lower-case hex), not retained for this book, or file missing. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID (64 lower-case hex), not retained for this book, or file missing. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="startchapterlistening"></a>
 ### `POST /api/books/{book_id}/listen/chapter`
@@ -1786,14 +1918,22 @@ the passage, `scope_start_segment_id` extends backwards when needed, `joins` inc
 request for a passage with no audio and no request in flight increments `ramp_restart` (the job
 restarts its ramp). Joining never checks the key or quota and never starts a second job.
 
-**Refusals (409).** The active chapter job belongs to a saved performance (`parent_id`); it is for a
-different chapter or narrator; it is closing (retry shortly); or other work holds the book.
+**Refusals (409).** The active chapter job belongs to a saved performance (`performance_active`); it is
+for a different chapter or narrator (`chapter_listen_active`); it is closing (`chapter_job_closing`,
+retry shortly); or other work holds the book.
 
-**Start.** Otherwise requires a Gemini key (400) and a running worker (503). While a daily-quota block
-holds for the model it returns 429 without sending anything. The block is set in this process after a
-daily-quota 429 from Gemini or after a chapter job stops at the configured requests per day, and lasts
-until midnight Pacific or until limits are saved in Settings. A library already over its configured
-requests per day with no block recorded yet is accepted and the job ends promptly as `quota_limited`.
+**Start.** Otherwise requires a Gemini key (400) and a server that is not shutting down (503). It then
+refuses with 429 `daily_quota_reached`, without queueing or sending anything, when either:
+
+- a daily-quota block holds for the model in this process (set after a daily-quota 429 from Gemini or
+  after a chapter job stopped at the configured requests per day; it lasts until midnight Pacific or
+  until limits are saved in Settings); or
+- this library's recorded Gemini speech requests for the model since midnight Pacific (the
+  `quota.requests_today` of the chapter preview, counting every narration path) have reached the
+  configured requests per day (`limits.rpd`).
+
+The 429 response carries a `Retry-After` header: whole seconds until the block lifts or the quota day
+resets at midnight Pacific.
 
 The job paces requests with the shared per-minute limiter (`waiting_seconds` while waiting), recounts
 this library's daily requests before every send, keeps up to `concurrency` requests in flight (1 until a
@@ -1804,9 +1944,10 @@ passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `ex
 `realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
-`limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
-the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after`. Finished chunks
-are kept on every outcome; start the chapter again to resume.
+`speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
+the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
+other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
+start the chapter again to resume.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1817,13 +1958,14 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ChapterListenStarted](#schema-chapterlistenstarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); or no Gemini API key (only when starting). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
-| 409 | [Error](#schema-error) | A saved performance is preparing this book; another chapter or narrator is being prepared; the chapter job is closing (retry shortly); or Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 429 | [Error](#schema-error) | A daily-quota block holds for this model in this process (`The daily Gemini request quota for this model is used up. It resets at midnight Pacific time, in about N h.`). Nothing was sent. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `gemini_key_missing`: Only when starting: no Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. - `performance_active`: A saved performance's chapter job is preparing this book. - `chapter_listen_active`: A chapter job for another chapter or narrator is active. - `chapter_job_closing`: The matching chapter job is finishing; retry shortly. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 429 | [Error](#schema-error) | - `daily_quota_reached`: Only when starting: a daily-quota block holds for the model, or this library's requests today have reached the configured requests per day. Nothing was queued or sent; `Retry-After` gives the seconds to wait. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewchapterlistening"></a>
 ### `POST /api/books/{book_id}/listen/chapter/preview`
@@ -1835,7 +1977,8 @@ needed, expected audio, ready passages and seconds, effective chunk options, cal
 limits and this library's daily request count for the model. Takes the same body as
 `POST /listen/chapter` (`intent: "queue"` without explicit ramp steps plans full-size chunks only).
 Creates the deterministic narrator session row only; no job, no provider request, no key required, and
-it works while the book is busy.
+it works while the book is busy. When `quota.requests_today` has reached `limits.rpd`, starting the
+chapter is refused with 429.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1846,10 +1989,12 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ChapterListenPlan](#schema-chapterlistenplan) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="listlisteningtakes"></a>
 ### `GET /api/books/{book_id}/listen/takes`
@@ -1860,7 +2005,7 @@ Saved simple audio for the session, one entry per passage in book order: a chunk
 applies, otherwise the newest single-passage take whose source recipe still matches the passage.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
-No generation. Works for archived books.
+No generation and no stored change. Works for archived books.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1870,8 +2015,9 @@ No generation. Works for archived books.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [ListeningTakes](#schema-listeningtakes) | Success. |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Listening session not found`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `listening_session_not_found`: The book has no listening session with this `session_id`. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Performances
 
@@ -1882,7 +2028,7 @@ Saved performances: named selections of chapters and narration settings over ret
 
 **List saved performances** · operation `listPerformances` · cost `none`
 
-Performances of the book, newest first, each with its latest job summary and readiness. Archived records are included only with `archived=true`. Local read; readiness uses file existence, not WAV validation.
+Performances of the book, newest first, each with its latest job summary and readiness. Archived records are included only with `archived=true`. Local read with no stored change; readiness uses file existence, not WAV validation.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1892,8 +2038,9 @@ Performances of the book, newest first, each with its latest job summary and rea
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceList](#schema-performancelist) | Success. |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createperformance"></a>
 ### `POST /api/books/{book_id}/performances`
@@ -1903,7 +2050,8 @@ Performances of the book, newest first, each with its latest job summary and rea
 Validate, record and start a performance. Simple performances pin a listening session (takes made
 earlier by live listening with the same narrator count as ready); cast performances snapshot the
 resolved cast now. Returns `{performance, job}`; `job` is null when every passage is already ready.
-The record is saved before the job starts.
+The record is saved before the job starts. When the preview would report `problems`, the request is
+refused with 400: the code is the first problem's, and the detail joins every problem's sentence.
 
 The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
 start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
@@ -1934,12 +2082,13 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: any preview `problems` (joined into one message), unknown chapters, or an unsupported/mismatched model. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_invalid`: The simple narrator voice cannot be used (see `previewPerformance` problems). - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="previewperformance"></a>
 ### `POST /api/books/{book_id}/performances/preview`
@@ -1950,7 +2099,7 @@ Local plan: readiness, passages to generate, request estimate, expected audio, b
 advisory `notes`, and for Gemini this library's daily request count. No provider calls and no job;
 creating the deterministic listening session row is allowed. Narrator and provider conditions the user
 can fix (missing key, unusable voice, narrator without a voice for a cast) are returned in `problems`
-rather than as errors.
+rather than as errors; `createPerformance` refuses them with the codes it lists.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1961,17 +2110,19 @@ Request body (`application/json`): [PerformanceRequest](#schema-performancereque
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformancePlan](#schema-performanceplan) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: a chapter ID is not in this book (`Choose chapters from this book.`); the Gemini model is not supported; or the model does not match the device/Breeze fixed model. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getperformance"></a>
 ### `GET /api/books/{book_id}/performances/{performance_id}`
 
 **Get a performance** · operation `getPerformance` · cost `none`
 
-The performance with its latest job summary and readiness. Local read. The book itself is not checked first: an unknown book also gives `Performance not found`.
+The performance with its latest job summary and readiness. Local read with no stored change.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -1981,15 +2132,16 @@ The performance with its latest job summary and readiness. Local read. The book 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
-| 404 | [Error](#schema-error) | `Performance not found` (no such performance in this book). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updateperformance"></a>
 ### `PATCH /api/books/{book_id}/performances/{performance_id}`
 
 **Rename or archive a performance** · operation `updatePerformance` · cost `none`
 
-Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched).
+Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is allowed while jobs run. Like every other write to a book, it is refused with 409 `book_archived` while the book is archived. Omitted or null fields are unchanged; with no fields the record is returned as is (and `updated_at` is not touched). An empty `name` string or one over 200 characters fails request validation (422).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2001,10 +2153,12 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceEnvelope](#schema-performanceenvelope) | Success. |
-| 400 | [Error](#schema-error) | `A performance name is required.`: `name` is only whitespace. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Performance not found`. |
-| 422 | [Error](#schema-error) | Request validation failed, including an empty `name` string or one over 200 characters. |
+| 400 | [Error](#schema-error) | - `performance_name_required`: `name` is only whitespace. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getperformanceaudio"></a>
 ### `GET /api/books/{book_id}/performances/{performance_id}/audio`
@@ -2012,10 +2166,10 @@ Request body (`application/json`): [PerformanceEdit](#schema-performanceedit)
 **List a performance's playable audio** · operation `getPerformanceAudio` · cost `none`
 
 Audio for each selected passage that is ready against its current source, as JSON (not bytes); play
-each `url`. Every object has `mode: "performance"` and `performance_id`. Simple performances return the
-`/listen/takes` objects (single-passage takes or chunk clips with `clip_start`/`clip_end`); cast
-performances return the newest retained take per passage, served from `/audio-assets/`. Local read;
-file existence is checked but WAVs are not re-validated.
+each `url`. Simple performances return the `/listen/takes` objects (single-passage takes or chunk clips
+with `clip_start`/`clip_end`); cast performances return the newest retained take per passage
+(`PerformanceCastAudio`, with `speaker_id`), served from `/audio-assets/`. Local read with no stored
+change; file existence is checked but WAVs are not re-validated.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2025,8 +2179,9 @@ file existence is checked but WAVs are not re-validated.
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceAudioMap](#schema-performanceaudiomap) | Success. |
-| 404 | [Error](#schema-error) | `Performance not found`. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="prepareperformance"></a>
 ### `POST /api/books/{book_id}/performances/{performance_id}/prepare`
@@ -2038,7 +2193,8 @@ creation do not apply, except that current credentials, limits and chunk options
 resume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes
 match the damaged one's content address is refused rather than overwritten (possible with
 deterministic device voices). Chapters removed from the book are skipped. Returns `{performance, job}`
-with `job` null when nothing is missing.
+with `job` null when nothing is missing. Blocking problems are refused with 400 as for
+`createPerformance`.
 
 The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
 start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
@@ -2068,12 +2224,13 @@ job for the book (including child jobs beyond the 100-job list bound).
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL; or a planning problem such as the cast narrator having no usable voice. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Performance not found`, or `Book not found`. |
-| 409 | [Error](#schema-error) | Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 ## Voice previews
 
@@ -2107,10 +2264,11 @@ Reuse is book-scoped and covers source and the effective performance recipe (a c
 reuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled
 `voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after
 the busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its
-`preview` and, when completed, `audio`. Credentials are snapshotted at queue time and cancellation is
-checked before synthesis; a take finished in flight is still retained after Stop. There is no retry of
-this POST and no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which
-keeps reported usage and records an unknown cost as unknown, not zero).
+`preview` and, when completed, `audio` (a `VoicePreviewAudio`). The worker checks the cache again
+before synthesis. Credentials are snapshotted at queue time and cancellation is checked before
+synthesis; a take finished in flight is still retained after Stop. There is no retry of this POST and
+no dollar cap; Gemini auditions can incur charges (resource stage `voice_preview`, which keeps reported
+usage and records an unknown cost as unknown, not zero).
 
 Book pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`
 of the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the
@@ -2134,12 +2292,13 @@ Request body (`application/json`): [VoicePreviewRequest](#schema-voicepreviewreq
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoicePreviewCached](#schema-voicepreviewcached) \| [VoicePreviewQueued](#schema-voicepreviewqueued) | `cached: true` with `audio`, or `cached: false` with a new or joined `voice_preview` job. |
-| 400 | [Error](#schema-error) | The book is archived (removed): restore it before processing. Or: the narrator voice cannot be resolved (a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last check or not usable), the model does not match the provider (device uses `macos-say`, Breeze uses `breeze-tts-2`, Gemini must be a supported TTS model; Gemini 3.1 needs a prebuilt voice); `direction` without `character_id`; `segment_direction` without both a passage and a character; the passage no longer matches its source; or (only when synthesis is needed) the provider is unavailable: Gemini without an API key, device narration without macOS `say` and `ffmpeg`, or Breeze without a configured server URL. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Passage not found in this book` / `Character not found in this book`. |
-| 409 | [Error](#schema-error) | Only when synthesis is needed: Another job is queued or running for this book, or an active series run reserves it (`A job is already working on this book…` / `This book is reserved by an active series run…`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 503 | [Error](#schema-error) | The server is shutting down (`The local worker is stopping…`), or the narration worker refused the job (`The local narration worker could not accept this request. No narration was started.`; the job record is created and marked `failed`). Nothing was sent to a provider. |
+| 400 | [Error](#schema-error) | - `unknown_passage`: The body names a passage (`segment_id`) that is not in this book. - `unknown_character`: The body names a character (`character_id`) that is not in this book. - `passage_source_mismatch`: The passage text no longer matches its source coordinates. - `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1). - `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model. - `direction_requires_character`: `direction` without `character_id`. - `segment_direction_requires_passage`: `segment_direction` without both a passage and a character. - `pronunciation_invalid`: The `pronunciation` entry is not valid. - `gemini_key_missing`: Only when synthesis is needed: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Only when synthesis is needed: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Only when synthesis is needed: Breeze narration with no Breeze server URL configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: Only when synthesis is needed: A job is queued or running for this book. - `series_run_active`: Only when synthesis is needed: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
 
 <a id="getvoicepreviewaudio"></a>
 ### `GET /api/books/{book_id}/voice-preview/audio/{asset_id}`
@@ -2157,9 +2316,10 @@ A retained audition WAV, scoped to its owning book. Every request verifies the c
 | --- | --- | --- |
 | 200 | `audio/wav` | Mono 24 kHz 16-bit PCM WAV. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | `Book not found`. Or `Voice preview audio not found` (malformed ID or not retained for this book) / `Voice preview audio is missing or damaged`. |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `audio_not_found`: Malformed ID, not retained for this book, or the file is missing or damaged. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Voices
 
@@ -2172,14 +2332,12 @@ The library-wide voice library: voices, versions, defaults, drafts and Breeze cl
 
 Voices belong to the whole library, not to a book. Breeze requests are free but run on the owner's self-hosted GPU; every Gemini voice create is billed. Provider error text is never echoed: Gemini errors carry only the HTTP status and a fixed hint, Breeze errors keep only the server's error code.
 
-Local only: reads SQLite and the saved Breeze and Gemini checks; never contacts a provider. Returns live library voices, the defaults, open drafts, provider state and built-in voices. Each version's `server_state` compares it with the last saved Breeze check (for this URL) and the last Gemini listing (for this key).
-
-**Known defect:** after a Gemini refresh that failed (`providers.gemini.state` would be `error`), this route fails with a plain-text HTTP 500 until a refresh succeeds or the Gemini key changes, because the failed listing is stored as null and then iterated.
+Local only and read-only: reads SQLite and the saved Breeze and Gemini checks; never contacts a provider and never writes. Returns live library voices, the defaults, open drafts, provider state and built-in voices. Each version's `server_state` compares it with the last saved Breeze check (for this URL) and the last Gemini listing (for this key). When the last Gemini refresh failed, `providers.gemini.state` is `error` and this still returns 200.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryOverview](#schema-voicelibraryoverview) | Success. |
-| 500 | `text/plain` | Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON). |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="clonebreezevoice"></a>
 ### `POST /api/voices/breeze/clone`
@@ -2188,18 +2346,19 @@ Local only: reads SQLite and the saved Breeze and Gemini checks; never contacts 
 
 Multipart form upload. Creates a cloned voice on the Breeze server from a recording and its exact transcript (ID `bardic-` plus 8 hex digits, labelled with the new library voice ID), pins its revision, retains the server's reference clip as the audition (best effort; the voice is still created without it), and creates a library voice with `origin: "cloned"`. With both `book_id` and `character_id`, the voice records that character as its `source` and is assigned to it like a cast edit; a failed assignment is reported in `assignment_error`, never rolled back. With only one of the two, both are ignored. The Breeze server accepts recordings of 1–30 seconds (5–15 seconds of clean speech works best).
 
-**Not atomic:** the server voice is created before the book and character are looked up, so an unknown book or character returns 404 after the server voice exists, and no library voice is created for it.
+**Validated before upload.** The form, the book and the character are checked before the server voice is created. If the library record still cannot be written afterwards, or the server keeps the upload but its read-back fails, the server voice is deleted again, best effort, and the error detail says whether that worked.
 
 Request body (`multipart/form-data`): [CloneBreezeVoiceForm](#schema-clonebreezevoiceform)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BreezeVoiceCloned](#schema-breezevoicecloned) | Success. |
-| 400 | [Error](#schema-error) | `consent` is not exactly `true` ("Confirm that you have the speaker's consent to clone this voice."); a blank name or transcript; an empty recording or one over 20 MB ("Upload a recording of at most 20 MB."); or no Breeze server URL. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | "Book not found" or "Character not found in this book" (after the server voice was created; see description). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length audio, or a bad API key), or was unreachable. |
+| 400 | [Error](#schema-error) | - `consent_required`: `consent` is not exactly `true`. - `voice_name_invalid`: `name` is blank. - `reference_text_missing`: `reference_text` is blank. - `recording_empty`: The recording is empty. - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `breeze_url_missing`: No Breeze server URL is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 413 | [Error](#schema-error) | - `recording_too_large`: The recording is larger than 20 MB. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length audio, or a bad API key), or was unreachable. |
 
 <a id="setdefaultlibraryvoice"></a>
 ### `POST /api/voices/defaults`
@@ -2215,11 +2374,11 @@ Request body (`application/json`): [DefaultVoice](#schema-defaultvoice)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryDefaultsResult](#schema-voicelibrarydefaultsresult) | Success. |
-| 400 | [Error](#schema-error) | The voice is deleted or is not a Breeze voice ("Choose a Breeze voice from the library as the default."). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. |
-| 409 | [Error](#schema-error) | A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_voice`: No library voice has the given `voice_id`. - `default_voice_invalid`: The voice is deleted or is not a Breeze voice. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="createvoicedraft"></a>
 ### `POST /api/voices/drafts`
@@ -2238,10 +2397,10 @@ Request body (`application/json`): [DraftCreate](#schema-draftcreate)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | The base voice is deleted or belongs to the other provider ("Iterate on an existing voice of the same provider."), or a filled-in value is too long (for example a character name over 100 characters). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book ("Book not found"), the character ("Character not found in this book") or the base voice ("Voice not found") does not exist. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `unknown_voice`: No library voice has the given `base_voice_id`. - `base_voice_unusable`: The base voice is deleted or belongs to the other provider. - `voice_name_invalid`: A filled-in name is longer than 100 characters. - `description_too_long`: A filled-in description is longer than 1,000 characters. - `sample_text_too_long`: A filled-in sample text is longer than 1,000 characters. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="updatevoicedraft"></a>
 ### `PATCH /api/voices/drafts/{draft_id}`
@@ -2259,10 +2418,11 @@ Request body (`application/json`): [DraftEdit](#schema-draftedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. |
-| 409 | [Error](#schema-error) | The draft is finished ("This voice draft is already finished."). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="abandonvoicedraft"></a>
 ### `POST /api/voices/drafts/{draft_id}/abandon`
@@ -2278,12 +2438,13 @@ Deletes every undiscarded Gemini candidate's stored voice from the Google projec
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | Gemini candidates need deleting and no Gemini key is loaded. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also when some undiscarded Gemini candidates were made with a different Google API key ("Switch back to that key to delete them before abandoning this draft."). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | "Some stored Gemini candidates could not be deleted: …" (the first failure). |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: Some stored Gemini candidates could not be deleted (the detail names the first failure); the draft stays open. |
 
 <a id="getvoicedraftcandidateaudio"></a>
 ### `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`
@@ -2301,9 +2462,10 @@ Bardic's retained copy of a candidate's audio (24 kHz mono WAV). Available for d
 | --- | --- | --- |
 | 200 | `audio/wav` | Success. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Preview audio not found" when the candidate does not exist or has no retained audio. |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. - `audio_not_found`: The candidate has no retained audio. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="discardvoicedraftcandidate"></a>
 ### `POST /api/voices/drafts/{draft_id}/candidates/{candidate_id}/discard`
@@ -2320,12 +2482,13 @@ Marks the candidate discarded so it cannot be saved. A Gemini candidate's stored
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | A Gemini candidate needs deleting and no Gemini key is loaded. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Candidate not found". |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also a Gemini candidate made with a different Google API key ("This candidate was made with a different Google API key."). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Gemini delete failed; the candidate stays undiscarded. |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The Gemini delete failed; the candidate stays undiscarded. |
 
 <a id="generatevoicedraftcandidates"></a>
 ### `POST /api/voices/drafts/{draft_id}/generate`
@@ -2336,7 +2499,7 @@ Synchronous: the request returns when generation finishes and returns the update
 
 **Breeze** (free, self-hosted GPU): generates `count` (1–3, default 2) previews of the draft description speaking the draft sample text, and retains each preview's audio. Takes roughly the audio length times `count`. `language_code`, `gender` and `confirm_cost` are ignored. With `book_id`, the request is recorded in that book's resource ledger (stage `voice_design`, cost basis `self_hosted`, $0).
 
-**Gemini** (billed): each call creates **one** stored, billed prompted voice in the Google project (`count` is ignored), named after the draft name (or "Bardic voice"), using the selected speech model when it is a design model, else the first design model. `confirm_cost: true` and `book_id` are required; the request is recorded in that book's resource ledger with an unknown cost (never recorded as $0). A create that times out or returns an unusable response is never resent and returns 502: the voice may exist and be billed, so refresh Gemini voices (`POST /api/voices/gemini/refresh`) and look for it in `project_voices`. If the returned sample cannot be stored, the candidate is kept without audio.
+**Gemini** (billed): each call creates **one** stored, billed prompted voice in the Google project (`count` is ignored), named after the draft name (or "Bardic voice"), using the selected speech model when it is a design model, else the first design model. `confirm_cost: true` and `book_id` are required; the request is recorded in that book's resource ledger with an unknown cost (never recorded as $0). A create that times out or returns an unusable response is never resent and returns 502 `provider_outcome_unknown`: the voice may exist and be billed, so refresh Gemini voices (`POST /api/voices/gemini/refresh`) and look for it in `project_voices`. If the returned sample cannot be stored, the candidate is kept without audio.
 
 Validation (400s) happens before the draft is claimed. While the request runs, the draft is `busy` and other generate, discard, abandon and save requests on it get 409.
 
@@ -2349,12 +2512,13 @@ Request body (`application/json`): [GenerateRequest](#schema-generaterequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | The description is shorter than 3 characters; Gemini without `confirm_cost: true` ("Confirm that this creates a billed, stored Gemini voice."), without `book_id`, without a Gemini key, or with an invalid name, language tag or gender; Breeze without sample text or without a server URL; or the draft was finished by a concurrent request. |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Book not found" for an unknown `book_id`. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The provider request failed, or a billed Gemini create may or may not have happened (see description). Breeze also returns 502 when the preview audio cannot be converted locally. |
+| 400 | [Error](#schema-error) | - `description_too_short`: The draft description has fewer than 3 characters. - `cost_not_confirmed`: Gemini: `confirm_cost` is not true. - `book_id_required`: Gemini: no `book_id` was given. - `unknown_book`: No book has the given `book_id`. - `voice_design_invalid`: Gemini: the draft name, language tag or gender is not accepted. - `sample_text_missing`: Breeze: the draft has no sample text. - `gemini_key_missing`: No Gemini API key is configured. - `breeze_url_missing`: No Breeze server URL is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. Also when a concurrent request finished it during generation. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. Breeze also returns it when the preview audio cannot be converted locally. - `provider_outcome_unknown`: Gemini: a billed create timed out or returned an unusable response, so the voice may exist and be billed (see description). |
 
 <a id="savevoicedraft"></a>
 ### `POST /api/voices/drafts/{draft_id}/save`
@@ -2367,7 +2531,7 @@ Saves one undiscarded candidate as a new library voice (`mode: "new"`) or as a n
 
 `make_default: true` (Breeze only) then makes the voice the Breeze default. `assign` then assigns the voice to that character, exactly like a cast edit; a failed assignment is reported in `assignment_error` and never rolled back. `mode: "version"` re-voices every follower of the base voice, and `make_default` re-voices characters on Default, so both are refused with 409 while narration runs for affected books.
 
-**Not atomic:** a Breeze server voice is uploaded before the library record is written. If the record then fails (for example a whitespace-only name, or a base voice deleted meanwhile), the request fails and the uploaded server voice is left on the server without a library voice.
+**Validated before upload.** Every check below runs before a Breeze server voice is uploaded. If the library record still cannot be written after the upload (for example the base voice was deleted in the meantime), the uploaded server voice is deleted again, best effort, and the error detail says whether that worked. The same happens when the server keeps the upload but its read-back fails. The draft stays open, so the save can be retried.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2378,29 +2542,31 @@ Request body (`application/json`): [SaveRequest](#schema-saverequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraftSaved](#schema-voicedraftsaved) | Success. |
-| 400 | [Error](#schema-error) | The candidate does not exist or is discarded ("Choose a candidate that has not been discarded."); `mode: "version"` without a base voice; `make_default` for Gemini ("Only Breeze has a default voice."); no Breeze server URL or no Gemini key; or a whitespace-only `name` (after the Breeze upload; see description). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Voice not found" when the base voice was deleted before a version save. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also a Gemini candidate made with a different Google API key, or A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Breeze upload or its read-back failed (Bardic's own message). |
+| 400 | [Error](#schema-error) | - `unknown_candidate`: The draft has no candidate with the given `candidate_id`. - `candidate_discarded`: The candidate was discarded. - `voice_name_invalid`: `name` is only whitespace. - `draft_has_no_base_voice`: `mode: "version"` for a draft not started from a base voice. - `default_breeze_only`: `make_default` for a Gemini draft. - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. - `base_voice_deleted`: `mode: "version"` and the draft's base voice is deleted, including when it was deleted during the save. - `candidate_audio_missing`: Breeze: the candidate's retained audio file is missing, so it cannot be uploaded. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The Breeze upload or its read-back failed. |
 
 <a id="refreshgeminivoices"></a>
 ### `POST /api/voices/gemini/refresh`
 
 **List the Google project's stored voices** · operation `refreshGeminiVoices` · cost `network`
 
-Lists the Google project's stored `prompted` and `replicated` voices (metadata only; no generation, up to 5 pages of 100) and saves the listing with a hash of the key, so a listing made with another key is ignored. A provider failure is saved as `state: "error"` with a message rather than returned as an HTTP error. Returns `providers.gemini` of the library overview.
+Lists the Google project's stored `prompted` and `replicated` voices (metadata only; no generation, up to 5 pages of 100) and saves the listing with a hash of the key, so a listing made with another key is ignored. Returns `providers.gemini` of the library overview.
 
-**Known defect:** when the listing fails, the failure is saved and then this route (and `GET /api/voices`) fails with a plain-text HTTP 500 instead of returning `state: "error"`.
+When the listing fails (an HTTP error, no connection, or an unreadable response), the failure is saved first, so that `GET /api/voices` reports `providers.gemini.state: "error"` with the message, and then this returns 502 `provider_error`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryGeminiStatus](#schema-voicelibrarygeministatus) | Success. |
-| 400 | [Error](#schema-error) | No Gemini API key is loaded ("Add a Gemini API key in Settings first."), or Gemini returned a body that is not JSON (the decoder message is the detail). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 409 | [Error](#schema-error) | The Gemini key changed during the check ("Refresh again."); nothing is saved. |
-| 500 | `text/plain` | Known defect: the listing failed (see description; plain-text body). |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 409 | [Error](#schema-error) | - `gemini_key_changed`: The Gemini API key changed during the check; nothing is saved. Refresh again. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 <a id="updatelibraryvoice"></a>
 ### `PATCH /api/voices/{voice_id}`
@@ -2409,7 +2575,7 @@ Lists the Google project's stored `prompted` and `replicated` voices (metadata o
 
 Changes the name and/or description; an omitted or null field is unchanged. Values are trimmed. Versions and pinned revisions do not change. For a Breeze voice, when a Breeze URL is configured, each distinct server voice behind its versions is renamed on the server best effort (the untrimmed values are sent; failures are ignored because the library record is authoritative). Gemini voices change locally only.
 
-The returned `LibraryVoice` is built without the saved provider checks, so each version's `server_state` is `unknown` (or `other_project` for a Gemini version made with another key) and `assignable`/`warnings` reflect only that. Call `GET /api/voices` for checked server states.
+The returned `LibraryVoice` compares each version with the same saved provider checks as `GET /api/voices` (read locally; this does not contact a provider to check).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2420,10 +2586,11 @@ Request body (`application/json`): [VoiceEdit](#schema-voiceedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
-| 400 | [Error](#schema-error) | The name is only whitespace ("The voice name must be 1–100 characters."). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Deleted voices also return 404. |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `voice_name_invalid`: The name is only whitespace. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="deletelibraryvoice"></a>
 ### `DELETE /api/voices/{voice_id}`
@@ -2432,7 +2599,9 @@ Request body (`application/json`): [VoiceEdit](#schema-voiceedit)
 
 Deletes the voice's provider voices (optionally), then marks the library voice deleted. The record is kept as a tombstone: it disappears from `GET /api/voices`, its versions and history stay, and a Breeze server voice behind a deleted voice is never re-imported by a connection check. Characters still assigned to it fail closed: narration is refused with "The voice … was deleted. Choose another voice in the cast."
 
-**Provider deletion (`server`)**: when omitted, voices Bardic made (`origin` `designed` or `cloned`) are deleted on the provider, while voices imported from the Breeze server are removed from Bardic only. `server=true` deletes every distinct provider voice behind every version (Breeze server voices, or stored Gemini voices in the current Google project); `server=false` never touches the provider. A provider that says the voice is already gone (404) counts as deleted. Deletion is not atomic: if one of several provider voices fails to delete, the earlier ones are already gone, the library voice is not marked deleted, and the request fails; retrying is safe.
+**Provider deletion (`server`)**: when omitted, voices Bardic made (`origin` `designed` or `cloned`) are deleted on the provider, while voices imported from the Breeze server are removed from Bardic only. `server=true` deletes every distinct provider voice behind every version (Breeze server voices, or stored Gemini voices in the current Google project); `server=false` never touches the provider. A provider that says the voice is already gone (404) counts as deleted.
+
+**Partial failure is recorded and resumable.** Provider voices are deleted one at a time, and each deletion is recorded before the next starts. If one fails, the request returns 502 `provider_error` (the detail says how many are deleted), and the library voice stays live: the already-deleted versions report `server_state: "missing"`, and `warnings` says the deletion is unfinished. Deleting again skips the recorded ones, deletes the rest, then marks the voice deleted. `server_deleted` lists every provider voice the deletion removed, across attempts.
 
 Deleting an already-deleted voice returns 200 with an empty `server_deleted` and changes nothing. Refused while any narration job is active for a book that follows the voice.
 
@@ -2444,11 +2613,13 @@ Deleting an already-deleted voice returns 200 with an empty `server_deleted` and
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoiceDeleted](#schema-libraryvoicedeleted) | Success. |
-| 400 | [Error](#schema-error) | Provider deletion was requested and the provider is not usable: no Breeze server URL ("Add the Breeze server URL in Settings first, or choose another narrator."), no Gemini key ("Add a Gemini API key in Settings first."), or the provider request failed (a provider failure here is 400, not 502; the detail is Bardic's own message such as "Breeze returned HTTP 500…" or "Gemini returned HTTP 403 while deleting a voice…"). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. |
-| 409 | [Error](#schema-error) | The voice is the Breeze default ("Choose another default before deleting it."); a Gemini voice has a version made with a different Google API key and provider deletion was requested ("…or remove it from Bardic only." — retry with `server=false`); or A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `voice_is_default`: The voice is the Breeze default; choose another default first. - `voice_other_project`: Provider deletion was requested for a Gemini voice with a version made with a different Google API key. Retry with `server=false` to remove it from Bardic only. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: Deleting a provider voice failed. Earlier ones in this request are recorded as deleted; deleting again resumes. |
 
 <a id="setlibraryvoicecurrentversion"></a>
 ### `POST /api/voices/{voice_id}/current`
@@ -2459,7 +2630,7 @@ Makes an existing version the current one. Choosing the version that is already 
 
 This re-voices every character that follows the affected voice: selected takes made with the previous voice become out of date but stay in history, and rendering again after switching back reuses the archived WAV without a provider request. Refused with 409 while a `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book with a character following the voice.
 
-The returned `LibraryVoice` is built without the saved provider checks, so each version's `server_state` is `unknown` (or `other_project` for a Gemini version made with another key) and `assignable`/`warnings` reflect only that. Call `GET /api/voices` for checked server states.
+The returned `LibraryVoice` compares each version with the same saved provider checks as `GET /api/voices` (read locally; this does not contact a provider to check).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2470,11 +2641,12 @@ Request body (`application/json`): [CurrentVersion](#schema-currentversion)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
-| 400 | [Error](#schema-error) | The version does not exist ("That version does not exist."). |
-| 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Deleted voices also return 404. |
-| 409 | [Error](#schema-error) | A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 400 | [Error](#schema-error) | - `unknown_version`: The voice has no version with the given number. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
+| 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 <a id="getlibraryvoiceaudition"></a>
 ### `GET /api/voices/{voice_id}/versions/{version}/audition`
@@ -2492,11 +2664,12 @@ Returns the version's retained audition WAV (Bardic's 24 kHz mono copy of the au
 | --- | --- | --- |
 | 200 | `audio/wav` | Success. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 400 | [Error](#schema-error) | A provider fetch is needed and the provider is not configured: no Breeze server URL, or no Gemini API key; or Gemini returned a body that is not JSON. |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Also "Voice version not found", or "No audition audio is available for this voice." when the provider has no sample. |
+| 400 | [Error](#schema-error) | - `breeze_url_missing`: A provider fetch is needed and no Breeze server URL is configured. - `gemini_key_missing`: A provider fetch is needed and no Gemini API key is configured. |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). - `voice_version_not_found`: The voice has no version with this number. - `audio_not_found`: Nothing is retained and the provider has no sample for this version. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
-| 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The provider request failed (Bardic's own message; provider text is not echoed). |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 ## Schemas
 
@@ -2589,8 +2762,8 @@ An analysis provider and whether it is usable.
 | --- | --- | --- | --- |
 | `id` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Analysis provider ID: `local` (offline draft analysis, no key) or a cloud provider `gemini`, `openai`, `anthropic`. |
 | `label` | string | yes | Display name. |
-| `available` | boolean | yes | `local` is always available; a cloud provider is available when its key is loaded. |
-| `has_api_key` | boolean | yes | True when a key is loaded (always false for `local`). The key is never returned. |
+| `available` | boolean | yes | Whether analysis with this provider can start without further configuration. `local` needs no key, so it is always available; a cloud provider is available exactly when its key is loaded. |
+| `has_api_key` | boolean | yes | Whether an API key is loaded for this provider (from `POST /api/settings` or the server environment). Always false for `local`, which uses no key; this is where it differs from `available`. The key is never returned. The `gemini` entry also tells whether Gemini narration and voice design have a key. |
 | `model` | string \| null | yes | The saved analysis model for this provider, or null for `local`. |
 | `models` | list of string | yes | Curated model IDs (empty for `local`). A saved custom model may be absent from this list. |
 
@@ -2664,8 +2837,8 @@ One page of artifact metadata, newest first.
 | --- | --- | --- | --- |
 | `items` | list of [ArtifactSummary](#schema-artifactsummary) | yes | This page of artifact versions matching the filters, newest first (by creation time). Empty past the end. |
 | `total` | integer | yes | Versions matching the filters. |
-| `offset` | integer | yes | The `offset` parameter as applied (versions skipped). |
-| `limit` | integer | yes | The `limit` parameter as applied (maximum page size, 1–200). |
+| `offset` | integer | yes | Effective offset (versions skipped) after clamping to 0–9007199254740991 (2^53 − 1). |
+| `limit` | integer | yes | Effective page size after clamping to 1–200. |
 
 <a id="schema-artifactsummary"></a>
 ### ArtifactSummary
@@ -2735,27 +2908,6 @@ Sentence timing reported by the Breeze server, accepted only when every offset m
 | `offsets` | `"recipe_text_code_points"` | yes | What the character offsets index into. |
 | `segments` | list of [AudioTakeSentenceSpan](#schema-audiotakesentencespan) | yes | Sentences in order. |
 
-<a id="schema-audiotakeusage"></a>
-### AudioTakeUsage
-
-Provider usage measured for the request that produced a take.
-
-Counts are reported by the provider, never inferred from audio length.
-Absent or null values are unknown, not zero. Test synthesizers and older
-takes may carry only some of these fields.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `input_tokens` | integer \| null |  | Reported input tokens (Gemini). |
-| `output_tokens` | integer \| null |  | Reported output (audio) tokens (Gemini). |
-| `cached_input_tokens` | integer \| null |  | Reported cached input tokens (Gemini). |
-| `usage_source` | string \| null |  | Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`. |
-| `estimated_cost_usd` | number \| null |  | Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze. |
-| `cost_basis` | string \| null |  | How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`. |
-| `price_as_of` | string \| null |  | Date of the price table used (Gemini). |
-| `price_source` | string \| null |  | Source of the price table (Gemini). |
-| `characters` | integer \| null |  | Characters the Breeze server reported synthesizing. |
-
 <a id="schema-audiotakevoicelibrary"></a>
 ### AudioTakeVoiceLibrary
 
@@ -2801,7 +2953,6 @@ novel is several megabytes).
 | `characters` | list of [BookCharacter](#schema-bookcharacter) | yes | The book-local cast, including `narrator` and `unassigned`. |
 | `analysis` | [BookAnalysisSummary](#schema-bookanalysissummary) | yes | Who produced the current annotations. |
 | `cover` | [BookCover](#schema-bookcover) \| null |  | Cover thumbnail metadata; absent when the original had no usable cover. |
-| `metadata_edited` | [BookMetadataEdits](#schema-bookmetadataedits) \| null |  | Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves. |
 | `pronunciations` | list of [BookPronunciation](#schema-bookpronunciation) \| null |  | The book's pronunciations, in saved order; absent when there are none. Managed with the Pronunciations operations, which also report where each term occurs. |
 
 <a id="schema-bookanalysissummary"></a>
@@ -2873,7 +3024,7 @@ separate). Every book has the reserved characters `narrator` and
 | `description` | string | yes | Voice and personality profile (draft or reviewed). |
 | `direction` | string | yes | Standing performance direction for this character's voice. |
 | `evidence` | list of string \| null |  | Exact source quotations supporting the profile (at most 12). Absent on some characters saved by older versions; treat as empty. |
-| `voices` | map of string → [BookCharacterVoice](#schema-bookcharactervoice) | yes | Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: the system voice). Library references are shown as references, not resolved. Legacy `voice`/`system_voice` fields are folded in here. |
+| `voices` | map of string → [BookCharacterVoice](#schema-bookcharactervoice) | yes | Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: the system voice). Library references are shown as references, not resolved. Choices saved by older versions in single-provider fields are included here. |
 | `former_names` | list of string \| null |  | Names replaced by a manual rename. Discovery still resolves them to this character; they are not aliases. |
 | `profile_refined` | boolean \| null |  | True once a profile refinement produced the description and direction. |
 | `profile_provider` | string \| null |  | Provider of the refined profile. |
@@ -2881,11 +3032,6 @@ separate). Every book has the reserved characters `narrator` and
 | `profile_priority` | `"deep"` \| `"standard"` \| `"basic"` \| null |  | Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`. |
 | `profile_state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` \| null |  | Written only by the removed Classic engine: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined). |
 | `profile_provisional` | boolean \| null |  | Written only by the removed Classic engine: true while the profile could still change. |
-| `profile_input_key` | string \| null |  | Internal; do not rely on it. Cache key of the profile request that produced the profile. |
-| `voice` | string \| null |  | Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`. |
-| `system_voice` | string \| null |  | Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`. |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
 
 <a id="schema-bookcharactervoice"></a>
 ### BookCharacterVoice
@@ -2934,16 +3080,6 @@ analyzed. Offsets are into the containing chapter's `text`.
 | `depth` | integer | yes | Nesting depth in the table of contents; 0 is top level. |
 | `title_source` | `"epub_nav"` \| `"epub_ncx"` | yes | Navigation format the entry came from. |
 
-<a id="schema-bookmetadataedits"></a>
-### BookMetadataEdits
-
-Which display metadata fields a person set; a later metadata refresh from the original keeps them.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `title` | boolean \| null |  | True when the title was set by hand. |
-| `author` | boolean \| null |  | True when the author was set by hand. |
-
 <a id="schema-bookmetadatarequest"></a>
 ### BookMetadataRequest
 
@@ -2975,14 +3111,13 @@ A passage ("segment"): the reader and narration unit, anchored to exact source o
 | `direction` | string | yes | Performance direction for this passage (empty when none). |
 | `cues` | list of string | yes | Short performance cue labels, for example `quiet` or `urgent`. |
 | `evidence` | list of string \| null |  | Exact source quotations that justify the attribution (copied from the source, never model paraphrase). Absent until analysis sets it. |
-| `seed` | integer \| null |  | Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed means a new take. Ignored by Gemini and device narration. |
+| `seed` | integer \| null |  | Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit; absent when not set, in which case the speaker's Breeze voice seed applies. A new seed means a new take. Ignored by Gemini and device narration. |
 | `speaker_check` | [BookSpeakerCheck](#schema-bookspeakercheck) \| null |  | BookNLP comparison; absent when not checked. |
 | `analysis_provider` | string \| null |  | Provider whose annotation is current for this passage (`local`, an LLM provider, `novel_analyzer` or `booknlp`). Absent before analysis; kept from the last analysis after a manual edit. |
 | `analysis_model` | string \| null |  | Model of that annotation; null for local or service providers. |
 | `audio` | [BookTake](#schema-booktake) \| null | yes | Presented: the selected enhanced take if still valid, else null. |
 | `leading_text` | string | yes | Presented only: chapter text between the previous passage (or the chapter start) and this passage, usually whitespace or a replaced scene-break ornament. |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
+| `manual_fields` | list of `"speaker_id"` \| `"direction"` \| `"cues"` \| `"seed"` | yes | Presented only: the passage fields a person set by hand (with `editPassage`), which analysis never replaces, in alphabetical order; empty when none. A passage edited before per-field tracking lists every field, and so does a speaker confirmed before contract 0.2.0. The server's lock bookkeeping itself is not published. |
 
 <a id="schema-bookpronunciation"></a>
 ### BookPronunciation
@@ -3026,8 +3161,6 @@ not proof that the character is physically present.
 | `direction` | string \| null |  | Performance direction for the whole scene. Used in enhanced narration recipes. |
 | `segment_ids` | list of string | yes | IDs of the scene's passages, in reading order. |
 | `character_ids` | list of string | yes | IDs of characters attributed to its passages (including `narrator`/`unassigned`). |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. Every successful edit request also sets the boolean `edited` to true, even one that changes nothing. |
 
 <a id="schema-bookseries"></a>
 ### BookSeries
@@ -3054,7 +3187,7 @@ Bounded, source-validated knowledge from strictly earlier volumes, as analysis w
 | `available_observations` | integer | yes | Valid observations found before the per-character cap and the size bound. |
 | `included_observations` | integer | yes | Observations included in `characters`. |
 | `truncated` | boolean | yes | True when `included_observations` < `available_observations`. |
-| `context_chars` | integer | yes | Length in characters of the JSON-serialized `characters` array; at most 12,000 with the current server bound. |
+| `context_chars` | integer | yes | Length in characters of the JSON-serialized `characters` array as analysis receives it; at most 12,000 with the current server bound. Analysis also receives validation bookkeeping that this response omits, so the returned array serializes slightly shorter. |
 | `fingerprint` | string | yes | Stable SHA-256 hex digest of the dependencies (membership, links, earlier sources) and the included context. It changes when anything that would change the context changes; it does not use timestamps. |
 
 <a id="schema-bookseriessuggestions"></a>
@@ -3093,31 +3226,21 @@ The selected enhanced (cast) narration take of a passage.
 Presented only when it is still valid: its recipe fingerprint matches the
 passage's current speaker voice, directions, scene notes, provider and
 model, and its WAV file exists. Otherwise the passage's `audio` is null.
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The `v` query changes when the selected audio changes, so the URL is safe to cache. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hex SHA-256 of the render recipe (the take's reuse identity). |
-| `asset_id` | string \| null |  | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content addressing, whose file is named by `fingerprint`. |
-| `duration` | number | yes | Audio duration in seconds, measured from the WAV. |
+| `url` | string | yes | Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The `v` query changes when the selected audio changes, so the URL is safe to cache and compare. |
+| `asset_id` | string \| null | yes | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Null for takes made before content addressing. |
+| `duration` | number \| null | yes | Audio duration in seconds, measured from the WAV; null only for a take stored without it. |
 | `provider` | string | yes | Narration provider: `system` (device), `gemini` or `breeze`. |
-| `model` | string \| null |  | Speech model ID (`macos-say` for device narration). |
-| `voice` | string \| null |  | Concrete provider voice that performed the take. |
-| `voice_library` | [BookTakeVoiceLibrary](#schema-booktakevoicelibrary) \| null |  | Library voice that was followed, when the character used one. |
+| `model` | string \| null | yes | Speech model ID (`macos-say` for device narration). |
+| `voice` | string \| null | yes | Concrete provider voice that performed the take, or null when not recorded. |
+| `created_at` | string \| null | yes | Always null for Studio takes: their retention time is not recorded on the take. |
+| `voice_library` | [AudioTakeVoiceLibrary](#schema-audiotakevoicelibrary) \| null |  | Library voice that was followed, when the character used one; absent otherwise. |
 | `voice_revision` | string \| null |  | Breeze only: the pinned server revision of the voice. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: sentence timing, or null when the server's timing was not usable. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
-| `resource_usage` | object \| null |  | Internal; do not rely on it. Measured provider usage for the request that produced the take (token counts, estimated cost in USD, cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage. |
-
-<a id="schema-booktakevoicelibrary"></a>
-### BookTakeVoiceLibrary
-
-The library voice and version that performed a take.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Library voice ID (`vl_` + 16 hex). |
-| `version` | integer \| null |  | Version number of that library voice. |
 
 <a id="schema-breezevoicecloned"></a>
 ### BreezeVoiceCloned
@@ -3258,15 +3381,13 @@ Character fields to change (edit) or set (create). Omitted or null fields are ig
 | `name` | string \| null |  | Display name, 1–100 characters. A changed name is remembered in `former_names`. |
 | `aliases` | list of string \| null |  | Complete replacement list of other names for the character. |
 | `description` | string \| null |  | Voice and personality profile, at most 3,000 characters. |
-| `voices` | map of string → [VoiceChoice](#schema-voicechoice) \| null \| null |  | Per-provider voice choices: `{provider: VoiceChoice \| null}` where provider is `system`, `gemini` or `breeze` (another key is rejected with 400). Only the providers present change; `null` removes that provider's choice, which means Default. The stored map is returned in `characters[].voices` (library references stay references). |
-| `voice` | string \| null |  | Compatibility alias for the Gemini choice: a voice ID (at most 200 characters) is stored as `voices.gemini = {id}`; an empty or blank string removes it. Ignored for Gemini when `voices` also names `gemini`. Any voice change removes the legacy fields from the stored character. |
-| `system_voice` | string \| null |  | Compatibility alias for the device (`system`) choice, with the same rules as `voice`. |
+| `voices` | map of string → [VoiceChoice](#schema-voicechoice) \| null \| null |  | Per-provider voice choices: `{provider: VoiceChoice \| null}` where provider is `system`, `gemini` or `breeze` (another key is 400 `voice_provider_unknown`). Only the providers present change; `null`, or a choice whose `id` is empty or blank, removes that provider's choice, which means Default. This rule is the same for every provider. The stored map is returned in `characters[].voices` (library references stay references). |
 | `direction` | string \| null |  | Standing performance direction, at most 3,000 characters. |
 
 <a id="schema-characterreference"></a>
 ### CharacterReference
 
-One source-anchored reference to a character from the latest published analysis.
+One source-anchored reference to a character in the current book.
 
 `chapter.text[start:end] == quote`. A mention is an explicit textual
 reference, not proof that the character is present in the scene.
@@ -3280,9 +3401,9 @@ reference, not proof that the character is present in the scene.
 | `start` | integer | yes | Zero-based Unicode code-point offset into the chapter text. |
 | `end` | integer | yes | Exclusive end offset in code points. |
 | `quote` | string | yes | The exact source text of the span. |
-| `kind` | `"dialogue"` \| `"mention"` \| `"profile_evidence"` | yes | `dialogue`: a passage attributed to the character. `mention`: the character's unique name or alias occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence. |
+| `kind` | `"dialogue"` \| `"mention"` \| `"profile_evidence"` | yes | `dialogue`: a dialogue passage currently attributed to the character. `mention`: the character's name or an alias, unique within the cast, occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence. |
 | `confidence` | number \| null |  | Attribution confidence for `dialogue` (0–1); null otherwise. |
-| `provider` | string \| null |  | Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited dialogue attribution; null when unknown. Current analysis always writes `confidence`, `provider` and `model`; references retained from older versions may omit them. |
+| `provider` | string \| null |  | Who produced it: the analysis provider of the passage's attribution or of the evidence, `local` for mentions, or `reviewed` for a dialogue attribution a person set or confirmed; null when unknown. Evidence retained from older versions may omit `confidence`, `provider` and `model`. |
 | `model` | string \| null |  | Model that produced it, or null. |
 | `profile_description` | string \| null |  | `profile_evidence` only: the description proposed with this evidence. |
 | `profile_direction` | string \| null |  | `profile_evidence` only: the direction proposed with this evidence. |
@@ -3334,8 +3455,8 @@ Which scopes of a version to preview, accept or reject.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `scopes` | list of string \| null |  | Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list, or a scope the version does not contain, is refused (400). |
-| `expected_revision` | integer \| null |  | Accept only: the `revision` returned by preview. The accept is refused (409) when the book revision differs. Ignored by preview and reject. |
+| `scopes` | list of string \| null |  | Scope IDs of the version to act on (at most 5000). Omit or null for every scope of the version. An empty list (400 `scopes_empty`), or a scope the version does not contain (400 `unknown_scope`), is refused. |
+| `expected_revision` | integer \| null |  | Accept only: the `revision` returned by preview. The accept is refused (409 `plan_stale`) when the book revision differs. Ignored by preview and reject. |
 
 <a id="schema-defaultvoice"></a>
 ### DefaultVoice
@@ -3388,20 +3509,20 @@ Whether a diagnostic event was stored. `recorded: false` is not an error; do not
 | --- | --- | --- | --- |
 | `recorded` | boolean | yes | True when a new event was stored; false when it was skipped (see `reason`). |
 | `id` | string \| null |  | The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event. |
-| `reason` | `"duplicate"` \| `"rate_limited"` \| `"unavailable"` \| null |  | Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed, or the fields broke a rule checked after validation, such as a passage ID without a book ID). |
+| `reason` | `"duplicate"` \| `"rate_limited"` \| `"unavailable"` \| null |  | Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed). |
 
 <a id="schema-diagnosticrequest"></a>
 ### DiagnosticRequest
 
-One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422).
+One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422). `segment_id`, `session_id` and `job_id` each require `book_id` (`dependentRequired`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `event` | `"listen_request_failed"` \| `"listen_poll_failed"` \| `"listen_job_failed"` \| `"buffer_failed"` \| `"cache_read_failed"` \| `"playback_media_error"` \| `"playback_play_rejected"` \| `"playback_waiting"` \| `"playback_resumed"` \| `"preview_failed"` | yes | Client event code: `listen_request_failed`, `listen_poll_failed`, `listen_job_failed`, `buffer_failed`, `cache_read_failed`, `playback_media_error`, `playback_play_rejected`, `playback_waiting`, `playback_resumed` or `preview_failed`. |
 | `book_id` | string \| null |  | Book UUID (lowercase hex with hyphens). Required when `segment_id`, `session_id` or `job_id` is sent. |
-| `segment_id` | string \| null |  | Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters. |
-| `session_id` | string \| null |  | Listening session ID: 64 lowercase hex characters. |
-| `job_id` | string \| null |  | Job ID: 32 lowercase hex characters. |
+| `segment_id` | string \| null |  | Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters. Requires `book_id`. |
+| `session_id` | string \| null |  | Listening session ID: 64 lowercase hex characters. Requires `book_id`. |
+| `job_id` | string \| null |  | Job ID: 32 lowercase hex characters. Requires `book_id`. |
 | `playback_rate` | number \| null |  | Playback rate, a finite JSON number from 0.1 to 8 (strict: no strings or booleans). |
 | `http_status` | integer \| null |  | HTTP status the client received, an integer 100–599 (strict). |
 | `media_error_code` | integer \| null |  | HTML media error code, an integer 1–4 (strict). |
@@ -3440,7 +3561,8 @@ Error body for every non-2xx JSON response.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `detail` | string \| list of [ValidationIssue](#schema-validationissue) | yes | A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it. Machine-readable error codes are not yet provided. |
+| `detail` | string \| list of [ValidationIssue](#schema-validationissue) | yes | A human-readable English sentence, or for 422 request validation a list of issues. Display it; do not parse it. |
+| `code` | string | yes | Stable, machine-readable error code in lower snake_case, for example `book_not_found` or `job_active`. Each operation lists the codes it returns for each status; every operation can also return the global codes listed in the contract introduction. Branch on `code`, not on `detail`. Treat an unknown code like any other failure with the same status. |
 
 <a id="schema-generaterequest"></a>
 ### GenerateRequest
@@ -3488,23 +3610,24 @@ A `series` parent can also stay `running` while it waits for the owner's
 review (`waiting_for_review` is set and no book is running); it continues
 only when resumed (`resumeSeriesProcessing`) and ends when cancelled.
 
-Treat the first terminal status you observe as final. The server may still
-rewrite `message` afterwards (a job cancelled while queued is settled
-again when its worker slot comes up, and in a shutdown race that can turn
-`cancelled` into `interrupted`). Resuming work uses the original start
-route and creates a new job; old job IDs are never revived. A queued
-series child that is cancelled or passed over never starts later.
+**A terminal status is final.** Once a job reaches a terminal status,
+its `status`, `message`, `error` and `resume_after` never change again,
+whatever happens later (a worker slot coming up for a job cancelled while
+queued, or the server shutting down). Other fields may still be updated
+as bookkeeping. Resuming work uses the original start route and creates a
+new job; old job IDs are never revived. A queued series child that is
+cancelled or passed over never starts later.
 
 **Kinds and their extra fields** (a field not listed for a kind is absent):
 
 | kind | started by | extra fields |
 | --- | --- | --- |
 | `render` | enhanced narration | none |
-| `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.2.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
-| `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `mode`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `plan_fingerprint`, and in some end states `not_started` or `finished_at`; since contract 0.3.0 also `consent_fingerprint`, `context_pending` and `context_sources` |
-| `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `mode`, `concurrency`, `fresh`, `limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `plan_fingerprint`, `estimated_cost_usd`, `requests`, `finished_at`; since contract 0.3.0 `context_pending_books`, and `waiting_for_review` once it has paused. A run recorded before contract 0.2.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `limits` (SeriesJobLimits), `book_ids`, `child_job_ids`, `plan_fingerprint` and `finished_at`, with `analyze` children |
+| `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.3.0 has `series_id`, `series_run_id`, `position` instead of `chapter_id` |
+| `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `scheduling`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |
+| `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `estimated_cost_usd`, `requests`, `context_pending_books`, `finished_at`, and `waiting_for_review` once it has paused. A run recorded before contract 0.3.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `analysis_limits` (SeriesJobLimits), `book_ids`, `child_job_ids` and `finished_at`, with `analyze` children |
 | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
-| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `limits` (speech), `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
+| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
 | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |
 
@@ -3513,7 +3636,9 @@ series child that is cancelled or passed over never starts later.
 **Progress.** `progress` and `total` are counts in kind-specific units, not
 a percentage, and `total` may change while running: passages for
 `render`, `performance` and `listen_chapter` (passages ready from the
-scope start to the chapter end); 0/1 for `listen` and `voice_preview`;
+scope start to the chapter end; a Gemini simple `performance` advances
+only when each chapter's child job settles); 0/1 for `listen` and
+`voice_preview`;
 analyzer work units for `analyze` and `pipeline`; books for `series`.
 
 | Field | Type | Required | Description |
@@ -3529,31 +3654,31 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.3.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.3.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.3.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"simple"` \| `"cast"` \| null |  | `performance` only: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
-| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
+| `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
 | `series_id` | string \| null |  | `series` parent and its children: the series. |
 | `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
 | `position` | number \| null |  | Series child: the book's reading-order position in the series. |
 | `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
 | `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
 | `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
-| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
-| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.3.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.3.0: parallel discovery workers (1–2). |
 | `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
 | `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
 | `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
-| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
-| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` at confirmation. A child queued before contract 0.3.0 (without `consent_fingerprint`) is not run when its recomputed plan differs. |
+| `analysis_limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| null |  | `series` only: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.3.0 (SeriesJobLimits). |
 | `consent_fingerprint` | string \| null |  | Series child (`pipeline`): the `consent_fingerprint` confirmed for that book (`SeriesPlanBook`). Before the book starts it is recomputed; the book is not run when it differs. It covers the unit set, providers, models, `fresh` and step versions, but not the earlier-volume context in context-pending prompts. |
 | `context_pending` | list of string \| null |  | Series child (`pipeline`): step IDs whose prompts read earlier books of this run (see `SeriesPlanBook.context_pending`). Empty when none. |
 | `context_sources` | list of string \| null |  | Series child (`pipeline`): earlier books of this run whose accepted results this book reads, in no particular order. The series pauses after such a book while it has results waiting for review. |
@@ -3572,6 +3697,7 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
 | `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
 | `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `speech_limits` | [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued. |
 | `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
 | `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
 | `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
@@ -3619,7 +3745,7 @@ Metadata of the book's saved cover thumbnail (a JPEG of at most 240 x 360 pixels
 | `width` | integer | yes | Thumbnail width in pixels. |
 | `height` | integer | yes | Thumbnail height in pixels. |
 | `sha256` | string | yes | Lowercase hex SHA-256 of the thumbnail bytes. Changes when the cover changes. |
-| `url` | string | yes | Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. The `v` query value is a cache-busting token only; the server ignores it. |
+| `url` | string | yes | Root-relative URL of the image, `/api/books/{book_id}/cover?v={sha256}`. Because the `v` value names these exact bytes, the server lets clients cache this URL indefinitely (see `getBookCover`); a changed cover gets a new URL. |
 
 <a id="schema-librarybookstorage"></a>
 ### LibraryBookStorage
@@ -3662,10 +3788,9 @@ prose projection. Counting and file measurement happen on every request.
 | `word_count` | integer | yes | Whitespace-separated tokens across all section text. |
 | `character_count` | integer | yes | Cast members, excluding the two built-in entries `narrator` and `unassigned`. Not a count of text characters (see `text_character_count`). |
 | `text_character_count` | integer | yes | Length of all section text in Unicode code points. |
-| `segment_count` | integer | yes | Number of passages (reader units). |
-| `passage_count` | integer | yes | Same value as `segment_count`; "passage" and "segment" name the same unit. |
+| `segment_count` | integer | yes | Number of passages (reader units; "passage" and "segment" name the same unit). |
 | `scene_count` | integer | yes | Number of scenes. |
-| `audio_count` | integer | yes | Passages that have a stored selected enhanced take, whether or not that take is still current. The book document shows only current takes, so this can exceed the playable count. |
+| `audio_count` | integer | yes | Passages whose selected enhanced (cast) take is current and playable: it still matches the passage's text, speaker, resolved voice, scene direction and provider/model, and its audio file exists. Equals the number of passages with a non-null `audio` in `GET /api/books/{book_id}`. Superseded or stale takes stay stored but are not counted. |
 | `membership` | [SeriesMembership](#schema-seriesmembership) \| null | yes | Series membership, or null when the book is in no series. Reported even when the book or its series is removed. |
 | `cover` | [LibraryBookCover](#schema-librarybookcover) \| null | yes | Saved cover thumbnail, or null when there is none (TXT imports, the demo, EPUBs without a usable cover). |
 | `storage` | [LibraryBookStorage](#schema-librarybookstorage) | yes | Measured storage attributed to this book. |
@@ -3677,7 +3802,7 @@ The library-management view: books, series and storage in one response.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `books` | list of [LibraryBookSummary](#schema-librarybooksummary) | yes | Book summaries, most recently saved first (any save of a book, including a metadata edit, moves it to the front). Removed books are included only with `include_archived=true`. |
+| `books` | list of [LibraryBookSummary](#schema-librarybooksummary) | yes | Book summaries, most recently imported first (see `listBooks` for the exact order). Removed books are included only with `include_archived=true`. |
 | `series` | list of [Series](#schema-series) | yes | Series sorted by name (ignoring case), then ID. Removed series are included only with `include_archived=true`. |
 | `storage` | [LibraryStorage](#schema-librarystorage) | yes | Library-wide measured storage. |
 
@@ -3717,7 +3842,27 @@ A named library voice with its versions ("VoiceView").
 | `versions` | list of [LibraryVoiceVersion](#schema-libraryvoiceversion) | yes | All versions, oldest first. |
 | `usage` | list of [LibraryVoiceUsage](#schema-libraryvoiceusage) | yes | Characters (in non-archived books) that follow this voice. |
 | `source` | [VoiceCharacterContext](#schema-voicecharactercontext) \| null | yes | The character the voice was designed or cloned for, or null. |
-| `warnings` | list of string | yes | Human-readable problems: the current version changed on the Breeze server (narration refused), is missing from the server, was made with another Google key, or the selected Gemini speech model accepts only built-in voices. |
+| `warnings` | list of string | yes | Human-readable problems: an unfinished deletion already removed some of its provider voices (delete it again to finish), the current version changed on the Breeze server (narration refused), is missing from the server, was made with another Google key, or the selected Gemini speech model accepts only built-in voices. |
+
+<a id="schema-libraryvoiceaudition"></a>
+### LibraryVoiceAudition
+
+A voice version's audition clip (`GET /api/voices/{voice_id}/versions/{version}/audition`).
+
+Always present. When Bardic retained the clip (24 kHz mono WAV), `asset_id`, `duration` and `created_at` are
+set. When it did not, they are null and the URL fetches the Breeze reference clip or Gemini sample from the
+provider on each request. `voice` is the version's provider voice ID. `model` is the design model for a
+designed version, and null for a cloned or imported version, whose clip is a recording.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not build audio URLs from other fields. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed (takes recorded before content addressing). A different `asset_id` means different audio. |
+| `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
+| `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
+| `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
+| `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when it was not recorded. |
 
 <a id="schema-libraryvoicedeleted"></a>
 ### LibraryVoiceDeleted
@@ -3727,7 +3872,7 @@ Result of deleting a library voice.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `deleted` | string | yes | The library voice ID. |
-| `server_deleted` | list of string | yes | Provider voice IDs deleted on the provider in this request, sorted. Empty when removed from Bardic only, or when the voice was already deleted. |
+| `server_deleted` | list of string | yes | Provider voice IDs this deletion removed on the provider, sorted, including those removed by earlier attempts that failed part-way. Empty when removed from Bardic only, or when the voice was already deleted. |
 
 <a id="schema-libraryvoicerecipe"></a>
 ### LibraryVoiceRecipe
@@ -3768,8 +3913,8 @@ One immutable version of a library voice: one fixed provider voice.
 | `made` | `"designed"` \| `"cloned"` \| `"imported"` | yes | How this version was made: saved from a design draft, cloned from an uploaded recording, or imported from the Breeze server by a connection check. |
 | `created_at` | string | yes | When the version was saved (ISO 8601 UTC). |
 | `expires_at` | string \| null | yes | Gemini: when Google deletes the stored voice (the provider's timestamp string; stored voices live about one year). Null for Breeze or when unknown. |
-| `server_state` | `"ok"` \| `"changed"` \| `"missing"` \| `"unknown"` \| `"other_project"` | yes | Result of comparing this version with the last saved provider check, computed locally. `ok`: present (Breeze: same revision). `changed`: Breeze only, the server voice changed since it was saved. `missing`: not in the last check. `unknown`: no check to compare with (Breeze never checked or checked against another URL; Gemini project voices not refreshed with the current key; or a single-voice response, which never compares). `other_project`: Gemini only, made with a different Google API key than the current one. |
-| `audition_url` | string | yes | Root-relative URL of this version's audition WAV (`GET /api/voices/{voice_id}/versions/{version}/audition`). |
+| `server_state` | `"ok"` \| `"changed"` \| `"missing"` \| `"unknown"` \| `"other_project"` | yes | Result of comparing this version with the last saved provider check, computed locally in every response that returns a voice. `ok`: present (Breeze: same revision). `changed`: Breeze only, the server voice changed since it was saved. `missing`: not in the last check, or already deleted on the provider by an unfinished deletion of this voice. `unknown`: no check to compare with (Breeze never checked or checked against another URL; Gemini project voices never listed with the current key, or the last listing failed). `other_project`: Gemini only, made with a different Google API key than the current one. |
+| `audition` | [LibraryVoiceAudition](#schema-libraryvoiceaudition) | yes | This version's audition clip. |
 | `recipe` | [LibraryVoiceRecipe](#schema-libraryvoicerecipe) | yes | How the version was made. |
 
 <a id="schema-limits"></a>
@@ -3824,54 +3969,45 @@ One passage with one simple narrator.
 One passage's estimated clip inside a multi-passage chunk WAV (Gemini chapter listening).
 
 Play ``url`` from ``clip_start`` to ``clip_end``. Consecutive clips of one
-chunk share the same file and play gaplessly.
+chunk share the same file and play gaplessly. Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"simple"` | yes | Always `simple` here. |
-| `available` | `true` | yes | Always true. |
-| `segment_id` | string | yes | Passage this clip narrates. |
 | `url` | string | yes | Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the chunk WAV. |
-| `chunk_id` | string | yes | ID of the retained chunk. |
-| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
-| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
 | `duration` | number | yes | Clip length in seconds (`clip_end - clip_start`, rounded to ms). |
-| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
-| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
 | `provider` | string | yes | Speech provider that produced the chunk, for example `gemini`. |
 | `model` | string | yes | Speech model that produced the chunk, for example `gemini-3.8-flash-tts`. |
 | `voice` | string | yes | Provider voice actually used for the chunk. |
-| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
+| `segment_id` | string | yes | Passage this clip narrates. |
+| `chunk_id` | string | yes | ID of the retained chunk. |
+| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
+| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
+| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
+| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
+| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
 
 <a id="schema-listeningpassageaudio"></a>
 ### ListeningPassageAudio
 
 A retained single-passage simple-listening take, ready to play.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"simple"` | yes | Always `simple` here. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
 | `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the WAV bytes (content address). |
 | `duration` | number | yes | Audio length in seconds. |
-| `provider` | string | yes | Provider that produced the bytes. |
+| `provider` | string | yes | Provider that produced the bytes (`system`, `gemini` or `breeze`). |
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
+| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
-| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
-| `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
-| `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
@@ -3888,8 +4024,6 @@ Pointer to the original retained take whose bytes were reused for this passage.
 | `book_id` | string | yes | Book of the original take (reuse can cross books). |
 | `session_id` | string | yes | Listening session ID (64 hex) of the original take; may differ from the current session. |
 | `segment_id` | string | yes | Passage ID the original take narrated, in the original take's book; may differ from this passage when equivalent text was reused. |
-| `recipe` | string | yes | Source-bound recipe hash of the original take. |
-| `fingerprint` | string | yes | Producer fingerprint of the original take. |
 
 <a id="schema-listeningsession"></a>
 ### ListeningSession
@@ -3911,22 +4045,6 @@ changed on the server (new revision) starts a new session and keeps old takes.
 | `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. |
 | `seed` | integer \| null |  | Breeze only: the pinned generation seed. |
 | `settings` | object \| null |  | Breeze only, when set: pinned speech settings for the voice (provider-defined keys). |
-
-<a id="schema-listeningsourceanchor"></a>
-### ListeningSourceAnchor
-
-The exact source binding a simple take was retained against.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `schema_version` | integer | yes | Anchor format version (1). |
-| `book_id` | string | yes | Book ID the take is bound to (the book it was retained in, even when its bytes were reused from another book). |
-| `session_id` | string | yes | Listening (narrator) session ID: 64 hex characters, a hash of the session configuration. |
-| `chapter_id` | string | yes | Chapter ID containing the passage; `start` and `end` index this chapter's text. |
-| `segment_id` | string | yes | Passage (segment) ID the take narrates. |
-| `start` | integer | yes | Passage start, chapter-local code-point offset. |
-| `end` | integer | yes | Passage end (exclusive), chapter-local code-point offset. |
-| `fingerprint` | string | yes | Hash of the passage speech recipe. |
 
 <a id="schema-listeningtake"></a>
 ### ListeningTake
@@ -4026,8 +4144,7 @@ Literal word search over saved passages.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `items` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Matches, strongest first. Same list as `results`. |
-| `results` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Alias of `items` (the documented name). |
+| `items` | list of [PassageSearchHit](#schema-passagesearchhit) | yes | Matches, strongest first. |
 | `available` | boolean | yes | False when this SQLite build lacks FTS5; then there are no results. |
 | `query` | string | yes | The `q` parameter as sent. |
 | `scope` | `"book"` \| `"earlier"` | yes | The effective scope. |
@@ -4059,7 +4176,7 @@ never include.
 | `archived` | boolean | yes | True when hidden from the default list (listed only with `archived=true`). Its audio is kept. |
 | `job_id` | string \| null | yes | Latest job ID, or null if no job was ever needed. |
 | `cast` | list of [PerformanceCastMember](#schema-performancecastmember) \| null |  | Cast only: the narrator and each speaker in the chosen chapters. |
-| `job` | [PerformanceJobSummary](#schema-performancejobsummary) \| null | yes | Summary of the latest job, or null. |
+| `job` | [Job](#schema-job) \| null | yes | The latest `performance` job (a full `Job`), or null when no job was ever needed. |
 | `progress` | [PerformanceProgress](#schema-performanceprogress) | yes |  |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`. |
 
@@ -4071,29 +4188,27 @@ Playable audio of a performance.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `performance_id` | string | yes | ID of the performance (`pf_…`). |
-| `audio` | map of string → [PerformancePassageAudio](#schema-performancepassageaudio) \| [PerformanceChunkClipAudio](#schema-performancechunkclipaudio) \| [PerformanceCastAudio](#schema-performancecastaudio) | yes | Keyed by passage (segment) ID; only passages ready against their current source. |
+| `audio` | map of string → [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [PerformanceCastAudio](#schema-performancecastaudio) | yes | Keyed by passage (segment) ID; only passages ready against their current source. Simple performances give the `/listen/takes` objects; cast performances give `PerformanceCastAudio`. |
 
 <a id="schema-performancecastaudio"></a>
 ### PerformanceCastAudio
 
 A cast performance's retained passage take.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this take belongs to. |
-| `available` | `true` | yes | Always true. |
-| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{asset_id}`. |
-| `asset_id` | string | yes | Content hash of the WAV (hex). For reused legacy Studio takes it can be a recipe fingerprint. |
-| `duration` | number \| null | yes | Audio length in seconds. |
-| `fingerprint` | string \| null | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes. |
+| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/audio-assets/{id}`. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the WAV (content address), or null for a reused Studio take recorded before content addressing (its URL then names the file by recipe). |
+| `duration` | number \| null | yes | Audio length in seconds, or null when the retained record lacks it. |
 | `provider` | string \| null | yes | Narration provider that produced the take (`system`, `gemini` or `breeze`); null when the retained take metadata does not record it. |
 | `model` | string \| null | yes | Speech model that produced the take (for example `macos-say`, `breeze-tts-2` or a Gemini TTS model); null when the retained take metadata does not record it. |
-| `voice` | string \| null | yes | Provider voice that performed the take. |
+| `voice` | string \| null | yes | Provider voice that performed the take, or null when not recorded. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the take was retained for this performance. |
 | `speaker_id` | string \| null | yes | The passage's speaker (a character ID, `narrator` or `unassigned`). |
 | `character_id` | string \| null | yes | Character whose voice was used (`narrator` when falling back). |
 | `fallback` | boolean | yes | True when the speaker had no usable voice and the narrator voice was used. |
-| `created_at` | string \| null | yes | ISO 8601 UTC time the take was retained for this performance. |
 
 <a id="schema-performancecastmember"></a>
 ### PerformanceCastMember
@@ -4119,33 +4234,6 @@ Readiness of one selected chapter.
 | `passages_total` | integer | yes | Passages in the chapter. |
 | `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
 
-<a id="schema-performancechunkclipaudio"></a>
-### PerformanceChunkClipAudio
-
-A simple performance's chunk clip (the `/listen/takes` object relabelled).
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `available` | `true` | yes | Always true. |
-| `segment_id` | string | yes | Passage this clip narrates. |
-| `url` | string | yes | Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`. |
-| `asset_id` | string | yes | SHA-256 hex of the chunk WAV. |
-| `chunk_id` | string | yes | ID of the retained chunk. |
-| `clip_start` | number | yes | Clip start within the chunk WAV, seconds. |
-| `clip_end` | number | yes | Clip end within the chunk WAV, seconds. |
-| `duration` | number | yes | Clip length in seconds (`clip_end - clip_start`, rounded to ms). |
-| `chunk_duration` | number | yes | Length of the whole chunk WAV in seconds. |
-| `timing` | `"estimated"` | yes | Clip boundaries are estimated from pauses, not measured. |
-| `provider` | string | yes | Speech provider that produced the chunk, for example `gemini`. |
-| `model` | string | yes | Speech model that produced the chunk, for example `gemini-3.8-flash-tts`. |
-| `voice` | string | yes | Provider voice actually used for the chunk. |
-| `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
-| `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
-| `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
-
 <a id="schema-performanceedit"></a>
 ### PerformanceEdit
 
@@ -4165,22 +4253,6 @@ One performance.
 | --- | --- | --- | --- |
 | `performance` | [Performance](#schema-performance) | yes |  |
 
-<a id="schema-performancejobsummary"></a>
-### PerformanceJobSummary
-
-The latest performance job, abbreviated.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Job ID (32-character hex) of the latest `performance` job; the full job is listed by `GET /api/jobs?book_id=…`. |
-| `status` | string | yes | Job status (see the Job object). |
-| `progress` | integer | yes | Passages finished so far (for Gemini simple performances, advances only when a chapter's child job settles). |
-| `total` | integer | yes | Passages the job has to prepare (those missing when it started). |
-| `message` | string | yes | Human-readable progress line, for example `Chapter 2 of 5 · passage 14 of 40`. Display only. |
-| `error` | string \| null | yes | Human-readable failure reason when the job failed, else null. |
-| `resume_after` | string \| null | yes | ISO 8601 UTC time after which a `quota_limited` job can be resumed, else null. |
-| `child_job_id` | string \| null | yes | The `listen_chapter` child job running now (Gemini simple), else null. |
-
 <a id="schema-performancelist"></a>
 ### PerformanceList
 
@@ -4189,36 +4261,6 @@ Performances of a book, newest first.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `performances` | list of [Performance](#schema-performance) | yes | Performances of the book, newest first. Archived ones only when requested with `archived=true`. |
-
-<a id="schema-performancepassageaudio"></a>
-### PerformancePassageAudio
-
-A simple performance's single-passage take (the `/listen/takes` object relabelled).
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `mode` | `"performance"` | yes | Always `performance` here. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
-| `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`. |
-| `asset_id` | string | yes | SHA-256 hex of the WAV bytes (content address). |
-| `duration` | number | yes | Audio length in seconds. |
-| `provider` | string | yes | Provider that produced the bytes. |
-| `model` | string | yes | Speech model that produced the bytes. |
-| `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
-| `session_id` | string | yes | Listening session the take belongs to. |
-| `segment_id` | string | yes | Passage the take narrates. |
-| `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
-| `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
-| `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
-| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
-| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
-| `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
 
 <a id="schema-performanceplan"></a>
 ### PerformancePlan
@@ -4237,10 +4279,20 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `requests_estimate` | integer | yes | Gemini simple: planned full-size chunk requests; otherwise passages to generate. |
 | `expected_seconds` | number | yes | Missing text at 14 code points per second plus ready durations. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Readiness per requested chapter, in book order. |
-| `problems` | list of string | yes | Blocking conditions; create refuses (400) while any exist. |
+| `problems` | list of [PerformanceProblem](#schema-performanceproblem) | yes | Blocking conditions, each with a stable `code` and a `detail` sentence; empty when nothing blocks. Create refuses (400, with the first problem's code) while any exist. |
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
+
+<a id="schema-performanceproblem"></a>
+### PerformanceProblem
+
+One blocking condition of a performance plan.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | Stable error code of the condition, the same code `createPerformance` refuses with when this is the first problem: `gemini_key_missing`, `breeze_url_missing`, `device_narration_unavailable`, `narrator_voice_invalid` (simple mode) or `narrator_voice_missing` (cast mode). Key a fix-it hint on it. |
+| `detail` | string | yes | A sentence that states the condition, for people. |
 
 <a id="schema-performanceprogress"></a>
 ### PerformanceProgress
@@ -4325,15 +4377,20 @@ The applied impact and the decision recorded.
 
 One recorded analysis HTTP attempt, newest 100 for the book (step pipeline, or the removed Classic engine).
 
-Fields come from the stored attempt and may be absent on records from
-older versions. Prompts, responses and credentials are never included.
+The pipeline inspector lists the newest 100 for the book; the analysis
+export's `analysis-attempts.json` lists all of them in this same shape.
+Fields come from the stored attempt through a fixed allowlist and may be
+absent on records from older versions. Prompts, responses, credentials
+and server process IDs are never included.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Attempt ID. |
+| `book_id` | string \| null |  | Book the attempt was made for. |
 | `run_id` | string \| null |  | Job ID of the run that sent it. |
 | `stage` | string \| null |  | Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records. |
 | `unit_key` | string \| null |  | Opaque cache key of the unit of work. |
+| `chapter_id` | string \| null |  | Chapter the request was about, when recorded. |
 | `provider` | string \| null |  | Provider ID. |
 | `model` | string \| null |  | Model ID. |
 | `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"interrupted_unknown"` \| null |  | `reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not active, so the outcome is unknown. |
@@ -4342,9 +4399,17 @@ older versions. Prompts, responses and credentials are never included.
 | `http_status` | integer \| null |  | Provider HTTP status code. A 200 does not mean the output passed validation. |
 | `input_tokens` | integer \| null |  | Reported input tokens; null when not reported. |
 | `output_tokens` | integer \| null |  | Reported output tokens; null when not reported. |
+| `cached_input_tokens` | integer \| null |  | Reported cached input tokens; null when not reported. |
+| `cache_write_input_tokens` | integer \| null |  | Reported cache-write input tokens; null when not reported. |
 | `reserved_input_tokens` | integer \| null |  | Input allowance reserved before sending (conservative). |
 | `reserved_output_tokens` | integer \| null |  | Output allowance reserved before sending. |
 | `charged_estimate_usd` | number \| null |  | Conservative USD estimate for this attempt; null when unknown. |
+| `cost_basis` | string \| null |  | How `charged_estimate_usd` was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent` or `unknown`. |
+| `input_rate` | number \| null |  | Input price used for the estimate, in USD per million input tokens; null when the model has no known price. |
+| `output_rate` | number \| null |  | Output price used for the estimate, in USD per million output tokens; null when the model has no known price. `charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + output tokens × `output_rate`) / 1,000,000, using reported usage when present and the reservation otherwise. |
+| `price_as_of` | string \| null |  | Date of the price table used for the estimate, or null. |
+| `price_source` | string \| null |  | URL of the price source used, or null. |
+| `elapsed_seconds` | number \| null |  | Measured wall time of the request in seconds; null when unknown. |
 | `input_artifact_id` | string \| null |  | Artifact ID of the retained request recipe (`analysis_input`). |
 | `validation_state` | `"accepted"` \| `"rejected"` \| `"unknown"` | yes | From retained events: `accepted` or `rejected` by output validation; `unknown` when no event links it. |
 
@@ -4529,7 +4594,7 @@ Read-only inspector envelope for a book's processing pipeline.
 | `schema_version` | integer | yes | Envelope version (currently 1). |
 | `book_id` | string | yes | Book ID of the inspected book. |
 | `stages` | list of [PipelineStage](#schema-pipelinestage) | yes | Stage cards in pipeline order. |
-| `jobs` | list of [PipelineJobSummary](#schema-pipelinejobsummary) | yes | The book's newest 100 jobs, newest first. |
+| `jobs` | list of [Job](#schema-job) | yes | The book's newest 100 jobs, newest first, as full `Job` objects (the same as `GET /api/jobs?book_id=…`). |
 | `usage` | [AnalysisUsage](#schema-analysisusage) | yes |  |
 | `attempts` | list of [PipelineAttempt](#schema-pipelineattempt) | yes | The newest 100 analysis attempts, oldest first. |
 | `events` | list of [PipelineEvent](#schema-pipelineevent) | yes | The newest 100 analysis events, newest first. |
@@ -4537,24 +4602,6 @@ Read-only inspector envelope for a book's processing pipeline.
 | `artifact_kinds` | list of string | yes | Same as `artifact_counts.kinds`. |
 | `artifact_counts` | [ArtifactCounts](#schema-artifactcounts) | yes |  |
 | `notes` | list of string | yes | Interpretation notes. Display only. |
-
-<a id="schema-pipelinejobsummary"></a>
-### PipelineJobSummary
-
-A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | Job ID. |
-| `kind` | string | yes | Job kind, e.g. `pipeline`, `series`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`, or `analyze` for historical jobs of the removed Classic engine. |
-| `status` | string | yes | Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, `quota_limited`. |
-| `phase` | string \| null |  | Phase of a historical `analyze` job of the removed Classic engine. |
-| `progress` | integer | yes | Units completed so far, in kind-specific units (see `Job`); not a percentage. |
-| `total` | integer | yes | Units planned, in the same units; 0 when not yet known. May grow while running. |
-| `message` | string | yes | Progress or outcome text. Display only. |
-| `error` | string \| null | yes | Failure text, or null. Display only. |
-| `created_at` | string | yes | ISO 8601 UTC. |
-| `updated_at` | string | yes | ISO 8601 UTC. |
 
 <a id="schema-pipelineplan"></a>
 ### PipelinePlan
@@ -4633,7 +4680,6 @@ A provider a pipeline step can use. Each step lists which of these it accepts.
 | `self_hosted` | boolean | yes | True for a server on the owner's network (`local_llm`, `booknlp`, `novel_analyzer`). |
 | `needs` | `"api_key"` \| `"url"` | yes | What must be configured in Settings: an API key (cloud) or a server URL. |
 | `configured` | boolean | yes | A key or URL is set. It does not prove the server answers or the key works. |
-| `has_api_key` | boolean | yes | Older name for `configured` (also true when a URL is set). Same value. |
 | `models` | list of [PipelineProviderModel](#schema-pipelineprovidermodel) \| null |  | Present only for `local_llm`: curated models for the self-hosted server. |
 
 <a id="schema-pipelineprovidermodel"></a>
@@ -4699,7 +4745,7 @@ Created with `status: queued`; the job worker adds `started_at`, then
 | `job_id` | string | yes | The `pipeline` job executing it (poll and cancel through the jobs API). |
 | `status` | `"queued"` \| `"running"` \| `"completed"` \| `"failed"` \| `"budget_limited"` \| `"cancelled"` \| `"interrupted"` \| `"quota_limited"` | yes | `queued`, `running`, then `completed`, `failed`, `budget_limited` (a limit stopped it), `cancelled`, or `interrupted` (server restart, or the job ended before the run settled). If the job ended before work began, the run takes the job's final status (so `quota_limited` is theoretically possible). |
 | `steps` | list of string | yes | Requested steps, deduplicated, in pipeline order. |
-| `mode` | `"serial"` \| `"parallel"` | yes | `serial`: steps run one after another in pipeline order. `parallel`: each step starts as soon as the in-run inputs it reads have finished, so independent steps overlap. |
+| `scheduling` | `"serial"` \| `"parallel"` | yes | `serial`: steps run one after another in pipeline order. `parallel`: each step starts as soon as the in-run inputs it reads have finished, so independent steps overlap. |
 | `chapter_ids` | list of string \| null | yes | Sorted chapter selection, or null for all eligible chapters. |
 | `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) | yes | Provider and model snapshotted per requested step. |
 | `gates` | map of string → `"auto"` \| `"review"` | yes | Gate snapshotted per requested step. |
@@ -4748,7 +4794,7 @@ The queued job and the run record. A queued job is not a result: poll the job.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `job` | [Job](#schema-job) | yes | The job of kind `pipeline` (with `run_id`, `steps` and `mode` added). |
+| `job` | [Job](#schema-job) | yes | The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added). |
 | `run` | [PipelineRun](#schema-pipelinerun) | yes | The run as created (`status: queued`, empty `step_run_ids`). |
 
 <a id="schema-pipelinestage"></a>
@@ -4836,7 +4882,6 @@ Returned raw: every field below is always present unless marked optional.
 | `scopes` | map of string → string | yes | The result: `{scope: artifact ID}` of one immutable version per scope. Filled when the run finishes; only scopes whose every unit validated appear. |
 | `unchanged_scopes` | list of string | yes | Scopes whose result is identical to the version already accepted when this run finished (content-addressed: same artifact ID). |
 | `units` | [PipelineUnitCounts](#schema-pipelineunitcounts) | yes |  |
-| `conflicts` | list of any | yes | Internal; do not rely on it. Always an empty list today; conflicts are reported by preview and accept instead. |
 | `error` | string \| null | yes | Human-readable failure text (secrets redacted), or null. Display only. |
 | `created_at` | string | yes | ISO 8601 UTC creation time. |
 | `updated_at` | string | yes | ISO 8601 UTC time of the last change. |
@@ -4851,9 +4896,10 @@ The effective provider, model and gate for one step: the saved choice, or a defa
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider` | string | yes | Provider ID: `local` for plain (local) steps, otherwise one of the step's `providers`. |
-| `model` | string \| null | yes | Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. A run with a null model for an LLM provider is not refused here; configure one first. |
-| `gate` | `"auto"` \| `"review"` | yes | `auto` accepts a completed run of this step immediately; `review` waits for a person. |
-| `saved` | boolean | yes | True when the owner saved settings for this step. False means these are computed defaults (the preferred analysis provider and its configured analysis or scan model). A saved choice that no longer validates is silently replaced by the defaults (but `saved` stays true). |
+| `model` | string \| null | yes | Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) and an LLM step whose default provider has no configured model. Planning or running an LLM step with a null model is refused (400 `step_model_missing`) unless the request sends a model in `configs`. |
+| `gate` | `"auto"` \| `"review"` | yes | `auto` accepts a completed run of this step immediately; `review` waits for a person. A saved gate applies even when `saved_invalid` is true. |
+| `saved` | boolean | yes | True when `provider` and `model` are the owner's saved choice for this step. False means they are computed defaults (the preferred analysis provider and its configured analysis or scan model). |
+| `saved_invalid` | boolean | yes | True when a saved provider/model choice exists but no longer validates (for example, the step no longer offers that provider). It is ignored: `saved` is false and the defaults apply. Saving new settings replaces it. |
 
 <a id="schema-pipelinestepversion"></a>
 ### PipelineStepVersion
@@ -4927,8 +4973,8 @@ render generically: show `stats` as label/value pairs and each column's
 | `columns` | list of [PipelineResultColumn](#schema-pipelineresultcolumn) | yes | Columns to display, in order. |
 | `diff` | [PipelineVersionDiff](#schema-pipelineversiondiff) | yes |  |
 | `total_rows` | integer | yes | Rows after the `scope` and `changed_only` filters, before paging. |
-| `offset` | integer | yes | Echo of the `offset` query parameter: rows skipped. |
-| `limit` | integer | yes | Echo of the `limit` query parameter: the page size. |
+| `offset` | integer | yes | Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1). |
+| `limit` | integer | yes | The page size used: the `limit` query parameter clamped to 1–1000. |
 | `rows` | list of [PipelineDirectingRow](#schema-pipelinedirectingrow) \| [PipelineQuotesRow](#schema-pipelinequotesrow) \| [PipelineProfilesRow](#schema-pipelineprofilesrow) \| [PipelineDiscoveryRow](#schema-pipelinediscoveryrow) \| [PipelineCensusRow](#schema-pipelinecensusrow) \| [PipelineStructureRow](#schema-pipelinestructurerow) | yes | The requested page of rows. Most cell values reflect the book's current names and passages; census rows use the names stored in the result and structure rows use the version's own titles. The row shape depends on the step (one variant per step); every row has `id` and `scope`. |
 | `scopes` | list of [PipelineVersionScope](#schema-pipelineversionscope) | yes | Every scope of the displayed version. |
 | `revision` | integer | yes | The book's current revision. |
@@ -4976,19 +5022,19 @@ Which steps to estimate, over which chapters, with which providers.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `steps` | list of string | yes | Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID returns 404. (min items `1`; max items `40`) |
-| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused. |
-| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. Entries for steps not requested are ignored. |
+| `steps` | list of string | yes | Step IDs to plan (1–40). Order does not matter: steps are planned in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
+| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book; other steps ignore it). Omit or null for every eligible (story) chapter. An empty list is refused (400 `chapter_ids_empty`). |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model for this request. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `fresh` | boolean |  | When true, cached validated units are not reused: new samples are requested (for comparing a model with itself). Part of the plan fingerprint. Default false. (default `false`) |
 
 <a id="schema-pronunciationentry"></a>
 ### PronunciationEntry
 
-A pronunciation entry. For adding, `term` and `respelling` are required. For changing, fields left out keep their saved values. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example.
+A pronunciation entry. For adding, `term` and `respelling` are required. Also used, with the `id` of the entry it edits, to audition an unsaved respelling in a voice example. Changing a saved entry uses `PronunciationPatch`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | string \| null |  | Ignored when adding or changing (the path names the entry). In a voice example, the entry this unsaved version replaces; omit it for a new word. |
+| `id` | string \| null |  | Ignored when adding (the server assigns one). In a voice example, the entry this unsaved version replaces; omit it for a new word. |
 | `term` | string | yes | The word or phrase as written: at most 80 characters after collapsing whitespace, with at least one letter or digit (the request accepts up to 200 before normalization). (max length `200`) |
 | `respelling` | string | yes | How to say it: at most 120 characters after collapsing whitespace. Control characters, brackets, parentheses, braces and backslashes are refused. (max length `300`) |
 | `providers` | map of string → string \| null \| null |  | Per-narrator overrides keyed by `system`, `gemini` or `breeze`. An empty or null value drops that override; an override equal to the term leaves that narrator reading the word unchanged. |
@@ -5016,6 +5062,20 @@ The book's pronunciations.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `pronunciations` | list of [PronunciationWithUsage](#schema-pronunciationwithusage) | yes | All entries, in saved order, each with its usage. |
+
+<a id="schema-pronunciationpatch"></a>
+### PronunciationPatch
+
+Changes to a saved pronunciation. Every field is optional: a field left out keeps its saved value, and `null` clears it. The path names the entry, so there is no `id`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `term` | string \| null |  | New word or phrase, with the same rules as when adding. `null` is refused: an entry needs a term. |
+| `respelling` | string \| null |  | New respelling, with the same rules as when adding. `null` is refused: an entry needs one. |
+| `providers` | map of string → string \| null \| null |  | Replacement per-narrator overrides keyed by `system`, `gemini` or `breeze`; `{}` or `null` removes them all, and an empty or null value drops that override. |
+| `match_case` | boolean \| null |  | True: match exact case. False: match any case. `null` restores the default (true). |
+| `character_id` | string \| null |  | Book-local character the word belongs to; must be in the current cast. `null` removes the link. |
+| `note` | string \| null |  | Free-text note, at most 500 characters. `null` or an empty string removes it. |
 
 <a id="schema-pronunciationsaved"></a>
 ### PronunciationSaved
@@ -5125,8 +5185,8 @@ ledger. Absent or null measurements are unknown, not zero.
 | --- | --- | --- | --- |
 | `id` | string | yes | Row ID (32 hex characters): the analysis attempt ID for `analysis_request`, the cache-hit event ID for `cache_reuse`, otherwise the resource-ledger operation ID. Unique within the response. |
 | `book_id` | string | yes | Book ID the work was recorded for. |
-| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports, searches, exports). |
-| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID. |
+| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports). |
+| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `audio_export`, or a pipeline step ID. `source_search` and `analysis_export` rows were recorded by versions before contract 0.2.0 and remain. |
 | `unit_key` | string \| null |  | Opaque unit key (cache key, passage ID, preview ID or census fingerprint). |
 | `chapter_id` | string \| null |  | Chapter the work belongs to, when recorded. |
 | `provider` | string \| null |  | Provider ID (`local` for local work). |
@@ -5134,7 +5194,6 @@ ledger. Absent or null measurements are unknown, not zero.
 | `kind` | string | yes | `analysis_request`, `cache_reuse`, or a resource-ledger kind: `local`, `assembly`, `validation`, `narration`. |
 | `cached` | boolean | yes | True when saved output was reused without a provider request. |
 | `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"unknown"` | yes | Analysis requests: attempt status (`reserved`, `received`, `uncertain`, `not_sent`), `failed` when the HTTP status was >= 400 or a failure event names it, `unknown` for legacy rows. Other rows: `running`, `completed`, `failed`, `interrupted`. Rows left `running`/`reserved` by an earlier server process or a finished job are reported `interrupted`. |
-| `process_id` | string \| null |  | Internal; do not rely on it. Server process that recorded the row. |
 | `created_at` | string \| null |  | ISO 8601 UTC start time. |
 | `completed_at` | string \| null |  | ISO 8601 UTC end time; absent while running. |
 | `request_count` | integer \| null |  | Provider requests made: 1 for analysis requests, 0 for local/cached work, null when unknown (e.g. a cloud narration that failed early). |
@@ -5247,7 +5306,7 @@ Recorded resource usage for a book, optionally narrowed to one run. Never contac
 | `total_operations` | integer | yes | Rows in scope. |
 | `unmeasured_runs` | integer | yes | Runs with no recorded rows. |
 | `limit` | integer | yes | Effective page size after clamping to 1–200. |
-| `offset` | integer | yes | Effective offset after clamping to >= 0. |
+| `offset` | integer | yes | Effective offset after clamping to 0–9007199254740991 (2^53 − 1). |
 | `price_sources` | list of string | yes | Distinct price-source URLs referenced by rows in scope. |
 | `notes` | list of string | yes | Interpretation notes. Display only. |
 
@@ -5258,15 +5317,15 @@ A run to queue. Send the same `steps`, `chapter_ids`, `configs` and `fresh` as t
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `steps` | list of string | yes | Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID returns 404. (min items `1`; max items `40`) |
-| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused. |
-| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model. Entries for steps not requested are ignored. |
+| `steps` | list of string | yes | Step IDs to run (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused (400 `unknown_step`). (min items `1`; max items `40`) |
+| `chapter_ids` | list of string \| null |  | Chapters to limit chapter-scoped steps to (1–2000 IDs of this book). Omit or null for every eligible chapter. An empty list is refused (400 `chapter_ids_empty`). |
+| `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `fresh` | boolean |  | Request new samples instead of reusing cached validated units (default false). Part of the fingerprint. (default `false`) |
-| `mode` | `"serial"` \| `"parallel"` |  | `serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished, so independent steps overlap. (default `"serial"`) |
-| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. |
+| `scheduling` | `"serial"` \| `"parallel"` |  | `serial` (default) runs steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished, so independent steps overlap. (default `"serial"`) |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. An unknown step ID is refused (400 `unknown_step`); entries for known steps that are not requested are ignored. |
 | `concurrency` | integer |  | Maximum model requests in flight across the run, 1–4 (default 2). Each step also has its own `parallel` cap. (≥ `1.0`; ≤ `4.0`; default `2`) |
 | `limits` | [Limits](#schema-limits) |  | Optional caps; see Limits. Uncapped when omitted. |
-| `expected_fingerprint` | string \| null |  | The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409. Required unless a limit is set. |
+| `expected_fingerprint` | string \| null |  | The `fingerprint` of the plan the owner confirmed (up to 64 characters). When sent, the plan is recomputed and a mismatch returns 409 `plan_stale`. Required unless a limit is set. |
 
 <a id="schema-saverequest"></a>
 ### SaveRequest
@@ -5296,14 +5355,14 @@ Scene fields to change. Omitted or null fields are ignored; send "" to clear.
 <a id="schema-segmentedit"></a>
 ### SegmentEdit
 
-Passage fields to change. Omitted or null fields are ignored; send "" or [] to clear.
+Passage fields to change. Omitted or null fields are ignored, except `seed`; send "" or [] to clear.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `speaker_id` | string \| null |  | Character ID from this book's cast (including `narrator` or `unassigned`); anything else is 400. Sets `confidence` to 1.0. |
+| `speaker_id` | string \| null |  | Character ID from this book's cast (including `narrator` or `unassigned`); anything else is 400 `character_not_in_cast`. Sets `confidence` to 1.0. |
 | `direction` | string \| null |  | Performance direction for the passage, at most 3,000 characters. |
 | `cues` | list of string \| null |  | Complete replacement list of cue labels. |
-| `seed` | integer \| null |  | Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. Gemini and device narration ignore it. It cannot be cleared through this endpoint (null is ignored). |
+| `seed` | integer \| null |  | Take seed 0–4294967295 for seeded providers such as Breeze; a new seed is a new take. `null` clears it, so the speaker's Breeze voice seed applies; omitting it keeps the saved seed. Gemini and device narration ignore it. |
 
 <a id="schema-series"></a>
 ### Series
@@ -5315,7 +5374,7 @@ A series with its supplied books, all volume slots and its identity count.
 | `id` | string | yes | Series ID (opaque, currently `series_<hex>`). |
 | `name` | string | yes | Display name, 1–200 characters, whitespace-collapsed. Unique ignoring case. |
 | `created_at` | string | yes | ISO 8601 UTC creation time. |
-| `archived` | boolean | yes | True when the series is removed. Series routes list only active series, so this is false there; the library snapshot with `include_archived=true` can include removed ones. |
+| `archived` | boolean | yes | True when the series is removed. `listSeries` lists only active series, so this is false there; `getSeriesMap` and the library snapshot with `include_archived=true` can return removed ones. |
 | `books` | list of [SeriesBook](#schema-seriesbook) | yes | Supplied, non-removed books in reading order (position, then book ID). |
 | `volumes` | list of [SeriesSuppliedVolume](#schema-seriessuppliedvolume) \| [SeriesVolumeSlot](#schema-seriesvolumeslot) | yes | Every slot in reading order: supplied books (including removed ones, with status `archived`) and placeholders. The two element shapes differ: select on `status`. |
 | `character_count` | integer | yes | Number of series-level character identities. |
@@ -5456,7 +5515,6 @@ retained with it (same content hash, so the same chapter text) still exists.
 | `step` | `"discovery"` \| `"profiles"` \| `"directing"` \| null | yes | Step whose accepted version produced the evidence; null for rows the removed Classic engine wrote and for dialogue attributed by hand or outside any accepted directing version. |
 | `version_id` | string \| null | yes | The accepted `step_output` version (artifact ID) the evidence came from, or null when `step` is null. |
 | `origin` | `"run"` \| `"baseline"` \| `"external"` \| `"manual"` \| `"book"` \| null | yes | How that version or row came about: `run` (a pipeline run), `baseline`/`external` (recorded from existing work; producer unknown), `manual` (a speaker chosen by hand), `book` (attributed outside any accepted version); null for rows the removed Classic engine wrote. |
-| `source_hash` | string | yes | Internal; do not rely on it. SHA-256 of the chapter text the observation was validated against. |
 | `book_title` | string | yes | Title of the earlier book. |
 | `position` | number | yes | The earlier book's reading order. |
 | `chapter_title` | string | yes | Title of the chapter in the earlier book. |
@@ -5512,7 +5570,7 @@ A confirmed link from one book-local character to this series identity.
 <a id="schema-seriesjoblimits"></a>
 ### SeriesJobLimits
 
-The analysis allowance of a series run recorded before contract 0.2.0, applied to each book separately.
+The analysis allowance of a series run recorded before contract 0.3.0, applied to each book separately.
 
 Newer series runs record `PipelineRunLimits` instead. Request and token
 caps counted that book's `analyze` child job (both of its stages in a
@@ -5614,7 +5672,7 @@ A name for a series or a series character identity.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | yes | 1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused with 400. (min length `1`; max length `200`) |
+| `name` | string | yes | 1–200 characters. Runs of whitespace are collapsed to one space and the ends trimmed; a name that is blank after trimming is refused (400 `name_invalid`). (min length `1`; max length `200`) |
 
 <a id="schema-seriesplan"></a>
 ### SeriesPlan
@@ -5691,8 +5749,8 @@ Result of renaming a series.
 
 The book a paused series run waits on.
 
-Review the book's waiting versions in its Analysis tab (accept or set them
-aside), then call `resumeSeriesProcessing`. While paused, that book accepts
+Decide the book's waiting versions (accept them or set them aside), then
+call `resumeSeriesProcessing`. While paused, that book accepts
 version decisions; every other reservation still holds.
 
 | Field | Type | Required | Description |
@@ -5722,31 +5780,31 @@ A series parent job with its child jobs.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.3.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.3.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.3.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"simple"` \| `"cast"` \| null |  | `performance` only: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
-| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
+| `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
 | `series_id` | string \| null |  | `series` parent and its children: the series. |
 | `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
 | `position` | number \| null |  | Series child: the book's reading-order position in the series. |
 | `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
 | `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
 | `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
-| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
-| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.3.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.3.0: parallel discovery workers (1–2). |
 | `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
 | `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
 | `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
-| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
-| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` at confirmation. A child queued before contract 0.3.0 (without `consent_fingerprint`) is not run when its recomputed plan differs. |
+| `analysis_limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| null |  | `series` only: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.3.0 (SeriesJobLimits). |
 | `consent_fingerprint` | string \| null |  | Series child (`pipeline`): the `consent_fingerprint` confirmed for that book (`SeriesPlanBook`). Before the book starts it is recomputed; the book is not run when it differs. It covers the unit set, providers, models, `fresh` and step versions, but not the earlier-volume context in context-pending prompts. |
 | `context_pending` | list of string \| null |  | Series child (`pipeline`): step IDs whose prompts read earlier books of this run (see `SeriesPlanBook.context_pending`). Empty when none. |
 | `context_sources` | list of string \| null |  | Series child (`pipeline`): earlier books of this run whose accepted results this book reads, in no particular order. The series pauses after such a book while it has results waiting for review. |
@@ -5765,6 +5823,7 @@ A series parent job with its child jobs.
 | `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
 | `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
 | `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `speech_limits` | [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued. |
 | `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
 | `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
 | `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
@@ -5793,31 +5852,31 @@ A child job of a series run, with a summary of its book's pipeline run.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.2.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, and `series` runs recorded before contract 0.3.0: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
 | `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.2.0); null for local analysis. |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.2.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline` started from the book, and `series` (inside each book's run): `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.3.0); null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze` (historical) and `series` runs recorded before contract 0.3.0: the Classic analysis phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"simple"` \| `"cast"` \| null |  | `performance` only: `simple` (one narrator) or `cast` (character voices). |
 | `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
 | `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
-| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs, deduplicated, in pipeline order. |
+| `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
+| `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
 | `series_id` | string \| null |  | `series` parent and its children: the series. |
 | `series_run_id` | string \| null |  | Series child: the parent `series` job ID. |
 | `position` | number \| null |  | Series child: the book's reading-order position in the series. |
 | `title` | string \| null |  | Series child (`pipeline`): the book title when the run was queued. |
 | `not_started` | boolean \| null |  | Series child (`pipeline`): true when the child ended without starting, either because the series was cancelled (status `cancelled`) or because it stopped at an earlier book, failed or could not start (status `interrupted`). Absent otherwise. |
 | `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
-| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
-| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.2.0: parallel discovery workers (1–2). |
+| `child_job_ids` | list of string \| null |  | `series`: one child job per book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.3.0). `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: maximum model requests in flight inside the running book (1–4); books run one at a time. Runs recorded before contract 0.3.0: parallel discovery workers (1–2). |
 | `configs` | map of string → [PipelineStepConfigView](#schema-pipelinestepconfigview) \| null |  | `series`: `{step ID: {provider, model}}` resolved when the run was queued and applied to every book. |
 | `gates` | map of string → `"auto"` \| `"review"` \| null |  | `series`: `{step ID: gate}` resolved when the run was queued (the request's `gates`, else the saved step setting). |
 | `fresh` | boolean \| null |  | `series`: true when every book requests new samples instead of reusing cached validated units. |
-| `limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.2.0 (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
-| `plan_fingerprint` | string \| null |  | `series`: the series plan `fingerprint` this run was confirmed against. Series child (`pipeline`): the book plan `fingerprint` at confirmation. A child queued before contract 0.3.0 (without `consent_fingerprint`) is not run when its recomputed plan differs. |
+| `analysis_limits` | [PipelineRunLimits](#schema-pipelinerunlimits) \| [SeriesJobLimits](#schema-seriesjoblimits) \| null |  | `series` only: the optional caps applied to each book's run (PipelineRunLimits; every value is null when none were sent), or the analysis allowance of a run recorded before contract 0.3.0 (SeriesJobLimits). |
 | `consent_fingerprint` | string \| null |  | Series child (`pipeline`): the `consent_fingerprint` confirmed for that book (`SeriesPlanBook`). Before the book starts it is recomputed; the book is not run when it differs. It covers the unit set, providers, models, `fresh` and step versions, but not the earlier-volume context in context-pending prompts. |
 | `context_pending` | list of string \| null |  | Series child (`pipeline`): step IDs whose prompts read earlier books of this run (see `SeriesPlanBook.context_pending`). Empty when none. |
 | `context_sources` | list of string \| null |  | Series child (`pipeline`): earlier books of this run whose accepted results this book reads, in no particular order. The series pauses after such a book while it has results waiting for review. |
@@ -5836,6 +5895,7 @@ A child job of a series run, with a summary of its book's pipeline run.
 | `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
 | `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
 | `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `speech_limits` | [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `listen_chapter` only: the Gemini speech limits snapshotted for the model when the job was queued. |
 | `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
 | `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
 | `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
@@ -5856,11 +5916,11 @@ A series run to queue: the reviewed preview's `steps`, `configs` and `fresh`, it
 | `steps` | list of string | yes | Step IDs to run in every book (1–40), executed in pipeline order. Duplicates are ignored. An unknown ID is refused with 400. (min items `1`; max items `40`) |
 | `configs` | map of string → [StepConfig](#schema-stepconfig) \| null |  | `{step ID: StepConfig}` overriding the saved provider/model, applied to every book. Entries for steps not requested are ignored. |
 | `fresh` | boolean |  | Request new samples instead of reusing cached validated units (default false). Part of the fingerprint. (default `false`) |
-| `mode` | `"serial"` \| `"parallel"` |  | `serial` (default) runs each book's steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished. Books always run one at a time. (default `"serial"`) |
-| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. With `review`, each book's version waits in that book's Analysis tab, and the series pauses after a book that a later book reads until it is reviewed and the run resumed. |
+| `scheduling` | `"serial"` \| `"parallel"` |  | `serial` (default) runs each book's steps one after another in pipeline order. `parallel` starts every step whose in-run inputs have finished. Books always run one at a time. (default `"serial"`) |
+| `gates` | map of string → `"auto"` \| `"review"` \| null |  | `{step ID: "auto" \| "review"}` overriding the saved gate for this run. With `review`, each book's version waits for a decision in that book, and the series pauses after a book that a later book reads until it is decided and the run resumed. |
 | `concurrency` | integer |  | Maximum model requests in flight inside the running book, 1–4 (default 2). Books run one at a time. Each step also has its own `parallel` cap. (≥ `1.0`; ≤ `4.0`; default `2`) |
 | `limits` | [Limits](#schema-limits) |  | Optional caps applied separately to each book's run; see Limits. Uncapped when omitted. A limit reached stops that book as `budget_limited` and stops the series. |
-| `expected_fingerprint` | string \| null |  | The series plan `fingerprint` the owner confirmed (up to 64 characters). A mismatch with the recomputed plan returns 409 and queues nothing. Required unless a limit is set. |
+| `expected_fingerprint` | string \| null |  | The series plan `fingerprint` the owner confirmed (up to 64 characters). A mismatch with the recomputed plan returns 409 `plan_stale` and queues nothing. Required unless a limit is set. |
 
 <a id="schema-seriesruns"></a>
 ### SeriesRuns
@@ -5927,16 +5987,14 @@ A partial settings update. Every field is optional; omitted fields stay unchange
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `api_key` | string \| null |  | Compatibility alias for `api_keys.gemini`. Runtime only, never saved; surrounding whitespace is removed and an empty string clears the key. Up to 500 characters. |
 | `tts_model` | string \| null |  | Gemini speech model; must be one of `tts_models` from status. Saved. |
-| `analysis_model` | string \| null |  | Compatibility alias for `analysis_models_by_provider.gemini`. Saved. |
-| `api_keys` | map of string → string \| null |  | Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key. |
+| `api_keys` | map of string → string \| null |  | Runtime API keys by cloud provider (`gemini`, `openai`, `anthropic`), up to 500 characters each. Never saved: they last until restart. Whitespace is trimmed; an empty string clears that key; providers not included keep their key. A different Gemini key lifts every daily quota block. |
 | `analysis_models_by_provider` | map of string → string \| null |  | Analysis model per cloud provider (`gemini`, `openai`, `anthropic`). IDs are 1–200 characters of letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit; they need not be in the curated list. Saved. |
 | `preprocess_models_by_provider` | map of string → string \| null |  | Preprocessing (scan) model per cloud provider, same ID rules. Saved. |
 | `analysis_provider` | string \| null |  | Default provider for model-based analysis steps without saved step settings: `local` (none), `gemini`, `openai` or `anthropic`. Saved. |
-| `tts_limits` | map of string → map of string → integer \| null |  | Gemini speech limits by TTS model: `{model: {rpm, tpm, rpd}}`. Each given model's limits are replaced as a whole: a limit left out of the object is reset to its default (rpm 10, tpm 10,000, rpd 100), not kept. Whole numbers: rpm 1–10,000, tpm 1–100,000,000, rpd 1–10,000,000. Models not included keep their limits. Saved. |
+| `tts_limits` | map of string → [TtsLimitsUpdate](#schema-ttslimitsupdate) \| null |  | Gemini speech limits by TTS model (each a key of `tts_models`): `{model: {rpm, tpm, rpd}}`. Each limit given replaces that limit; a limit left out (or null) keeps its current value. Models not included keep their limits. Changing a model's limits lifts its daily quota block. Saved. |
 | `listen_chunking` | [ChunkingOptions](#schema-chunkingoptions) \| null |  | Default chapter-listening chunk settings. Fields given are merged over the saved values and the result is validated. Saved. |
-| `breeze_url` | string \| null |  | Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. An empty string clears it. Saved. The saved Breeze check stays valid only for the URL it was made with. |
+| `breeze_url` | string \| null |  | Breeze server root: `http://` or `https://` host and optional port, without path, query, fragment or credentials, up to 500 characters; a trailing slash is removed. Saved. An empty string clears the saved URL, so the server's `BREEZE_TTS_URL` environment variable applies again (if set). The saved Breeze check stays valid only for the URL it was made with. |
 | `breeze_api_key` | string \| null |  | Breeze API key. Runtime only, never saved; whitespace trimmed; an empty string clears it. |
 | `local_service_urls` | map of string → string \| null |  | Self-hosted analysis server roots by service ID (`local_llm`, `booknlp`, `novel_analyzer`), each an http(s) root without path or credentials, up to 500 characters. An empty string clears it and also overrides its environment variable. Services not included keep their value; a service never set in Settings uses its environment variable, which is never saved. Saved. |
 | `analysis_step_presets` | list of [StepPreset](#schema-steppreset) \| null |  | Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` clears it. Validated as a whole: an unknown step, a provider or model the step does not take, a duplicate `id`, or a duplicate name for one step is refused (400) and nothing is saved. Saved. |
@@ -5951,15 +6009,13 @@ derived at request time.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `has_api_key` | boolean | yes | True when a Gemini API key is loaded (from Settings or the environment). |
 | `tts_model` | string | yes | Selected Gemini speech model; one of `tts_models`. |
 | `analysis_provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` | yes | Default provider for model-based analysis steps without saved step settings. `local` means none: the first cloud provider with a key is used. |
-| `analysis_model` | string | yes | Compatibility alias of `analysis_models_by_provider.gemini`. |
 | `analysis_models_by_provider` | map of string → string | yes | Selected analysis model per cloud provider (always all three). |
 | `preprocess_models_by_provider` | map of string → string | yes | Selected preprocessing (scan) model per cloud provider (always all three). |
 | `tts_limits` | map of string → [ChapterListenLimits](#schema-chapterlistenlimits) | yes | Gemini speech limits per TTS model (one entry for each of `tts_models`). |
 | `listen_chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) | yes | Default chapter-listening chunk settings. |
-| `breeze_url` | string | yes | Configured Breeze server root, or an empty string. When never set in Settings it comes from the `BREEZE_TTS_URL` environment variable (and is then saved with the next settings change). |
+| `breeze_url` | string | yes | The Breeze server root in use, or an empty string: the URL saved by `POST /api/settings` when it is not empty, otherwise the server's `BREEZE_TTS_URL` environment variable. The environment value is never saved. |
 | `local_service_urls` | [LocalServiceUrls](#schema-localserviceurls) | yes | Resolved self-hosted server URLs: the Settings value when one was saved (even an empty string), otherwise the environment variable. |
 | `narration_defaults` | [VoiceLibraryDefaults](#schema-voicelibrarydefaults) | yes | Default library voice per narration provider. |
 | `providers` | list of [StatusNarrationAvailability](#schema-statusnarrationavailability) | yes | Narration providers in order system, gemini, breeze, with availability. |
@@ -5970,11 +6026,9 @@ derived at request time.
 | `model_catalogs` | map of string → [AnalysisModelCatalog](#schema-analysismodelcatalog) | yes | Analysis model choices per cloud provider: the last refresh for the current key, else the curated list. |
 | `system_voices` | list of [VoiceLibrarySystemVoice](#schema-voicelibrarysystemvoice) | yes | Installed macOS voices; empty when unavailable. |
 | `tts_models` | list of string | yes | Supported Gemini speech models. |
-| `analysis_models` | list of string | yes | Curated Gemini analysis model IDs (compatibility; see `model_catalogs`). |
 | `tts_rate` | map of string → [TtsRateState](#schema-ttsratestate) | yes | Live rate-limiter state per Gemini speech model. |
 | `analysis_step_presets` | list of [StepPresetView](#schema-steppresetview) | yes | Saved step settings for the Analyze tab, in saved order; empty when none. Applying one never starts work. |
 | `tts_quota` | map of string → [ChapterListenQuota](#schema-chapterlistenquota) | yes | This library's daily Gemini speech request count for the selected speech model: one entry keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before any usage is recorded. |
-| `data_directory` | string | yes | Internal; do not rely on it. Absolute path of the server library directory. |
 | `timing_kind` | `"segment"` | yes | Granularity of read-along timing: per passage (segment). |
 
 <a id="schema-statusnarrationavailability"></a>
@@ -6079,7 +6133,7 @@ A typed graph of the book: book→chapters→scenes→passages, reading order an
 | `characters` | list of [StoryMapCharacter](#schema-storymapcharacter) | yes | Every cast member, including `narrator` and `unassigned`. |
 | `nodes` | list of [StoryMapNode](#schema-storymapnode) | yes | Graph nodes: one book node, then per chapter its chapter, scene and passage nodes, then one node per cast member. Unpaginated. |
 | `edges` | list of [StoryMapEdge](#schema-storymapedge) | yes | Graph edges (`contains`, `next`, `attributed_speaker`) between node IDs. Unpaginated. |
-| `references` | list of [StoryMapReference](#schema-storymapreference) | yes | All saved character references for the book, unpaginated. |
+| `references` | list of [StoryMapReference](#schema-storymapreference) | yes | All saved character references for the book, unpaginated. These are the stored rows as the last pipeline write recorded them; `listCharacterReferences` shows the projection of the current book. |
 | `reference_counts` | [StoryMapReferenceCounts](#schema-storymapreferencecounts) | yes |  |
 | `note` | string | yes | Interpretation caveat. Display only. |
 
@@ -6117,8 +6171,8 @@ A typed graph edge.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `from` | string | yes | Source node ID. |
-| `to` | string | yes | Target node ID. An `attributed_speaker` target may name a character node that is absent when the passage names a speaker no longer in the cast. |
-| `type` | `"contains"` \| `"next"` \| `"attributed_speaker"` | yes | `contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence). |
+| `to` | string | yes | Target node ID. Every edge ends at a node in `nodes`. |
+| `type` | `"contains"` \| `"next"` \| `"attributed_speaker"` | yes | `contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence); omitted when the passage names a speaker that is no longer in the cast. |
 | `order` | integer \| null |  | `contains` edges: zero-based position within the parent. |
 | `confidence` | number \| null |  | `attributed_speaker` edges: attribution confidence 0–1, or null. |
 
@@ -6174,6 +6228,11 @@ A source reference to a character. Kinds are distinct evidence and must not be m
 | `model` | string \| null | yes | Model that produced it, or null. |
 | `profile_description` | string \| null |  | `profile_evidence`: the description the model gave with this evidence. |
 | `profile_direction` | string \| null |  | `profile_evidence`: the direction the model gave. |
+| `step` | `"discovery"` \| `"profiles"` \| `"directing"` \| null |  | Analysis step whose accepted version supplied this row; absent or null for mentions and for rows written by the removed Classic engine. |
+| `version_id` | string \| null |  | Accepted step-output artifact the row was projected from; absent or null when there is none (mentions, manual attributions, older rows). |
+| `origin` | string \| null |  | How the source result came to be: `run`, `baseline` or `external` (from the step version), `manual` (a hand-edited attribution), `book` (dialogue with no accepted directing version), `cast_names` (mentions); null when unknown. |
+| `projection` | integer \| null |  | Version of the evidence projection that wrote the row (1). Absent on rows written by the removed Classic engine. |
+| `anchors` | integer \| null |  | Profiles evidence only: how many exact locations the quotation matched within the discovery evidence it came from. Every location is listed; none is chosen. |
 
 <a id="schema-storymapreferencecounts"></a>
 ### StoryMapReferenceCounts
@@ -6198,7 +6257,7 @@ A scene with its passages and attributed speakers.
 | `start` | integer \| null | yes | Smallest passage start offset, or null when no passage has offsets. |
 | `end` | integer \| null | yes | Largest passage end offset, or null. |
 | `passage_ids` | list of string | yes | Passages in the scene, in order. |
-| `character_ids` | list of string | yes | Attributed dialogue speakers (excluding narrator/unassigned), sorted. Not proof of physical presence. |
+| `character_ids` | list of string | yes | Attributed dialogue speakers that are cast members (excluding narrator/unassigned), sorted. Not proof of physical presence. |
 
 <a id="schema-storymapsourceanchor"></a>
 ### StoryMapSourceAnchor
@@ -6211,6 +6270,17 @@ A verified location of a passage in a retained source artifact.
 | `start` | integer | yes | Code-point offset (inclusive). |
 | `end` | integer | yes | Code-point offset (exclusive). |
 
+<a id="schema-ttslimitsupdate"></a>
+### TtsLimitsUpdate
+
+Gemini speech limits for one model. Each limit is optional: omitted or null keeps the current value. Whole JSON numbers only (strict: no strings or booleans); unknown names are refused (422).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `rpm` | integer \| null |  | Requests per minute, 1–10,000. Default 10. |
+| `tpm` | integer \| null |  | Estimated input tokens per minute, 1–100,000,000. Default 10,000. |
+| `rpd` | integer \| null |  | Requests per day (quota day ends at midnight Pacific time), 1–10,000,000. Default 100. |
+
 <a id="schema-ttsratestate"></a>
 ### TtsRateState
 
@@ -6221,7 +6291,7 @@ Live state of this server's Gemini speech rate limiter for one model (memory onl
 | `recent_requests` | integer | yes | Requests sent in the last 61 seconds. |
 | `recent_input_tokens` | integer | yes | Estimated input tokens sent in the last 61 seconds. |
 | `cooldown_seconds` | number | yes | Seconds left in a cooldown after a provider rate-limit response; 0 when none. |
-| `daily_block_seconds` | number | yes | Seconds until the daily quota block lifts (midnight Pacific time); 0 when not blocked. Saving settings lifts it early. |
+| `daily_block_seconds` | number | yes | Seconds until the daily quota block lifts (midnight Pacific time); 0 when not blocked. A settings change to this model's limits, or to the Gemini key, lifts it early; other settings changes keep it. |
 
 <a id="schema-validationissue"></a>
 ### ValidationIssue
@@ -6254,9 +6324,9 @@ One provider's voice choice. Exactly one of `id` or `library` (otherwise 422).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | string \| null |  | A direct provider voice ID, 1–200 characters, trimmed of surrounding spaces. For Breeze it must be a usable (cloned) voice in the last Breeze check and is stored pinned as `{id, revision, seed}`; for Gemini and device voices it is stored as `{id}`. |
-| `library` | string \| null |  | A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted. Stored as `{library}`: the character follows that voice's current version. |
-| `seed` | integer \| null |  | Breeze `id` choices only: take seed 0–4294967295 for the pin; defaults to the voice's own seed, else 42. Ignored with `library` and for other providers. |
+| `id` | string \| null |  | A direct provider voice ID, at most 200 characters, trimmed of surrounding spaces. Empty or blank (after trimming) clears the choice so Default applies, for every provider; it never selects a provider's own default voice. For Breeze a nonblank ID must be a usable (cloned) voice in the last Breeze check (400 `breeze_voice_unavailable`) and is stored pinned as `{id, revision, seed}`; for Gemini and device voices it is stored as `{id}`. |
+| `library` | string \| null |  | A library voice ID (`vl_` + 16 lowercase hex) of the same provider, not deleted (400 `library_voice_unavailable`). Stored as `{library}`: the character follows that voice's current version. |
+| `seed` | integer \| null |  | Take seed 0–4294967295 for a Breeze pin; only with a nonblank Breeze `id`. Defaults to the voice's own seed, else 42. With `library`, a blank `id` or another provider it is 400 `seed_not_applicable` (it is never silently ignored). |
 
 <a id="schema-voicedraft"></a>
 ### VoiceDraft
@@ -6296,7 +6366,26 @@ One generated candidate in a design draft.
 | `created_at` | string | yes | When the candidate was generated (ISO 8601 UTC). |
 | `expires_at` | string \| null | yes | Provider expiry timestamp string: the Breeze preview's expiry (about 24 hours; irrelevant to saving, which uploads the retained clip) or the Gemini stored voice's expiry. Null when not reported. |
 | `discarded` | boolean | yes | True once discarded (explicitly, or by abandoning the draft). |
-| `audio_url` | string \| null | yes | Root-relative URL of the retained audio (`GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`), or null when none was retained. |
+| `audio` | [VoiceDraftCandidateAudio](#schema-voicedraftcandidateaudio) \| null | yes | The retained audio, or null when none was retained (a Gemini sample that could not be stored). |
+
+<a id="schema-voicedraftcandidateaudio"></a>
+### VoiceDraftCandidateAudio
+
+Bardic's retained copy of a candidate's audio (24 kHz mono WAV).
+
+Served by `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`. `voice` is the Gemini `voice_…`
+ID, or null for a Breeze preview, which is not a server voice. `model` is the Breeze model or the Gemini
+design model used.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not build audio URLs from other fields. |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed (takes recorded before content addressing). A different `asset_id` means different audio. |
+| `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
+| `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
+| `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
+| `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when it was not recorded. |
 
 <a id="schema-voicedraftsaved"></a>
 ### VoiceDraftSaved
@@ -6409,14 +6498,14 @@ Gemini voice-design state and the last listing of the Google project's stored vo
 | --- | --- | --- | --- |
 | `has_api_key` | boolean | yes | True when a Gemini API key is loaded (the key is never returned). |
 | `tts_model` | string | yes | The selected Gemini speech model preference. |
-| `state` | `"unchecked"` \| `"ready"` \| `"error"` | yes | `unchecked`: never refreshed with the current key (a listing made with another key is ignored). `ready` or `error`: the last refresh result. |
+| `state` | `"unchecked"` \| `"ready"` \| `"error"` | yes | `unchecked`: never refreshed with the current key (a listing made with another key is ignored). `ready` or `error`: the last refresh result. After `error`, `stored_count` is null, `project_voices` is empty and Gemini versions report `server_state` `unknown` until a refresh succeeds. |
 | `message` | string | yes | Human-readable result, for example "3 stored voices in this Google project."; empty when unchecked. |
 | `checked_at` | string \| null | yes | When the last refresh with the current key finished (ISO 8601 UTC), or null. |
 | `design_models` | list of string | yes | Gemini speech models that accept designed voices. |
 | `designed_voices_supported` | boolean | yes | True when `tts_model` is one of `design_models`. Otherwise Gemini library voices are not assignable. |
 | `stored_count` | integer \| null | yes | Number of stored voices in the last listing; null when never listed or the last refresh failed. |
 | `limit` | integer | yes | Google's stored-voice limit per project (200). |
-| `project_voices` | list of [VoiceLibraryGeminiProjectVoice](#schema-voicelibrarygeminiprojectvoice) | yes | Stored voices from the last successful listing with the current key, newest first. |
+| `project_voices` | list of [VoiceLibraryGeminiProjectVoice](#schema-voicelibrarygeminiprojectvoice) | yes | Stored voices from the last refresh with the current key, newest first. Empty when never listed or when the last refresh failed. |
 
 <a id="schema-voicelibraryoverview"></a>
 ### VoiceLibraryOverview
@@ -6481,24 +6570,19 @@ An immutable audition request.
 
 A retained audition take.
 
+Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | `"preview"` | yes | Always `preview`. |
-| `available` | `true` | yes | Always true: only playable audio is presented. |
 | `url` | string | yes | Root-relative WAV URL: `/api/books/{book_id}/voice-preview/audio/{asset_id}`. |
 | `asset_id` | string | yes | SHA-256 hex of the WAV bytes. |
 | `duration` | number | yes | Seconds. |
 | `provider` | string | yes | Provider that produced the bytes: `system`, `gemini` or `breeze`. |
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used. |
+| `created_at` | string | yes | ISO 8601 UTC time the take was retained. |
 | `preview_id` | string | yes | ID of the audition request (`VoicePreview.id`) this take was retained for. |
-| `schema_version` | integer | yes | Take record format version (1). |
-| `created_at` | string | yes | ISO 8601 UTC. |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result. |
-| `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes. |
-| `source_anchor` | [VoicePreviewSourceAnchor](#schema-voicepreviewsourceanchor) \| null | yes | Internal; do not rely on it. Copy of the preview source anchor. |
 | `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
 | `voice_revision` | string \| null |  | Breeze only: voice revision used. |

@@ -169,9 +169,15 @@ def test_directing_rollback_moves_dialogue_and_manual_speakers_win(api):
     # A manual speaker choice is what the book shows, so it is what Cast lists.
     line = next(s for s in book_of(api, book['id'])['segments'] if s['kind'] == 'dialogue')
     assert api.patch(f"/api/books/{book['id']}/segments/{line['id']}", json={'speaker_id': names['Elio']}).status_code == 200
-    api.get(base)  # the next sync rebuilds
-    row = next(r for r in references(api, book['id']) if r['segment_id'] == line['id'] and r['kind'] == 'dialogue')
+    # The references route computes the projection from the current book, so it shows the edit at once
+    # without recording anything; the stored rows follow at the next write.
+    stored = references(api, book['id'])
+    row = next(r for r in references(api, book['id'], names['Elio']) if r['segment_id'] == line['id'] and r['kind'] == 'dialogue')
     assert (row['character_id'], row['provider'], row['origin'], row['step']) == (names['Elio'], 'reviewed', 'manual', None)
+    assert references(api, book['id']) == stored
+    assert api.post(f"{base}/plan", json={'steps': ['census']}).status_code == 200
+    row = next(r for r in references(api, book['id']) if r['segment_id'] == line['id'] and r['kind'] == 'dialogue')
+    assert row['character_id'] == names['Elio'] and row['provider'] == 'reviewed'
 
 
 def test_rebuild_is_idempotent_and_writes_no_observations(api):
@@ -206,8 +212,13 @@ def test_a_legacy_checkpoint_write_is_replaced_by_the_next_sync(api):
     store = api.app.state.runtime.store
     store.save_analysis_checkpoint(book['id'], 'legacy-fingerprint', {'references': [legacy]})
     assert references(api, book['id']) == [legacy]
+    # Reads show the rebuilt projection at once and record nothing.
+    mara = cast(api, book['id'])['Mara']
+    assert references(api, book['id'], mara) == [r for r in rows if r['character_id'] == mara]
     api.get(f"/api/books/{book['id']}/analysis-pipeline")
-    # Discovery has an accepted version, so legacy discovery evidence is not carried.
+    assert references(api, book['id']) == [legacy]
+    # The next write syncs. Discovery has an accepted version, so legacy discovery evidence is not carried.
+    assert api.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={'steps': ['census']}).status_code == 200
     assert references(api, book['id']) == rows
     # It remains in retained history.
     assert any(o['quote'] == 'Mara lit' for o in observations(api, book['id']))

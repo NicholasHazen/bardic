@@ -19,10 +19,17 @@ class FakeGemini:
 
     def __init__(self):
         self.voices, self.creates, self.deleted, self.keys = {}, [], [], []
+        self.fail = {}  # "list" or "delete:<voice id>" -> an HTTP status, or "text" for a non-JSON 200
 
     def __call__(self, request: httpx.Request):
         self.keys.append(request.headers.get("x-goog-api-key"))
         path = request.url.path
+        failure = self.fail.get("list" if path == "/v1beta/voices" and request.method == "GET" else
+                                f"{request.method.lower()}:{path.rsplit('/', 1)[-1]}")
+        if failure == "text":
+            return httpx.Response(200, content=b"<html>not json</html>")
+        if failure:
+            return httpx.Response(failure, json={"error": {"message": "secret provider text"}})
         if path == "/v1beta/voices" and request.method == "POST":
             body = json.loads(request.content)
             self.creates.append(body)
@@ -102,13 +109,28 @@ def test_check_connection_imports_server_voices_and_sets_the_default(client, ser
     narrator = voices[0]
     assert narrator["origin"] == "imported" and narrator["is_default"] and narrator["versions"][0]["server_state"] == "ok"
     assert library(client)["defaults"]["breeze"] == narrator["id"]
-    assert client.get(narrator["versions"][0]["audition_url"]).status_code == 200
+    assert client.get(narrator["versions"][0]["audition"]["url"]).status_code == 200
     client.post("/api/narration/breeze/refresh")  # A second check imports nothing twice.
     assert len(library(client)["voices"]) == 1
     fake_breeze.reference = b"changed on the server"
     client.post("/api/narration/breeze/refresh")
     changed = voice_named(client, "Narrator")
     assert changed["versions"][0]["server_state"] == "changed" and changed["warnings"] and not changed["assignable"]
+
+
+def test_refresh_imports_a_server_voice_whose_name_exceeds_the_library_limit(client, servers):
+    fake_breeze, _ = servers
+    # Server names are not user input: Breeze may send up to 200 characters, the library keeps 100.
+    long_name = "Ölander " + "\U0001F56F" * 60 + " the Lamplighter of the Northern Wharf and the Last Ferry"
+    fake_breeze.voices["narrator"]["name"] = long_name
+    view = client.post("/api/settings", json={"breeze_url": "http://breeze.local:7860/"})
+    assert view.status_code == 200, view.text
+    for _ in range(2):  # the second refresh must not fail either
+        refreshed = client.post("/api/narration/breeze/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+    voices = library(client)["voices"]
+    assert len(voices) == 1 and library(client)["defaults"]["breeze"] == voices[0]["id"]
+    assert voices[0]["name"] == long_name[:100].rstrip() and len(voices[0]["name"]) <= 100
 
 
 def test_characters_on_default_follow_the_default_voice_and_switching_back_restores_takes(client, servers):
@@ -146,8 +168,8 @@ def test_design_with_character_context_saves_the_audited_clip_and_assigns(client
     assert draft["sample_text"] == line[:len(draft["sample_text"])]
     assert client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"count": 2}).status_code == 200
     draft = client.get("/api/voices").json()["drafts"][0]
-    assert len(draft["candidates"]) == 2 and all(c["audio_url"] for c in draft["candidates"])
-    heard = client.get(draft["candidates"][1]["audio_url"]).content
+    assert len(draft["candidates"]) == 2 and all(c["audio"] for c in draft["candidates"])
+    heard = client.get(draft["candidates"][1]["audio"]["url"]).content
     saved = client.post(f"/api/voices/drafts/{draft['id']}/save",
                         json={"candidate_id": draft["candidates"][1]["id"], "name": "Keeper",
                               "assign": {"book_id": book["id"], "character_id": "narrator"}}).json()
@@ -211,7 +233,8 @@ def test_delete_rules_protect_the_default_and_imported_server_voices(client, ser
     gone = client.delete(f"/api/voices/{other['id']}").json()
     assert gone["server_deleted"] == [other["versions"][0]["provider_voice_id"]]
     assert other["versions"][0]["provider_voice_id"] in fake_breeze.deleted
-    assert [event["kind"] for event in client.app.state.runtime.voices.events(other["id"])] == ["created", "deleted"]
+    assert [event["kind"] for event in client.app.state.runtime.voices.events(other["id"])] == [
+        "created", "server_voice_deleted", "deleted"]
 
 
 def test_deleted_or_unresolved_assignments_fail_closed(client, servers):
@@ -264,7 +287,7 @@ def test_gemini_design_requires_confirmation_records_cost_and_cleans_up(client, 
     assert fake_gemini.creates[0]["voice"]["prompted"]["input"] == "A warm astronomer in his sixties."
     draft = made.json()
     assert [c["provider_voice_id"] for c in draft["candidates"]] == ["voice_0001", "voice_0002"]
-    assert client.get(draft["candidates"][0]["audio_url"]).status_code == 200
+    assert client.get(draft["candidates"][0]["audio"]["url"]).status_code == 200
     rows = client.get(f"/api/books/{book['id']}/resources").json()["operations"]
     design = [row for row in rows if row["stage"] == "voice_design"]
     assert len(design) == 2 and all(row["request_count"] == 1 and row["estimated_cost_usd"] is None
@@ -329,7 +352,7 @@ def test_a_billed_gemini_voice_is_kept_when_its_sample_cannot_be_stored(client, 
     made = client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"book_id": book["id"], "confirm_cost": True})
     assert made.status_code == 200, made.text
     candidate = made.json()["candidates"][0]
-    assert candidate["provider_voice_id"] == "voice_0001" and candidate["audio_url"] is None
+    assert candidate["provider_voice_id"] == "voice_0001" and candidate["audio"] is None
 
 
 def test_a_busy_draft_refuses_a_second_generation(client, servers):
@@ -363,3 +386,188 @@ def test_switching_a_followed_voice_is_refused_while_narration_runs(client, serv
     runtime.store.update_job(job["id"], status="running")
     assert client.post(f"/api/voices/{keeper['id']}/current", json={"version": 1}).status_code == 409
     assert client.delete(f"/api/voices/{keeper['id']}").status_code == 409
+
+
+# Known issues (#17): each test failed before its fix. ---------------------------------------------
+
+
+def breeze_failing(monkeypatch, fake_breeze, method, voice_id, status=500):
+    """Route Breeze requests to the fake, except one method on one server voice, which fails."""
+    def transport(request):
+        if request.method == method and request.url.path == f"/v1/voices/{voice_id}":
+            return httpx.Response(status, json={"error": {"code": "internal_error", "message": "secret"}})
+        return fake_breeze(request)
+    monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(transport))
+
+
+def gemini_voice(client, book, name="Astronomer"):
+    draft = client.post("/api/voices/drafts", json={"provider": "gemini", "name": name,
+                                                     "description": "A warm astronomer in his sixties."}).json()
+    draft = client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"book_id": book["id"], "confirm_cost": True})
+    assert draft.status_code == 200, draft.text
+    saved = client.post(f"/api/voices/drafts/{draft.json()['id']}/save", json={"candidate_id": "c1", "name": name})
+    assert saved.status_code == 200, saved.text
+    return saved.json()["voice"]
+
+
+def test_a_failed_gemini_refresh_is_a_502_and_the_library_still_reports_it(client, servers):
+    _, fake_gemini = servers
+    client.app.state.runtime.api_keys["gemini"] = "gemini-test-key"
+    book = import_text(client)
+    voice = gemini_voice(client, book)
+    assert client.post("/api/voices/gemini/refresh").status_code == 200
+    for failure in (500, "text"):
+        fake_gemini.fail["list"] = failure
+        refreshed = client.post("/api/voices/gemini/refresh")
+        assert refreshed.status_code == 502 and refreshed.json()["code"] == "provider_error", refreshed.text
+        assert "secret" not in refreshed.text
+        gemini = library(client)["providers"]["gemini"]  # 200, not a server error
+        assert gemini["state"] == "error" and gemini["message"] and gemini["checked_at"]
+        assert gemini["stored_count"] is None and gemini["project_voices"] == []
+        assert voice_named(client, "Astronomer")["versions"][0]["server_state"] == "unknown"
+    del fake_gemini.fail["list"]
+    assert client.post("/api/voices/gemini/refresh").json()["state"] == "ready"
+    assert voice_named(client, "Astronomer")["versions"][0]["server_state"] == "ok"
+    # A provider failure while deleting is a 502 too, and the voice stays in the library.
+    fake_gemini.fail[f"delete:{voice['versions'][0]['provider_voice_id']}"] = 403
+    failed = client.delete(f"/api/voices/{voice['id']}")
+    assert failed.status_code == 502 and failed.json()["code"] == "provider_error", failed.text
+    assert voice_named(client, "Astronomer")["deleted"] is False
+
+
+def test_a_partly_failed_voice_deletion_is_recorded_and_a_retry_finishes_it(client, servers, monkeypatch):
+    fake_breeze, _ = servers
+    connect(client)
+    book = import_text(client)
+    keeper = design_voice(client, book)[1]["voice"]
+    draft = client.post("/api/voices/drafts", json={"provider": "breeze", "base_voice_id": keeper["id"],
+                                                     "description": "Warmer and slower."}).json()
+    client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"count": 1})
+    saved = client.post(f"/api/voices/drafts/{draft['id']}/save",
+                        json={"candidate_id": "c1", "name": "Keeper", "mode": "version"})
+    assert saved.status_code == 200, saved.text
+    first, second = sorted(version["provider_voice_id"] for version in saved.json()["voice"]["versions"])
+    breeze_failing(monkeypatch, fake_breeze, "DELETE", second)
+    failed = client.delete(f"/api/voices/{keeper['id']}")
+    assert failed.status_code == 502 and failed.json()["code"] == "provider_error", failed.text
+    assert "1 of 2" in failed.json()["detail"]
+    assert fake_breeze.deleted == [first]
+    left = voice_named(client, "Keeper")  # still in the library, and it says what is gone
+    assert {v["provider_voice_id"]: v["server_state"] for v in left["versions"]} == {first: "missing", second: "ok"}
+    assert any("deletion" in warning for warning in left["warnings"])
+    monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(fake_breeze))
+    done = client.delete(f"/api/voices/{keeper['id']}")
+    assert done.status_code == 200, done.text
+    assert done.json()["server_deleted"] == [first, second]
+    assert fake_breeze.deleted == [first, second]  # the retry did not delete the first again
+    assert "Keeper" not in [voice["name"] for voice in library(client)["voices"]]
+    kinds = [event["kind"] for event in client.app.state.runtime.voices.events(keeper["id"])]
+    assert kinds.count("server_voice_deleted") == 2 and kinds[-1] == "deleted"
+
+
+def test_saving_and_cloning_validate_before_uploading_a_server_voice(client, servers):
+    fake_breeze, _ = servers
+    connect(client)
+    book = import_text(client)
+    draft = client.post("/api/voices/drafts", json={"provider": "breeze", "name": "Tide", "description": "Calm pilot."}).json()
+    client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"count": 1})
+    blank = client.post(f"/api/voices/drafts/{draft['id']}/save", json={"candidate_id": "c1", "name": "   "})
+    assert blank.status_code == 400 and blank.json()["code"] == "voice_name_invalid", blank.text
+    assert fake_breeze.clones == []
+
+    keeper = design_voice(client, book)[1]["voice"]
+    uploads = len(fake_breeze.clones)
+    iteration = client.post("/api/voices/drafts", json={"provider": "breeze", "base_voice_id": keeper["id"],
+                                                         "description": "Warmer."}).json()
+    client.post(f"/api/voices/drafts/{iteration['id']}/generate", json={"count": 1})
+    assert client.delete(f"/api/voices/{keeper['id']}").status_code == 200
+    stale = client.post(f"/api/voices/drafts/{iteration['id']}/save",
+                        json={"candidate_id": "c1", "name": "Keeper", "mode": "version"})
+    assert stale.status_code == 409 and stale.json()["code"] == "base_voice_deleted", stale.text
+    assert len(fake_breeze.clones) == uploads
+
+    recording = wav_bytes(frames=24000)
+    form = {"name": "Mara", "reference_text": "Hello there.", "consent": "true"}
+    for ids, code in (({"book_id": "missing", "character_id": "narrator"}, "unknown_book"),
+                      ({"book_id": book["id"], "character_id": "nobody"}, "unknown_character")):
+        refused = client.post("/api/voices/breeze/clone", data={**form, **ids},
+                              files={"reference_audio": ("mara.wav", recording, "audio/wav")})
+        assert refused.status_code == 400 and refused.json()["code"] == code, refused.text
+    assert len(fake_breeze.clones) == uploads
+
+
+def test_a_record_failure_after_the_upload_removes_the_uploaded_server_voice(client, servers, monkeypatch):
+    from bardic.errors import NotFound
+    fake_breeze, _ = servers
+    connect(client)
+    book = import_text(client)
+    keeper = design_voice(client, book)[1]["voice"]
+    iteration = client.post("/api/voices/drafts", json={"provider": "breeze", "base_voice_id": keeper["id"],
+                                                         "description": "Warmer."}).json()
+    client.post(f"/api/voices/drafts/{iteration['id']}/generate", json={"count": 1})
+    runtime = client.app.state.runtime
+
+    def deleted_meanwhile(voice_id, fields, **kwargs):  # the base voice was deleted after validation
+        raise NotFound("voice_not_found", "Voice not found")
+
+    monkeypatch.setattr(runtime.voices, "add_version", deleted_meanwhile)
+    stale = client.post(f"/api/voices/drafts/{iteration['id']}/save",
+                        json={"candidate_id": "c1", "name": "Keeper", "mode": "version"})
+    assert stale.status_code == 409 and stale.json()["code"] == "base_voice_deleted", stale.text
+    uploaded = fake_breeze.clones[-1]["id"].decode()
+    assert uploaded in fake_breeze.deleted and uploaded not in fake_breeze.voices
+    assert "removed" in stale.json()["detail"]
+    assert uploaded not in [voice["id"] for voice in client.get("/api/status").json()["breeze"]["voices"]]
+    assert library(client)["drafts"][0]["id"] == iteration["id"]  # still open, so the save can be retried
+
+
+def test_a_clone_whose_read_back_fails_is_removed_from_the_server(client, servers, monkeypatch):
+    fake_breeze, _ = servers
+    connect(client)
+
+    def transport(request):  # The server keeps the upload, but its reference clip cannot be read back.
+        if request.method == "GET" and request.url.path.startswith("/v1/voices/bardic-"):
+            return httpx.Response(500, json={"error": {"code": "internal_error"}})
+        return fake_breeze(request)
+
+    monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(transport))
+    made = client.post("/api/voices/breeze/clone", data={"name": "Mara", "reference_text": "Hello there.", "consent": "true"},
+                       files={"reference_audio": ("mara.wav", wav_bytes(frames=24000), "audio/wav")})
+    assert made.status_code == 502 and made.json()["code"] == "provider_error", made.text
+    uploaded = fake_breeze.clones[-1]["id"].decode()
+    assert uploaded in fake_breeze.deleted and uploaded not in fake_breeze.voices
+    assert "Mara" not in [voice["name"] for voice in library(client)["voices"]]
+
+
+def test_single_voice_responses_compare_with_the_saved_provider_checks(client, servers):
+    connect(client)
+    narrator = voice_named(client, "Narrator")
+    edited = client.patch(f"/api/voices/{narrator['id']}", json={"description": "Steady."})
+    assert edited.status_code == 200 and edited.json()["versions"][0]["server_state"] == "ok"
+    switched = client.post(f"/api/voices/{narrator['id']}/current", json={"version": 1}).json()
+    assert switched["versions"][0]["server_state"] == "ok"
+    book = import_text(client)
+    assert design_voice(client, book)[1]["voice"]["versions"][0]["server_state"] == "ok"
+    recording = wav_bytes(frames=24000)
+    cloned = client.post("/api/voices/breeze/clone", data={"name": "Mara", "reference_text": "Hello there.", "consent": "true"},
+                         files={"reference_audio": ("mara.wav", recording, "audio/wav")}).json()["voice"]
+    assert cloned["versions"][0]["server_state"] == "ok"
+
+
+def test_audio_in_voice_responses_is_an_audio_object(client, servers):
+    connect(client)
+    book = import_text(client)
+    narrator = voice_named(client, "Narrator")
+    audition = narrator["versions"][0]["audition"]
+    assert audition["url"] == f"/api/voices/{narrator['id']}/versions/1/audition"
+    assert audition["provider"] == "breeze" and audition["voice"] == "narrator" and audition["model"] is None
+    # The fake server's reference clip is not a WAV, so nothing is retained: the URL fetches from the provider.
+    assert audition["asset_id"] is None and audition["duration"] is None and audition["created_at"] is None
+    assert client.get(audition["url"]).status_code == 200
+    draft, saved = design_voice(client, book)
+    audio = draft["candidates"][0]["audio"]
+    assert audio["url"].endswith("/candidates/c1/audio") and audio["duration"] > 0 and audio["provider"] == "breeze"
+    assert audio["asset_id"] and audio["voice"] is None and audio["model"] == "breeze-tts-2"
+    kept = saved["voice"]["versions"][0]["audition"]  # the auditioned clip is retained as the version's audition
+    assert kept["asset_id"] == audio["asset_id"] and kept["duration"] == audio["duration"] and kept["created_at"]
+    assert kept["voice"] == saved["voice"]["versions"][0]["provider_voice_id"]

@@ -41,6 +41,6 @@ API:
 - `POST /api/books/{book_id}/analysis-plan` previews the chosen phase without generation.
 - `POST /api/books/{book_id}/analyze {provider?, chapter_id?, resume?, phase?, limits?}`; omitted chapter uses whole-book scope for the chosen phase, `resume` defaults true and `phase` defaults `scan`.
 - `GET /api/books/{book_id}/analysis` returns progress only, without source snapshots or model responses.
-- `GET /api/books/{book_id}/characters/{character_id}/references` returns the character's recorded source references.
+- `GET /api/books/{book_id}/characters/{character_id}/references` returns the character's source references. Dialogue and name mentions are derived from the current book on each read, so manual edits and pipeline acceptance show at once; discovery evidence comes from the stored references while its quote still matches.
 
 See [validation](VALIDATION.md) for regression coverage and dated live results. Personal-library preview captures are local validation files and are intentionally excluded from Git.

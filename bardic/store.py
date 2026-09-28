@@ -7,10 +7,51 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from .errors import Conflict, NotFound
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+# Written once, when a job reaches its terminal status; never changed afterwards.
+JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "resume_after"})
+# Stored bookkeeping that is not part of the published Job (the series plan
+# fingerprint stays in storage and in the `series_run` artifact).
+INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint"})
+# Job fields renamed in contract 0.2.0, by kind: stored documents from older
+# versions are translated when read, and new documents use the new names.
+LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "analysis_limits", "mode": "scheduling"},
+                     "listen_chapter": {"limits": "speech_limits"}}
+
+
+def upgrade_job(job: dict) -> dict:
+    """A stored job document with current field names (the stored row is not rewritten)."""
+    for old, new in LEGACY_JOB_FIELDS.get(job.get("kind"), {}).items():
+        if old in job:
+            value = job.pop(old)
+            job.setdefault(new, value)
+    return job
+
+
+def public_job(job: dict) -> dict:
+    """The job as the API presents it: without internal bookkeeping.
+
+    Audio stored inside jobs by versions before contract 0.2.0 still carries
+    recipe hashes and transient markers; it is presented again through the
+    current audio whitelist.
+    """
+    public = {name: value for name, value in job.items() if name not in INTERNAL_JOB_FIELDS}
+    audio = public.get('audio')
+    if isinstance(audio, dict) and audio.get('asset_id'):
+        if public.get('kind') == 'listen':
+            from .listening import present_audio
+            public['audio'] = present_audio(public['book_id'], audio)
+        elif public.get('kind') == 'voice_preview':
+            from .voice_previews import present_take
+            public['audio'] = present_take(public['book_id'], audio)
+    return public
 
 
 class Store:
@@ -18,6 +59,8 @@ class Store:
         from .series import initialize_schema
         from .artifacts import initialize_schema as initialize_artifacts
         from .library import initialize_schema as initialize_library
+        from .pipeline.repository import initialize_schema as initialize_pipeline
+        from .processing import initialize_schema as initialize_processing
 
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -39,6 +82,8 @@ class Store:
             initialize_artifacts(conn)
             initialize_library(conn)
             initialize_schema(conn)
+            initialize_pipeline(conn)
+            initialize_processing(conn)
         for job in self.jobs(limit=None):
             if job["status"] in {"running", "queued"}:
                 message = ("Server restarted. Analyze story again to resume from saved chapter analysis."
@@ -68,7 +113,10 @@ class Store:
     def books(self, include_archived=False) -> list[dict]:
         with self.lock, self.connect() as conn:
             where = '' if include_archived else " WHERE NOT EXISTS(SELECT 1 FROM library_archives a WHERE a.kind='book' AND a.entity_id=books.id)"
-            return [self._hydrate(json.loads(row[0]), conn) for row in conn.execute("SELECT body FROM books" + where + " ORDER BY rowid DESC")]
+            # Most recently imported first. Books saved without an import time sort last, in stable row order
+            # (a save updates the row in place, so it keeps its rowid).
+            order = " ORDER BY json_extract(body,'$.created_at') DESC, rowid DESC"
+            return [self._hydrate(json.loads(row[0]), conn) for row in conn.execute("SELECT body FROM books" + where + order)]
 
     def is_archived(self, book_id: str) -> bool:
         from .library import is_archived
@@ -78,7 +126,7 @@ class Store:
     def require_active(self, book_id: str):
         self.book(book_id)
         if self.is_archived(book_id):
-            raise ValueError('Restore this book from Removed items before processing or editing it.')
+            raise Conflict('book_archived', 'This book is archived.')
 
     def _hydrate(self, book, conn):
         takes = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT segment_id,body FROM takes WHERE book_id=?", (book["id"],))}
@@ -90,7 +138,7 @@ class Store:
         with self.lock, self.connect() as conn:
             row = conn.execute("SELECT body FROM books WHERE id=?", (book_id,)).fetchone()
             if not row:
-                raise KeyError("Book not found")
+                raise NotFound('book_not_found', "Book not found")
             return self._hydrate(json.loads(row[0]), conn)
 
     def save_book(self, book: dict) -> dict:
@@ -107,7 +155,8 @@ class Store:
             # Upgrade-time writes must retain the old projection before replacing it.
             capture_book(conn, self._hydrate(json.loads(previous[0]), conn), legacy_provenance=True, only_missing=True)
         persist_cover(conn, book)
-        conn.execute("INSERT OR REPLACE INTO books(id,body) VALUES (?,?)", (book["id"], json.dumps(book, ensure_ascii=False)))
+        conn.execute("INSERT INTO books(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
+                     (book["id"], json.dumps(book, ensure_ascii=False)))
         conn.execute("DELETE FROM takes WHERE book_id=?", (book["id"],))
         conn.executemany("INSERT INTO takes(book_id,segment_id,body) VALUES (?,?,?)", [(book["id"], s["id"], json.dumps(s["audio"])) for s in book["segments"] if s.get("audio")])
         capture_book(conn, book)
@@ -195,14 +244,14 @@ class Store:
         clauses = (["book_id=?"] if book_id else []) + (["json_extract(body,'$.status') IN ('queued','running')"] if active else [])
         with self.lock, self.connect() as conn:
             sql = "SELECT body FROM jobs" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid DESC" + (f" LIMIT {int(limit)}" if limit is not None else "")
-            return [json.loads(row[0]) for row in conn.execute(sql, (book_id,) if book_id else ())]
+            return [upgrade_job(json.loads(row[0])) for row in conn.execute(sql, (book_id,) if book_id else ())]
 
     def job(self, job_id: str) -> dict:
         with self.lock, self.connect() as conn:
             row = conn.execute("SELECT body FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row:
-                raise KeyError("Job not found")
-            return json.loads(row[0])
+                raise NotFound('job_not_found', "Job not found")
+            return upgrade_job(json.loads(row[0]))
 
     def create_job(self, book_id: str, kind: str, total: int = 0) -> dict:
         job = dict(id=uuid4().hex, book_id=book_id, kind=kind, status="queued", progress=0,
@@ -215,6 +264,12 @@ class Store:
     def update_job(self, job_id: str, **fields) -> dict:
         with self.lock:
             job = self.job(job_id)
+            if job["status"] not in ACTIVE_JOB_STATUSES:
+                # A terminal outcome is final: a late worker, done-callback or shutdown race
+                # must not turn `cancelled` into `interrupted` or rewrite what the job reported.
+                fields = {name: value for name, value in fields.items() if name not in JOB_OUTCOME_FIELDS}
+                if not fields:
+                    return job
             job.update(fields, updated_at=now())
             with self.connect() as conn:
                 conn.execute("UPDATE jobs SET body=? WHERE id=?", (json.dumps(job), job_id))

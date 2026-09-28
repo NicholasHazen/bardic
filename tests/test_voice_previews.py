@@ -29,7 +29,8 @@ def test_simple_and_generic_previews_do_not_use_cast_notes_or_mutate_production(
     repo.render(book['id'], generic['id'], synthesizer=render)
     assert generic['text'] == DEMO_TEXT and generic['source'] == 'demo'
     assert generic['source_anchor'] is None and generic['segment_id'] is None
-    assert audio['mode'] == 'preview' and repo.asset_path(book['id'], audio['asset_id']).is_file()
+    assert audio['preview_id'] == simple['id'] and repo.asset_path(book['id'], audio['asset_id']).is_file()
+    assert 'fingerprint' not in audio and 'source_anchor' not in audio, 'recipe identity stays in storage'
     assert production_snapshot(store) == before
     with store.connect() as conn:
         assert 'private-key' not in '\n'.join(row[0] for row in conn.execute('SELECT body FROM voice_preview_requests'))
@@ -109,7 +110,7 @@ def test_snapshot_survives_subsequent_cast_changes_and_no_key_needed_for_cache(s
     assert calls[0]['character']['direction'] == 'An enhanced dramatic voice.'
     later = VoicePreviewRepository(Store(store.root))
     second = later.render(book['id'], preview['id'], synthesizer=lambda *_: pytest.fail('cache must avoid provider'))
-    assert first['asset_id'] == second['asset_id'] and second['cache_hit']
+    assert first['asset_id'] == second['asset_id'] and 'cache_hit' not in second
     changed = prepare(repo, book, character_id=book['characters'][0]['id'])
     assert changed['id'] != preview['id']
 

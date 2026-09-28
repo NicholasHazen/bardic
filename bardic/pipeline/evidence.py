@@ -14,7 +14,8 @@ passages in ``books.body``. It is rebuilt from what is accepted now:
   volume's context has no location in this book and is dropped.
 * ``directing`` (chapter scope): the book's attributed dialogue. Manual speaker
   choices win over the accepted version (``provider: 'reviewed'``), exactly as
-  directing's projection honours them.
+  directing's projection honours them; so does an older confirmation marker
+  (:func:`reviewed_speaker`).
 * ``mention``: exact, case-sensitive whole-word matches of each recorded spelling
   of an unambiguous cast name or alias.
   A mention is not proof that the character is present.
@@ -26,8 +27,11 @@ hash their content, so a rebuild is deterministic and idempotent.
 
 The rebuild runs from :func:`bardic.pipeline.projection.sync`, which every
 pipeline decision (accept, rollback, set aside, auto, baseline and external
-capture) and read path (overview, plan, run start, preview) calls inside its
-transaction. It is skipped when a digest of its inputs and of the stored rows
+capture), every outside writer (``record_before_outside_write``) and the plan,
+run start and preview calls inside its transaction. GET views (the Analyze
+overview, the Details explorer and ``listCharacterReferences``) run the same
+sync in a transaction they roll back: they show what the next write records,
+and record nothing. It is skipped when a digest of its inputs and of the stored rows
 is unchanged. Any other writer of ``character_references`` (structure repair of
 a legacy Classic checkpoint) changes the stored rows, so the next sync rebuilds them.
 
@@ -287,7 +291,7 @@ def build(repository, conn, book, previous=()):
             continue
         chapter_id = segment['chapter_id']
         head = heads['directing'].get(chapter_id)
-        if locked(segment, 'speaker_id'):
+        if reviewed_speaker(segment):
             provenance = {'provider': 'reviewed', 'model': None, 'origin': 'manual'}
         elif head:
             provenance = {'provider': segment.get('analysis_provider'), 'model': segment.get('analysis_model'),
@@ -321,6 +325,19 @@ def build(repository, conn, book, previous=()):
     return ordered, counts
 
 
+def reviewed_speaker(segment):
+    """True when a person chose or confirmed this passage's speaker.
+
+    The speaker is edit-locked (:func:`locked`). Before per-field locks recorded
+    confirmations, confirming an unchanged speaker set only ``edited`` and
+    confidence 1.0; that older marker still counts.
+    """
+    if locked(segment, 'speaker_id'):
+        return True
+    confidence = segment.get('confidence')
+    return bool(segment.get('edited')) and isinstance(confidence, (int, float)) and confidence >= 1.0
+
+
 def _stored(conn, book_id):
     return [json.loads(body) for (body,) in conn.execute(
         'SELECT body FROM character_references WHERE book_id=? ORDER BY rowid', (book_id,))]
@@ -334,7 +351,7 @@ def _inputs(repository, conn, book):
                    [[c['id'], digest(c['text'])] for c in book['chapters']],
                    # Every passage: evidence and mention rows take segment_id from the passage covering them.
                    [[s['id'], s['chapter_id'], s.get('start'), s.get('end'), s.get('kind'), s.get('speaker_id'),
-                     locked(s, 'speaker_id'), s.get('confidence'), s.get('analysis_provider'), s.get('analysis_model')]
+                     reviewed_speaker(s), s.get('confidence'), s.get('analysis_provider'), s.get('analysis_model')]
                     for s in book['segments']]])
 
 

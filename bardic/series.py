@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 from uuid import uuid4
+from .errors import Conflict, Invalid, NotFound
 
 
 def _now():
@@ -124,22 +125,43 @@ def retain_observations(conn, book_id, references):
 
 def _name(value, label):
     if not isinstance(value, str) or not 1 <= len(value.strip()) <= 200:
-        raise ValueError(f"Choose a {label} of 1–200 characters.")
+        raise Invalid('name_invalid', f"A {label} must have 1–200 characters after trimming whitespace.")
     return " ".join(value.split())
 
 
 def _book(conn, book_id):
     row = conn.execute("SELECT body FROM books WHERE id=?", (book_id,)).fetchone()
     if not row:
-        raise KeyError("Book not found")
+        raise NotFound('book_not_found', "No book has this ID.")
     return json.loads(row[0])
 
 
 def _series(conn, series_id):
     row = conn.execute("SELECT id,name,created_at FROM series WHERE id=?", (series_id,)).fetchone()
     if not row:
-        raise KeyError("Series not found")
+        raise NotFound('series_not_found', "No series has this ID.")
     return dict(zip(("id", "name", "created_at"), row))
+
+
+SERIES_ARCHIVED = 'This series is archived.'
+
+
+def require_active_series(conn, series_id):
+    """409 ``series_archived`` for a removed series."""
+    from .library import is_archived
+
+    if is_archived(conn, 'series', series_id):
+        raise Conflict('series_archived', SERIES_ARCHIVED)
+
+
+def require_active_book(store, book_id):
+    """404 ``book_not_found`` for an unknown book, 409 ``book_archived`` for a removed one."""
+    from .library import is_archived
+
+    with store.lock, store.connect() as conn:
+        _book(conn, book_id)
+        if is_archived(conn, 'book', book_id):
+            raise Conflict('book_archived', 'This book is archived.')
 
 
 def _membership(conn, book_id, include_archived=False):
@@ -162,36 +184,52 @@ class SeriesRepository:
         with self.store.lock, self.store.connect() as conn:
             result = []
             for row in conn.execute("SELECT id,name,created_at FROM series ORDER BY name COLLATE NOCASE,id"):
-                item = dict(zip(("id", "name", "created_at"), row))
-                item['archived'] = is_archived(conn, 'series', item['id'])
-                if item['archived'] and not include_archived:
+                if not include_archived and is_archived(conn, 'series', row[0]):
                     continue
-                item["books"] = []
-                item['volumes'] = []
-                for book_id, position, body in conn.execute("""SELECT sb.book_id,sb.position,b.body
-                    FROM series_books sb JOIN books b ON b.id=sb.book_id
-                    WHERE sb.series_id=? ORDER BY sb.position,sb.book_id""", (item["id"],)):
-                    book = json.loads(body)
-                    archived = is_archived(conn, 'book', book_id)
-                    volume = {"book_id": book_id, "position": position, "title": book.get("title", "Untitled"),
-                              "author": book.get("author", ""), 'archived': archived}
-                    if include_archived or not archived:
-                        item["books"].append(volume)
-                    item['volumes'].append(dict(volume, status='archived' if archived else 'available'))
-                item['volumes'].extend({'series_id': item['id'], 'position': position, 'title': title, 'status': status, 'book_id': None}
-                                       for position, title, status in conn.execute('SELECT position,title,status FROM series_volume_slots WHERE series_id=?', (item['id'],)))
-                item['volumes'].sort(key=lambda v: (v['position'], v.get('book_id') or ''))
-                item["character_count"] = conn.execute("SELECT count(*) FROM series_characters WHERE series_id=?",
-                                                        (item["id"],)).fetchone()[0]
-                result.append(item)
+                result.append(self._entry(conn, row, include_archived))
             return result
 
+    def series(self, series_id):
+        """One series, removed or not. As in a listing, its ``books`` omit removed books."""
+        with self.store.lock, self.store.connect() as conn:
+            row = conn.execute("SELECT id,name,created_at FROM series WHERE id=?", (series_id,)).fetchone()
+            if not row:
+                raise NotFound('series_not_found', "No series has this ID.")
+            return self._entry(conn, row, False)
+
+    @staticmethod
+    def _entry(conn, row, include_archived):
+        from .library import is_archived
+
+        item = dict(zip(("id", "name", "created_at"), row))
+        item['archived'] = is_archived(conn, 'series', item['id'])
+        item["books"] = []
+        item['volumes'] = []
+        for book_id, position, body in conn.execute("""SELECT sb.book_id,sb.position,b.body
+            FROM series_books sb JOIN books b ON b.id=sb.book_id
+            WHERE sb.series_id=? ORDER BY sb.position,sb.book_id""", (item["id"],)):
+            book = json.loads(body)
+            archived = is_archived(conn, 'book', book_id)
+            volume = {"book_id": book_id, "position": position, "title": book.get("title", "Untitled"),
+                      "author": book.get("author", ""), 'archived': archived}
+            if include_archived or not archived:
+                item["books"].append(volume)
+            item['volumes'].append(dict(volume, status='archived' if archived else 'available'))
+        item['volumes'].extend({'series_id': item['id'], 'position': position, 'title': title, 'status': status, 'book_id': None}
+                               for position, title, status in conn.execute('SELECT position,title,status FROM series_volume_slots WHERE series_id=?', (item['id'],)))
+        item['volumes'].sort(key=lambda v: (v['position'], v.get('book_id') or ''))
+        item["character_count"] = conn.execute("SELECT count(*) FROM series_characters WHERE series_id=?",
+                                                (item["id"],)).fetchone()[0]
+        return item
+
     def create_series(self, name):
-        name = _name(name, "series name")
+        from .library import _label
+        # The same checks as a rename: a name that could not be saved again is refused here too.
+        name = _label(_name(name, "series name"), "series name", required=True, maximum=200)
         item = {"id": "series_" + uuid4().hex, "name": name, "created_at": _now()}
         with self.store.lock, self.store.connect() as conn:
             if any(row[0].casefold() == name.casefold() for row in conn.execute("SELECT name FROM series")):
-                raise ValueError("A series with that name already exists. Select the existing series.")
+                raise Invalid('series_name_taken', "Another series already has this name (names are compared ignoring case).")
             conn.execute("INSERT INTO series(id,name,created_at) VALUES (?,?,?)", tuple(item.values()))
         return dict(item, books=[], character_count=0)
 
@@ -202,29 +240,28 @@ class SeriesRepository:
 
     def set_membership(self, book_id, series_id=None, position=None):
         from .artifacts import capture_series
-        from .library import LibraryRepository
 
+        require_active_book(self.store, book_id)
         with self.store.lock, self.store.connect() as conn:
-            _book(conn, book_id)
-            self.store.require_active(book_id)
             previous = _membership(conn, book_id, include_archived=True)
             capture_series(conn, book_id, legacy_provenance=True, only_missing=True)
             if series_id is None:
                 if position is not None:
-                    raise ValueError("Choose a series before setting its reading order.")
+                    raise Invalid('position_without_series', "A reading order was sent without a `series_id`.")
                 conn.execute("DELETE FROM series_books WHERE book_id=?", (book_id,))
                 conn.execute("DELETE FROM series_character_links WHERE book_id=?", (book_id,))
                 capture_series(conn, book_id)
                 return None
-            _series(conn, series_id)
-            LibraryRepository(self.store).require_active_series(series_id)
+            if not conn.execute("SELECT 1 FROM series WHERE id=?", (series_id,)).fetchone():
+                raise Invalid('unknown_series', "No series has the requested `series_id`.")
+            require_active_series(conn, series_id)
             if (type(position) not in {int, float} or not math.isfinite(position)
                     or not 0 <= position <= 1_000_000):
-                raise ValueError("Set a finite reading order between 0 and 1,000,000; decimals allow prequels or side stories.")
+                raise Invalid('position_invalid', "A reading order must be a finite number from 0 through 1,000,000.")
             conflict = conn.execute("SELECT book_id FROM series_books WHERE series_id=? AND position=? AND book_id!=?",
                                     (series_id, position, book_id)).fetchone()
             if conflict:
-                raise ValueError("Another book already has that reading order in this series.")
+                raise Invalid('position_taken', "Another book already has this reading order in the series.")
             if previous and previous["series_id"] != series_id:
                 conn.execute("DELETE FROM series_character_links WHERE book_id=?", (book_id,))
             conn.execute("INSERT OR REPLACE INTO series_books(book_id,series_id,position) VALUES (?,?,?)",
@@ -253,6 +290,7 @@ class SeriesRepository:
                 "name": name, "created_at": _now()}
         with self.store.lock, self.store.connect() as conn:
             _series(conn, series_id)
+            require_active_series(conn, series_id)
             # Duplicate names are permitted: a shared name is not shared identity.
             conn.execute("INSERT INTO series_characters(id,series_id,name,created_at) VALUES (?,?,?,?)", tuple(item.values()))
         return dict(item, links=[])
@@ -273,18 +311,17 @@ class SeriesRepository:
         with self.store.lock, self.store.connect() as conn:
             book = _book(conn, book_id)
             if character_id in {"narrator", "unassigned"}:
-                raise ValueError("Narrator and unassigned dialogue cannot be linked to series characters.")
+                raise Invalid('character_not_linkable',
+                              "The narrator and unassigned dialogue cannot be linked to series characters.")
             if character_id not in {c["id"] for c in book.get("characters", [])}:
-                raise KeyError("Character not found")
-            member = _membership(conn, book_id)
-            if member is None:
-                raise ValueError("Add this book to a series before linking characters.")
+                raise NotFound('character_not_found', "The book has no character with this ID.")
+            member = self._editable_membership(conn, book_id)
             identity = conn.execute("SELECT series_id,name FROM series_characters WHERE id=?",
                                     (series_character_id,)).fetchone()
             if not identity:
-                raise KeyError("Series character not found")
+                raise Invalid('unknown_series_character', "No series character has the requested `series_character_id`.")
             if identity[0] != member["series_id"]:
-                raise ValueError("Choose a character from this book's series.")
+                raise Invalid('series_character_mismatch', "The series character belongs to another series.")
             previous = conn.execute("""SELECT series_character_id,confirmed_at FROM series_character_links
                 WHERE book_id=? AND character_id=?""", (book_id, character_id)).fetchone()
             confirmed_at = previous[1] if previous and previous[0] == series_character_id else _now()
@@ -296,11 +333,23 @@ class SeriesRepository:
             return {"character_id": character_id, "series_character_id": series_character_id,
                     "name": identity[1], "confirmed_at": confirmed_at, "stale": False}
 
+    @staticmethod
+    def _editable_membership(conn, book_id):
+        """The book's membership; 400 when it is in no series, 409 when its series is removed."""
+        member = _membership(conn, book_id, include_archived=True)
+        if member is None:
+            raise Invalid('book_not_in_series', "The book is in no series.")
+        require_active_series(conn, member["series_id"])
+        return member
+
     def unlink_character(self, book_id, character_id):
         from .artifacts import capture_series
 
         with self.store.lock, self.store.connect() as conn:
             _book(conn, book_id)
+            if _membership(conn, book_id, include_archived=True):
+                # Links are retained for restoration: a removed series keeps them unchanged.
+                self._editable_membership(conn, book_id)
             capture_series(conn, book_id, legacy_provenance=True, only_missing=True)
             conn.execute("DELETE FROM series_character_links WHERE book_id=? AND character_id=?", (book_id, character_id))
             capture_series(conn, book_id)

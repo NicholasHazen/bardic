@@ -20,13 +20,19 @@
     interrupted:'Interrupted', budget_limited:'Stopped at allowance', quota_limited:'Quota reached',
     not_started:'Not started', needs_review:'Waiting for review'};
   const stateLabel = value => STATES[value] || ui().statusLabel(value);
+  // Server details describe the condition; where to fix it is the UI's business, keyed on the error code.
+  const HINTS = {api_key_missing:'Add it in Providers & settings.', server_url_missing:'Add it in Providers & settings.',
+    series_archived:'Restore it from Removed items in the library.'};
 
   async function request(url, body) {
     const response = await fetch(url, body === undefined ? {headers:{Accept:'application/json'}} :
       {method:'POST',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify(body)});
     let value;
     try { value = await response.json(); } catch { value = null; }
-    if (!response.ok) throw new Error(typeof value?.detail === 'string' ? value.detail : `Could not process the series request (${response.status}).`);
+    if (!response.ok) {
+      const hint = HINTS[value?.code] ? ` ${HINTS[value.code]}` : '';
+      throw new Error(typeof value?.detail === 'string' ? value.detail + hint : `Could not process the series request (${response.status}).`);
+    }
     if (!value || typeof value !== 'object') throw new Error('The server returned an unreadable series response. Try again.');
     return value;
   }

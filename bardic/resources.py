@@ -47,9 +47,12 @@ def _metrics(value):
 class ResourceLedger:
     def __init__(self, store):
         self.store = store
-        with store.lock, store.connect() as conn:
-            conn.execute('CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, run_id TEXT, stage TEXT NOT NULL, body TEXT NOT NULL)')
-            conn.execute('CREATE INDEX IF NOT EXISTS resource_operations_book ON resource_operations(book_id,run_id)')
+        # The table is created once per store (server process), not on every construction.
+        if not getattr(store, '_resource_ledger_ready', False):
+            with store.lock, store.connect() as conn:
+                conn.execute('CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, run_id TEXT, stage TEXT NOT NULL, body TEXT NOT NULL)')
+                conn.execute('CREATE INDEX IF NOT EXISTS resource_operations_book ON resource_operations(book_id,run_id)')
+            store._resource_ledger_ready = True
 
     def _save(self, row):
         with self.store.lock, self.store.connect() as conn:
@@ -172,7 +175,8 @@ def resource_summary(store, book_id, *, limit=100, offset=0, run_id=None):
     from .processing import ProcessingStore
     repository = ProcessingStore(store)
     ResourceLedger(store)
-    limit, offset = max(1, min(200, int(limit))), max(0, int(offset))
+    from .artifacts import MAX_OFFSET
+    limit, offset = max(1, min(200, int(limit))), max(0, min(MAX_OFFSET, int(offset)))
     with store.lock, store.connect() as conn:
         events = [json.loads(r[0]) for r in conn.execute('SELECT body FROM pipeline_events WHERE book_id=?', (book_id,))]
         operations = [json.loads(r[0]) for r in conn.execute('SELECT body FROM resource_operations WHERE book_id=?', (book_id,))]
@@ -207,6 +211,8 @@ def resource_summary(store, book_id, *, limit=100, offset=0, run_id=None):
         if row.get('status') in {'running', 'reserved'} and (previous_process or finished_job):
             row['status'] = 'interrupted'
     rows.sort(key=lambda r: (r.get('created_at') or '', r['id']), reverse=True)
+    for row in rows:
+        row.pop('process_id', None)  # Only used above to find rows left running by an earlier process.
     stages, runs = defaultdict(list), defaultdict(list)
     for row in rows:
         stages[row.get('stage') or 'unrecorded'].append(row)

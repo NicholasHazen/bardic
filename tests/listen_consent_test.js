@@ -53,7 +53,7 @@ function listening({bookId = 'book-t', session = new Map(), provider = 'gemini',
   if (saved) storage.set(`bardic:listen:${bookId}`, JSON.stringify({mode:'simple', provider, voices:{system:'', gemini:'Kore', breeze:''}, continuous:false, ...prior}));
   const calls = [], toasts = [];
   const job = {id:'job-1', kind:'listen_chapter', status:'running', chapter_id:'c1', session_id:'sess', chunks:[], projection:[]};
-  const status = {has_api_key:true, providers:[{id:'system', available:provider === 'system'}, {id:'gemini', available:true}],
+  const status = {providers:[{id:'system', available:provider === 'system'}, {id:'gemini', available:true}],
     tts_model:'gemini-3.8-flash-tts', tts_models:['gemini-3.8-flash-tts'], listen_chunking:{ramp_seconds:[30,60], target_seconds:420, concurrency:2}};
   const clock = {now:0};
   const state = {book:book || story(bookId), chapterId:'c1', segmentId:'s1', audioSegmentId:null, pendingOffset:0, selectionVersion:1, jobs:[], tab:'read', status, lastSave:0};
@@ -472,7 +472,7 @@ test('cancelled, failed, interrupted and budget-limited chapter jobs keep distin
       fetch:async url => ({ok:true, status:200, json:async () => url.startsWith('/api/jobs?') ? [job] : url.includes('/takes') ? {takes:[]} : {session:{id:'sess'}, requests_needed:1}})};
     vm.runInNewContext(listenSource, context);
     const api = context.window.BardicListen, book = story('book-h'), panel = node('#panel');
-    const options = {chapterId:'c1', segmentId:'s1', status:{has_api_key:true, providers:[{id:'system', available:false}, {id:'gemini', available:true}], tts_model:'gemini-3.8-flash-tts', tts_models:['gemini-3.8-flash-tts']}};
+    const options = {chapterId:'c1', segmentId:'s1', status:{providers:[{id:'system', available:false}, {id:'gemini', available:true}], tts_model:'gemini-3.8-flash-tts', tts_models:['gemini-3.8-flash-tts']}};
     await api.render(panel, book, options);
     await settle();
     await api.render(panel, book, options);
@@ -550,7 +550,6 @@ test('the sheet uses BardicUI radio groups and offers Set up for an unavailable 
   const env = listening({provider:'system'});
   await settle();
   env.state.status.providers = [{id:'system', available:true}, {id:'gemini', available:false}];
-  env.state.status.has_api_key = false;
   env.node('#listen-sheet').open = true;
   env.app.chooseInSheet({name:'provider', value:'gemini'});
   const html = env.node('#listen-sheet-body').innerHTML;

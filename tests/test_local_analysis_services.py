@@ -293,7 +293,7 @@ def test_steps_list_their_providers_and_services_take_no_model(client):
     steps = {s['id']: s for s in body['steps']}
     assert steps['quotes']['providers'] == ['booknlp'] and steps['quotes']['settings']['provider'] == 'booknlp'
     assert steps['directing']['providers'][-2:] == ['novel_analyzer', 'booknlp'] and 'local_llm' in steps['profiles']['providers']
-    ready = {p['id']: p['has_api_key'] for p in body['providers']}
+    ready = {p['id']: p['configured'] for p in body['providers']}
     assert ready['booknlp'] and not ready['novel_analyzer'] and not ready['local_llm']
     put = lambda step, value: client.put(f'/api/analysis-pipeline/steps/{step}/settings', json=value)
     assert put('directing', {'provider': 'novel_analyzer', 'model': 'x'}).status_code == 400

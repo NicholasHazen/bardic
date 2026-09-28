@@ -190,7 +190,7 @@ def test_in_flight_result_cannot_replace_a_changed_credentials_status(client, mo
             release.set()
         response = pending.result(timeout=3)
     assert response.status_code == 409
-    assert "settings changed" in response.json()["detail"].lower()
+    assert response.json()["code"] == "settings_changed"
     assert client.get("/api/status").json()["account_checks"]["openai"]["state"] == "unchecked"
     current = client.post("/api/account-checks/openai")
     assert current.status_code == 200

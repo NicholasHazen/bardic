@@ -11,10 +11,13 @@ import json
 import re
 from urllib.parse import quote
 
-from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .audio import (AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, TTS_MODELS, render_fingerprint,
+                    validate_audio)
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from .audio_refs import audio_ref
+from .errors import Invalid, NotFound
 
 
 VERSION = 1
@@ -43,6 +46,25 @@ def _excerpt(text):
     return prefix
 
 
+# Optional public extras of an audition take, copied when the stored record has them.
+# Provider usage is served by the resources routes, not with the audio.
+_TAKE_EXTRAS = ('reuse', 'provider_timing', 'breeze', 'voice_revision', 'voice_library')
+
+
+def present_take(book_id, metadata):
+    """The public audio object (contract ``VoicePreviewAudio``) for a retained audition take.
+
+    A whitelist: the recipe fingerprint, the record format version, provider
+    usage, the copied source anchor and any transient marker stay in storage. Idempotent, so it also cleans an audio
+    object presented by an earlier version (for example inside a stored job).
+    """
+    return audio_ref(f'/api/books/{quote(book_id, safe="")}/voice-preview/audio/{metadata["asset_id"]}',
+                     asset_id=metadata['asset_id'], duration=metadata.get('duration'),
+                     provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
+                     created_at=metadata.get('created_at'), preview_id=metadata.get('preview_id'),
+                     **{key: metadata[key] for key in _TAKE_EXTRAS if key in metadata})
+
+
 def _speech_inputs(recipe):
     # A display-name edit does not alter speech. Keep the recorded label in the
     # immutable request while comparing every other retained input for reuse.
@@ -55,6 +77,9 @@ def _speech_inputs(recipe):
 class VoicePreviewRepository:
     def __init__(self, store):
         self.store = store
+        # Schema setup runs once per store, never on each request.
+        if getattr(store, '_voice_preview_schema_ready', False):
+            return
         with store.lock, store.connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS voice_preview_requests (
                 id TEXT PRIMARY KEY, book_id TEXT NOT NULL, body TEXT NOT NULL)''')
@@ -70,6 +95,7 @@ class VoicePreviewRepository:
                     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_no_{operation.lower()}
                         BEFORE {operation} ON {table} BEGIN
                         SELECT RAISE(ABORT, 'Voice previews are immutable'); END''')
+        store._voice_preview_schema_ready = True
 
     def prepare(self, book_id, provider, voice=None, model=None, *, segment_id=None,
                 character_id=None, direction=None, segment_direction=None, selection=None, pronunciation_draft=None):
@@ -82,39 +108,45 @@ class VoicePreviewRepository:
         book = self.store.book(book_id)
         lexicon, draft = pronunciation.book_lexicon(book), None
         if pronunciation_draft is not None:
-            draft = pronunciation.normalize_entry(pronunciation_draft)
+            try:
+                draft = pronunciation.normalize_entry(pronunciation_draft)
+            except ValueError as error:
+                raise Invalid('pronunciation_invalid', str(error)) from None
             lexicon = pronunciation.merged(lexicon, draft)
         if provider not in PROVIDERS:
-            raise ValueError('Choose system, Gemini or Breeze narration.')
+            raise Invalid('provider_unsupported', 'The narration provider must be system, gemini or breeze.')
         if direction is not None and not character_id:
-            raise ValueError('Performance direction requires a selected character.')
+            raise Invalid('direction_requires_character', 'A performance direction needs a selected character.')
         if segment_direction is not None and not (segment_id and character_id):
-            raise ValueError('Passage direction requires a selected passage and character.')
+            raise Invalid('segment_direction_requires_passage',
+                          'A passage direction needs both a selected passage and a selected character.')
         if voice is not None and (not isinstance(voice, str) or len(voice) > 256):
-            raise ValueError('Choose a valid narrator voice.')
+            raise Invalid('narrator_voice_invalid', 'The narrator voice is not a valid voice value.')
         if direction is not None and (not isinstance(direction, str) or len(direction) > 3000):
-            raise ValueError('Choose a valid performance direction.')
+            raise Invalid('direction_invalid', 'The performance direction must be text of at most 3000 characters.')
         if segment_direction is not None and (not isinstance(segment_direction, str) or len(segment_direction) > 3000):
-            raise ValueError('Choose a valid passage direction.')
+            raise Invalid('direction_invalid', 'The passage direction must be text of at most 3000 characters.')
         voice = voice.strip() if voice else ''
         if provider == 'system':
             if model not in (None, '', SYSTEM_MODEL):
-                raise ValueError('Device narration uses the installed macOS voice model.')
+                raise Invalid('model_unsupported', f'Device narration uses the {SYSTEM_MODEL} model.')
             model = SYSTEM_MODEL
         elif provider == 'breeze':
             if model not in (None, '', BREEZE_MODEL):
-                raise ValueError('Breeze narration uses the breeze-tts-2 model.')
+                raise Invalid('model_unsupported', f'Breeze narration uses the {BREEZE_MODEL} model.')
             if not isinstance(selection, dict) or (voice and selection.get('id') != voice):
-                raise ValueError('Choose a Breeze voice from the last voice check.')
+                raise Invalid('narrator_voice_invalid', 'The Breeze voice is not in the last Breeze voice check.')
             voice, model = selection['id'], BREEZE_MODEL
         else:
             voice, model = voice or 'Kore', model or DEFAULT_TTS_MODEL
+            if model not in TTS_MODELS:
+                raise Invalid('model_unsupported', 'The Gemini speech model is not a supported TTS model.')
         segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
         if segment_id and segment is None:
-            raise KeyError('Passage not found in this book')
+            raise Invalid('unknown_passage', 'No passage with this ID is in the book.')
         character = next((c for c in book['characters'] if c['id'] == character_id), None)
         if character_id and character is None:
-            raise KeyError('Character not found in this book')
+            raise Invalid('unknown_character', 'No character with this ID is in the book.')
         if draft is not None and segment is None:
             segment = next((s for s in book['segments'] if pronunciation.first_match(s['text'], draft)), None)
         if character is not None and segment is None:
@@ -125,7 +157,7 @@ class VoicePreviewRepository:
             start, end = segment.get('start'), segment.get('end')
             if (chapter is None or type(start) is not int or type(end) is not int or
                     not 0 <= start < end <= len(chapter['text']) or chapter['text'][start:end] != segment['text']):
-                raise ValueError('This passage does not match its original source. Repair its source mapping before previewing.')
+                raise Invalid('passage_source_mismatch', 'The passage text does not match its original source coordinates.')
             match = pronunciation.first_match(segment['text'], draft) if draft is not None else None
             if match:
                 # The whole sentence from the chapter: a passage can be a lone speech tag (" Eilidh said.").
@@ -156,7 +188,10 @@ class VoicePreviewRepository:
             performer['voices'] = {'breeze': copy.deepcopy(selection)}
         if character is not None:
             performer['direction'] = character.get('direction', '') if direction is None else direction
-        fingerprint = render_fingerprint(passage, performer, scene, provider, model)
+        try:
+            fingerprint = render_fingerprint(passage, performer, scene, provider, model)
+        except AudioError as error:
+            raise Invalid('narrator_voice_invalid', str(error)) from None
         preview = {'schema_version': VERSION, 'book_id': book_id, 'text': passage['text'],
                    'source': 'passage' if segment is not None else 'demo',
                    'segment_id': segment['id'] if segment is not None else None,
@@ -185,13 +220,13 @@ class VoicePreviewRepository:
             row = conn.execute('SELECT body FROM voice_preview_requests WHERE book_id=? AND id=?',
                                (book_id, preview_id)).fetchone()
         if not row:
-            raise KeyError('Voice preview not found')
+            raise NotFound('voice_preview_not_found', 'Voice preview not found')
         return json.loads(row[0])
 
     def _path(self, book_id, asset_id):
         if (not isinstance(book_id, str) or re.fullmatch(r'[A-Za-z0-9_-]+', book_id) is None or
                 not isinstance(asset_id, str) or re.fullmatch(r'[a-f0-9]{64}', asset_id) is None):
-            raise KeyError('Voice preview audio not found')
+            raise NotFound('audio_not_found', 'Voice preview audio not found')
         return self.store.root / 'voice-previews' / book_id / f'{asset_id}.wav'
 
     def _validated_asset(self, book_id, asset_id):
@@ -208,19 +243,15 @@ class VoicePreviewRepository:
             found = conn.execute('SELECT 1 FROM voice_preview_takes WHERE book_id=? AND asset_id=? LIMIT 1',
                                  (book_id, asset_id)).fetchone()
         if not found:
-            raise KeyError('Voice preview audio not found')
+            raise NotFound('audio_not_found', 'Voice preview audio not found')
         try:
             self._validated_asset(book_id, asset_id)
         except (OSError, EOFError, ValueError):
-            raise KeyError('Voice preview audio is missing or damaged') from None
+            raise NotFound('audio_not_found', 'Voice preview audio is missing or damaged') from None
         return path
 
-    @staticmethod
-    def _present(book_id, metadata):
-        return {**metadata, 'available': True, 'mode': 'preview',
-                'url': f'/api/books/{quote(book_id, safe="")}/voice-preview/audio/{metadata["asset_id"]}'}
-
     def cached(self, book_id, preview_id):
+        """A retained audition take for the preview (public shape), or None. Never contacts a provider."""
         recipe = self._request(book_id, preview_id)
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('SELECT body FROM voice_preview_takes WHERE book_id=? AND preview_id=? ORDER BY rowid DESC',
@@ -231,7 +262,7 @@ class VoicePreviewRepository:
                 duration = self._validated_asset(book_id, metadata['asset_id'])
             except (OSError, EOFError, ValueError, KeyError):
                 continue
-            return {**self._present(book_id, metadata), 'duration': duration, 'cache_hit': True}
+            return present_take(book_id, {**metadata, 'duration': duration})
         # Request IDs retain the historical character name. A rename may reuse
         # the same speech, but source identity and every performance input must
         # still match. The expression index narrows lookup before decoding.
@@ -253,7 +284,7 @@ class VoicePreviewRepository:
             reused.update(duration=duration, reuse={'schema_version': 1, 'take_id': take_id,
                                                     'preview_id': original['preview_id']})
             metadata = self._retain(book_id, recipe['preview'], reused)
-            return {**self._present(book_id, metadata), 'cache_hit': True}
+            return present_take(book_id, metadata)
         return None
 
     def _retain(self, book_id, preview, audio):
@@ -267,10 +298,15 @@ class VoicePreviewRepository:
             return json.loads(conn.execute('SELECT body FROM voice_preview_takes WHERE id=?', (identifier,)).fetchone()[0])
 
     def render(self, book_id, preview_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
+        """A retained take for the preview, generating one only when none is retained. Public shape."""
         check_cancel()
         cached = self.cached(book_id, preview_id)
         if cached:
             return cached
+        return self.generate(book_id, preview_id, api_key, synthesizer=synthesizer, check_cancel=check_cancel)
+
+    def generate(self, book_id, preview_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
+        """Synthesize and retain a new audition take without consulting the cache. Public shape."""
         recipe = self._request(book_id, preview_id)
         preview = recipe['preview']
         check_cancel()
@@ -280,4 +316,4 @@ class VoicePreviewRepository:
         metadata = self._retain(book_id, preview, audio)
         # Keep successfully completed audio even when cancellation arrived during
         # the provider call; Runtime performs the final playback cancellation.
-        return self._present(book_id, metadata)
+        return present_take(book_id, metadata)

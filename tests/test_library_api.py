@@ -103,8 +103,9 @@ def test_book_archive_restore_keeps_files_takes_history_and_direct_access(client
     assert client.get(f'/api/books/{book_id}').status_code == 200
     assert store.book(book_id) == before and source.read_bytes() == original_bytes
     refused = client.post(f'/api/books/{book_id}/analysis-pipeline/runs', json={'steps': ['census'], 'limits': {'max_requests': 1}})
-    assert refused.status_code == 400 and 'Restore this book' in refused.json()['detail']
-    assert client.patch(f'/api/books/{book_id}/metadata', json={'title': 'Blocked'}).status_code == 400
+    assert refused.status_code == 409 and refused.json()['code'] == 'book_archived'
+    blocked = client.patch(f'/api/books/{book_id}/metadata', json={'title': 'Blocked'})
+    assert blocked.status_code == 409 and blocked.json()['code'] == 'book_archived'
     assert client.post(f'/api/books/{book_id}/restore').status_code == 200
     assert client.get('/api/books').json()[0]['id'] == book_id
     assert store.book(book_id) == before
@@ -192,7 +193,7 @@ def test_incoming_book_cannot_join_active_target_series_but_unrelated_book_work_
     parent = store.create_job('series:' + series_id, 'series')
     store.update_job(parent['id'], status='running', book_ids=[member['id']], child_job_ids=[])
     response = client.put(f"/api/books/{incoming['id']}/series", json={'series_id': series_id, 'position': 2})
-    assert response.status_code == 409 and 'series run' in response.text.lower()
+    assert response.status_code == 409 and response.json()['code'] == 'series_run_active'
     assert client.get(f"/api/books/{incoming['id']}/series").json()['membership'] is None
     assert len(client.get('/api/series').json()[0]['books']) == 1
     store.update_job(parent['id'], status='completed')

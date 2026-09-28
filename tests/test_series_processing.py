@@ -352,7 +352,7 @@ def test_submission_failure_releases_books_and_redacts(client, monkeypatch):
     with monkeypatch.context() as scoped:
         scoped.setattr(runtime.series_pool, 'submit', rejected)
         response = process(client, series)
-    assert response.status_code == 400 and 'could not start' in response.text
+    assert response.status_code == 503 and response.json()['code'] == 'shutting_down'
     jobs = runtime.store.jobs(limit=None)
     assert all(job['status'] not in {'queued', 'running'} for job in jobs)
     assert SECRET not in str(jobs)
@@ -369,7 +369,8 @@ def test_archived_books_and_placeholders_are_not_scheduled(client):
     assert wait_job(client, process(client, series, plan).json()['id'])['status'] == 'completed'
     assert client.provider.volumes == [2]
     assert client.post(f"/api/series/{series['id']}/archive").status_code == 200
-    assert client.post(f"/api/series/{series['id']}/plan", json={'steps': ['discovery']}).status_code == 404
+    refused = client.post(f"/api/series/{series['id']}/plan", json={'steps': ['discovery']})
+    assert refused.status_code == 409 and refused.json()['code'] == 'series_archived'
 
 
 def test_local_steps_run_across_the_series_without_keys(client):
@@ -386,7 +387,7 @@ def test_missing_key_is_reported_by_plan_and_refused_by_process(client):
     plan = preview(client, series)
     assert plan['missing_credentials'] == [{'provider': 'openai', 'label': 'OpenAI', 'needs': 'api_key'}]
     response = process(client, series, plan)
-    assert response.status_code == 400 and 'API key' in response.text
+    assert response.status_code == 400 and response.json()['code'] == 'api_key_missing' and 'API key' in response.text
     assert client.get('/api/jobs').json() == []
 
 
@@ -406,17 +407,27 @@ def test_empty_and_unknown_series_and_invalid_plans_are_refused_without_jobs(cli
     assert plan['books'] == [] and plan['requests'] == 0 and plan['estimated_cost_usd'] == 0
     assert plan['unknown_cost_books'] == [] and len(plan['fingerprint']) == 64
     response = process(client, empty, plan)
-    assert response.status_code == 400 and 'Add a book' in response.text
+    assert response.status_code == 400 and response.json()['code'] == 'series_empty'
     for method, route, body in (('post', 'plan', {'steps': ['discovery']}),
                                 ('post', 'process', {'steps': ['discovery'], 'limits': {'max_requests': 1}}),
                                 ('get', 'runs', None)):
         kwargs = {'json': body} if body is not None else {}
         missing = getattr(client, method)(f'/api/series/series_missing/{route}', **kwargs)
-        assert missing.status_code == 404 and missing.json()['detail'] == 'Series not found'
+        assert missing.status_code == 404 and missing.json()['code'] == 'series_not_found'
     series, _ = collection(client, positions=(1,))
-    for body in ({'steps': ['unknown']}, {'steps': ['discovery'], 'configs': {'discovery': {'provider': 'local'}}}):
-        assert client.post(f"/api/series/{series['id']}/plan", json=body).status_code == 400
+    for body, code in (({'steps': ['unknown']}, 'unknown_step'),
+                       ({'steps': ['discovery'], 'configs': {'unknown': {'provider': 'openai', 'model': 'm'}}}, 'unknown_step'),
+                       ({'steps': ['discovery'], 'configs': {'discovery': {'provider': 'local'}}}, 'step_config_invalid')):
+        refused = client.post(f"/api/series/{series['id']}/plan", json=body)
+        assert refused.status_code == 400 and refused.json()['code'] == code
     assert client.get(f"/api/series/{series['id']}/runs").json() == {'runs': []}
+    assert client.get('/api/jobs').json() == []
+    # A removed series still answers reads, but refuses a preview or a run (409 series_archived).
+    assert client.post(f"/api/series/{series['id']}/archive").status_code == 200
+    assert client.get(f"/api/series/{series['id']}/runs").json() == {'runs': []}
+    for route, body in (('plan', {'steps': ['discovery']}), ('process', {'steps': ['discovery'], 'limits': {'max_requests': 1}})):
+        refused = client.post(f"/api/series/{series['id']}/{route}", json=body)
+        assert refused.status_code == 409 and refused.json()['code'] == 'series_archived'
     assert client.get('/api/jobs').json() == []
 
 

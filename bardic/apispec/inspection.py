@@ -9,10 +9,15 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from .base import Op, View, internal, op
+from .base import Op, View, op
+from .common import Job
 
 BOOK_ID = 'Book ID, from the library or the import response.'
-BOOK_404 = 'No book has this ID.'
+BOOK_404 = {'book_not_found': 'No book has this ID.'}
+UNKNOWN_CHAPTER = 'The body\'s `chapter_id` is not a chapter of this book.'
+UNKNOWN_PROVIDER = 'The provider (from the body, or the saved default) is not `local`, `gemini`, `openai` or `anthropic`.'
+READ_ONLY = ('This GET creates and changes no domain records: no artifacts, decisions, resource-ledger rows, jobs or '
+             'book changes.')
 
 
 class AnalysisUsage(View):
@@ -66,32 +71,21 @@ class PipelineStage(View):
     note: str = Field(description='Interpretation text. Display only.')
 
 
-class PipelineJobSummary(View):
-    """A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`."""
-    id: str = Field(description='Job ID.')
-    kind: str = Field(description='Job kind, e.g. `pipeline`, `series`, `render`, `listen`, `listen_chapter`, `performance`, '
-                                  '`voice_preview`, or `analyze` for historical jobs of the removed Classic engine.')
-    status: str = Field(description='Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, '
-                                    '`budget_limited`, `quota_limited`.')
-    phase: str | None = Field(default=None, description='Phase of a historical `analyze` job of the removed Classic engine.')
-    progress: int = Field(description='Units completed so far, in kind-specific units (see `Job`); not a percentage.')
-    total: int = Field(description='Units planned, in the same units; 0 when not yet known. May grow while running.')
-    message: str = Field(description='Progress or outcome text. Display only.')
-    error: str | None = Field(description='Failure text, or null. Display only.')
-    created_at: str = Field(description='ISO 8601 UTC.')
-    updated_at: str = Field(description='ISO 8601 UTC.')
-
-
 class PipelineAttempt(View):
     """One recorded analysis HTTP attempt, newest 100 for the book (step pipeline, or the removed Classic engine).
 
-    Fields come from the stored attempt and may be absent on records from
-    older versions. Prompts, responses and credentials are never included.
+    The pipeline inspector lists the newest 100 for the book; the analysis
+    export's `analysis-attempts.json` lists all of them in this same shape.
+    Fields come from the stored attempt through a fixed allowlist and may be
+    absent on records from older versions. Prompts, responses, credentials
+    and server process IDs are never included.
     """
     id: str = Field(description='Attempt ID.')
+    book_id: str | None = Field(default=None, description='Book the attempt was made for.')
     run_id: str | None = Field(default=None, description='Job ID of the run that sent it.')
     stage: str | None = Field(default=None, description='Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records.')
     unit_key: str | None = Field(default=None, description='Opaque cache key of the unit of work.')
+    chapter_id: str | None = Field(default=None, description='Chapter the request was about, when recorded.')
     provider: str | None = Field(default=None, description='Provider ID.')
     model: str | None = Field(default=None, description='Model ID.')
     status: Literal['reserved', 'received', 'uncertain', 'not_sent', 'interrupted_unknown'] | None = Field(
@@ -104,9 +98,23 @@ class PipelineAttempt(View):
     http_status: int | None = Field(default=None, description='Provider HTTP status code. A 200 does not mean the output passed validation.')
     input_tokens: int | None = Field(default=None, description='Reported input tokens; null when not reported.')
     output_tokens: int | None = Field(default=None, description='Reported output tokens; null when not reported.')
+    cached_input_tokens: int | None = Field(default=None, description='Reported cached input tokens; null when not reported.')
+    cache_write_input_tokens: int | None = Field(default=None, description='Reported cache-write input tokens; null when not reported.')
     reserved_input_tokens: int | None = Field(default=None, description='Input allowance reserved before sending (conservative).')
     reserved_output_tokens: int | None = Field(default=None, description='Output allowance reserved before sending.')
     charged_estimate_usd: float | None = Field(default=None, description='Conservative USD estimate for this attempt; null when unknown.')
+    cost_basis: str | None = Field(default=None, description='How `charged_estimate_usd` was made, e.g. `reservation`, '
+                                                            '`usage_estimate_with_guard_uplift`, `not_sent` or `unknown`.')
+    input_rate: float | None = Field(default=None, description='Input price used for the estimate, in USD per million input '
+                                                               'tokens; null when the model has no known price.')
+    output_rate: float | None = Field(default=None, description='Output price used for the estimate, in USD per million output '
+                                                                'tokens; null when the model has no known price. '
+                                                                '`charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + '
+                                                                'output tokens × `output_rate`) / 1,000,000, using reported '
+                                                                'usage when present and the reservation otherwise.')
+    price_as_of: str | None = Field(default=None, description='Date of the price table used for the estimate, or null.')
+    price_source: str | None = Field(default=None, description='URL of the price source used, or null.')
+    elapsed_seconds: float | None = Field(default=None, description='Measured wall time of the request in seconds; null when unknown.')
     input_artifact_id: str | None = Field(default=None, description='Artifact ID of the retained request recipe (`analysis_input`).')
     validation_state: Literal['accepted', 'rejected', 'unknown'] = Field(
         description='From retained events: `accepted` or `rejected` by output validation; `unknown` when no event links it.')
@@ -148,7 +156,7 @@ class PipelineInspector(View):
     schema_version: int = Field(description='Envelope version (currently 1).')
     book_id: str = Field(description='Book ID of the inspected book.')
     stages: list[PipelineStage] = Field(description='Stage cards in pipeline order.')
-    jobs: list[PipelineJobSummary] = Field(description='The book\'s newest 100 jobs, newest first.')
+    jobs: list[Job] = Field(description='The book\'s newest 100 jobs, newest first, as full `Job` objects (the same as `GET /api/jobs?book_id=…`).')
     usage: AnalysisUsage
     attempts: list[PipelineAttempt] = Field(description='The newest 100 analysis attempts, oldest first.')
     events: list[PipelineEvent] = Field(description='The newest 100 analysis events, newest first.')
@@ -220,11 +228,12 @@ class ResourceOperation(View):
     id: str = Field(description='Row ID (32 hex characters): the analysis attempt ID for `analysis_request`, the cache-hit event ID '
                                 'for `cache_reuse`, otherwise the resource-ledger operation ID. Unique within the response.')
     book_id: str = Field(description='Book ID the work was recorded for.')
-    run_id: str | None = Field(default=None, description='Job ID, or null for work outside a job (e.g. imports, searches, exports).')
+    run_id: str | None = Field(default=None, description='Job ID, or null for work outside a job (e.g. imports).')
     stage: str | None = Field(default=None, description='What was measured, e.g. `discovery`, `discovery_validation`, `publication`, '
                                                        '`census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, '
                                                        '`voice_preview`, `voice_design`, `import`, `structure_repair`, '
-                                                       '`metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID.')
+                                                       '`metadata_refresh`, `audio_export`, or a pipeline step ID. `source_search` and '
+                                                       '`analysis_export` rows were recorded by versions before contract 0.2.0 and remain.')
     unit_key: str | None = Field(default=None, description='Opaque unit key (cache key, passage ID, preview ID or census fingerprint).')
     chapter_id: str | None = Field(default=None, description='Chapter the work belongs to, when recorded.')
     provider: str | None = Field(default=None, description='Provider ID (`local` for local work).')
@@ -236,7 +245,6 @@ class ResourceOperation(View):
                     'status was >= 400 or a failure event names it, `unknown` for legacy rows. Other rows: `running`, `completed`, '
                     '`failed`, `interrupted`. Rows left `running`/`reserved` by an earlier server process or a finished job are '
                     'reported `interrupted`.')
-    process_id: str | None = internal('Server process that recorded the row.', default=None)
     created_at: str | None = Field(default=None, description='ISO 8601 UTC start time.')
     completed_at: str | None = Field(default=None, description='ISO 8601 UTC end time; absent while running.')
     request_count: int | None = Field(default=None, description='Provider requests made: 1 for analysis requests, 0 for local/cached '
@@ -278,7 +286,7 @@ class ResourceSummary(View):
     total_operations: int = Field(description='Rows in scope.')
     unmeasured_runs: int = Field(description='Runs with no recorded rows.')
     limit: int = Field(description='Effective page size after clamping to 1–200.')
-    offset: int = Field(description='Effective offset after clamping to >= 0.')
+    offset: int = Field(description='Effective offset after clamping to 0–9007199254740991 (2^53 − 1).')
     price_sources: list[str] = Field(description='Distinct price-source URLs referenced by rows in scope.')
     notes: list[str] = Field(description='Interpretation notes. Display only.')
 
@@ -319,8 +327,8 @@ class ArtifactPage(View):
     items: list[ArtifactSummary] = Field(description='This page of artifact versions matching the filters, newest first (by creation time). '
                                                      'Empty past the end.')
     total: int = Field(description='Versions matching the filters.')
-    offset: int = Field(description='The `offset` parameter as applied (versions skipped).')
-    limit: int = Field(description='The `limit` parameter as applied (maximum page size, 1–200).')
+    offset: int = Field(description='Effective offset (versions skipped) after clamping to 0–9007199254740991 (2^53 − 1).')
+    limit: int = Field(description='Effective page size after clamping to 1–200.')
 
 
 class ArtifactDependencyLink(View):
@@ -357,8 +365,8 @@ class StoryMapScene(View):
     start: int | None = Field(description='Smallest passage start offset, or null when no passage has offsets.')
     end: int | None = Field(description='Largest passage end offset, or null.')
     passage_ids: list[str] = Field(description='Passages in the scene, in order.')
-    character_ids: list[str] = Field(description='Attributed dialogue speakers (excluding narrator/unassigned), sorted. Not proof of '
-                                                 'physical presence.')
+    character_ids: list[str] = Field(description='Attributed dialogue speakers that are cast members (excluding narrator/unassigned), '
+                                                 'sorted. Not proof of physical presence.')
 
 
 class StoryMapChapter(View):
@@ -407,11 +415,11 @@ class StoryMapNode(View):
 class StoryMapEdge(View):
     """A typed graph edge."""
     from_: str = Field(alias='from', description='Source node ID.')
-    to: str = Field(description='Target node ID. An `attributed_speaker` target may name a character node that is absent when '
-                                'the passage names a speaker no longer in the cast.')
+    to: str = Field(description='Target node ID. Every edge ends at a node in `nodes`.')
     type: Literal['contains', 'next', 'attributed_speaker'] = Field(
         description='`contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages '
-                    'of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence).')
+                    'of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence); '
+                    'omitted when the passage names a speaker that is no longer in the cast.')
     order: int | None = Field(default=None, description='`contains` edges: zero-based position within the parent.')
     confidence: float | None = Field(default=None, description='`attributed_speaker` edges: attribution confidence 0–1, or null.')
 
@@ -435,6 +443,22 @@ class StoryMapReference(View):
     model: str | None = Field(description='Model that produced it, or null.')
     profile_description: str | None = Field(default=None, description='`profile_evidence`: the description the model gave with this evidence.')
     profile_direction: str | None = Field(default=None, description='`profile_evidence`: the direction the model gave.')
+    step: Literal['discovery', 'profiles', 'directing'] | None = Field(
+        default=None, description='Analysis step whose accepted version supplied this row; absent or null for '
+                                  'mentions and for rows written by the removed Classic engine.')
+    version_id: str | None = Field(
+        default=None, description='Accepted step-output artifact the row was projected from; absent or null when '
+                                  'there is none (mentions, manual attributions, older rows).')
+    origin: str | None = Field(
+        default=None, description='How the source result came to be: `run`, `baseline` or `external` (from the '
+                                  'step version), `manual` (a hand-edited attribution), `book` (dialogue with no '
+                                  'accepted directing version), `cast_names` (mentions); null when unknown.')
+    projection: int | None = Field(
+        default=None, description='Version of the evidence projection that wrote the row (1). Absent on rows '
+                                  'written by the removed Classic engine.')
+    anchors: int | None = Field(
+        default=None, description='Profiles evidence only: how many exact locations the quotation matched within '
+                                  'the discovery evidence it came from. Every location is listed; none is chosen.')
 
 
 class StoryMapReferenceCounts(View):
@@ -453,7 +477,10 @@ class StoryMap(View):
     nodes: list[StoryMapNode] = Field(description='Graph nodes: one book node, then per chapter its chapter, scene and passage nodes, '
                                                    'then one node per cast member. Unpaginated.')
     edges: list[StoryMapEdge] = Field(description='Graph edges (`contains`, `next`, `attributed_speaker`) between node IDs. Unpaginated.')
-    references: list[StoryMapReference] = Field(description='All saved character references for the book, unpaginated.')
+    references: list[StoryMapReference] = Field(description='All saved character references for the book, unpaginated. '
+                                                             'These are the stored rows as the last pipeline write '
+                                                             'recorded them; `listCharacterReferences` shows the '
+                                                             'projection of the current book.')
     reference_counts: StoryMapReferenceCounts
     note: str = Field(description='Interpretation caveat. Display only.')
 
@@ -474,8 +501,7 @@ class PassageSearchHit(View):
 
 class PassageSearchResult(View):
     """Literal word search over saved passages."""
-    items: list[PassageSearchHit] = Field(description='Matches, strongest first. Same list as `results`.')
-    results: list[PassageSearchHit] = Field(description='Alias of `items` (the documented name).')
+    items: list[PassageSearchHit] = Field(description='Matches, strongest first.')
     available: bool = Field(description='False when this SQLite build lacks FTS5; then there are no results.')
     query: str = Field(description='The `q` parameter as sent.')
     scope: Literal['book', 'earlier'] = Field(description='The effective scope.')
@@ -494,12 +520,11 @@ OPS: list[Op] = [
        'and must not be summed into a global completion percentage. An HTTP 200 attempt does not mean its output '
        'passed validation: use `validation_state`.\n\n'
        'Step cards count the step pipeline\'s accepted, out-of-date (`stale_count`) and waiting (`candidate_count`) '
-       'results, as `GET /api/books/{book_id}/analysis-pipeline` does. Artifact counts include retained versions '
+       'results, as `GET /api/books/{book_id}/analysis-pipeline` does: outside changes are taken into account as the '
+       'next pipeline write would record them, but nothing is recorded. Artifact counts include retained versions '
        'from the removed Classic engine.\n\n'
-       '**This GET writes.** Like the pipeline overview, it first records outside changes as `baseline` or '
-       '`external` step versions (see `GET /api/books/{book_id}/analysis-pipeline`). The first inspection of a book '
-       'in a server process also retains legacy data as artifacts (marked `legacy_provenance`). No provider is '
-       'contacted, and the book itself is not changed.',
+       'No provider is contacted. ' + READ_ONLY + ' Legacy data from versions before artifacts existed is retained as '
+       'artifacts (marked `legacy_provenance`) once, when the server starts, not by this request.',
        response=PipelineInspector, errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
 
     op('GET', '/api/books/{book_id}/resources', 'getBookResourceUsage', 'Inspection',
@@ -509,19 +534,20 @@ OPS: list[Op] = [
        'book/run scope, `totals`, stage aggregates and run aggregates; a page of `operations`, '
        '`total_operations` and the effective `limit`/`offset`; `total_runs`, unmeasured-run counts, price-source '
        'URLs and interpretation notes.\n\n'
-       '`limit` and `offset` are clamped (to 1–200 and at least 0), unlike the artifact endpoint\'s strict '
-       'out-of-range rejection. Aggregates cover the entire selected scope, not just the current page. The run '
-       'summary list is bounded to 100; the total run count is reported separately.\n\n'
+       '`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1), as for every paged operation. Aggregates cover '
+       'the entire selected scope, not just the current page. The run summary list is bounded to 100; the total '
+       'run count is reported separately.\n\n'
        'Operations distinguish request count, reported tokens and cache tokens, retained estimates and '
        'reservations, elapsed time, opted-in local Python thread CPU time, audio seconds, output bytes and cache '
        'reuse. Missing measurements stay null (unknown) and are accompanied by coverage counters. Historical runs '
        'can exist without measurements. Costs are dated estimates, not provider invoices or available credits. '
        'CPU excludes subprocesses, GPUs and remote machines. Cached work does not represent another provider '
-       'call. Never contacts a provider or backfills guessed usage.',
+       'call. Reads (GET requests, including searches and the analysis export) are not recorded. Never contacts '
+       'a provider or backfills guessed usage. ' + READ_ONLY,
        response=ResourceSummary, errors={404: BOOK_404},
        params={'book_id': BOOK_ID,
                'limit': 'Page size for `operations`; default 100, clamped to 1–200.',
-               'offset': 'Rows to skip in `operations`; default 0, negative values become 0.',
+               'offset': 'Rows to skip in `operations`; default 0, clamped to 0–9007199254740991 (2^53 − 1).',
                'run_id': 'Only rows (and the run) with this job ID. Optional.'}),
 
     op('GET', '/api/books/{book_id}/artifacts', 'listBookArtifacts', 'Inspection',
@@ -530,53 +556,57 @@ OPS: list[Op] = [
        'not included; fetch one version for its payload. Artifact metadata includes kind, logical key, stage, '
        'creation time, provider/model where recorded, `is_current`, schema version and legacy-provenance state. '
        'Historical or rejected outputs remain inspectable without becoming accepted knowledge.\n\n'
-       'The first artifact request for a book in a server process retains legacy data as artifacts (marked '
-       '`legacy_provenance`). No provider is contacted.',
+       '`limit` and `offset` are clamped (to 1–200 and 0–2^53 − 1); an offset past the end returns an empty page. '
+       'No provider is contacted. ' + READ_ONLY + ' Legacy data is retained as artifacts (marked '
+       '`legacy_provenance`) once, when the server starts.',
        response=ArtifactPage,
-       errors={404: BOOK_404, 400: '`limit` is outside 1–200 or `offset` is negative.'},
+       errors={404: BOOK_404},
        params={'book_id': BOOK_ID,
                'kind': 'Only this artifact kind (exact match). Optional.',
                'stage': 'Only this artifact stage (exact match). Optional.',
                'current': '`true` for current selections only, `false` for non-current versions only; omit for all versions.',
-               'limit': 'Page size; default 30, must be 1–200.',
-               'offset': 'Versions to skip; default 0, must be nonnegative.'}),
+               'limit': 'Page size; default 30, clamped to 1–200.',
+               'offset': 'Versions to skip; default 0, clamped to 0–9007199254740991 (2^53 − 1).'}),
 
     op('GET', '/api/books/{book_id}/artifacts/{artifact_id}', 'getBookArtifact', 'Inspection',
        'Get one artifact version with its payload',
        'Metadata plus the literal `payload`, dependency IDs, and `dependency_links: [{id, book_id}]`. An artifact '
        'owned by another book returns 404 under this book\'s path: follow the recorded owner in '
-       '`dependency_links` to inspect earlier-book inputs. Has the same one-time legacy retention as the list. '
-       'No provider is contacted.',
+       '`dependency_links` to inspect earlier-book inputs. No provider is contacted. ' + READ_ONLY,
        response=ArtifactDetail,
-       errors={404: 'No book has this ID, or this book owns no artifact with this ID (including artifacts owned by another book).'},
+       errors={404: {**BOOK_404,
+                     'artifact_not_found': 'This book owns no artifact with this ID (including an artifact owned by '
+                                           'another book).'}},
        params={'book_id': BOOK_ID, 'artifact_id': 'Artifact version ID, from a list, a dependency or an event.'}),
 
     op('GET', '/api/books/{book_id}/story-map', 'getStoryMap', 'Inspection',
        'Get the story map graph',
        'Versioned typed nodes and edges, chapters/scenes/passages, character IDs, source references and counts, and '
-       'notes about interpretation. Node identities include the owning book. Verified source anchors refer to '
-       'retained source artifacts; unavailable or unverified anchors remain null. Scene characters are attributed '
-       'speakers, not verified physical presence; mentions and profile evidence remain separate references; scene '
-       'boundaries may be local drafts.\n\n'
-       'The response is unpaginated and grows with the book (every passage is a node). Has the same one-time legacy '
-       'retention as the artifact list. No provider is contacted.',
+       'notes about interpretation. Node identities include the owning book, and every edge ends at a node. '
+       'Verified source anchors refer to retained source artifacts; unavailable or unverified anchors remain null. '
+       'Scene characters are attributed speakers, not verified physical presence; mentions and profile evidence '
+       'remain separate references; scene boundaries may be local drafts. A dialogue passage whose speaker ID is no '
+       'longer in the cast has no `attributed_speaker` edge and adds no scene character.\n\n'
+       'The response is unpaginated and grows with the book (every passage is a node). No provider is contacted. '
+       + READ_ONLY,
        response=StoryMap, errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
 
     op('GET', '/api/books/{book_id}/search', 'searchBookPassages', 'Inspection',
        'Search passages by words',
-       '`{available, query, scope, results, note, items}`. Each result identifies book, chapter and passage, the exact '
-       'source text, range and chapter hash, and lexical rank. `items` remains as an alias of `results` in the '
-       'current response.\n\n'
+       '`{available, query, scope, items, note}`. Each item identifies book, chapter and passage, the exact '
+       'source text, range and chapter hash, and lexical rank.\n\n'
        'Search words (runs of letters, digits and underscores) are combined with AND; this is not an exact-phrase or '
        'operator query language, or semantic embedding search. A query with no words returns no matches with a '
        'note. If SQLite lacks FTS5, `available: false` explains that limitation; it does not start a fallback model '
        'call. Lower lexical rank means a stronger text match, not identity or speaker confidence. Only passages '
        'whose text matches their source offsets are searchable.\n\n'
-       'Builds or refreshes a local full-text index for each searched book when its passages changed, and records a '
-       '`source_search` resource operation. No provider is contacted.',
+       'No provider is contacted. ' + READ_ONLY + ' It may write one disposable derived cache: a local full-text '
+       'index of each searched book\'s passages, refreshed when the passages changed. The index can be deleted '
+       'without loss and is rebuilt on demand.',
        response=PassageSearchResult,
        errors={404: BOOK_404,
-               400: '`q` is empty, whitespace-only or longer than 300 characters, or `scope` is not `book` or `earlier`.'},
+               400: {'search_query_invalid': '`q` is empty, whitespace-only or longer than 300 characters.',
+                     'search_scope_invalid': '`scope` is not `book` or `earlier`.'}},
        params={'book_id': BOOK_ID,
                'q': 'Search text, 1–300 characters. Required.',
                'scope': '`book` (default) searches this book. `earlier` also searches strictly earlier active (not archived) '
@@ -592,7 +622,7 @@ OPS: list[Op] = [
        'reduced to word characters, spaces, dots and hyphens, at most 80 characters; `book` if empty).\n\n'
        'Contents:\n\n'
        '| File | Content |\n| --- | --- |\n'
-       '| `manifest.json` | `{schema_version: 1, format: "spintails-analysis", exported_at, book_id, artifact_count, '
+       '| `manifest.json` | `{schema_version: 2, format: "spintails-analysis", exported_at, book_id, artifact_count, '
        'external_book_dependencies, audio_files_included: false, source_text_included: true, word_alignment: false, '
        'coordinate_system, notes}`. Start here. |\n'
        '| `README.txt` | Plain-text guide to the bundle. |\n'
@@ -602,7 +632,9 @@ OPS: list[Op] = [
        '| `series.json` | `{membership, links, series_characters}` for the book\'s series (nulls/empty when none). |\n'
        '| `observations.json` | Retained character observations of the book. |\n'
        '| `references.json` | Saved character references (as in the story map). |\n'
-       '| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, as stored. |\n'
+       '| `analysis-attempts.json` | Every recorded analysis HTTP attempt of the book, oldest first, each in the '
+       '`PipelineAttempt` shape of `GET /api/books/{book_id}/pipeline` (the same field allowlist, with '
+       '`validation_state`). |\n'
        '| `artifacts.jsonl` | One artifact per line, as `GET …/artifacts/{artifact_id}` returns it (metadata, '
        '`dependency_links`, `payload`), oldest first. |\n'
        '| `pipeline-events.jsonl` | Every analysis event of the book, one per line, oldest first. |\n'
@@ -614,8 +646,8 @@ OPS: list[Op] = [
        'simple-listening WAVs and voice-preview audio), API keys and settings credentials. Voice-preview records are '
        'not included. Some legacy outputs lack original prompts or exact attempt provenance; the export marks that '
        'absence (`legacy_provenance`) rather than reconstructing it.\n\n'
-       'Retains legacy data as artifacts on first use in a server process and records an `analysis_export` resource '
-       'operation. No provider is contacted. For audio, use the audiobook export (`GET /api/books/{book_id}/export`).',
+       'No provider is contacted. ' + READ_ONLY + ' For audio, use the audiobook export '
+       '(`GET /api/books/{book_id}/export`).',
        media='application/zip', ranges=True, response_description='The analysis bundle as a ZIP attachment.',
        errors={404: BOOK_404}, params={'book_id': BOOK_ID}),
 ]
