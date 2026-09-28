@@ -104,7 +104,7 @@ def _payload_bytes(conn, book_id):
                          ('character_observations', 'body'), ('analysis_units', 'body'), ('analysis_attempts', 'body'),
                          ('book_preprocessing', 'body'), ('pipeline_events', 'body'), ('artifact_versions', 'payload'),
                          ('book_covers', 'body'), ('resource_operations', 'body'), ('listening_sessions', 'body'),
-                         ('listening_takes', 'body'), ('voice_preview_requests', 'body'), ('voice_preview_takes', 'body')):
+                         ('listening_takes', 'body'), ('listening_chunks', 'body'), ('voice_preview_requests', 'body'), ('voice_preview_takes', 'body')):
         if table in tables:
             total += conn.execute(f'SELECT COALESCE(SUM(length(CAST({field} AS BLOB))),0) FROM {table} WHERE book_id=?',
                                   (book_id,)).fetchone()[0]

@@ -49,6 +49,24 @@ class AudioError(ValueError):
     """A safe, user-facing rendering or audio validation error."""
 
 
+class RateLimited(AudioError):
+    """Gemini rejected a request with HTTP 429; nothing was generated.
+
+    ``scope`` is ``day`` when the daily request quota is exhausted, otherwise
+    ``minute`` or ``unknown``. Retrying a rejection is safe; retrying an
+    uncertain request (timeout, connection loss) is not.
+    """
+
+    def __init__(self, message: str, scope: str, retry_after: float):
+        super().__init__(message)
+        self.scope = scope
+        self.retry_after = retry_after
+
+
+class UncertainRequest(AudioError):
+    """The request may have been processed and billed; never resend it automatically."""
+
+
 def _run(command: list[str], *, timeout: float, label: str) -> subprocess.CompletedProcess:
     """Never include input text, process stderr, or a credential in errors."""
     try:
@@ -296,25 +314,40 @@ def _extract_gemini_audio(response: dict, model: str) -> bytes:
     raise AudioError("Gemini returned an unsupported or corrupt audio format.")
 
 
-def _generate_gemini(recipe: dict, api_key: str | None) -> bytes:
+def _generate_gemini(recipe: dict, api_key: str | None, *, timeout: float | None = None, pace: bool = True) -> bytes:
     from .resources import publish_metrics, tts_usage
+    from .tts_limits import LIMITER, classify_rate_limit, estimate_input_tokens
     publish_metrics(request_count=0, estimated_cost_usd=0., cost_basis='no_provider_request')
     if not api_key or not api_key.strip():
         raise AudioError("Add a Gemini API key in Settings before generating cloud narration.")
+    if pace:
+        # Callers that schedule their own sends (chapter chunks) reserve first.
+        LIMITER.acquire(recipe["model"], estimate_input_tokens(recipe["text"]))
     publish_metrics(request_count=1, estimated_cost_usd=None, cost_basis='unknown')
     try:
         response = httpx.post(
             _GEMINI_URL,
             headers={"x-goog-api-key": api_key.strip(), "Content-Type": "application/json"},
             json=_gemini_payload(recipe),
-            timeout=httpx.Timeout(240.0, connect=20.0),
+            timeout=httpx.Timeout(max(240.0, timeout or 0.0), connect=20.0),
             follow_redirects=False,
         )
     except httpx.TimeoutException:
-        raise AudioError("Gemini narration timed out. Try again with a shorter passage.") from None
-    except httpx.RequestError:
+        raise UncertainRequest("Gemini narration timed out. The request may still have been processed, so it was not resent.") from None
+    except httpx.ConnectError:
         raise AudioError("Could not reach Gemini. Check the network connection and try again.") from None
+    except httpx.RequestError:
+        raise UncertainRequest("The connection to Gemini failed during the request. It may have been processed, so it was not resent.") from None
     publish_metrics(http_status=response.status_code)
+    if response.status_code == 429:
+        from .tts_limits import seconds_until_reset
+        scope, retry_after = classify_rate_limit(response)
+        LIMITER.cool_down(recipe["model"], retry_after)
+        if scope == 'day':
+            LIMITER.block_day(recipe["model"], seconds_until_reset())
+        detail = ("The daily request quota for this model is used up; it resets at midnight Pacific time."
+                  if scope == 'day' else "The project reached its quota or rate limit; retry later.")
+        raise RateLimited(f"Gemini returned HTTP 429. {detail}", scope, retry_after)
     if response.status_code >= 400:
         hints = {
             400: "Check the model, voice, and passage length.",
@@ -386,8 +419,13 @@ def validate_audio(path: Path) -> float:
 def synthesize(
     segment: dict, character: dict, scene: dict, provider: str,
     model: str | None, api_key: str | None, output_path: Path,
+    *, timeout: float | None = None, pace: bool = True,
 ) -> dict:
-    """Render a take and atomically publish validated, normalized WAV audio."""
+    """Render a take and atomically publish validated, normalized WAV audio.
+
+    ``timeout`` extends the provider read timeout for long multi-passage takes;
+    ``pace=False`` is for callers that already reserved a rate-limit slot.
+    """
     recipe = _recipe(segment, character, scene, provider, model)
     actual_voice = recipe["voice"]
     resource_usage = None
@@ -404,11 +442,11 @@ def synthesize(
             source = temporary / "source.aiff"
             transcript = temporary / "transcript.txt"
             transcript.write_text(recipe["text"], encoding="utf-8")
-            _run([say, "-v", actual_voice, "-o", str(source), "-f", str(transcript)], timeout=240, label="System narration")
+            _run([say, "-v", actual_voice, "-o", str(source), "-f", str(transcript)], timeout=max(240, timeout or 0), label="System narration")
             _normalize(source, normalized_path)
         else:
             source = temporary / "source.wav"
-            data = _generate_gemini(recipe, api_key)
+            data = _generate_gemini(recipe, api_key, timeout=timeout, pace=pace)
             resource_usage = getattr(data, 'resource_usage', None)
             source.write_bytes(data)
             channels, width, rate, _ = _wave_info(source)

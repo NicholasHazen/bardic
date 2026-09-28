@@ -63,7 +63,7 @@ The explorer includes stage/type/current/history filters, paginated artifact ins
 - `artifacts.jsonl`: every retained version for this book plus transitive input artifacts from other books.
 - `observations.json`, `references.json`, `series.json`: append-only observations, current references and explicit identity mappings.
 - `analysis-attempts.json`, `pipeline-events.jsonl`: usage and execution/validation history.
-- `resource-operations.json`, `listening-sessions.json`, `listening-takes.json`: per-book operation and simple-listening metadata when those tables exist; these do not include the simple audio files.
+- `resource-operations.json`, `listening-sessions.json`, `listening-takes.json`, `listening-chunks.json`: per-book operation and simple-listening metadata when those tables exist; these do not include the simple audio files.
 
 No narration is required. The bundle excludes credentials and audio binaries; the separate audiobook export includes current playable takes. There is no bundle import/restore UI yet. Consumers can use the documented JSON directly, and the standalone source/graph remains usable if providers change.
 

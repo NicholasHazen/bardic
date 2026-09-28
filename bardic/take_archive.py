@@ -22,13 +22,15 @@ def _content_hash(path: Path) -> str:
 def produce_take(
     segment: dict, character: dict, scene: dict, provider: str,
     model: str | None, api_key: str | None, audio_dir: Path,
-    *, synthesizer: Callable | None = None,
+    *, synthesizer: Callable | None = None, accept: Callable | None = None,
 ) -> dict:
     """Render and return metadata for a validated, immutable WAV asset.
 
     This deliberately has no cache/force policy or database writes. Even on a
     failed retry, existing assets and legacy recipe-named WAVs stay untouched.
     ``synthesizer`` is injectable so callers can retain their provider boundary.
+    ``accept(path, metadata)`` may inspect the validated temporary WAV and raise
+    to reject it (for example truncated output) before any asset is published.
     """
     audio_dir = Path(audio_dir)
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +42,8 @@ def produce_take(
         if not isinstance(metadata, dict) or metadata.get("fingerprint") != expected:
             raise AudioError("The generated take does not match its render recipe.")
         duration = validate_audio(temporary)
+        if accept is not None:
+            metadata = {**metadata, **(accept(temporary, {**metadata, "duration": duration}) or {})}
         asset_id = _content_hash(temporary)
         target = audio_dir / f"{asset_id}.wav"
         # The temporary lives on the same filesystem. link() atomically creates

@@ -2539,3 +2539,15 @@ textarea {
 .voice-preview-panel small { font-size:10px; color:#667461; }
 #voice-preview-text { font-family:Georgia,serif; font-size:16px; max-width:850px; }
 @media(max-width:760px) { .voice-preview-panel { left:0; bottom:105px; padding:14px 18px; max-height:220px; } .player-settings-link { font-size:8px; } }
+.narration-limits .limit-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px 14px;
+  margin:10px 0 6px;
+}
+.narration-limits .limit-grid input,.narration-limits .limit-grid select {
+  width:100%;
+}
+@media (max-width:640px) {
+  .narration-limits .limit-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}

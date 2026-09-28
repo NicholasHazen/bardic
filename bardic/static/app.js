@@ -65,6 +65,7 @@ function fillSettings() {
   $('#settings-analysis-provider').value = state.status?.analysis_provider || 'local';
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
   $('#tts-model').value = state.status?.tts_model || '';
+  fillNarrationLimits();
   for (const provider of cloudProviders) {
     const info = analysisProvider(provider);
     fillProviderModels(provider, {
@@ -72,6 +73,22 @@ function fillSettings() {
       preprocess: state.status?.preprocess_models_by_provider?.[provider] || '',
     });
   }
+}
+function fillNarrationLimits() {
+  const limits = state.status?.tts_limits?.[$('#tts-model').value] || {rpm:10,tpm:10000,rpd:100};
+  const chunking = state.status?.listen_chunking || {ramp_seconds:[30,60],target_seconds:420,concurrency:2};
+  $('#tts-rpm').value = limits.rpm; $('#tts-tpm').value = limits.tpm; $('#tts-rpd').value = limits.rpd;
+  $('#tts-concurrency').value = String(chunking.concurrency);
+  $('#tts-ramp').value = (chunking.ramp_seconds || []).join(', ');
+  $('#tts-target').value = chunking.target_seconds;
+}
+function narrationLimitValues() {
+  const text = $('#tts-ramp').value.trim();
+  const ramp = text ? text.split(/[,\s]+/).filter(Boolean).map(Number) : [];
+  if (ramp.some(value => !Number.isFinite(value) || value < 10 || value > 470) || ramp.length > 6) throw new Error('Quick-start steps must be up to six numbers from 10 to 470 seconds, separated by commas.');
+  const whole = id => Number($(id).value);
+  return {tts_limits:{[$('#tts-model').value.trim()]:{rpm:whole('#tts-rpm'),tpm:whole('#tts-tpm'),rpd:whole('#tts-rpd')}},
+    listen_chunking:{ramp_seconds:ramp,target_seconds:whole('#tts-target'),concurrency:whole('#tts-concurrency')}};
 }
 function modelPicker(role, provider) { return providerField(`${role}-model`, provider); }
 function modelCustom(role, provider) { return $(`#${modelPicker(role, provider).id}-custom`); }
@@ -213,7 +230,7 @@ async function checkAccounts(providers) {
 }
 function saveProgress() {
   if (!state.book) return;
-  const time = state.audioSegmentId === state.segmentId && Number.isFinite(audio.currentTime) ? audio.currentTime : state.pendingOffset || 0;
+  const time = state.audioSegmentId === state.segmentId && Number.isFinite(audio.currentTime) ? passageTime() : state.pendingOffset || 0;
   safeWrite(progressKey(), {chapterId:state.chapterId, segmentId:state.segmentId, currentTime:time});
   safeWrite('bardic:lastBook', state.book.id);
 }
@@ -307,12 +324,19 @@ function updateListeningBuffer() {
   if (!state.book || state.voicePreview || !simpleActive() || audio.paused || preparingListen) return;
   const segment = segmentById(state.segmentId);
   if (!segment) return;
-  window.BardicListen?.updatePlayback?.(state.book, segment, {playbackRate:audio.playbackRate, currentTime:audio.currentTime || 0});
+  window.BardicListen?.updatePlayback?.(state.book, segment, {playbackRate:audio.playbackRate, currentTime:passageTime()});
   // Warm only the next two locally generated files. Fetching these URLs cannot
-  // start synthesis and never crosses a chapter or narrator selection.
+  // start synthesis and never crosses a chapter or narrator selection. Chunk
+  // clips share one file, so look ahead for the next two different files.
   const segments = chapterSegments();
   const index = segments.findIndex(item => item.id === segment.id);
-  const urls = new Set(segments.slice(index + 1, index + 3).map(item => listeningAudio(item)?.url).filter(Boolean));
+  const urls = new Set();
+  for (const item of segments.slice(index + 1)) {
+    const url = listeningAudio(item)?.url;
+    if (!url) break;
+    if (url !== audio.getAttribute('src')) urls.add(url);
+    if (urls.size >= 2) break;
+  }
   for (const [url, media] of listeningPreloads) {
     if (!urls.has(url)) { media.removeAttribute('src'); media.load(); listeningPreloads.delete(url); }
   }
@@ -321,6 +345,56 @@ function updateListeningBuffer() {
       const media = new Audio(); media.preload = 'auto'; media.src = url;
       listeningPreloads.set(url, media); media.load();
     }
+  }
+}
+// A chunk WAV holds consecutive passages; each passage's audio names its clip
+// inside that file. Single-passage takes have no clip and start at zero.
+function clipStart(media) { const value = Number(media?.clip_start); return Number.isFinite(value) && value > 0 ? value : 0; }
+function clipEnd(media) { const value = Number(media?.clip_end); return Number.isFinite(value) && value > 0 ? value : null; }
+function playingMedia() { return state.audioSegmentId ? listeningAudio(segmentById(state.audioSegmentId)) : null; }
+function passageTime() {
+  const media = playingMedia();
+  const time = Number(audio.currentTime) || 0;
+  return media && audio.getAttribute('src') === media.url ? Math.max(0, time - clipStart(media)) : time;
+}
+function passageDuration(segment) {
+  const media = listeningAudio(segment);
+  if (clipEnd(media) !== null) return clipEnd(media) - clipStart(media);
+  return state.audioSegmentId === segment?.id && Number.isFinite(audio.duration) ? audio.duration : media?.duration || 0;
+}
+function followClip() {
+  // Move the highlight across contiguous clips without reloading or pausing.
+  if (state.voicePreview || previewEnhanced || !simpleActive() || audio.paused || preparingListen) return;
+  let media = playingMedia(), end = clipEnd(media);
+  if (end === null || state.audioSegmentId !== state.segmentId || (Number(audio.currentTime) || 0) < end - .02) return;
+  const segments = orderedSegments();
+  let moved = false;
+  while (end !== null && (Number(audio.currentTime) || 0) >= end - .02) {
+    const index = segments.findIndex(item => item.id === state.segmentId);
+    const next = segments[index + 1];
+    const nextMedia = next && window.BardicListen?.allowsAdvance(state.book, segments[index], next) ? listeningAudio(next) : null;
+    if (!nextMedia || nextMedia.url !== audio.getAttribute('src') || Math.abs(clipStart(nextMedia) - end) > .05) {
+      // The next passage is elsewhere; finish this clip like a file end.
+      if (!Number.isFinite(audio.duration) || end < audio.duration - .05) { audio.pause(); void finishClip(); }
+      break;
+    }
+    state.segmentId = next.id; state.audioSegmentId = next.id; moved = true;
+    media = nextMedia; end = clipEnd(media);
+  }
+  if (moved) { updateHighlight({scroll:true}); saveProgress(); }
+}
+async function finishClip() {
+  if (state.voicePreview) { window.BardicVoicePreview?.stop(); return; }
+  if (preparingListen || !state.audioSegmentId || state.audioSegmentId !== state.segmentId) return;
+  if (previewEnhanced) { stopAudio({clear:true}); renderReader(); saveProgress(); return; }
+  const segments = orderedSegments();
+  const index = segments.findIndex(segment => segment.id === state.segmentId);
+  if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.BardicListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
+    await moveSegment(1,true,true);
+  } else {
+    window.BardicListen?.stop(state.book); clearListeningPreloads();
+    updatePlayer(); saveProgress();
+    toast(simpleActive() ? 'Chapter complete. Choose the next chapter when you are ready.' : 'The end. A good place to linger.');
   }
 }
 function reportPlaybackIssue(event, details = {}) {
@@ -422,7 +496,8 @@ function renderBook() {
 }
 function renderReader() {
   window.BardicListen?.render($('#simple-listen'), state.book, {
-    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, playbackRate:audio.playbackRate, busy:Boolean(busyJob()),
+    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, playbackRate:audio.playbackRate, busy:Boolean(busyJob() && busyJob().kind !== 'listen_chapter'),
+    onSettings:status => { state.status = status; },
     playing:!audio.paused && !state.voicePreview, preparing:preparingListen, previewing:Boolean(state.voicePreview),
     onChange:() => { renderReader(); updatePlayer(); },
     onStop:() => { stopAudio({clear:true}); previewEnhanced = false; },
@@ -456,12 +531,15 @@ function renderReader() {
   $('.chapter-ornament').hidden = sourceHasHeading;
   let cursor = 0;
   let content = '';
+  const marks = window.BardicListen?.chapterMarks?.(state.book, chapter.id) || new Map();
   for (const segment of segments) {
     // Match stored source text, not code-point offsets: JavaScript uses UTF-16 indices.
     const match = chapter.text.indexOf(segment.text, cursor);
     const leading = segment.leading_text ?? (match >= cursor ? chapter.text.substring(cursor, match) : '');
     content += escapeHTML(leading);
-    content += `<span class="passage ${sourceHasHeading && segment === segments[0] ? 'source-chapter-title' : ''} ${listeningReady(segment) ? 'rendered' : 'unrendered'} ${state.segmentId === segment.id ? 'active' : ''}" data-segment="${escapeHTML(segment.id)}" tabindex="0" role="button" aria-label="${escapeHTML(`${listeningReady(segment) ? 'Play' : 'Select'} passage, ${characterById(segment.speaker_id)?.name || 'Narrator'}: ${segment.text}`)}" ${state.segmentId === segment.id ? 'aria-current="true"' : ''}>${escapeHTML(segment.text)}</span>`;
+    const mark = marks.get(segment.id);
+    const markClass = !mark ? '' : mark.status === 'ready' ? `listen-ready listen-chunk-${mark.chunk}${mark.start ? ' listen-chunk-start' : ''}` : `listen-${mark.status}`;
+    content += `<span class="passage ${sourceHasHeading && segment === segments[0] ? 'source-chapter-title' : ''} ${listeningReady(segment) ? 'rendered' : 'unrendered'} ${markClass} ${state.segmentId === segment.id ? 'active' : ''}" data-segment="${escapeHTML(segment.id)}" tabindex="0" role="button" aria-label="${escapeHTML(`${listeningReady(segment) ? 'Play' : 'Select'} passage, ${characterById(segment.speaker_id)?.name || 'Narrator'}: ${segment.text}`)}" ${state.segmentId === segment.id ? 'aria-current="true"' : ''}>${escapeHTML(segment.text)}</span>`;
     if (match >= cursor) cursor = match + segment.text.length;
   }
   content += escapeHTML(chapter.trailing_text ?? chapter.text.substring(cursor));
@@ -470,7 +548,8 @@ function renderReader() {
   $('#previous-chapter').disabled = chapterIndex === 0;
   $('#next-chapter').disabled = chapterIndex === state.book.chapters.length - 1;
   const ready = segments.filter(listeningReady).length;
-  $('#reader-hint').textContent = simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Create a narration in the studio, then press play to follow each passage.';
+  const chunkedListening = simpleActive() && window.BardicListen?.getSelection?.(state.book)?.provider === 'gemini';
+  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Create a narration in the studio, then press play to follow each passage.';
   renderPassageDetail();
 }
 function renderPassageDetail() {
@@ -672,12 +751,12 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
       const settled = await window.BardicVoicePreview?.waitForStopped?.();
       if (settled === false || playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId) return;
       const listen = window.BardicListen;
-      selectedAudio = await (listen.prepare ? listen.prepare(state.book, segment, {playbackRate:audio.playbackRate, offset}) : listen.ensure(state.book, segment));
+      selectedAudio = await (listen.prepare ? listen.prepare(state.book, segment, {playbackRate:audio.playbackRate, offset, continuation}) : listen.ensure(state.book, segment));
     }
     catch (error) { selectedAudio = null; if (playToken === playGeneration) toast(error.message, true); }
     if (playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId || state.segmentId !== id) return;
     preparingListen = false;
-    if (!selectedAudio) { updatePlayer(); return; }
+    if (!selectedAudio) { updatePlayer(); renderReader(); return; }
     renderReader();
   }
   if (!selectedAudio?.url) {
@@ -687,13 +766,16 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
     if (!simple) toast(segment.audio ? 'This take is out of date. Regenerate it in the studio.' : 'This passage is not narrated yet. Open the studio to give it a voice.');
     return;
   }
-  if (state.audioSegmentId !== id || audio.getAttribute('src') !== selectedAudio.url) {
+  if (audio.getAttribute('src') !== selectedAudio.url) {
     state.audioSegmentId = id;
     state.pendingOffset = offset;
     audio.src = selectedAudio.url;
     audio.load();
-  } else if (Number.isFinite(audio.duration)) {
-    audio.currentTime = Math.min(offset, Math.max(0, audio.duration - .01));
+  } else {
+    // Same file (a repeated take or another clip of this chunk): seek only.
+    state.audioSegmentId = id;
+    if (Number.isFinite(audio.duration)) audio.currentTime = Math.min(clipStart(selectedAudio) + offset, Math.max(0, audio.duration - .01));
+    else state.pendingOffset = offset;
   }
   if (autoplay) {
     try { await audio.play(); }
@@ -732,7 +814,7 @@ async function togglePlayback() {
   const segment = segmentById(state.segmentId) || chapterSegments()[0];
   if (!segment) return;
   const offset = state.audioSegmentId === segment.id && audio.getAttribute('src') === listeningAudio(segment)?.url
-    ? audio.currentTime || 0 : state.pendingOffset;
+    ? passageTime() : state.pendingOffset;
   await startSegment(segment.id, {offset});
 }
 function orderedSegments() {
@@ -786,8 +868,8 @@ function updatePlayer() {
   const narrator = window.BardicListen?.getSelection?.(state.book);
   const voiceLabel = simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
   $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
-  const duration = state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration) ? audio.duration : listeningAudio(segment)?.duration || 0;
-  const elapsed = state.audioSegmentId === state.segmentId ? audio.currentTime || 0 : state.pendingOffset || 0;
+  const duration = passageDuration(segment);
+  const elapsed = state.audioSegmentId === state.segmentId ? passageTime() : state.pendingOffset || 0;
   $('#elapsed').textContent = formatTime(elapsed);
   $('#duration').textContent = formatTime(duration);
   $('#audio-progress').max = duration || 1;
@@ -816,8 +898,8 @@ function renderJob() {
   if (!job) { banner.hidden = true; updateBusyControls(); return; }
   const active = ['running','queued'].includes(job.status);
   banner.hidden = false;
-  banner.classList.toggle('failed', ['failed','interrupted','budget_limited'].includes(job.status));
-  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' ? 'Analyzing the story' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained'};
+  banner.classList.toggle('failed', ['failed','interrupted','budget_limited','quota_limited'].includes(job.status));
+  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
   banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job aria-label="Dismiss job status">${icon('close')}</button>`}`;
   updateBusyControls();
   renderProduction();
@@ -1038,14 +1120,16 @@ $('#settings-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (state.settingsBusy) return;
   state.settingsBusy = true; updateSettingsControls(); $('#settings-error').hidden = true;
-  const values = {tts_model:$('#tts-model').value.trim(),analysis_provider:$('#settings-analysis-provider').value,analysis_models_by_provider:{},preprocess_models_by_provider:{},api_keys:{}};
+  let values;
+  try { values = {tts_model:$('#tts-model').value.trim(),analysis_provider:$('#settings-analysis-provider').value,analysis_models_by_provider:{},preprocess_models_by_provider:{},api_keys:{},...narrationLimitValues()}; }
+  catch (error) { showInlineError('#settings-error', error.message); state.settingsBusy = false; updateSettingsControls(); return; }
   for (const provider of cloudProviders) {
     values.analysis_models_by_provider[provider] = modelValue('analysis', provider);
     values.preprocess_models_by_provider[provider] = modelValue('preprocess', provider);
     const key = providerField('api-key', provider).value.trim();
     if (key) values.api_keys[provider] = key;
   }
-  try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); if (state.book) renderCast(); $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
+  try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved. Your studio is ready.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
 });
 $$('[data-clear-key]').forEach(button => button.addEventListener('click', async () => {
   const provider = button.dataset.clearKey;
@@ -1058,6 +1142,7 @@ $$('[data-clear-key]').forEach(button => button.addEventListener('click', async 
 }));
 $$('[data-check-account]').forEach(button => button.addEventListener('click', () => checkAccounts([button.dataset.checkAccount])));
 $('#check-all-accounts').addEventListener('click', () => checkAccounts(cloudProviders));
+$('#tts-model').addEventListener('change', fillNarrationLimits);
 cloudProviders.forEach(provider => {
   providerField('api-key', provider).addEventListener('input', () => renderAccountCheck(provider));
   for (const role of ['analysis','preprocess']) {
@@ -1083,31 +1168,22 @@ $('#playback-speed').addEventListener('change', event => setPlaybackRate(event.t
 $('#audio-progress').addEventListener('input', event => {
   const time = Number(event.target.value);
   if (state.voicePreview) { if (state.voicePreview.audio && Number.isFinite(audio.duration)) audio.currentTime = time; updatePlayer(); return; }
-  if (state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration)) { audio.currentTime = time; saveProgress(); }
+  if (state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration)) { audio.currentTime = clipStart(playingMedia()) + time; saveProgress(); }
   else if (listeningReady(segmentById(state.segmentId))) { state.pendingOffset = time; startSegment(state.segmentId,{autoplay:false,offset:time}); }
   updatePlayer();
 });
-audio.addEventListener('loadedmetadata', () => { if (!state.voicePreview && state.pendingOffset > 0) { audio.currentTime = Math.min(state.pendingOffset, Math.max(0,audio.duration - .01)); state.pendingOffset = 0; } updatePlayer(); });
-audio.addEventListener('timeupdate', () => { updatePlayer(); updateListeningBuffer(); if (Date.now() - state.lastSave > 1000) { saveProgress(); state.lastSave = Date.now(); } });
+audio.addEventListener('loadedmetadata', () => {
+  const start = state.voicePreview ? 0 : clipStart(playingMedia());
+  if (!state.voicePreview && (state.pendingOffset > 0 || start > 0)) { audio.currentTime = Math.min(start + state.pendingOffset, Math.max(0,audio.duration - .01)); state.pendingOffset = 0; }
+  updatePlayer();
+});
+audio.addEventListener('timeupdate', () => { followClip(); updatePlayer(); updateListeningBuffer(); if (Date.now() - state.lastSave > 1000) { saveProgress(); state.lastSave = Date.now(); } });
 audio.addEventListener('play', () => { updatePlayer(); renderReader(); });
 audio.addEventListener('waiting', () => { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); });
 audio.addEventListener('stalled', () => { if (!audio.paused) { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); } });
 audio.addEventListener('playing', () => { if (mediaBuffering) reportPlaybackIssue('playback_resumed'); mediaBuffering = false; updatePlayer(); updateListeningBuffer(); });
 audio.addEventListener('pause', () => { updatePlayer(); saveProgress(); renderReader(); });
-audio.addEventListener('ended', async () => {
-  if (state.voicePreview) { window.BardicVoicePreview?.stop(); return; }
-  if (preparingListen || !state.audioSegmentId || state.audioSegmentId !== state.segmentId) return;
-  if (previewEnhanced) { stopAudio({clear:true}); renderReader(); saveProgress(); return; }
-  const segments = orderedSegments();
-  const index = segments.findIndex(segment => segment.id === state.segmentId);
-  if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.BardicListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
-    await moveSegment(1,true,true);
-  } else {
-    window.BardicListen?.stop(state.book); clearListeningPreloads();
-    updatePlayer(); saveProgress();
-    toast(simpleActive() ? 'Chapter complete. Choose the next chapter when you are ready.' : 'The end. A good place to linger.');
-  }
-});
+audio.addEventListener('ended', () => finishClip());
 audio.addEventListener('error', () => {
   if (!audio.getAttribute('src')) return;
   if (state.voicePreview) {
@@ -1118,7 +1194,7 @@ audio.addEventListener('error', () => {
   }
   const simple = simpleActive();
   const segment = segmentById(state.segmentId);
-  const offset = audio.currentTime || state.pendingOffset || 0;
+  const offset = passageTime() || state.pendingOffset || 0;
   reportPlaybackIssue('playback_media_error', {media_error_code:audio.error?.code});
   stopAudio({clear:true});
   state.pendingOffset = offset;

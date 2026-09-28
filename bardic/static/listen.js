@@ -55,6 +55,25 @@
   const rateOf = value => Math.min(4,Math.max(.25,Number(value) || 1));
   const durationOf = audio => Number.isFinite(audio?.duration) && audio.duration > 0 ? audio.duration : 0;
   const WARM_SECONDS = 10, BUFFER_SECONDS = 45, WARM_PASSAGES = 3, AHEAD_PASSAGES = 12;
+  // Gemini narration is prepared by a server chapter job in large chunks paced
+  // to the project's request limits; the browser only watches and plays.
+  const CHAPTER_TERMINAL = new Set(['completed','failed','cancelled','interrupted','quota_limited','budget_limited']);
+  const CHUNK_PRESETS = [
+    {id:'quick',label:'Quick start · 30 s, 1 min, then full',ramp:[30,60]},
+    {id:'balanced',label:'Balanced · 1 min, then full',ramp:[60]},
+    {id:'largest',label:'Largest requests only',ramp:[]},
+  ];
+  const CHUNK_LENGTHS = [[180,'3 min'],[300,'5 min'],[420,'7 min · recommended'],[470,'7.8 min · maximum']];
+  const SAFETY_MARGIN = 5;
+  const chunked = state => state?.mode === 'simple' && state.provider === 'gemini';
+  const presetFor = ramp => CHUNK_PRESETS.find(preset => JSON.stringify(preset.ramp) === JSON.stringify((ramp || []).map(Number))) || null;
+  function span(seconds) {
+    if (!Number.isFinite(seconds)) return 'unknown';
+    const value = Math.max(0,Math.round(seconds));
+    if (value < 60) return `${value} s`;
+    if (value < 3600) return `${Math.round(value/60)} min`;
+    return `${Math.floor(value/3600)} h ${Math.round(value%3600/60)} min`;
+  }
 
   function invalidate(state) {
     state.version++;
@@ -101,7 +120,8 @@
     const segmentId = intent?.segmentId || state.panel.options.segmentId;
     const rate = intent?.rate || rateOf(state.panel.options.playbackRate);
     let seconds = 0, readyPassages = 0;
-    for (const [index,segment] of remaining(state,segmentId).slice(0,AHEAD_PASSAGES+1).entries()) {
+    const ahead = chunked(state) ? remaining(state,segmentId) : remaining(state,segmentId).slice(0,AHEAD_PASSAGES+1);
+    for (const [index,segment] of ahead.entries()) {
       const audio = resolve(state.book,segment);
       if (!audio) break;
       seconds += Math.max(0,durationOf(audio)-(index === 0 ? intent?.offset || 0 : 0))/rate;
@@ -294,6 +314,7 @@
   }
   function schedule(state) {
     const intent = state.intent;
+    if (chunked(state)) return;
     if (!intent || intent.blocked || intent.phase !== 'playing' || state.active || state.queue.length) return;
     const list = remaining(state,intent.segmentId).slice(0,AHEAD_PASSAGES+1);
     let seconds = 0;
@@ -304,9 +325,10 @@
       seconds += Math.max(0,durationOf(audio)-(index === 0 ? intent.offset : 0))/intent.rate;
     }
   }
-  async function prepare(book,segment,{playbackRate=1,offset=0}={}) {
+  async function prepare(book,segment,{playbackRate=1,offset=0,continuation=false}={}) {
     const state = stateFor(book);
     if (!state || state.mode !== 'simple') return resolve(book,segment);
+    if (chunked(state)) return prepareFromChapter(state,segment,{playbackRate,offset,continuation});
     let intent = state.intent;
     if (intent?.type !== 'play' || intent.chapterId !== segment.chapter_id) {
       if (intent) invalidate(state);
@@ -355,6 +377,7 @@
   async function prepareChapter(book,segment,{playbackRate=1}={}) {
     const state = stateFor(book);
     if (!state || state.mode !== 'simple') return;
+    if (chunked(state)) { await queueChapter(state,segment); return; }
     invalidate(state);
     state.error = '';
     const list = remaining(state,segment.id);
@@ -394,6 +417,333 @@
       state.message = 'The rest of this chapter is saved and ready. Press play whenever you like.';
       paint(state.panel);
     }
+  }
+
+  // Chapter jobs ------------------------------------------------------------
+  const chapterSegmentsOf = (state, chapterId) => state.book.segments.filter(segment => segment.chapter_id === chapterId);
+  function adoptSession(state, session) {
+    if (!session?.id) return;
+    state.sessionId = session.id;
+    state.sessionKey = configKey(state);
+    save(state);
+  }
+  function chapterBody(state, segment, intent) {
+    return {provider:'gemini',voice:state.voices.gemini || 'Kore',model:state.model,segment_id:segment.id,intent};
+  }
+  function settleWaiters(state) {
+    for (const resolveWaiter of state.chapter.waiters.splice(0)) resolveWaiter();
+  }
+  const nextChapterUpdate = state => new Promise(resolveWaiter => state.chapter.waiters.push(resolveWaiter));
+  async function refreshChapter(state) {
+    const job = state.chapter.job;
+    if (!job) return;
+    const jobs = await request(`/api/jobs?book_id=${encode(state.book.id)}`);
+    const latest = jobs.find(item => item.id === job.id);
+    if (!latest) return;
+    const done = (latest.chunks || []).filter(entry => entry.status === 'done').length;
+    const mark = `${latest.status}:${done}`;
+    state.chapter.job = latest;
+    if (state.chapter.takesMark !== mark) {
+      state.chapter.takesMark = mark;
+      await loadSaved(state,true);
+    }
+    notify(state);
+    paint(state.panel);
+  }
+  function watchChapter(state) {
+    if (state.chapter.watching) return;
+    state.chapter.watching = true;
+    const bookId = state.book.id;
+    let failures = 0;
+    const tick = async () => {
+      if (!state.chapter.job || stateFor(state.book) !== state || state.book.id !== bookId) { state.chapter.watching = false; settleWaiters(state); return; }
+      try { await refreshChapter(state); failures = 0; state.chapter.error = ''; }
+      catch (error) {
+        // Read-only status polling can retry; it never resubmits generation.
+        if (++failures > 5) { state.chapter.error = `Chapter status could not be read: ${error.message}`; state.chapter.watching = false; settleWaiters(state); paint(state.panel); return; }
+      }
+      settleWaiters(state);
+      if (CHAPTER_TERMINAL.has(state.chapter.job?.status)) { state.chapter.watching = false; state.chapter.preview = null; state.chapter.previewKey = null; paint(state.panel); return; }
+      setTimeout(tick,1000);
+    };
+    setTimeout(tick,0);
+  }
+  async function startChapter(state, segment, intent) {
+    const result = await request(base(state) + '/chapter',chapterBody(state,segment,intent));
+    adoptSession(state,result.session);
+    state.chapter.job = result.job;
+    state.chapter.takesMark = null;
+    state.chapter.error = '';
+    watchChapter(state);
+    notify(state);
+    return result.job;
+  }
+  async function discoverChapter(state) {
+    if (!chunked(state) || state.chapter.job || state.chapter.discovered === state.book.id) return;
+    state.chapter.discovered = state.book.id;
+    try {
+      const jobs = await request(`/api/jobs?book_id=${encode(state.book.id)}`);
+      const job = jobs.find(item => item.kind === 'listen_chapter' && (!state.sessionId || item.session_id === state.sessionId));
+      if (job && !state.chapter.job) {
+        state.chapter.job = job;
+        // A fresh browser learns the narrator session from a matching job so
+        // saved chunks play without sending anything.
+        if (!state.sessionId && job.voice === (state.voices.gemini || 'Kore') && job.model === state.model) {
+          adoptSession(state,{id:job.session_id});
+          await loadSaved(state,true);
+        }
+        if (!CHAPTER_TERMINAL.has(job.status)) watchChapter(state);
+        paint(state.panel);
+        notify(state);
+      }
+    } catch { /* Status is optional; Play or Queue will report problems. */ }
+  }
+  async function queueChapter(state, segment) {
+    state.error = '';
+    try {
+      await startChapter(state,segment,'queue');
+      state.message = 'Chapter queued. Audio appears in the text as each chunk finishes; press Play any time.';
+    } catch (error) {
+      report(state,'listen_request_failed',error,'request',segment.id);
+      state.error = error.message;
+    }
+    paint(state.panel);
+  }
+  function stopChapter(state) {
+    const job = state.chapter.job;
+    if (job && !CHAPTER_TERMINAL.has(job.status)) cancelJob(job.id);
+    state.message = 'Stopping after the requests already sent. Their audio will be saved.';
+    paint(state.panel);
+  }
+  const STOPPED = new Set(['failed','cancelled','interrupted','quota_limited','budget_limited']);
+  async function prepareFromChapter(state, segment, {playbackRate=1,offset=0,continuation=false}) {
+    let intent = state.intent;
+    if (intent?.type !== 'play' || intent.chapterId !== segment.chapter_id) {
+      if (intent) invalidate(state);
+      intent = state.intent = {type:'play',phase:'warmup',chapterId:segment.chapter_id,segmentId:segment.id,
+        offset:Math.max(0,Number(offset)||0),rate:rateOf(playbackRate),blocked:false};
+    } else Object.assign(intent,{segmentId:segment.id,offset:Math.max(0,Number(offset)||0),rate:rateOf(playbackRate)});
+    state.error = '';
+    state.message = '';
+    const version = state.version;
+    const ready = resolve(state.book,segment);
+    const missing = remaining(state,segment.id).some(item => !resolve(state.book,item));
+    const job = state.chapter.job;
+    const sameChapter = job?.chapter_id === segment.chapter_id;
+    const active = job && !CHAPTER_TERMINAL.has(job.status) && sameChapter;
+    // Only an explicit Play starts or joins generation. Automatic continuation
+    // never sends a request, and a job that failed (possibly after an uncertain,
+    // billed request), was stopped or hit its quota restarts only through an
+    // explicit Resume chapter.
+    const stopped = sameChapter && STOPPED.has(job?.status);
+    if (!ready && (continuation || stopped) && !active) {
+      if (state.intent === intent) state.intent = null;
+      paint(state.panel);
+      throw new Error(stopped ? `${job.error || job.message || 'Chapter preparation stopped.'} Choose Resume chapter to continue generating.`
+        : 'The rest of this chapter has not been generated. Press Play or Queue chapter to continue.');
+    }
+    if (missing && !continuation && !stopped && (!active || !ready)) {
+      try { await startChapter(state,segment,'play'); }
+      catch (error) {
+        if (!ready) throw error;
+        state.error = error.message;
+      }
+    }
+    if (!current(state,version) || state.intent !== intent) return null;
+    if (ready) { intent.phase = 'ready'; paint(state.panel); return ready; }
+    paint(state.panel);
+    try {
+      for (;;) {
+        await nextChapterUpdate(state);
+        if (!current(state,version) || state.intent !== intent) return null;
+        const audio = resolve(state.book,segment);
+        if (audio) { intent.phase = 'ready'; paint(state.panel); return audio; }
+        const latest = state.chapter.job;
+        if (state.chapter.error) throw new Error(state.chapter.error);
+        if (!latest || CHAPTER_TERMINAL.has(latest.status) || !state.chapter.watching) {
+          throw new Error(latest?.error || latest?.message || 'Chapter preparation stopped before this passage was ready.');
+        }
+      }
+    } catch (error) {
+      // Leave no warmup behind: the panel must offer Play/Resume again.
+      if (state.intent === intent) state.intent = null;
+      paint(state.panel);
+      throw error;
+    }
+  }
+
+  /* Pure estimate of listening time and generation pace for one chapter.
+     Durations are measured for generated passages and estimated from text for
+     the rest. Generation finish times simulate the job's remaining chunks with
+     its concurrency, per-minute limit and the library's daily request count. */
+  function estimateChapter({segments, audioFor, job, fromIndex=0, offset=0, rate=1, now=Date.now()/1000}) {
+    const calibration = job?.calibration || {};
+    const charsPerSecond = calibration.chars_per_second || 14;
+    const realtime = calibration.realtime_factor || 2;
+    const latency = seconds => 3 + seconds/realtime;
+    const scope = segments.slice(Math.max(0,fromIndex));
+    const index = new Map(scope.map((segment,i) => [segment.id,i]));
+    const durations = scope.map(segment => { const audio = audioFor(segment); return audio ? {ready:true,seconds:durationOf(audio)} : {ready:false,seconds:Math.max(.5,(segment.end-segment.start || segment.text.length)/charsPerSecond)}; });
+    const finish = new Array(scope.length).fill(Infinity);
+    const active = job && !CHAPTER_TERMINAL.has(job.status);
+    let quotaBlocked = false, requestsLeft = null;
+    if (active) {
+      const concurrency = job.chunking?.concurrency || 2, rpm = job.limits?.rpm || 10;
+      const sends = (job.chunks || []).map(entry => Date.parse(entry.started_at)/1000).filter(Number.isFinite);
+      const running = (job.chunks || []).filter(entry => entry.status === 'requesting');
+      const slots = running.map(entry => Math.max(now+1,Date.parse(entry.started_at)/1000 + (entry.expected_latency || latency(entry.expected_seconds))));
+      while (slots.length < concurrency) slots.push(now + (job.waiting_seconds || 0));
+      const assign = (entry, time) => {
+        const first = index.get(entry.first_segment_id), last = index.get(entry.last_segment_id);
+        if (first === undefined && last === undefined) return;
+        for (let i = first ?? 0; i <= (last ?? scope.length-1); i++) finish[i] = Math.min(finish[i],time);
+      };
+      running.forEach((entry,i) => assign(entry,slots[i]));
+      requestsLeft = Math.max(0,(job.quota?.rpd ?? Infinity) - (job.quota?.requests_today ?? 0));
+      let left = requestsLeft;
+      for (const entry of job.projection || []) {
+        slots.sort((a,b) => a-b);
+        let start = Math.max(slots[0],now);
+        const recent = sends.filter(time => time > start-61).sort((a,b) => a-b);
+        if (recent.length >= rpm) start = Math.max(start,recent[recent.length-rpm]+61);
+        if (left <= 0) { quotaBlocked = true; continue; }
+        left--;
+        sends.push(start);
+        const end = start + latency(entry.expected_seconds);
+        slots[0] = end;
+        assign(entry,end);
+      }
+    }
+    let readySeconds = 0, remainingSeconds = 0, reach = -offset, wait = 0, maxRate = Infinity, catchUp = null, completion = now;
+    durations.forEach((item,i) => {
+      if (item.ready) { readySeconds += item.seconds; finish[i] = now; }
+      else { remainingSeconds += item.seconds; completion = Math.max(completion,finish[i]); }
+      if (!item.ready) {
+        const reachAt = now + Math.max(0,reach)/rate;
+        const deficit = finish[i] - reachAt + SAFETY_MARGIN;
+        if (deficit > 0 && catchUp === null) catchUp = {index:i + Math.max(0,fromIndex),seconds:Math.max(0,reach)/rate};
+        wait = Math.max(wait,deficit);
+        maxRate = Math.min(maxRate,reach > 0 ? reach/Math.max(1e-6,finish[i]-now+SAFETY_MARGIN) : 0);
+      }
+      reach += item.seconds;
+    });
+    const firstAudio = durations[0] && !durations[0].ready ? finish[0] - now : 0;
+    return {readySeconds,remainingSeconds,readyPassages:durations.filter(item => item.ready).length,totalPassages:scope.length,firstAudioSeconds:firstAudio,
+      etaSeconds:remainingSeconds ? completion-now : 0,safe:wait <= 0,waitSeconds:Math.max(0,wait),
+      maxSafeRate:Number.isFinite(maxRate) ? maxRate : Infinity,catchUp,quotaBlocked,requestsLeft,generating:Boolean(active)};
+  }
+  function chapterEstimate(state, panel) {
+    const selected = selectedSegment(panel);
+    if (!selected) return null;
+    const segments = chapterSegmentsOf(state,selected.chapter_id);
+    const job = state.chapter.job?.chapter_id === selected.chapter_id ? state.chapter.job : null;
+    const intent = state.intent;
+    const from = segments.findIndex(segment => segment.id === (intent?.segmentId || selected.id));
+    return estimateChapter({segments,audioFor:segment => resolve(state.book,segment),job,fromIndex:Math.max(0,from),
+      offset:intent?.segmentId ? intent.offset || 0 : 0,rate:rateOf(panel.options.playbackRate)});
+  }
+  function chapterMarks(book, chapterId) {
+    const state = stateFor(book), marks = new Map();
+    if (!state || state.mode !== 'simple') return marks;
+    const segments = chapterSegmentsOf(state,chapterId);
+    const chunkOrder = new Map();
+    let previous = null;
+    for (const segment of segments) {
+      const audio = resolve(book,segment);
+      if (!audio) { previous = null; continue; }
+      const key = audio.chunk_id || audio.asset_id || segment.id;
+      if (!chunkOrder.has(key)) chunkOrder.set(key,chunkOrder.size);
+      marks.set(segment.id,{status:'ready',chunk:chunkOrder.get(key)%2,start:key !== previous && Boolean(audio.chunk_id)});
+      previous = key;
+    }
+    const job = state.chapter.job;
+    if (job && !CHAPTER_TERMINAL.has(job.status) && job.chapter_id === chapterId) {
+      const position = new Map(segments.map((segment,i) => [segment.id,i]));
+      const mark = (entry, status) => {
+        const first = position.get(entry.first_segment_id), last = position.get(entry.last_segment_id);
+        if (first === undefined || last === undefined) return;
+        for (let i = first; i <= last; i++) if (!marks.has(segments[i].id)) marks.set(segments[i].id,{status});
+      };
+      (job.chunks || []).filter(entry => entry.status === 'requesting').forEach(entry => mark(entry,'generating'));
+      (job.projection || []).forEach(entry => mark(entry,'queued'));
+    }
+    return marks;
+  }
+  async function saveChunking(panel, changes) {
+    const current = panel.options.status?.listen_chunking || {};
+    try {
+      const status = await request('/api/settings',{listen_chunking:{...current,...changes}});
+      if (panel.options.status) panel.options.status.listen_chunking = status.listen_chunking;
+      panel.state.chapter.previewKey = null;
+      panel.options.onSettings?.(status);
+    } catch (error) { panel.state.error = error.message; }
+    paint(panel);
+  }
+  async function loadPreview(state, panel) {
+    const selected = selectedSegment(panel);
+    if (!chunked(state) || !selected || (state.chapter.job && !CHAPTER_TERMINAL.has(state.chapter.job.status))) return;
+    const key = JSON.stringify([state.book.id,state.book.revision,selected.id,configKey(state),state.takes.size,panel.options.status?.listen_chunking]);
+    if (state.chapter.previewKey === key) return;
+    state.chapter.previewKey = key;
+    try {
+      const preview = await request(base(state) + '/chapter/preview',chapterBody(state,selected,'queue'));
+      if (state.chapter.previewKey !== key) return;
+      state.chapter.preview = preview;
+      if (preview.session?.id && preview.session.id !== state.sessionId) {
+        adoptSession(state,preview.session);
+        await loadSaved(state,true);
+        notify(state);
+      }
+      paint(panel);
+    } catch { state.chapter.preview = null; }
+  }
+  function chapterMarkup(state, panel) {
+    const estimate = chapterEstimate(state,panel);
+    if (!estimate) return '';
+    const rate = rateOf(panel.options.playbackRate);
+    const job = state.chapter.job?.chapter_id === selectedSegment(panel)?.chapter_id ? state.chapter.job : null;
+    const active = job && !CHAPTER_TERMINAL.has(job.status);
+    const preview = state.chapter.preview;
+    const quota = (active ? job.quota : preview?.quota) || job?.quota;
+    const lines = [];
+    let headline;
+    if (active) {
+      const running = (job.chunks || []).filter(entry => entry.status === 'requesting').length;
+      headline = job.waiting_seconds ? `Waiting ${Math.ceil(job.waiting_seconds)} s for the per-minute limit` :
+        running ? `Generating ${running} chunk${running === 1 ? '' : 's'}` : 'Planning the next chunk';
+      headline += !estimate.remainingSeconds ? '' : estimate.quotaBlocked ? ' · the rest needs requests after the daily reset' : ` · done in ~${span(estimate.etaSeconds)}`;
+    } else if (job?.status === 'quota_limited') headline = 'Daily request quota reached · finished audio is saved';
+    else if (job && ['failed','cancelled','interrupted'].includes(job.status) && estimate.remainingSeconds) headline = 'Chapter preparation stopped · finished audio is saved';
+    else headline = estimate.remainingSeconds ? 'Not queued yet' : 'Chapter ready';
+    lines.push(`<div><span>${escape(headline)}</span><span>${estimate.readyPassages} of ${estimate.totalPassages} passages from here ready</span></div>`);
+    lines.push(`<progress max="${estimate.readySeconds + estimate.remainingSeconds || 1}" value="${estimate.readySeconds}" aria-label="Chapter audio generated"></progress>`);
+    lines.push(`<div class="chapter-queue-times"><span>Ready: ${escape(span(estimate.readySeconds/rate))} of listening at ${rate}×</span><span>Left to generate: ~${escape(span(estimate.remainingSeconds/rate))}</span></div>`);
+    if (estimate.remainingSeconds) {
+      let safety;
+      if (!active && job?.status === 'quota_limited') safety = {tone:'idle',text:'Generation is paused until the daily request quota resets. Choose Resume chapter after the reset; finished audio plays now.'};
+      else if (!active) safety = {tone:'idle',text:'Queue the chapter to keep generating ahead of you.'};
+      else if (estimate.quotaBlocked) safety = {tone:'warn',text:'The remaining chunks need more requests than are left today. Playback will stop where generation stops.'};
+      else if (estimate.safe) safety = {tone:'safe',text:`Safe to listen at ${rate}× — generation should stay ahead of you.`};
+      else if (estimate.firstAudioSeconds > 0) {
+        const first = Number.isFinite(estimate.firstAudioSeconds) ? `First audio here in ~${span(estimate.firstAudioSeconds)}. ` : '';
+        safety = {tone:'warn',text:`${first}For gap-free listening at ${rate}×, start in ~${span(estimate.waitSeconds)}.`};
+      } else {
+        const slower = playbackRates.filter(value => value <= estimate.maxSafeRate).pop();
+        const catchUp = estimate.catchUp ? ` in ~${span(estimate.catchUp.seconds)}` : '';
+        safety = {tone:'warn',text:`At ${rate}× you would reach unfinished audio${catchUp}. For gap-free listening, wait ~${span(estimate.waitSeconds)}${slower ? ` or listen at ${slower}× or slower` : ''}.`};
+      }
+      lines.push(`<p class="chapter-queue-safety ${safety.tone}" role="status">${escape(safety.text)}</p>`);
+    }
+    const needed = active ? (job.projection || []).length : preview?.requests_needed;
+    if (quota) {
+      const reset = quota.resets_at ? new Date(quota.resets_at) : null;
+      const resetText = reset && !Number.isNaN(reset.getTime()) ? ` Resets ${reset.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}.` : '';
+      lines.push(`<p>${needed !== undefined ? `${needed} more request${needed === 1 ? '' : 's'} for this chapter. ` : ''}${quota.requests_today} of ${quota.rpd} daily Gemini requests used by this library.${escape(resetText)}</p>`);
+    }
+    const uncertain = (job?.chunks || []).filter(entry => entry.status === 'done' && (entry.flags || []).includes('weak_alignment')).length;
+    if (uncertain) lines.push(`<p>Passage highlighting in ${uncertain} chunk${uncertain === 1 ? '' : 's'} is less certain (few clear pauses); the audio itself plays normally.</p>`);
+    lines.push('<p class="chapter-queue-legend"><span class="legend-ready">ready</span><span class="legend-alt">next chunk</span><span class="legend-generating">generating</span><span class="legend-queued">queued</span> Passage timing inside a chunk is estimated from pauses.</p>');
+    return `<div class="simple-listen-buffer chapter-queue" aria-live="polite">${lines.join('')}</div>`;
   }
 
   function change(panel, field, value) {
@@ -447,8 +797,15 @@
     const progressText = chapter
       ? `Preparing chapter · ${state.intent.completed} of ${state.intent.total} passages saved`
       : `${warming ? 'Warming up' : 'Audio buffer'} · ${Math.floor(buffered.seconds)} seconds ready at ${buffered.rate}×`;
-    const progressMarkup = state.mode === 'simple' ? `<div class="simple-listen-buffer" aria-live="polite"><div><span>${escape(progressText)}</span><span>${buffered.readyPassages} consecutive passage${buffered.readyPassages === 1 ? '' : 's'}</span></div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Saved audio buffer'}"></progress><p>${chapter ? 'Preparing only the remainder of this chapter, one request at a time. Stop cancels future requests.' : warming ? 'A short warmup prepares up to 3 passages before playback. Saved durations determine progress.' : 'While playing, aim for 45 listening seconds ahead, with at most 12 future passages. If generation cannot keep pace, prepare the chapter before listening.'}</p></div>` : '';
-    const html = `<section class="simple-listen"><div class="simple-listen-heading"><div><h3>Listen your way</h3><p>Voice here; playback and speed are shared with the player below.</p></div><label>Listening mode<select data-listen-field="mode" aria-label="Listening mode"><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Enhanced production</option><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>Simple · one narrator</option></select></label></div><div class="simple-listen-settings"><label>Narration provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option></select></label><div class="simple-listen-voice"><label>Narrator voice<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voice => { const id = voice.id ?? voice.name; return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}</option>`; }).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || busy ? 'disabled' : ''}>Hear example</button></div>${state.provider === 'gemini' ? `<label>Speech model<select data-listen-field="model" aria-label="Simple speech model">${models.map(model => `<option value="${escape(model)}" ${model === state.model ? 'selected' : ''}>${escape(model)}</option>`).join('')}</select></label>` : ''}<label>Playback speed<select data-listen-speed aria-label="Simple listening playback speed">${playbackRates.map(rate => `<option value="${rate}" ${rate === rateOf(panel.options.playbackRate) ? 'selected' : ''}>${rate}×</option>`).join('')}</select></label></div><p class="simple-listen-note">${state.provider === 'gemini' ? 'Gemini sends each requested passage to Google and may incur charges. Play prepares a short warmup, then a limited buffer ahead while you listen.' : 'Device narration stays on this computer and has no model charges.'} Simple playback stops at the end of this chapter. Highlighting follows each passage.</p>${progressMarkup}${!available && !canUseCache ? `<p class="simple-listen-note">${state.provider === 'system' ? 'Device narration is unavailable here. Choose another provider to generate new takes.' : 'Add a Gemini API key in Settings to generate new takes.'}</p>` : ''}<div class="simple-listen-actions"><button type="button" class="button primary" data-listen-action="start" ${startDisabled ? 'disabled' : ''} aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : state.mode === 'simple' ? 'Play simple listening' : 'Start simple listening'}">${startLabel}</button><button type="button" class="button subtle" data-listen-action="prepare-chapter" ${warming || chapter || busy || !remainingCount || !available && !canUseCache ? 'disabled' : ''}>Prepare rest of chapter</button><button type="button" class="button subtle" data-listen-action="stop">Stop</button>${state.error ? '<button type="button" class="button subtle" data-listen-action="retry">Retry preparation</button>' : ''}<span>${state.takes.size} saved simple passage${state.takes.size === 1 ? '' : 's'}</span></div><p class="simple-listen-note">Prepare rest of chapter saves up to ${remainingCount} passages from here without starting playback. ${state.provider === 'gemini' ? 'Uncached passages can incur provider charges; no narration spending cap is enforced.' : 'Saved matching audio is reused.'}</p><p class="simple-listen-message ${state.error ? 'simple-listen-error' : ''}" role="${state.error ? 'alert' : 'status'}">${escape(state.error || state.message || '')}</p></section>`;
+    const chapterJob = state.chapter.job;
+    const generating = chapterJob && !CHAPTER_TERMINAL.has(chapterJob.status);
+    const resumable = chapterJob && ['quota_limited','failed','cancelled','interrupted'].includes(chapterJob.status) &&
+      selected && remaining(state,selected.id).some(item => !resolve(state.book,item));
+    const chunking = status.listen_chunking || {};
+    const preset = presetFor(chunking.ramp_seconds);
+    const chunkSettings = state.provider === 'gemini' ? `<label>First audio<select data-listen-field="chunk-preset" aria-label="How quickly the first chunk arrives">${CHUNK_PRESETS.map(item => `<option value="${item.id}" ${preset?.id === item.id ? 'selected' : ''}>${escape(item.label)}</option>`).join('')}${preset ? '' : `<option value="" selected>Custom · ${escape((chunking.ramp_seconds || []).join(', '))} s</option>`}</select></label><label>Full chunk length<select data-listen-field="chunk-length" aria-label="Audio per full-size request">${CHUNK_LENGTHS.map(([value,label]) => `<option value="${value}" ${Number(chunking.target_seconds) === value ? 'selected' : ''}>${escape(label)}</option>`).join('')}${CHUNK_LENGTHS.some(([value]) => value === Number(chunking.target_seconds)) || !chunking.target_seconds ? '' : `<option value="" selected>Custom · ${escape(span(chunking.target_seconds))}</option>`}</select></label>` : '';
+    const progressMarkup = state.mode === 'simple' && chunked(state) ? chapterMarkup(state,panel) : state.mode === 'simple' ? `<div class="simple-listen-buffer" aria-live="polite"><div><span>${escape(progressText)}</span><span>${buffered.readyPassages} consecutive passage${buffered.readyPassages === 1 ? '' : 's'}</span></div><progress max="${maximum}" value="${progress}" aria-label="${chapter ? 'Chapter preparation' : 'Saved audio buffer'}"></progress><p>${chapter ? 'Preparing only the remainder of this chapter, one request at a time. Stop cancels future requests.' : warming ? 'A short warmup prepares up to 3 passages before playback. Saved durations determine progress.' : 'While playing, aim for 45 listening seconds ahead, with at most 12 future passages. If generation cannot keep pace, prepare the chapter before listening.'}</p></div>` : '';
+    const html = `<section class="simple-listen"><div class="simple-listen-heading"><div><h3>Listen your way</h3><p>Voice here; playback and speed are shared with the player below.</p></div><label>Listening mode<select data-listen-field="mode" aria-label="Listening mode"><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Enhanced production</option><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>Simple · one narrator</option></select></label></div><div class="simple-listen-settings"><label>Narration provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option></select></label><div class="simple-listen-voice"><label>Narrator voice<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voice => { const id = voice.id ?? voice.name; return `<option value="${escape(id)}" ${id === selectedVoice ? 'selected' : ''}>${escape(voice.name || id)}${voice.locale ? ` · ${escape(voice.locale)}` : ''}</option>`; }).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || busy ? 'disabled' : ''}>Hear example</button></div>${state.provider === 'gemini' ? `<label>Speech model<select data-listen-field="model" aria-label="Simple speech model">${models.map(model => `<option value="${escape(model)}" ${model === state.model ? 'selected' : ''}>${escape(model)}</option>`).join('')}</select></label>` : ''}${chunkSettings}<label>Playback speed<select data-listen-speed aria-label="Simple listening playback speed">${playbackRates.map(rate => `<option value="${rate}" ${rate === rateOf(panel.options.playbackRate) ? 'selected' : ''}>${rate}×</option>`).join('')}</select></label></div><p class="simple-listen-note">${state.provider === 'gemini' ? 'Gemini receives the chapter text in large chunks, paced to your request limits, and may incur charges. Play starts or joins the chapter queue and begins when your passage is ready.' : 'Device narration stays on this computer and has no model charges.'} Simple playback stops at the end of this chapter. Highlighting follows each passage.</p>${progressMarkup}${!available && !canUseCache ? `<p class="simple-listen-note">${state.provider === 'system' ? 'Device narration is unavailable here. Choose another provider to generate new takes.' : 'Add a Gemini API key in Settings to generate new takes.'}</p>` : ''}<div class="simple-listen-actions"><button type="button" class="button primary" data-listen-action="start" ${startDisabled ? 'disabled' : ''} aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause simple listening' : state.mode === 'simple' ? 'Play simple listening' : 'Start simple listening'}">${startLabel}</button>${chunked(state) ? (generating ? '<button type="button" class="button subtle" data-listen-action="stop-generating">Stop generating</button>' : `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${busy || !remainingCount || !available ? 'disabled' : ''}>${resumable ? 'Resume chapter' : 'Queue chapter'}</button>`) : `<button type="button" class="button subtle" data-listen-action="prepare-chapter" ${warming || chapter || busy || !remainingCount || !available && !canUseCache ? 'disabled' : ''}>Prepare rest of chapter</button>`}<button type="button" class="button subtle" data-listen-action="stop">Stop</button>${state.error ? '<button type="button" class="button subtle" data-listen-action="retry">Retry preparation</button>' : ''}<span>${state.takes.size} saved simple passage${state.takes.size === 1 ? '' : 's'}</span></div><p class="simple-listen-note">${chunked(state) && generating ? 'Stop generating lets requests already sent finish; their audio stays saved. Playback continues with what is ready.' : chunked(state) ? `Queue chapter prepares ${remainingCount} passages from here to the chapter end without starting playback. Each chunk is one request; no narration spending cap is enforced.` : `Prepare rest of chapter saves up to ${remainingCount} passages from here without starting playback. ${state.provider === 'gemini' ? 'Uncached passages can incur provider charges; no narration spending cap is enforced.' : 'Saved matching audio is reused.'}`}</p><p class="simple-listen-message ${state.error || state.chapter.error ? 'simple-listen-error' : ''}" role="${state.error || state.chapter.error ? 'alert' : 'status'}">${escape(state.error || state.chapter.error || (chunked(state) && chapterJob?.chapter_id === selected?.chapter_id && ['failed','quota_limited'].includes(chapterJob.status) ? chapterJob.error || chapterJob.message : '') || state.message || '')}</p></section>`;
     if (panel.container.innerHTML === html) return;
     const focused = typeof document === 'undefined' ? null : document.activeElement;
     const focusField = panel.container.contains?.(focused) && focused?.dataset;
@@ -459,10 +816,10 @@
     if (focusSelector) panel.container.querySelector(focusSelector)?.focus({preventScroll:true});
   }
 
-  async function loadSaved(state) {
+  async function loadSaved(state, force = false) {
     if (!state.sessionId || state.sessionKey !== configKey(state)) return;
     const key = `${state.sessionId}:${state.book.revision}`;
-    if (state.loadedKey === key) return;
+    if (!force && state.loadedKey === key) return;
     state.loadedKey = key;
     const version = state.version;
     try {
@@ -495,6 +852,16 @@
           return;
         }
         const field = event.target.dataset.listenField;
+        if (field === 'chunk-preset') {
+          const preset = CHUNK_PRESETS.find(item => item.id === event.target.value);
+          if (preset) void saveChunking(panel,{ramp_seconds:preset.ramp});
+          return;
+        }
+        if (field === 'chunk-length') {
+          const seconds = Number(event.target.value);
+          if (CHUNK_LENGTHS.some(([value]) => value === seconds)) void saveChunking(panel,{target_seconds:seconds});
+          return;
+        }
         if (['mode','provider','voice','model'].includes(field)) change(panel,field,event.target.value);
       });
       container.addEventListener('click',event => {
@@ -506,11 +873,13 @@
           return;
         }
         if (action === 'stop') { stop(panel.state.book); panel.options.onStop?.(); }
+        if (action === 'stop-generating') { stopChapter(panel.state); return; }
         if (action === 'prepare-chapter' || action === 'retry') {
           const state = panel.state;
           const segment = state.book.segments.find(item => item.id === (state.intent?.segmentId || panel.options.segmentId)) ||
             state.book.segments.find(item => item.chapter_id === panel.options.chapterId);
           if (!segment) return;
+          if (action === 'prepare-chapter' && chunked(state)) { void queueChapter(state,segment); return; }
           if (action === 'retry' && state.intent?.type === 'play' && state.intent.phase === 'playing') {
             state.error = '';
             state.intent.blocked = false;
@@ -546,6 +915,7 @@
       const status = options.status || {};
       const systemAvailable = status.providers?.find(provider => provider.id === 'system')?.available !== false;
       state = {book,version:0,takes:new Map(),queue:[],active:null,intent:null,job:null,knownJob:null,loading:false,error:'',message:'',loadedKey:null,
+        chapter:{job:null,preview:null,previewKey:null,watching:false,waiters:[],takesMark:null,error:'',discovered:null},
         mode:prior.mode === 'simple' ? 'simple' : 'enhanced',provider:['system','gemini'].includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
         voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore'},
         model:prior.model || status.tts_model || 'gemini-3.8-flash-tts',sessionId:prior.sessionId || null,sessionKey:prior.sessionKey || null};
@@ -570,10 +940,15 @@
       if (!segment || sourceKey(segment) !== item.source) state.takes.delete(id);
     }
     paint(panel);
-    return loadSaved(state);
+    return loadSaved(state).then(() => {
+      if (!chunked(state)) return;
+      void discoverChapter(state);
+      void loadPreview(state,panel);
+    });
   }
   function allowsAdvance(book, currentSegment, nextSegment) {
     return !enabled(book) || Boolean(currentSegment && nextSegment && currentSegment.chapter_id === nextSegment.chapter_id);
   }
-  window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance};
+  window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance,
+    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null};
 })();

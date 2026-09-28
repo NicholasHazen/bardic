@@ -39,6 +39,9 @@ from .series import SeriesRepository
 from .structure import repair_structure, transform_checkpoint_structure
 from .store import InstanceLock, Store
 from .take_archive import produce_take
+from .chapter_listening import ChapterCoordinator, QuotaReached
+from .chunking import Calibration, normalize_options, plan as plan_chunks
+from .tts_limits import CANCEL_CHECK, DEFAULT_LIMITS as DEFAULT_TTS_LIMITS, LIMITER, normalize_limits, quota_day, requests_today
 
 TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview"]
 ANALYSIS_MODELS = ANALYSIS_CATALOG["gemini"]
@@ -108,6 +111,21 @@ class ListenRequest(StrictModel):
     segment_id: str
 
 
+class ChunkingOptions(StrictModel):
+    ramp_seconds: list[Annotated[float, Field(ge=10, le=470, allow_inf_nan=False)]] | None = Field(default=None, max_length=6)
+    target_seconds: float | None = Field(default=None, ge=30, le=470, allow_inf_nan=False)
+    concurrency: int | None = Field(default=None, ge=1, le=3)
+
+
+class ChapterListenRequest(StrictModel):
+    provider: Literal['gemini'] = 'gemini'
+    voice: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=200)
+    segment_id: str = Field(max_length=200)
+    intent: Literal['play', 'queue'] = 'queue'
+    chunking: ChunkingOptions | None = None
+
+
 class VoicePreviewRequest(StrictModel):
     provider: Literal['system', 'gemini'] = 'system'
     voice: str | None = Field(default=None, max_length=256)
@@ -140,6 +158,8 @@ class SettingsRequest(StrictModel):
     analysis_models_by_provider: dict[str, str] | None = None
     preprocess_models_by_provider: dict[str, str] | None = None
     analysis_provider: str | None = None
+    tts_limits: dict[str, dict[str, int]] | None = None
+    listen_chunking: ChunkingOptions | None = None
 
 
 def valid_analysis_model(model):
@@ -187,6 +207,10 @@ class Runtime:
         self.store = Store(root)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bardic")
         self.series_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='series-coordinator')
+        # Chapter listening has its own coordinator and bounded request pool so
+        # a long chapter does not block analysis or other books' work.
+        self.listen_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='listen-coordinator')
+        self.narration_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='narration')
         self.stopping = threading.Event()
         self.api_keys = {
             "gemini": os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "",
@@ -215,7 +239,28 @@ class Runtime:
             "analysis_model": models["gemini"],
             "analysis_models_by_provider": models,
             "preprocess_models_by_provider": preprocess_models,
+            "tts_limits": self._saved_tts_limits(saved.get("tts_limits")),
+            "listen_chunking": self._saved_chunking(saved.get("listen_chunking")),
         }
+        LIMITER.configure(self.preferences["tts_limits"])
+
+    @staticmethod
+    def _saved_tts_limits(saved):
+        limits = {model: dict(DEFAULT_TTS_LIMITS) for model in TTS_MODELS}
+        for model, value in (saved or {}).items() if isinstance(saved, dict) else ():
+            if model in limits:
+                try:
+                    limits[model] = normalize_limits(value)
+                except ValueError:
+                    pass
+        return limits
+
+    @staticmethod
+    def _saved_chunking(saved):
+        try:
+            return normalize_options(saved if isinstance(saved, dict) else None)
+        except ValueError:
+            return normalize_options(None)
 
     @property
     def api_key(self):
@@ -229,6 +274,8 @@ class Runtime:
     def close(self):
         self.stopping.set()
         self.series_pool.shutdown(wait=True, cancel_futures=True)
+        self.listen_pool.shutdown(wait=True, cancel_futures=True)
+        self.narration_pool.shutdown(wait=True, cancel_futures=True)
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.instance_lock.close()
 
@@ -350,16 +397,23 @@ class Runtime:
 
     def run(self, job, operation, secrets=()):
         job_id = job["id"]
+        # Paced provider waits inside this job check its cancellation and shutdown.
+        cancel_token = CANCEL_CHECK.set(lambda: self.check_cancel(job_id))
         try:
             self.check_cancel(job_id)
             self.store.update_job(job_id, status="running", message="Starting…")
             operation()
             self.check_cancel(job_id)
-            self.store.update_job(job_id, status="completed", message="Ready to listen" if job["kind"] in {"render", "listen", "voice_preview"} else "Analysis ready for review")
+            self.store.update_job(job_id, status="completed", message=(
+                "Chapter ready to listen" if job["kind"] == "listen_chapter" else
+                "Ready to listen" if job["kind"] in {"render", "listen", "voice_preview"} else "Analysis ready for review"))
         except BudgetReached as exc:
             self.store.update_job(job_id, status="budget_limited", message=str(exc))
+        except QuotaReached as exc:
+            self.store.update_job(job_id, status="quota_limited", message=str(exc), resume_after=exc.resume_after)
         except (Cancelled, InterruptedError):
             message = ("Stopped. Validated chapter work is saved; analyze again to resume." if job["kind"] == "analyze"
+                       else "Stopped. Finished chunks are saved; prepare the chapter again to resume." if job["kind"] == "listen_chapter"
                        else "Stopped. Completed takes are saved; generate again to resume.")
             self.store.update_job(job_id, status="interrupted" if self.stopping.is_set() else "cancelled", message=message)
         except Exception as exc:
@@ -372,6 +426,7 @@ class Runtime:
             self.store.update_job(job_id, status="failed", error=message,
                                   message="Stopped on an error. Validated chapter work is saved." if job["kind"] == "analyze" else "Stopped on an error. Completed takes are saved.")
         finally:
+            CANCEL_CHECK.reset(cancel_token)
             if job['kind'] in {'listen', 'voice_preview'}:
                 try:
                     settled = self.store.job(job_id)
@@ -581,6 +636,7 @@ def create_app(data_dir: Path | None = None):
                     "account_checks": {provider: runtime.account_check_view(provider) for provider in ANALYSIS_CATALOG},
                     "model_catalogs": {provider: runtime.model_catalog.view(provider, runtime.api_keys[provider]) for provider in ANALYSIS_CATALOG},
                     "system_voices": voices, "tts_models": TTS_MODELS, "analysis_models": ANALYSIS_MODELS,
+                    "tts_rate": {model: LIMITER.view(model) for model in TTS_MODELS},
                     "data_directory": str(runtime.store.root), "timing_kind": "segment"}
 
     @app.get("/api/status")
@@ -632,8 +688,20 @@ def create_app(data_dir: Path | None = None):
             raise HTTPException(400, "Unknown analysis provider")
         if body.tts_model is not None and body.tts_model not in TTS_MODELS:
             raise HTTPException(400, "Unsupported tts_model")
+        tts_limits = {}
+        for model, value in (body.tts_limits or {}).items():
+            if model not in TTS_MODELS:
+                raise HTTPException(400, "Unsupported tts_model in rate limits")
+            tts_limits[model] = normalize_limits(value)
+        chunking = None
+        if body.listen_chunking is not None:
+            chunking = normalize_options({**runtime.preferences["listen_chunking"],
+                                          **body.listen_chunking.model_dump(exclude_none=True)})
         with runtime.store.lock:
             preferences = copy.deepcopy(runtime.preferences)
+            preferences["tts_limits"].update(tts_limits)
+            if chunking is not None:
+                preferences["listen_chunking"] = chunking
             if body.tts_model is not None:
                 preferences["tts_model"] = body.tts_model
             if body.analysis_provider is not None:
@@ -643,6 +711,7 @@ def create_app(data_dir: Path | None = None):
             preferences["analysis_model"] = preferences["analysis_models_by_provider"]["gemini"]
             runtime.store.save_settings(preferences)
             runtime.preferences = preferences
+            LIMITER.configure(preferences["tts_limits"])
             runtime.api_keys.update({provider: key.strip() for provider, key in keys.items()})
             for provider, check in list(runtime.account_checks.items()):
                 current = (runtime.api_keys[provider], preferences["analysis_models_by_provider"][provider])
@@ -1181,6 +1250,115 @@ def create_app(data_dir: Path | None = None):
     def listen_audio(book_id: str, asset_id: str, request: Request):
         from .listening import ListeningRepository
         return FileResponse(ListeningRepository(rt(request).store).asset_path(book_id, asset_id), media_type='audio/wav')
+
+    def chapter_listen_context(runtime, book_id, body):
+        """Resolve session, chapter and chunk options for a chapter request. Local only."""
+        from .listening import ListeningRepository
+        store = runtime.store
+        repository = ListeningRepository(store)
+        store.require_active(book_id)
+        model = body.model or runtime.preferences['tts_model']
+        session = repository.session(book_id, body.provider, body.voice, model)
+        book = store.book(book_id)
+        segment = next((s for s in book['segments'] if s['id'] == body.segment_id), None)
+        if segment is None:
+            raise KeyError('Passage not found in this book')
+        chapter, segments = repository.chapter_segments(book, segment['chapter_id'])
+        chosen = {**runtime.preferences['listen_chunking'], **(body.chunking.model_dump(exclude_none=True) if body.chunking else {})}
+        if body.intent == 'queue' and not (body.chunking and body.chunking.ramp_seconds is not None):
+            # Queued work does not need a quick first clip; every request is full size.
+            chosen['ramp_seconds'] = []
+        options = normalize_options(chosen)
+        takes = repository.takes(book_id, session['id'])['takes']
+        ready = {take['segment_id']: take['audio'] for take in takes}
+        blocked = {segment_id for segment_id, audio in ready.items() if audio.get('chunk_id')}
+        previous = next((job for job in store.jobs(book_id, limit=None)
+                         if job['kind'] == 'listen_chapter' and job.get('session_id') == session['id'] and job.get('calibration')), None)
+        calibration = Calibration(previous.get('calibration') if previous else None)
+        return repository, session, chapter, segments, segment, options, ready, blocked, calibration
+
+    def chapter_summary(runtime, model, segments, chapter, segment, options, ready, blocked, calibration):
+        position = next(i for i, s in enumerate(segments) if s['id'] == segment['id'])
+        chunks = plan_chunks(segments, chapter['text'], scope_start=position, focus=position, blocked=blocked,
+                             covered=set(ready), options=options, calibration=calibration)
+        scope = segments[position:]
+        limits = runtime.preferences['tts_limits'].get(model, dict(DEFAULT_TTS_LIMITS))
+        return {'chunks': [{'first_segment_id': c['segment_ids'][0], 'last_segment_id': c['segment_ids'][-1],
+                            'segment_count': len(c['segment_ids']), 'chars': c['chars'],
+                            'target_seconds': c['target_seconds'], 'expected_seconds': c['expected_seconds']} for c in chunks],
+                'requests_needed': len(chunks), 'expected_seconds': round(sum(c['expected_seconds'] for c in chunks), 1),
+                'ready_seconds': round(sum(ready[s['id']]['duration'] for s in scope if s['id'] in ready), 1),
+                'passages_total': len(scope), 'passages_ready': sum(1 for s in scope if s['id'] in ready),
+                'chunking': options, 'calibration': calibration.view(), 'limits': limits,
+                'quota': {'requests_today': requests_today(runtime.store, model), 'rpd': limits['rpd'],
+                          'resets_at': quota_day()[1].isoformat(), 'scope': 'this library'}}
+
+    @app.post('/api/books/{book_id}/listen/chapter/preview')
+    def preview_chapter_listen(book_id: str, body: ChapterListenRequest, request: Request):
+        runtime = rt(request)
+        with runtime.store.lock:
+            _, session, chapter, segments, segment, options, ready, blocked, calibration = chapter_listen_context(runtime, book_id, body)
+        # Planning and the ledger scan are local reads; keep them outside the global lock.
+        return {'session': session, 'chapter_id': chapter['id'],
+                **chapter_summary(runtime, session['model'], segments, chapter, segment, options, ready, blocked, calibration)}
+
+    @app.post('/api/books/{book_id}/listen/chapter')
+    def start_chapter_listen(book_id: str, body: ChapterListenRequest, request: Request):
+        runtime = rt(request)
+        store = runtime.store
+        with store.lock:
+            _, session, chapter, segments, segment, options, ready, _, calibration = chapter_listen_context(runtime, book_id, body)
+            position = {s['id']: i for i, s in enumerate(segments)}
+            active = next((job for job in store.jobs(book_id, limit=None)
+                           if job['kind'] == 'listen_chapter' and job['status'] in ACTIVE and not job.get('cancel_requested')), None)
+            if active:
+                if active.get('session_id') != session['id'] or active.get('chapter_id') != chapter['id']:
+                    raise HTTPException(409, 'Another chapter or narrator is being prepared. Stop it before starting this one.')
+                if active.get('closing'):
+                    raise HTTPException(409, 'The chapter job is finishing. Try again in a moment.')
+                # Joining moves generation to the listener; it never starts a second job.
+                fields = {'focus_segment_id': segment['id'], 'joins': active.get('joins', 0) + 1}
+                if position[segment['id']] < position.get(active.get('scope_start_segment_id'), 0):
+                    fields['scope_start_segment_id'] = segment['id']
+                in_flight = any(entry.get('status') == 'requesting' and
+                                position.get(entry['first_segment_id'], -1) <= position[segment['id']] <= position.get(entry['last_segment_id'], -1)
+                                for entry in active.get('chunks', []))
+                if body.intent == 'play' and segment['id'] not in ready and not in_flight:
+                    fields['ramp_restart'] = active.get('ramp_restart', 0) + 1
+                return {'session': session, 'job': store.update_job(active['id'], **fields), 'joined': True}
+            runtime.require_idle(book_id)
+            if runtime.stopping.is_set():
+                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
+            key = runtime.api_key
+            if not key:
+                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+            limits = runtime.preferences['tts_limits'].get(session['model'], dict(DEFAULT_TTS_LIMITS))
+            blocked_for = LIMITER.daily_block(session['model'])
+            if blocked_for > 0:
+                # A provider daily-quota rejection holds until the Pacific reset
+                # (or until the limits are saved again in Settings).
+                raise HTTPException(429, f'The daily Gemini request quota for this model is used up. It resets at midnight Pacific time, in about {max(1, round(blocked_for / 3600))} h.')
+            job = store.create_job(book_id, 'listen_chapter', len(segments) - position[segment['id']])
+            job = store.update_job(job['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
+                                   model=session['model'], voice=session['voice'], intent=body.intent,
+                                   scope_start_segment_id=segment['id'], focus_segment_id=segment['id'],
+                                   chunking=options, limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                                   calibration=calibration.view())
+            coordinator = ChapterCoordinator(store, job['id'], key, runtime.narration_pool,
+                                             cancelled=lambda: runtime.cancelled(job['id']))
+            try:
+                future = runtime.listen_pool.submit(runtime.run, job, coordinator.run, (key,))
+            except RuntimeError:
+                store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
+                                 message='No narration was started. Restart Bardic and try again.')
+                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+
+            def settle_cancelled(future):
+                if future.cancelled():
+                    store.update_job(job['id'], status='interrupted' if runtime.stopping.is_set() else 'cancelled',
+                                     cancel_requested=True, message='Stopped before any chunk was requested.')
+            future.add_done_callback(settle_cancelled)
+            return {'session': session, 'job': job, 'joined': False}
 
     @app.post('/api/books/{book_id}/voice-preview')
     def voice_preview(book_id: str, body: VoicePreviewRequest, request: Request):

@@ -145,7 +145,10 @@ function ordinary(call){
   assert.match(auditionContainer.innerHTML,/data-listen-action="preview"[^>]*disabled/);
   assert.match(auditionContainer.innerHTML,/aria-label="Play simple listening">Play/);
   assert.equal(previews.length,4,'Passive renders never restart an audition');
-  assert.equal(auditions.calls.length,0);
+  // Gemini simple mode may read job status and a local chapter preview, but
+  // rendering never submits narration or a chapter job.
+  assert.deepEqual(auditions.calls.filter(call=>call.method==='POST'&&!call.url.endsWith('/listen/chapter/preview')),[]);
+  assert.ok(auditions.calls.every(call=>call.method==='GET'||call.url.endsWith('/listen/chapter/preview')));
 
   // A persisted session only reads its local take index, once per revision.
   const savedConfig={mode:'simple',provider:'system',voices:{system:'',gemini:'Kore'},model:'gemini-3.8-flash-tts',sessionId:'session-1',sessionKey:JSON.stringify(['system','','macos-say'])};

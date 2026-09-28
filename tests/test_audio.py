@@ -175,7 +175,7 @@ def test_bad_or_silent_take_does_not_replace_existing_audio(monkeypatch, tmp_pat
     target = tmp_path / "existing.wav"
     target.write_bytes(wav_bytes())
     previous = target.read_bytes()
-    monkeypatch.setattr(audio, "_generate_gemini", lambda *args: wav_bytes(silence=True))
+    monkeypatch.setattr(audio, "_generate_gemini", lambda *args, **kwargs: wav_bytes(silence=True))
     with pytest.raises(audio.AudioError, match="silent"):
         audio.synthesize(*recipe_inputs, "gemini", audio.DEFAULT_TTS_MODEL, "test-key", target)
     assert target.read_bytes() == previous
