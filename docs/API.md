@@ -20,7 +20,7 @@ Do not commit a captured runtime/status response or populate a schema example wi
 - `segment` and `passage` refer to the same source-level reader unit. Source offsets are Python Unicode character offsets, chapter-local, with an exclusive `end`; they are not UTF-8 byte offsets or JavaScript UTF-16 indices.
 - `GET` routes do not trigger paid model generation. Some build local caches/indexes, retain legacy artifact snapshots, or record local resource measurements.
 - Every `/api/` response is marked `Cache-Control: no-store` by middleware. Download endpoints return bytes instead of JSON.
-- The default process binds to loopback. Trusted hosts and same-origin write checks reject unexpected hosts/cross-origin writes; there is no account authentication layer. A command-line request without an `Origin` header is accepted locally. Browser writes must be same-origin.
+- The default process binds to loopback. `BARDIC_LAN_NAME` opts into network binding and adds its `.local` name to the trusted hosts; `BARDIC_ALLOWED_HOSTS` adds exact names. Trusted hosts and same-origin write checks reject unexpected hosts/cross-origin writes; there is no account authentication layer, including on the network. A command-line request without an `Origin` header is accepted locally. Browser writes must be same-origin.
 
 ### Errors and work state
 
