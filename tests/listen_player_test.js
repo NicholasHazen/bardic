@@ -8,7 +8,7 @@ function between(start,end){ const a=source.indexOf(start),b=source.indexOf(end,
 const functions=[
   between('function saveProgress(', 'function stopAudio('),
   between('function stopAudio(', 'function renderLibrary('),
-  between('function renderReader(', 'function systemVoiceOptions('),
+  between('function renderReader(', 'function castVoiceBlock('),
   between('function setTab(', 'function updateHighlight('),
   between('async function startSegment(', 'function updateProviderHint('),
   between("$('#cast-grid').addEventListener('click'", "$('#analysis-progress').addEventListener"),
@@ -49,6 +49,7 @@ function environment(ensure,previewRequest){
     escapeHTML:value=>String(value??''),toast:(message,error)=>{calls.toasts.push(message);calls.toastErrors.push(Boolean(error));},
     updateHighlight:()=>{},renderStudio:()=>{},renderJob:()=>{},pollJobs:()=>{}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voice-preview.js'),'utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/voices.js'),'utf8'),context);
   vm.runInNewContext(`let playGeneration=0,preparingListen=false,previewEnhanced=false,mediaBuffering=false; const listeningPreloads=new Map();\n${between('audio.preload =', 'let toastTimer;')}\n${helpers}\n${functions}\n`+
     'setupVoicePreviews(); globalThis.player={startSegment,togglePlayback,stopAudio,renderReader,updatePlayer,moveSegment,simpleActive,setPlaybackRate,beginVoicePreview,playVoicePreview,finishVoicePreview,auditionCharacter,auditionPassage,startVoicePreview,get preparing(){return preparingListen;},get preview(){return previewEnhanced;},get buffering(){return mediaBuffering;}};',context);
   return {state,audio,calls,nodes,events,player:context.player,takes,storage,listen,voicePreview:context.window.BardicVoicePreview,setSimple:value=>{simple=value;},get hooks(){return readerHooks;}};
@@ -422,42 +423,50 @@ function environment(ensure,previewRequest){
   casting.state.book.segments[1].speaker_id='mara';
   casting.state.segmentId='s2';
   const castBefore=JSON.stringify(casting.state.book);
-  const characterForm={dataset:{characterForm:'mara'},elements:{voice:{value:'Puck'},system_voice:{value:'Alex'},direction:{value:'An unsaved gentle delivery.'}}};
+  // A cast card shows one provider's voice select ("voice_choice"): "" is Default,
+  // "id:<voice>" a direct voice and "library:<id>" a library voice.
+  const characterForm={dataset:{characterForm:'mara',castProvider:'gemini'},elements:{voice_choice:{value:'id:Puck'},direction:{value:'An unsaved gentle delivery.'}}};
   casting.player.auditionCharacter(characterForm,'gemini');
   await until(()=>casting.voicePreview.getState().status==='ready');
   assert.deepEqual(casting.calls.previews[0].body,{provider:'gemini',character_id:'mara',segment_id:'s2',voice:'Puck',model:'tts-test',direction:'An unsaved gentle delivery.'});
   casting.state.segmentId='s1';
-  casting.player.auditionCharacter(characterForm,'system');
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:'id:Alex'}}},'system');
   await until(()=>casting.voicePreview.getState().status==='ready');
   assert.equal(casting.calls.previews[1].body.segment_id,'s2','Use this chapter\'s character passage when the selected passage has a different speaker');
   assert.equal(casting.calls.previews[1].body.voice,'Alex');
   casting.state.chapterId='c2';
-  casting.player.auditionCharacter(characterForm,'gemini');
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:''}}},'gemini');
   await until(()=>casting.voicePreview.getState().status==='ready');
   assert.equal(casting.calls.previews[2].body.segment_id,undefined,'Without a local passage, the server chooses character text or its demo fallback');
+  assert.equal(casting.calls.previews[2].body.voice,'Kore','Gemini Default is Kore');
   // The passage helper selects its provider through the existing studio field.
   if(!casting.nodes.has('#render-provider')) casting.nodes.set('#render-provider',{value:'gemini'});
   else casting.nodes.get('#render-provider').value='gemini';
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[3].body,{provider:'gemini',character_id:'mara',segment_id:'s1',voice:'Kore',model:'tts-test',segment_direction:'Unsaved passage cue.'});
-  // Breeze auditions name the chosen server voice and omit the model; without a
-  // chosen voice nothing is requested.
-  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,breeze_voice:{value:''}}},'breeze');
-  assert.equal(casting.calls.previews.length,4,'A missing Breeze voice never requests a sample');
-  assert.match(casting.calls.toasts.at(-1),/Choose a Breeze voice for Mara/);
-  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,breeze_voice:{value:'storyteller'}}},'breeze');
+  assert.deepEqual(casting.calls.previews[3].body,{provider:'gemini',character_id:'mara',segment_id:'s1',voice:'Kore',model:'tts-test',segment_direction:'Unsaved passage cue.'},
+    'Legacy Gemini voice fields are still read');
+  // Breeze Default needs a default voice; without one nothing is requested.
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:''}}},'breeze');
+  assert.equal(casting.calls.previews.length,4,'Breeze Default without a default voice never requests a sample');
+  assert.match(casting.calls.toasts.at(-1),/no default Breeze voice yet/);
+  casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:'library:vl_story'}}},'breeze');
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[4].body,{provider:'breeze',character_id:'mara',voice:'storyteller',direction:'An unsaved gentle delivery.'});
+  assert.deepEqual(casting.calls.previews[4].body,{provider:'breeze',character_id:'mara',voice:'library:vl_story',direction:'An unsaved gentle delivery.'},
+    'A library voice is sent by reference and the server resolves its current version; Breeze sends no model');
   casting.nodes.get('#render-provider').value='breeze';
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
-  assert.equal(casting.calls.previews.length,5,'A character without a Breeze voice cannot audition a Breeze passage');
+  assert.equal(casting.calls.previews.length,5,'A character on Breeze Default cannot audition without a default voice');
   assert.equal(JSON.stringify(casting.state.book),castBefore,'No audition saves voice, direction or speaker edits');
-  character.voices={breeze:{id:'narrator',revision:'r1',seed:42}};
+  casting.state.voiceLibrary={voices:[],defaults:{breeze:'vl_narr'}};
+  casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
+  await until(()=>casting.voicePreview.getState().status==='ready');
+  assert.equal(casting.calls.previews[5].body.voice,'','With a default voice, Default is sent as an empty voice for the server to resolve');
+  character.voices={breeze:{library:'vl_narr'}};
   const pinnedBefore=JSON.stringify(casting.state.book);
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[5].body,{provider:'breeze',character_id:'mara',segment_id:'s1',voice:'narrator',segment_direction:'Unsaved passage cue.'});
+  assert.deepEqual(casting.calls.previews[6].body,{provider:'breeze',character_id:'mara',segment_id:'s1',voice:'library:vl_narr',segment_direction:'Unsaved passage cue.'});
   assert.equal(JSON.stringify(casting.state.book),pinnedBefore,'No audition saves voice, direction or speaker edits');
   delete character.voices;
   console.log('Main player simple-listen integration checks passed.');

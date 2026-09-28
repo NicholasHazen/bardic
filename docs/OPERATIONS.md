@@ -17,7 +17,29 @@ uv run --frozen python -m bardic
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). There is no frontend compilation step. The launcher binds to loopback unless [local-network access](#local-network-access) is enabled; this version has no user account system and is intended for a single owner. The application checks request origins for writes. A publicly hosted deployment is not configured or promised by this setup.
 
-Use **Stop** on active work when convenient, then Ctrl+C in the server terminal. Shutdown waits for running worker work to finish or reach a cancellation boundary. A request already sent to a provider can still complete and be charged. Do not start another server against the same data directory while the first is shutting down.
+### Run as a service
+
+On macOS, `./bardicctl` runs Bardic as a LaunchAgent. It then starts at login, restarts after a crash and belongs to launchd rather than to whichever terminal or agent session started it:
+
+```sh
+./bardicctl install    # once, from any checkout of this repository
+./bardicctl status     # what serves the port, who owns it, active jobs
+./bardicctl restart    # after pulling code or editing .env
+./bardicctl stop       # until `start` or the next login
+./bardicctl start
+./bardicctl logs -f    # ~/Library/Logs/bardic.log
+./bardicctl uninstall  # stop, and no longer start at login
+```
+
+- `install` writes `~/Library/LaunchAgents/local.bardic.plist` for the repository's **main checkout**, never a linked worktree. `install`, `start` and `restart` run `uv sync --frozen` there first; a failed sync stops nothing. launchd then runs the checkout's `.venv/bin/python -m bardic` directly, so its signals reach the server itself rather than a `uv` wrapper. That launch reads the checkout's `.env` as usual. launchd passes no shell variables, so keep the port, library and network settings in `.env`. The job's PATH includes Homebrew, so ffmpeg is found; `say` and `dns-sd` are in `/usr/bin`.
+- The service runs whatever the main checkout contains. Work in another worktree is not served until it is merged there and the service restarts.
+- `stop`, `restart`, `install` (when reloading) and `uninstall` refuse while jobs are queued or running and name them, or when the server cannot report its jobs; `--force` proceeds. Shutdown waits for a safe boundary, which lets a request already sent finish. After 5 minutes launchd sends SIGKILL, which cuts off a long Gemini chapter chunk that can take up to 15 minutes. A request already sent can still be charged, and unfinished jobs are marked interrupted. The commands return only after the server process has exited.
+- Run from a linked worktree, those four commands also require `--yes`, so an agent cannot interrupt the owner's server by confusing `stop` with `dev stop`.
+- A server started by hand (for example with `nohup`) is not managed. `status` lists its parent processes; when they lead straight to launchd, whatever started it has exited and no session owns it. `install`, `start` and `restart` refuse while it holds the port. `./bardicctl stop` sends it SIGTERM, but only when its command line is a Bardic launch; then run `./bardicctl install`.
+- After a crash or failed start, launchd tries again every 30 seconds. A port held by another program therefore adds a log line every 30 seconds until it is freed or the service is stopped. The log records every request, about 2 MB a day with the app open. When it passes 10 MB, the next `install`, `start` or `restart` moves it to `bardic.log.1`; it is not rotated while the server runs.
+- The service commands need macOS. The [development servers](DEVELOPMENT.md#configuration-and-data-isolation) work on any POSIX system.
+
+For a server started in a terminal, use **Stop** on active work when convenient, then Ctrl+C in the server terminal. Shutdown waits for running worker work to finish or reach a cancellation boundary. A request already sent to a provider can still complete and be charged. Do not start another server against the same data directory while the first is shutting down.
 
 An operating-system lock on `server.lock` enforces one application instance per data directory. The file may remain after a clean exit; its mere presence is not an active lock. Do not delete it to bypass a running process. Open the existing app or stop the process using that directory.
 
@@ -27,7 +49,7 @@ An alternate launch can use another port and a separate data directory:
 BARDIC_PORT=8766 BARDIC_DATA_DIR=/absolute/path/to/test-library BARDIC_LAN_NAME='' uv run --frozen python -m bardic
 ```
 
-The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access.
+The empty `BARDIC_LAN_NAME` keeps a test copy on loopback when `.env` enables local-network access. `./bardicctl dev start --library /absolute/path/to/test-library` does the same in the background with provider keys blank; it refuses the service's own library.
 
 This is useful for testing a restored **copy**. Changing the port alone does not allow two servers to share one library. Keep the primary database on a local filesystem; SQLite WAL relies on same-host coordination. See [SQLite WAL](https://sqlite.org/wal.html).
 
@@ -70,7 +92,17 @@ Restart the server after changing `.env`. A browser refresh does not reload cred
 
 Keys entered in **Settings** replace the current server session's in-memory value only. They are not written to `.env`, SQLite or browser storage. Clearing a session key does not erase the file/environment value; it returns after restart. Provider/model preferences are saved in SQLite. A queued job captures its configuration so changing Settings does not reroute a request already scheduled.
 
-The Breeze server URL entered in **Settings → Breeze** is saved in SQLite and takes precedence over `BREEZE_TTS_URL`; clearing it falls back to the environment value after restart. The optional Breeze key follows the key rules above (memory only). **Check connection** reads the server's health, voice list and each cloned voice's reference clip; it never generates audio. The result, including pinned voice revisions, is saved so existing Breeze audio stays playable while the server is off. Only `cloned` voices can narrate; create or clone voices with the Breeze server's own tools. Breeze narration sends passage text and performance notes to that server over the local network, in plain HTTP unless the URL uses `https`.
+The Breeze server URL entered in **Settings → Breeze** is saved in SQLite and takes precedence over `BREEZE_TTS_URL`; clearing it falls back to the environment value after restart. The optional Breeze key follows the key rules above (memory only). **Check connection** reads the server's health, voice list and each cloned voice's reference clip; it never generates audio. The result, including pinned voice revisions, is saved so existing Breeze audio stays playable while the server is off. It also imports each usable server voice into the voice library and, the first time, makes the server's default voice the Bardic default. Only `cloned` voices can narrate. Breeze narration and voice design send passage text, descriptions and performance notes to that server over the local network, in plain HTTP unless the URL uses `https`.
+
+### Voices and casting
+
+The **Voices** tab holds voices shared by every book; the **Cast** tab assigns them. In Cast, choose the provider at the top, then each character's voice: **Default** (for Breeze, the Bardic default voice; for Gemini, Kore), one of your library voices, a Gemini built-in/project voice or device voice, or **Create new voice…**. Create new voice opens a Voices draft filled with the character's name, profile and delivery notes and one of their lines; **Save & assign** returns to Cast with the voice set. Narrator and Unassigned dialogue are listed first.
+
+- **Breeze, describe:** write a description and 5–15 seconds of sample text, **Generate previews** (1–3, free, roughly the audio length × count on the server), listen, adjust and generate again, then save one under a name. Bardic keeps a copy of every preview; the saved voice is uploaded from that copy, so it does not depend on the server's 24-hour preview expiry.
+- **Breeze, clone from a recording:** upload 5–15 seconds of clean speech (at most 20 MB) with its exact transcript. You must confirm that you have the speaker's consent.
+- **Gemini, describe:** each **Create** is a billed request that stores one voice in your Google project (at most 200 stored voices per project, each kept for one year). Tick the confirmation for every create; the Voices tab shows how many of the 200 are used after **Refresh Gemini voices**. Discarding a candidate, abandoning the draft or saving another candidate deletes those stored voices. A Gemini voice made with one API key cannot be used or deleted with another. Gemini voice creation has not been exercised against a live account by this project.
+- **Iterate** on a voice to save a new version of it. Characters follow a voice's current version, so saving a version, **Make current** on an older one, or **Set as default** re-voices the characters that follow it; their existing takes become out of date but are kept, and switching back then rendering reuses the old audio without a request. These actions are refused while narration is being prepared for an affected book.
+- **Delete** a voice Bardic made deletes it on the provider too. An imported Breeze server voice is removed from Bardic only unless **Also delete on the server** is ticked; a removed imported voice is not imported again by later checks. The Breeze default cannot be deleted until another default is chosen. Characters still assigned to a deleted voice show a warning and refuse to render until reassigned.
 
 `.env`, `.bardic/` and legacy `.spintails/` directories are excluded by [`.gitignore`](../.gitignore). Git is for source and documentation, not library backup. If using another data directory inside the checkout, add its precise path to the ignore rules before staging files, or keep that directory outside the checkout. Exports and screenshots can contain private book content even when they contain no API keys.
 
@@ -182,6 +214,7 @@ Paths below are relative to the configured data directory:
 | `audio/<book-id>/` | Enhanced audio assets, including retained alternatives and readable legacy recipe-named files. |
 | `listen-audio/<book-id>/` | Independent simple-listening assets. |
 | `voice-previews/<book-id>/` | Independent retained voice-example WAVs, matched to immutable preview request/take metadata in SQLite. |
+| `voice-library/` | Library-wide audition clips and design candidates for the voice library, content-addressed by SHA-256. |
 | `backups/` when present | Previously created backups; not an automatic scheduled full-library backup service. |
 | `server.lock` | Operating-system instance lock file. |
 
@@ -191,7 +224,7 @@ Browser reading position and some UI state live in that browser's local storage,
 
 ## Full backup and safe restore
 
-The simplest full backup is a copy of the **entire data directory after the server has stopped**. Preserve originals and all three audio trees (enhanced, simple listening and voice examples) along with SQLite; a database-only copy is not a complete audiobook backup. Keep credentials separately from shareable data/source backups.
+The simplest full backup is a copy of the **entire data directory after the server has stopped**. Preserve originals and all four audio trees (enhanced, simple listening, voice examples and voice library) along with SQLite; a database-only copy is not a complete audiobook backup. Keep credentials separately from shareable data/source backups.
 
 For the documented source launcher, this example uses the same configuration loader and creates a new timestamped directory outside the checkout. Run it from the project directory **only after server shutdown has completed**:
 

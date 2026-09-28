@@ -68,15 +68,41 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 
 Since 2026-09-27 a character stores `voices: {provider: {id, ...}}`, one entry per narration provider (`gemini`, `system`, `breeze`). New characters from import, analysis and the cast editor start with `{"gemini": {"id": ...}}`; the device-voice assignment adds `system`. Characters saved earlier keep their `voice` (Gemini) and `system_voice` (macOS) fields, and `audio.voice_selection()` reads them whenever the map has no entry for that provider. Editing any voice choice through the API rewrites the character with a `voices` map and removes both legacy fields, leaving one stored source per provider. Presented books always include the normalized map. Because Gemini and device recipes contain only the voice string, both layouts produce identical fingerprints; `tests/test_narration_providers.py` pins pre-change fingerprints, listening session IDs and synthesis keys.
 
-A Breeze choice is `{id, revision, seed, settings?}`. `revision` is a SHA-256 over schema version, voice ID, kind, `created_at`, `instruction`, voice `settings`, reference transcript and the SHA-256 of the reference clip bytes. Labels, name, description and `updated_at` are excluded, so relabelling a voice does not invalidate audio. Only `cloned` voices are pinned; `designed` voices are listed as unusable because they change between requests. `seed` defaults to the voice's own seed, else 42. A passage `seed` overrides it for seeded providers; Gemini and device recipes ignore it. Setting a new passage seed is how a Breeze retake differs from the previous take, and like other performance edits it retires the currently selected take while retaining history.
+Each provider entry takes one of these forms:
+
+| Value | Meaning |
+| --- | --- |
+| `{"library": "vl_…"}` | Follow a [library voice](#voice-library)'s **current** version. The Cast tab writes this form for Breeze and Gemini library voices. |
+| `{"id": …}` | A direct provider voice: a Gemini built-in or project voice, a device voice, or a legacy field. |
+| `{"id", "revision", "seed", "settings"?}` | A concrete Breeze pin made before the voice library existed; still accepted and resolved as-is. |
+| absent | **Default**. Breeze: the Bardic default library voice in `narration_defaults.breeze`. Gemini: Kore. Device: the system default voice. |
+
+Library references and the Breeze default are resolved to concrete provider voices by `Runtime.resolved_cast()` from SQLite only; recipes never see an unresolved reference and refuse one (`voice_selection()` raises) rather than falling back to a default voice. Resolved selections carry `library` and `version`; enhanced takes and Breeze voice examples made with a library voice record `voice_library: {id, version}`, and every Breeze take (including simple listening) records `voice_revision`. Simple-listening sessions pin the concrete voice only, so their takes do not name the library voice. The `voice_assignment` artifact captures the stored `voices` map (references, not their resolution); current-version and default changes are recorded in `voice_library_events` instead.
+
+A concrete Breeze choice is `{id, revision, seed, settings?}`. `revision` is a SHA-256 over schema version, voice ID, kind, `created_at`, `instruction`, voice `settings`, reference transcript and the SHA-256 of the reference clip bytes. Labels, name, description and `updated_at` are excluded, so relabelling a voice does not invalidate audio. Only `cloned` voices are pinned; `designed` voices are listed as unusable because they change between requests. `seed` defaults to the voice's own seed, else 42. A passage `seed` overrides it for seeded providers; Gemini and device recipes ignore it. Setting a new passage seed is how a Breeze retake differs from the previous take, and like other performance edits it retires the currently selected take while retaining history.
 
 A Breeze recipe adds `voice_revision`, `seed`, `settings` (validated temperature/cfg_scale/top_p/top_k overrides; no current API or UI sets them, so this is empty), the explicit `segmentation` sent to the server, `style` (the Breeze instruction built from performance notes) and `adapter_version` (1) to the shared recipe fields. Breeze take metadata may include `provider_timing` (`{schema_version:1, kind:"sentence", source:"breeze", offsets:"recipe_text_code_points", segments:[{char_start,char_end,start,end}]}`, kept only when every server offset resolves to the exact sent text, else `null`) and a `breeze` block with the server `request_id`, `timing_accepted` and any `vocal_event_markup` found in the source text.
 
-Settings preferences store `breeze_url` and `breeze_catalog`, the last voice check (state, message, model, default voice, voices with revisions, checked URL and time). The catalog is persisted so pinned sessions, previews and cached audio still resolve after a restart while the server is offline; a failed check keeps the previous voices for the same URL. The optional Breeze key is held only in process memory or the environment.
+Settings preferences store `breeze_url` and `breeze_catalog`, the last voice check (state, message, model, default voice, voices with revisions, checked URL and time). The catalog is persisted so pinned sessions, previews and cached audio still resolve after a restart while the server is offline; a failed check keeps the previous voices for the same URL. Voices Bardic creates or deletes are added to or removed from this saved catalog immediately. The optional Breeze key is held only in process memory or the environment. `narration_defaults` holds `{"breeze": "vl_…"}`; `gemini_voice_catalog` holds the last listing of the Google project's stored voices with `key_hash` (the first 12 hex digits of the key's SHA-256, never the key), state, message and time.
+
+### Voice library
+
+Voices belong to the whole data directory, not to a book. Tables are defined in [voice_library.py](../bardic/voice_library.py).
+
+| Table | Key and columns | Contract |
+| --- | --- | --- |
+| `voice_library` | PK `id`; `provider`, `body` | Mutable voice record `{id: "vl_<16 hex>", provider: breeze|gemini, name, description, origin: designed|cloned|imported, current_version, created_at, updated_at, deleted_at, source: {book_id, character_id, character_name}|null}`. Rows are never deleted (a trigger refuses DELETE); deletion sets `deleted_at`. |
+| `voice_library_versions` | PK `(voice_id, version)`; FK `voice_id`; `body` | Immutable version `{version, provider, provider_voice_id, revision, seed, made: designed|cloned|imported, recipe: {description, sample_text, preview_id, preview_seed, model?, language_code?, gender?}, audition: {asset_id, duration}|null, project, created_at, expires_at}`. UPDATE/DELETE triggers reject changes. |
+| `voice_library_events` | PK autoincrement `id`; `body` | Append-only history: `created`, `version_added`, `current_changed` (with `previous`), `updated`, `deleted` (with `server_deleted`), `default_changed`. UPDATE/DELETE triggers reject changes. |
+| `voice_drafts` | PK `id`; `body` | Mutable design working state `{id: "vd_<16 hex>", provider, base_voice_id, context, name, description, sample_text, status: open|saved|abandoned, candidates[], saved?}`. Candidates hold `kind` (`breeze_preview`/`gemini_voice`), preview or provider voice ID, seed, description, sample text, local `asset_id`/duration, server expiry, `discarded`, and for Gemini the creating `project` key hash and model. |
+
+Audition and candidate audio is copied to `voice-library/<sha256>.wav`, validated and normalized to mono 16-bit 24 kHz WAV, and never overwritten. This keeps what was heard after Breeze previews expire (24 hours) and after Gemini voices expire (one year).
+
+Breeze versions are separate server voices with generated IDs `bardic-<8 hex>` and labels `bardic_voice` (the library ID) and `bardic_version`. Saving a Breeze candidate uploads the locally kept auditioned clip through the server's clone endpoint with the preview text as its transcript. The server re-encodes the stored reference (verified live on 2026-09-27: the reference bytes differ from the upload), so the version's `revision` hashes the reference the server actually keeps, read back after creation. Imported versions (`made: imported`) pin an existing server voice at its checked revision; a server-side change afterwards shows as `changed` and is refused at render time, and adopting it as a new version is not implemented. Gemini versions record the provider voice ID, the server's expiry time and `project`, the hash of the key that created them; a different key can neither use nor delete them.
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), and [search.py](../bardic/search.py). The inventory below covers 30 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 34 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -152,7 +178,7 @@ Principal artifact kinds are:
 | `structure` / `book` | Book display metadata and chapter structure, depending on source versions. |
 | `scene_map` / chapter ID | Scenes and passage IDs/spans/attributions/directions with verified source anchors. Passage text is referenced, not redundantly stored per passage artifact. |
 | `character_profile` / character ID | Current profile, evidence and freshness fields. A generation dependency is attached only when the stored produced profile can be verified. Edited profiles do not claim unverified model lineage. |
-| `voice_assignment` / character ID | Voice/system voice choice, separate from semantic profile. |
+| `voice_assignment` / character ID | Stored per-provider voice choices (`voices`, plus legacy `voice`/`system_voice` when present), separate from semantic profile. Library references are captured as references, not resolved versions. |
 | `audio_take` / passage ID | Enhanced take metadata and a verified source dependency where possible. It does not claim today's mutable directions generated an old take. |
 | `census` / `book` | Local preprocessing result. |
 | `analysis_input` / unit key | Effective request recipe plus actual retained upstream artifact dependencies. |
@@ -264,6 +290,7 @@ New libraries default to `.bardic/`, configurable with `BARDIC_DATA_DIR` (legacy
   audio/<book-id>/<asset-id>.wav
   listen-audio/<book-id>/<asset-id>.wav
   voice-previews/<book-id>/<asset-id>.wav
+  voice-library/<asset-id>.wav     # Library-wide voice auditions and design candidates
 ```
 
 Older enhanced audio may use a recipe fingerprint as its filename; current byte-addressed takes use a SHA-256 asset ID. Thumbnail bytes are inside SQLite. Export ZIPs are built in temporary directories and removed after their response. A manually created `backups/` folder may exist, but the application has no automatic backup scheduler.
@@ -295,7 +322,7 @@ The separate audiobook export contains current selected enhanced takes, `product
 
 ### Full backup boundary
 
-A recoverable local backup needs a consistent SQLite snapshot **and** the originals and all three audio trees. A raw copy of only `library.sqlite3` while WAL is active may omit committed work; use SQLite's backup facility or stop the server before taking a consistent filesystem copy. Preserve project environment configuration separately if needed; it is not in the library or portable export. Restoration procedures must be exercised independently because the application does not yet provide a restore tool.
+A recoverable local backup needs a consistent SQLite snapshot **and** the originals and all four audio trees (including `voice-library/`). A raw copy of only `library.sqlite3` while WAL is active may omit committed work; use SQLite's backup facility or stop the server before taking a consistent filesystem copy. Preserve project environment configuration separately if needed; it is not in the library or portable export. Restoration procedures must be exercised independently because the application does not yet provide a restore tool.
 
 ## Constraints for future changes
 

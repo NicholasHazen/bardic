@@ -191,9 +191,10 @@ class Store:
             conn.execute("INSERT OR REPLACE INTO takes(book_id,segment_id,body) VALUES (?,?,?)", (book_id, segment_id, json.dumps(metadata)))
             capture_take(conn, book, segment, metadata)
 
-    def jobs(self, book_id: str | None = None, limit: int | None = 100) -> list[dict]:
+    def jobs(self, book_id: str | None = None, limit: int | None = 100, active: bool = False) -> list[dict]:
+        clauses = (["book_id=?"] if book_id else []) + (["json_extract(body,'$.status') IN ('queued','running')"] if active else [])
         with self.lock, self.connect() as conn:
-            sql = "SELECT body FROM jobs" + (" WHERE book_id=?" if book_id else "") + " ORDER BY rowid DESC" + (f" LIMIT {int(limit)}" if limit is not None else "")
+            sql = "SELECT body FROM jobs" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY rowid DESC" + (f" LIMIT {int(limit)}" if limit is not None else "")
             return [json.loads(row[0]) for row in conn.execute(sql, (book_id,) if book_id else ())]
 
     def job(self, job_id: str) -> dict:

@@ -121,3 +121,13 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 **Consequences:** Restarting reloads `.env`/environment values and clears session-only key edits/check results. The local app has no authentication and must not be treated as a public hosted product. Keys are not the only private data: retained prompts, source text, artifacts and exports also belong to the user.
 
 **Revisit when:** Distribution requires an OS keychain, shared server access or a different threat model. Public hosting, licensing and multi-user authentication require explicit product/owner decisions.
+
+## D13 · launchd supervision; development servers are processes
+
+**Decision:** On macOS the owner's server runs as the LaunchAgent `local.bardic` from the repository's main checkout, controlled by `./bardicctl`. Agents test changes on development servers: background processes that run their own checkout on a separate port with a scratch library, loopback bind and blank provider keys, recorded where any session can list or stop them. There is no container image.
+
+**Reason:** A server launched from a terminal or agent session outlives that session with nothing responsible for it, and the next session cannot tell who owns it. launchd provides login start, crash restart and one owner. Worktrees already isolate code; the port, library and key settings isolate runtime state. A Linux container would lose macOS voices and `dns-sd`, and Docker Desktop's VM boundary defeats SQLite WAL shared memory and is not guaranteed to honour the `server.lock` exclusion against a host process.
+
+**Consequences:** The job runs the checkout's virtual-environment Python directly after `bardicctl` syncs it, so launchd's stop and kill reach the server rather than a wrapper. The service serves the main checkout, so worktree changes are live only after merging and restarting. Service commands are macOS-specific; other systems need their own supervisor. The service log is not rotated. Development servers share the host's tools and Python, not a pinned image.
+
+**Revisit when:** Bardic gains Linux-only dependencies, needs a CI image, or runs somewhere other than the owner's Mac. Any container must never mount the owner's live library.

@@ -150,6 +150,22 @@ def _versions_view(repository, registry, conn, book_id, step, step_runs):
     return items
 
 
+def audio_checker(runtime):
+    """``valid_audio(book, segment)`` that resolves each book's voice cast only once.
+
+    Casts resolve through the voice library (a database read), so resolving it
+    per passage would make previews scale with passages × library size.
+    """
+    casts = {}
+
+    def check(book, segment):
+        entry = casts.get(id(book))
+        if entry is None or entry[0] is not book:
+            entry = casts[id(book)] = (book, runtime.resolved_cast(book))
+        return runtime.valid_audio(book, segment, entry[1])
+    return check
+
+
 def build_router(registry: Registry):
     router = APIRouter()
 
@@ -313,11 +329,12 @@ def build_router(registry: Registry):
     def accept_versions(runtime, book_id, step, versions, step_run_id, *, mode, expected_revision=None):
         def finalize(book):
             runtime.assign_local_voices(book)
+            cast = runtime.resolved_cast(book)
             for segment in book['segments']:
-                if segment.get('audio') and not runtime.valid_audio(book, segment):
+                if segment.get('audio') and not runtime.valid_audio(book, segment, cast):
                     segment['audio'] = None
         return projection.accept(runtime.store, PipelineRepository(runtime.store), registry, book_id, step, versions,
-                                 mode=mode, step_run_id=step_run_id, valid_audio=runtime.valid_audio, finalize=finalize,
+                                 mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime), finalize=finalize,
                                  expected_revision=expected_revision)
 
     def require_decidable(runtime, book_id):
@@ -408,7 +425,7 @@ def build_router(registry: Registry):
             book = runtime.store.book(book_id)
             with runtime.store.connect() as conn:
                 projection.sync(repository, registry, conn, book)
-                impact = projection.preview(repository, registry, conn, book, step, chosen, runtime.valid_audio)
+                impact = projection.preview(repository, registry, conn, book, step, chosen, audio_checker(runtime))
         impact.pop('book')
         return {**impact, 'revision': book.get('revision', 0)}
 

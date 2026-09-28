@@ -6,6 +6,34 @@ This is a dated development record. Counts and account outcomes below belong to 
 
 Historical `.spintails/` backup paths and `spintails` commands below retain their original spelling. The current application is Bardic; see [rename compatibility](OPERATIONS.md#upgrading-from-spin-tails) for current launch commands and library selection.
 
+## Service control (`bardicctl`)
+
+Verified on September 27, 2026, with Python 3.11.5 (worktree venv) and uv 0.8.17 on macOS (Darwin 27).
+
+- `tests/test_service.py` (23 tests): a fake launchctl records calls, and `HOME` and the development root are temporary, so no real LaunchAgent or registry is written. Real processes cover:
+  - signalling only Bardic command lines, and rejecting a reused process ID by its start time;
+  - a real development server that reports no key although the test process had one, listens only on loopback, and keeps its port and restored library across `dev restart`;
+  - two concurrent `dev start` processes;
+  - an impostor server on the chosen port, and a server that never answers.
+
+  An in-app test shows `/api/jobs?active=true` finding a running job behind 120 newer ones.
+- Mutation checks: removing each of these safeguards made its test fail:
+  - key blanking, the start-time check and the start lock (the lock test failed 3 times out of 3 without it);
+  - waiting for the server process, the loopback Host header, and refusing unreadable jobs;
+  - the own-process readiness check, restarting with the same library, the worktree `--yes` check, the file-identity library check, and the name-ownership check.
+
+  Removing the `terminate` call was not detected, because the 30 s `kill` fallback still stops the process. Full suite: **952 passed, 1 skipped** (the opt-in macOS speech test). After merging the voice-library and chapter-player changes from main: **964 passed, 1 skipped**, all **115** Node tests passed, and every browser JavaScript syntax check passed.
+- An adversarial review found problems that are now fixed: a `uv run` wrapper whose Bardic child survived launchd's SIGKILL while `stop` reported success; the job guard passing when the server could not be read (including a server bound to a LAN address); the 100-job bound; case/containment gaps in the library check; `dev restart` switching libraries; readiness accepting another server; stopping the owner's server from a worktree without confirmation; and default-name collisions between checkouts.
+- Real launchd, under the throwaway label `local.bardic-itest` with a copied checkout, port 8790 and a scratch library:
+  - `install` 2.1 s including a fresh `uv sync`; `status` showed launchd as the owner; `start` did nothing because the server was running; `restart` 1.2 s with a new process.
+  - After a SIGKILL of the server, launchd restarted it within its 30 s throttle.
+  - `stop`, `start` and `uninstall` completed, with graceful shutdown in the log each time.
+  - An earlier `restart` built on `kickstart -k` waited 28.7 s for the respawn throttle, so `restart` now unloads and loads the job.
+  - Under `local.bardic-slowstop`, a fake server that ignored SIGTERM was killed by launchd at a 5 s ExitTimeOut. `stop` returned after 5.1 s, with the process gone and the port free.
+- Handover rehearsal on the same copy: a `nohup`-launched server was reported as detached, `restart`, `start` and `install` refused to race it, `stop` shut it down gracefully, and `install` took over.
+- The owner's running server (port 8766) was inspected read-only with `status` and was not stopped, restarted or moved under launchd during this work.
+- Not verified: behaviour after logout/login and reboot, the `logs -f` pager, and Linux (service commands are macOS-only).
+
 ## Chunked Gemini chapter listening
 
 Verified on September 28, 2026, with Python 3.11.5 (project venv) and Node 22.22.1.
