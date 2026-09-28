@@ -45,6 +45,15 @@ test('only explicit audition requests a sample, preserves inputs and uses the sh
   assert.equal(postCount(env), 1);
 });
 
+test('a pronunciation draft is sent with only its own fields', async () => {
+  const env = environment(cached);
+  const draft = {id:'pr_0123456789ab', term:'Cthaelor', respelling:'Kaylor', match_case:false, providers:{breeze:'Kay-lor'},
+    usage:{occurrences:3}, note:''};
+  await env.api.start(book, {provider:'breeze', voice:'narrator', pronunciation:draft}, 'Cthaelor → Kaylor');
+  assert.deepEqual(env.calls[0].body, {provider:'breeze', voice:'narrator', pronunciation:{id:'pr_0123456789ab',
+    term:'Cthaelor', respelling:'Kaylor', match_case:false, providers:{breeze:'Kay-lor'}}});
+});
+
 test('main-player onStart may call stop without invalidating the new audition', async () => {
   const env = environment(cached);
   let stopped = 0, played = 0;

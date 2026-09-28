@@ -13,11 +13,14 @@ from urllib.parse import quote
 
 from .audio import AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, render_fingerprint, validate_audio
 from .store import now
+from . import pronunciation
 from .take_archive import produce_take
 
 
 VERSION = 1
 MAX_PREVIEW_CHARACTERS = 400
+# Carrier for auditioning a word the book does not contain (yet): original text, not book prose.
+NAME_DEMO_TEXT = 'The next morning, {} crossed the square and asked for the ferryman.'
 DEMO_TEXT = 'The lantern glowed beside the open book. “Shall we begin?” she asked. Beyond the window, the quiet town was waiting for a story.'
 
 
@@ -69,9 +72,18 @@ class VoicePreviewRepository:
                         SELECT RAISE(ABORT, 'Voice previews are immutable'); END''')
 
     def prepare(self, book_id, provider, voice=None, model=None, *, segment_id=None,
-                character_id=None, direction=None, segment_direction=None, selection=None):
-        """``selection`` is the pinned Breeze voice; it is retained in the recipe."""
+                character_id=None, direction=None, segment_direction=None, selection=None, pronunciation_draft=None):
+        """``selection`` is the pinned Breeze voice; it is retained in the recipe.
+
+        The book's pronunciations apply to every preview. ``pronunciation_draft`` is an unsaved entry
+        auditioned in place of the one it edits; without a chosen passage, the first passage using
+        its word is read from that word's sentence.
+        """
         book = self.store.book(book_id)
+        lexicon, draft = pronunciation.book_lexicon(book), None
+        if pronunciation_draft is not None:
+            draft = pronunciation.normalize_entry(pronunciation_draft)
+            lexicon = pronunciation.merged(lexicon, draft)
         if provider not in PROVIDERS:
             raise ValueError('Choose system, Gemini or Breeze narration.')
         if direction is not None and not character_id:
@@ -103,6 +115,8 @@ class VoicePreviewRepository:
         character = next((c for c in book['characters'] if c['id'] == character_id), None)
         if character_id and character is None:
             raise KeyError('Character not found in this book')
+        if draft is not None and segment is None:
+            segment = next((s for s in book['segments'] if pronunciation.first_match(s['text'], draft)), None)
         if character is not None and segment is None:
             segment = next((s for s in book['segments'] if s.get('speaker_id') == character_id), None)
         anchor, scene = None, {}
@@ -112,9 +126,16 @@ class VoicePreviewRepository:
             if (chapter is None or type(start) is not int or type(end) is not int or
                     not 0 <= start < end <= len(chapter['text']) or chapter['text'][start:end] != segment['text']):
                 raise ValueError('This passage does not match its original source. Repair its source mapping before previewing.')
-            text = _excerpt(segment['text'])
+            match = pronunciation.first_match(segment['text'], draft) if draft is not None else None
+            if match:
+                # The whole sentence from the chapter: a passage can be a lone speech tag (" Eilidh said.").
+                begin, finish = pronunciation.sentence_around(chapter['text'], start + match[0], start + match[1],
+                                                              MAX_PREVIEW_CHARACTERS)
+                offset, text = begin - start, chapter['text'][begin:finish]
+            else:
+                offset, text = 0, _excerpt(segment['text'])
             anchor = {'schema_version': VERSION, 'book_id': book_id, 'chapter_id': chapter['id'],
-                      'segment_id': segment['id'], 'start': start, 'end': start + len(text),
+                      'segment_id': segment['id'], 'start': start + offset, 'end': start + offset + len(text),
                       'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
             passage = {'id': segment['id'], 'text': text}
             if character is not None:
@@ -123,8 +144,13 @@ class VoicePreviewRepository:
                     passage['direction'] = segment_direction
                 selected_scene = next((s for s in book['scenes'] if s['id'] == segment.get('scene_id')), {})
                 scene = {k: selected_scene[k] for k in ('tone', 'direction') if k in selected_scene}
+        elif draft is not None:
+            passage = {'id': 'pronunciation-demo-v1', 'text': NAME_DEMO_TEXT.format(draft['term'])}
         else:
             passage = {'id': 'voice-preview-demo-v1', 'text': DEMO_TEXT}
+        spoken = pronunciation.apply(passage['text'], lexicon, provider)[0]
+        # The retained request keeps only matching entries' speech fields: no IDs, notes or unrelated words.
+        passage = pronunciation.with_lexicon(passage, pronunciation.speech_entries(passage['text'], lexicon))
         performer = {'id': character_id or 'preview-narrator', 'voice': voice or 'Kore', 'system_voice': voice}
         if provider == 'breeze':
             performer['voices'] = {'breeze': copy.deepcopy(selection)}
@@ -138,6 +164,11 @@ class VoicePreviewRepository:
                    'character_id': character_id, 'character_name': character.get('name') if character is not None else None,
                    'source_anchor': anchor, 'truncated': segment is not None and len(passage['text']) < len(segment['text']),
                    'provider': provider, 'model': model, 'voice': voice}
+        # Added only when they apply, so earlier preview identities are unchanged.
+        if spoken != passage['text']:
+            preview['spoken_text'] = spoken
+        if draft is not None:
+            preview['pronunciation'] = {'term': draft['term'], 'spoken': pronunciation.spoken_form(draft, provider)}
         recipe = {'schema_version': VERSION, 'preview': preview, 'passage': passage,
                   'character': performer, 'scene': scene, 'fingerprint': fingerprint}
         preview['id'] = _hash(recipe)

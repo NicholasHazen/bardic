@@ -105,6 +105,14 @@ The **Voices** tab holds voices shared by every book; the **Cast** tab assigns t
 - **Iterate** on a voice to save a new version of it. Characters follow a voice's current version, so saving a version, **Make current** on an older one, or **Set as default** re-voices the characters that follow it; their existing takes become out of date but are kept, and switching back then rendering reuses the old audio without a request. These actions are refused while narration is being prepared for an affected book.
 - **Delete** a voice Bardic made deletes it on the provider too. An imported Breeze server voice is removed from Bardic only unless **Also delete on the server** is ticked; a removed imported voice is not imported again by later checks. The Breeze default cannot be deleted until another default is chosen. Characters still assigned to a deleted voice show a warning and refuse to render until reassigned.
 
+**Pronunciations** (Cast tab, below the cards) fix how the narrator says a name or invented word:
+
+- Type the word and how it should sound, then **Hear it**. The narrator for the provider selected at the top of Cast reads the word's first sentence in the book with your spelling. Nothing is saved, and a Gemini example can be charged like any voice example.
+- Write the sound as an ordinary-looking word: `Kaylor`, `Aylee`, `Zosahree`. Use hyphens only when a syllable goes missing (`ny-oh-var`), and check that no piece sounds like another word (`ay` is read as "aye"). Avoid capital letters, which narrators may read as initials or shout.
+- **Match capitals** (on by default) keeps a name like `Will` from changing the verb `will`. Turn it off for a word that also appears in capitals, such as shouted dialogue.
+- **Different spelling for one narrator** helps when one provider still gets the word wrong. Typing the original word there lets that narrator read it unchanged.
+- Add the pronunciations before narrating a whole book. Saving one retires recorded Studio takes that contain the word, and they are narrated again (with provider charges or quota for Gemini) the next time you narrate. Changing the entry back reuses the archived audio. A saved cast performance keeps the pronunciations it started with; create a new one to use later changes.
+
 `.env`, `.bardic/` and legacy `.spintails/` directories are excluded by [`.gitignore`](../.gitignore). Git is for source and documentation, not library backup. If using another data directory inside the checkout, add its precise path to the ignore rules before staging files, or keep that directory outside the checkout. Exports and screenshots can contain private book content even when they contain no API keys.
 
 ### Model inventory versus account checks
