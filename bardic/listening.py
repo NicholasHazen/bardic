@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from .audio import DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .audio import AudioError, DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
 from .store import now
 from .take_archive import produce_take
 
 
 VERSION = 1
+SYNTHESIS_CACHE_VERSION = 1
 
 
 def _hash(value):
@@ -38,6 +42,13 @@ class ListeningRepository:
                 body TEXT NOT NULL)''')
             conn.execute('''CREATE INDEX IF NOT EXISTS listening_recipe
                 ON listening_takes(book_id,session_id,segment_id,recipe)''')
+            # An index of retained takes, not another mutable take selection.
+            # Source/session identities remain in listening_takes; equivalent
+            # speech inputs may reuse bytes without pretending to generate them.
+            conn.execute('''CREATE TABLE IF NOT EXISTS listening_synthesis_cache (
+                content_key TEXT NOT NULL, take_id TEXT NOT NULL,
+                PRIMARY KEY(content_key,take_id),
+                FOREIGN KEY(take_id) REFERENCES listening_takes(id))''')
             for operation in ('UPDATE', 'DELETE'):
                 conn.execute(f'''CREATE TRIGGER IF NOT EXISTS listening_takes_no_{operation.lower()}
                     BEFORE {operation} ON listening_takes BEGIN
@@ -86,6 +97,61 @@ class ListeningRepository:
         fingerprint = render_fingerprint(passage, narrator, {}, session['provider'], session['model'])
         return passage, narrator, fingerprint
 
+    @classmethod
+    def _synthesis_key(cls, passage, session):
+        # This constant ID is ONLY a lookup identity. Never pass it to synthesis
+        # or publish its fingerprint as the source-bound generated fingerprint.
+        fingerprint = cls._audio_recipe({'id': 'simple-speech-content', 'text': passage['text']}, session)[-1]
+        return _hash({'schema_version': SYNTHESIS_CACHE_VERSION, 'fingerprint': fingerprint})
+
+    def _validated_asset(self, book_id, asset_id):
+        path = self._path(book_id, asset_id)
+        with path.open('rb') as source:
+            if hashlib.file_digest(source, 'sha256').hexdigest() != asset_id:
+                raise AudioError('Saved narration failed its content integrity check.')
+        return validate_audio(path)
+
+    def _index(self, content_key, take_id):
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO listening_synthesis_cache VALUES (?,?)', (content_key, take_id))
+
+    def _retain(self, book_id, session_id, segment_id, identity, recipe, content_key, metadata):
+        metadata = {**metadata, 'session_id': session_id, 'segment_id': segment_id,
+                    'recipe': recipe, 'source_anchor': identity, 'synthesis_key': content_key,
+                    'created_at': now()}
+        # A new lookup format/version must not collide with an older immutable
+        # row if deterministic synthesis happens to return the same WAV bytes.
+        # Legacy identifiers remain accepted by exact-source cache reads.
+        identifier = _hash([book_id, recipe, metadata['asset_id'], content_key])
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO listening_takes VALUES (?,?,?,?,?,?,?)',
+                         (identifier, book_id, session_id, segment_id, recipe, metadata['asset_id'], json.dumps(metadata)))
+            conn.execute('INSERT OR IGNORE INTO listening_synthesis_cache VALUES (?,?)', (content_key, identifier))
+            # If a concurrent read already retained this take, report its real
+            # first creation/provenance, not the losing caller's proposed row.
+            return json.loads(conn.execute('SELECT body FROM listening_takes WHERE id=?', (identifier,)).fetchone()[0])
+
+    def _copy_asset(self, source_book_id, book_id, asset_id):
+        source, target = self._path(source_book_id, asset_id), self._path(book_id, asset_id)
+        if source == target:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Copy rather than hardlink the retained source so accidental damage to
+        # one book's file cannot also corrupt the other book's saved narration.
+        with tempfile.TemporaryDirectory(prefix='.reuse-take-', dir=target.parent) as directory:
+            temporary = Path(directory) / 'take.wav'
+            shutil.copyfile(source, temporary)
+            with temporary.open('rb') as copied:
+                if hashlib.file_digest(copied, 'sha256').hexdigest() != asset_id:
+                    raise AudioError('Saved narration changed while it was being reused.')
+                os.fsync(copied.fileno())
+            validate_audio(temporary)
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                # Never overwrite a retained asset, even when its path is bad.
+                self._validated_asset(book_id, asset_id)
+
     def _inputs(self, book_id, session_id, segment_id):
         session = self.get_session(book_id, session_id)
         book = self.store.book(book_id)
@@ -128,18 +194,43 @@ class ListeningRepository:
                 'url': f'/api/books/{quote(book_id, safe="")}/listen/audio/{metadata["asset_id"]}'}
 
     def cached(self, book_id, session_id, segment_id):
-        _, _, _, _, recipe = self._inputs(book_id, session_id, segment_id)
+        session, passage, _, identity, recipe = self._inputs(book_id, session_id, segment_id)
+        content_key = self._synthesis_key(passage, session)
         with self.store.lock, self.store.connect() as conn:
-            rows = conn.execute('''SELECT body FROM listening_takes WHERE book_id=? AND session_id=?
+            rows = conn.execute('''SELECT id,body FROM listening_takes WHERE book_id=? AND session_id=?
                 AND segment_id=? AND recipe=? ORDER BY rowid DESC''',
                                 (book_id, session_id, segment_id, recipe)).fetchall()
-        for (body,) in rows:
+        for take_id, body in rows:
             metadata = json.loads(body)
+            if metadata.get('synthesis_key', content_key) != content_key:
+                continue
             try:
-                duration = validate_audio(self._path(book_id, metadata['asset_id']))
+                duration = self._validated_asset(book_id, metadata['asset_id'])
             except (OSError, EOFError, ValueError, KeyError):
                 continue
-            return self._present(book_id, {**metadata, 'duration': duration})
+            self._index(content_key, take_id)
+            return {**self._present(book_id, {**metadata, 'duration': duration}), 'cache_hit': True}
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('''SELECT t.id,t.book_id,t.body FROM listening_synthesis_cache c
+                JOIN listening_takes t ON t.id=c.take_id
+                WHERE c.content_key=? ORDER BY t.rowid DESC''', (content_key,)).fetchall()
+        for take_id, source_book_id, body in rows:
+            original = json.loads(body)
+            try:
+                duration = self._validated_asset(source_book_id, original['asset_id'])
+            except (OSError, EOFError, ValueError, KeyError):
+                continue
+            self._copy_asset(source_book_id, book_id, original['asset_id'])
+            # The producer fingerprint remains the real original fingerprint.
+            # The target source-bound recipe is recorded in source_anchor;
+            # reuse explicitly points to the actual retained input take.
+            reused = {key: value for key, value in original.items() if key != 'resource_usage'}
+            reused.update(duration=duration, reuse={'schema_version': 1, 'take_id': take_id,
+                          'book_id': source_book_id, 'session_id': original['session_id'],
+                          'segment_id': original['segment_id'], 'recipe': original['recipe'],
+                          'fingerprint': original['fingerprint']})
+            metadata = self._retain(book_id, session_id, segment_id, identity, recipe, content_key, reused)
+            return {**self._present(book_id, metadata), 'cache_hit': True}
         return None
 
     def takes(self, book_id, session_id):
@@ -180,12 +271,8 @@ class ListeningRepository:
         # must not publish a new take against the wrong passage coordinates.
         if self._inputs(book_id, session_id, segment_id)[-1] != recipe:
             raise ValueError('The source passage changed during narration. Select the passage again.')
-        metadata = {**metadata, 'session_id': session_id, 'segment_id': segment_id,
-                    'recipe': recipe, 'source_anchor': identity, 'created_at': now()}
-        identifier = _hash([book_id, recipe, metadata['asset_id']])
-        with self.store.lock, self.store.connect() as conn:
-            conn.execute('INSERT OR IGNORE INTO listening_takes VALUES (?,?,?,?,?,?,?)',
-                         (identifier, book_id, session_id, segment_id, recipe, metadata['asset_id'], json.dumps(metadata)))
+        metadata = self._retain(book_id, session_id, segment_id, identity, recipe,
+                                self._synthesis_key(passage, session), metadata)
         # Completed audio is retained even if Stop was pressed during the call.
         # The worker's cancellation check controls whether playback resumes.
         return self._present(book_id, metadata)

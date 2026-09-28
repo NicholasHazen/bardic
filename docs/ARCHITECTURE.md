@@ -60,8 +60,10 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`search.py`](../bardic/search.py) | Local literal-word search with source coordinates, limited to the selected book or it plus earlier active series volumes. |
 | [`audio.py`](../bardic/audio.py) | Narration recipes/providers, audio validation/normalization, and sample-accurate WAV assembly. |
 | [`take_archive.py`](../bardic/take_archive.py) | Private rendering followed by validated, atomic, content-addressed audio publication. Distinguishes generation recipe from actual resulting bytes. |
-| [`listening.py`](../bardic/listening.py) | Independent single-voice sessions and takes; intentionally excludes enhanced casting and performance directions. |
+| [`voice_previews.py`](../bardic/voice_previews.py) | Bounded contextual/demo auditions, retained input recipes and independent byte-addressed preview takes. Never edits casting or selected simple/enhanced takes. |
+| [`listening.py`](../bardic/listening.py) | Independent single-voice sessions/takes and a content-equivalent synthesis cache; intentionally excludes enhanced casting and performance directions. |
 | [`resources.py`](../bardic/resources.py) | Durable local/narration measurements and combined resource summaries, preserving unknown measurements and avoiding double-counting analysis attempts. |
+| [`diagnostics.py`](../bardic/diagnostics.py) | Bounded local operational event log; validates safe fields, suppresses duplicates, limits client events and prunes old rows independently of immutable provenance. |
 
 ## Browser and API flow
 
@@ -70,6 +72,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Feature | Browser files | Main API families |
 | --- | --- | --- |
 | Library and removed items | `library.js`, `library.css` | `/api/library`, book metadata/cover/archive/restore, series and volume slots |
+| Voice examples | `voice-preview.js`, main player in `app.js` | Book `/voice-preview`, `/voice-preview/audio/{asset_id}` |
 | Single-narrator listening | `listen.js`, `listen.css` | Book `/listen`, `/listen/takes`, `/listen/audio/{asset_id}` |
 | Progressive production | `production.js`, `production.css` | Book `/preprocessing`, `/analysis-plan`, `/analyze`, `/analysis` |
 | Series identity review | `series.js`, `series.css` | Book `/series`, character links, series characters/context |
@@ -81,7 +84,15 @@ The table summarizes endpoint families; inspect [route definitions](../bardic/ap
 
 An import posts an EPUB/TXT, saves its original bytes, creates canonical chapters and anchored passages, and makes the book readable immediately. Cast and scene data start as a local draft. The reader highlights a whole passage while that passage's audio plays. Position and playback speed are browser-local preferences; the browser does not save API keys in local storage.
 
-Simple listening requests the chosen passage as needed and reuses a matching saved take. Enhanced production separately analyzes the story, lets the user review/edit cast and directions, and renders selected passages, scenes, or the book. The reader can use either mode; simple takes do not overwrite enhanced selections. Stale-response guards prevent a completed background response from continuing playback after the user changes selection or stops.
+Simple listening warms a short buffer before playback, then prepares ahead according to real saved durations and playback speed. The browser serializes single-passage requests: warmup targets 10 listening seconds with a three-passage cap; rolling preparation targets 45 listening seconds with at most 12 future passages in the chapter. It locally preloads the next two available clips. An explicit Prepare rest of chapter action fills the remaining chapter without autoplay. Browser intent/selection guards prevent late responses from continuing playback or scheduling new work after Stop or a selection/configuration change; completed single-passage jobs remain reusable after reload.
+
+The listen API checks cache first and joins an existing non-cancelled job for an identical session/passage before considering new work. The client retries only bounded read-only polling, not potentially charged generation POSTs. Errors halt preparation without deleting ready audio. Enhanced production separately analyzes the story, lets the user review/edit cast and directions, and renders selected passages, scenes, or the book. The reader can use either mode; simple takes do not overwrite enhanced selections.
+
+Voice examples use the same audio element, transport and speed as book playback. `static/voice-preview.js` owns explicit audition request intent, serializes requests, waits for stopped simple-listening work to settle, polls known jobs and rejects stale completions. `app.js` pauses reading/lookahead, preserves the passage/offset bookmark, displays sample text and restores the paused book when the example closes. Voice dropdown changes and passive renders cannot generate samples. Cast and passage controls snapshot unsaved choices without saving editor forms; the server resolves/validates source, bounds the prefix to 400 Python Unicode code points and snapshots its effective delivery recipe before queueing one job. A generic original demo is used only when there is no selected or attributed passage. Preview metadata and WAVs have their own archive and cache; they do not select production takes or join the simple-listening cache.
+
+The simple panel delegates Play/Pause and speed changes to the main player. Its displayed state is an input from the shared player; changing speed updates an existing warmup target without promoting it to rolling playback. The footer shows the current narrator and links back to the listening settings.
+
+`static/diagnostics.js` sends best-effort, allowlisted browser event codes and operational IDs through `/api/diagnostics`; it sends no free-form messages, source text, stack traces, URLs or credentials. The server adds listen-job failure/stop/submission correlation using the same bounded store. Settings links to a JSON download. This logging path cannot control playback success or trigger model work. Its newest 5,000 events are intentionally a rotating troubleshooting window, not immutable analysis provenance.
 
 ## Source and structure
 
@@ -147,9 +158,9 @@ An enhanced narration recipe combines the exact passage, provider/model, selecte
 
 `take_archive.produce_take()` renders into a private temporary file, checks the returned recipe fingerprint, validates the WAV, hashes its final bytes, and publishes without replacing an existing asset. The recipe fingerprint identifies the requested performance; the asset hash identifies a particular result. Two generations of one recipe can therefore coexist. WAV assembly uses real sample counts, and export joins only complete chapters.
 
-Simple listening instead hashes a narrator session and exact passage identity. It excludes inferred speaker, character traits, scene directions, and cues. Cast edits therefore do not invalidate simple listening audio. Its sessions, takes, and audio directory are separate from enhanced production.
+Simple listening retains a narrator session and exact passage identity. It excludes inferred speaker, character traits, scene directions, and cues. Cast edits therefore do not invalidate simple listening audio. A separate rebuildable index hashes equivalent speech inputs without passage IDs so exact text and voice/provider/model recipes can reuse audio across passages/books. WAV validity and content hashes are checked before reuse; a new target take records its own source binding and a pointer to the actual retained input, keeping the original producer fingerprint. Target books receive independent audio-file copies. Its sessions, takes, and audio directory remain separate from enhanced production.
 
-Current highlighting/timelines are passage-level. Word alignment, verification that every word was actually spoken, continuous scene-level acting synthesis, and automated audio quality scoring are not implemented.
+Current highlighting/timelines are passage-level. Word alignment, verification that every word was actually spoken, continuous scene-level acting synthesis, and automated audio quality scoring are not implemented. The [word-highlighting proposal](WORD-HIGHLIGHTING.md) recommends optional per-asset alignment with passage fallback. Buffering cannot guarantee that an unmeasured provider will sustain 2.5× consumption; chapter preparation is available when generation lags.
 
 ## Concurrency, migration, and operational boundaries
 

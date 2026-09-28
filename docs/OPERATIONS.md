@@ -77,7 +77,7 @@ A successful text check establishes that one request worked at that time. It doe
 
 | Need | Workflow | What can call a provider |
 | --- | --- | --- |
-| Listen immediately | Read & listen → simple listening, choose one narrator, start playback. | Gemini requests one uncached passage at a time. Device voices stay local. |
+| Listen immediately | Read & listen → simple listening, choose one narrator, start playback. Optionally prepare the rest of the chapter first. | Gemini requests uncached passages serially for warmup/lookahead or the selected chapter preparation. Device voices stay local. |
 | Build a character performance | Studio → free census → cheap discovery → profiles → chapter direction → review voices/notes → render a short scene. | Selected cloud analysis stages and Gemini narration. |
 | Process supplied series volumes | Manage books & series → membership/order/placeholders → confirm character links → preview a series run. | Explicit series analysis; at most two discovery books concurrently, later phases in reading order. |
 | Inspect existing work | Pipeline explorer, artifact inspection, source search, resource dashboard, analysis export. | None of these inspection actions generates model output. Local indices/artifact projections may be prepared as needed. |
@@ -86,7 +86,7 @@ The census is free local Python processing. It does not count as semantic model 
 
 For a later volume, set an explicit reading order and supply any earlier books you want considered. Only confirmed character links and source-valid observations from strictly earlier, available books are used. Missing/planned placeholders contain no source evidence. Removing/changing series membership clears that book's current identity links while retaining historical observations. Review links again before relying on cross-book profiles.
 
-Simple listening has a separate audio store and does not require or change enhanced analysis. Pause, Stop, switching books or changing narrator invalidate pending playback. An in-flight take can finish and remain cached. Automatic continuation stops at the current chapter boundary. There is no whole-book background preparation queue or simple-mode ZIP yet.
+Simple listening has a separate audio store and does not require or change enhanced analysis. Its buffer meter reports saved listening seconds at the selected speed. Pause, Stop, switching books or changing narrator invalidate pending playback/preparation. An in-flight take can finish and remain cached. Automatic continuation stops at the current chapter boundary. There is no whole-book background preparation queue or simple-mode ZIP yet.
 
 ## Budget and resource semantics
 
@@ -107,7 +107,9 @@ Preview estimates describe the known work at preview time. They exclude retries 
 
 An unknown/custom model price prevents a dollar-guarded request. Earlier attempts with unknown cost also prevent claiming a reliable cumulative dollar allowance. Choose a documented priced model when possible, or explicitly select request/token-only limits after reviewing the uncertainty. Do not clear ledger rows to make an allowance appear unused.
 
-**The analysis allowances do not currently cap narration, simple listening, account checks, or unrelated account spending.** Narration use is measured where possible, but no narration dollar ceiling is enforced. Use explicit short auditions and provider-side account controls when deciding how much narration to run. Extending guards is a [roadmap item](ROADMAP.md).
+**The analysis allowances do not currently cap narration, simple listening, voice examples, account checks, or unrelated account spending.** Narration use is measured where possible, but no narration dollar ceiling is enforced. Use explicit short auditions and provider-side account controls when deciding how much narration to run. Extending guards is a [roadmap item](ROADMAP.md).
+
+Simple Play can prepare audio ahead of the currently heard passage: a warmup aims for 10 listening seconds with at most three passages, then a rolling buffer aims for 45 listening seconds within the chapter and at most 12 future passages. **Prepare rest of chapter** explicitly saves every remaining passage from the selected position without autoplay. The UI shows the remaining passage count and cloud-charge warning, not a dollar estimate. Stop/pause prevents further scheduling; already submitted work may finish and be billed. Replaying matching saved audio makes no new provider request.
 
 The resource dashboard combines analysis attempts with separate local/narration operations without charging one request twice:
 
@@ -130,6 +132,10 @@ On startup, unfinished jobs/checkpoints become interrupted. No cloud work automa
 
 Transport failures are deliberately bounded. Progressive analysis can perform one short retry of a recognized transient response; authentication/billing failures are not automatically retried. An uncertain connection/timeout stops rather than blindly repeating a potentially charged request. Invalid structured evidence gets at most one corrective response for that request. These are separate mechanisms and both consume allowance if another HTTP attempt is sent.
 
+Simple listening similarly does not automatically resend a failed or uncertain generation POST. Its browser polls jobs with bounded read-only retries and joins an already active identical session/passage request when the API receives it again. Preparation failures preserve saved clips and expose **Retry preparation**. After a restart/reload, the saved single-passage jobs/takes remain, but the browser's chapter/lookahead queue requires another explicit action. Do not assume that pressing Play after a failure is always free: it checks the saved cache and can request new narration if no valid match is available.
+
+Voice examples use the same one-unit job/cancellation rules. **Hear example** explicitly requests at most 400 source characters (or fixed demo text); a matching saved preview is reused. It snapshots unsaved voice/direction choices without saving them, pauses the book, and keeps the reader bookmark. Close the example to return to that paused place. Failed or uncertain generation is not automatically resubmitted. An example waits for a previously cancelled listening request to settle before submitting its own request. A cancelled in-flight sample may finish and remain cached; its late response must not resume playback. Preview usage is shown separately as stage `voice_preview`, with no enforced dollar allowance.
+
 Changing source, effective model/request recipe, profile evidence or reviewed performance inputs may make downstream results stale. That is different from deleting their historical artifacts. Review a new preview before assuming everything will replay at zero cost. A force-render always permits a new provider take; retained WAVs are immutable and selected metadata chooses the current take.
 
 ## Data layout
@@ -138,11 +144,12 @@ Paths below are relative to the configured data directory:
 
 | Path / store | Contents |
 | --- | --- |
-| `library.sqlite3` | Books/projections, jobs, settings preferences, checkpoints, references, series identities, covers, immutable artifacts/dependencies, listening metadata and resource records. |
+| `library.sqlite3` | Books/projections, jobs, settings preferences, checkpoints, references, series identities, covers, immutable artifacts/dependencies, listening and voice-example metadata and resource records. |
 | `library.sqlite3-wal`, `library.sqlite3-shm` when present | SQLite WAL state/coordination files. Do not discard these around a running database. |
 | `originals/<book-id>/source.epub` or `source.txt` | Retained upload used for metadata/structure refresh and recovery. |
 | `audio/<book-id>/` | Enhanced audio assets, including retained alternatives and readable legacy recipe-named files. |
 | `listen-audio/<book-id>/` | Independent simple-listening assets. |
+| `voice-previews/<book-id>/` | Independent retained voice-example WAVs, matched to immutable preview request/take metadata in SQLite. |
 | `backups/` when present | Previously created backups; not an automatic scheduled full-library backup service. |
 | `server.lock` | Operating-system instance lock file. |
 
@@ -152,7 +159,7 @@ Browser reading position and some UI state live in that browser's local storage,
 
 ## Full backup and safe restore
 
-The simplest full backup is a copy of the **entire data directory after the server has stopped**. Preserve originals and both audio trees along with SQLite; a database-only copy is not a complete audiobook backup. Keep credentials separately from shareable data/source backups.
+The simplest full backup is a copy of the **entire data directory after the server has stopped**. Preserve originals and all three audio trees (enhanced, simple listening and voice examples) along with SQLite; a database-only copy is not a complete audiobook backup. Keep credentials separately from shareable data/source backups.
 
 For the documented source launcher, this example uses the same configuration loader and creates a new timestamped directory outside the checkout. Run it from the project directory **only after server shutdown has completed**:
 
@@ -198,7 +205,7 @@ Restore procedure:
    PY
    ```
 
-4. Launch against the restored copy on an alternate port. Startup can create/update schema and mark interrupted jobs, so test a copy rather than the sole backup. Open representative books, source references, covers, enhanced takes and simple-listening takes; verify file availability and selected-audio playback. Do not start paid analysis/narration just to inspect a restore.
+4. Launch against the restored copy on an alternate port. Startup can create/update schema and mark interrupted jobs, so test a copy rather than the sole backup. Open representative books, source references, covers, enhanced takes, simple-listening takes and saved voice examples; verify file availability and selected-audio playback. Do not start paid analysis/narration just to inspect a restore.
 5. Once satisfied, stop the test server and point the normal launch configuration at the restored directory. Keep the previous library until the restore is verified for your use.
 
 An integrity result of `ok` and no foreign-key violations do not prove every WAV exists or every reference has correct source meaning; perform the representative application checks too. Do not assume an older application revision can safely open a newer database. Keep the application source revision/lockfile with backup notes. Lost pre-retention artifacts or media absent from every backup cannot be reconstructed by a schema migration.
@@ -207,9 +214,13 @@ An integrity result of `ok` and no foreign-key violations do not prove every WAV
 
 **Export analysis files** includes canonical source, profiles, observations, story map, retained artifact versions and transitive earlier-book dependencies, attempts/events, resource operations and listening metadata. It excludes API keys and audio binaries. There is no bundle import/restore UI yet.
 
-The **audiobook ZIP** contains current enhanced takes, production metadata, text, a timeline and assembled WAVs for complete chapters. An incomplete chapter still contributes its available individual takes and missing-passage information. Simple-listening audio is separate and is not included by this export. Neither export is a replacement for a full data-directory backup.
+The **audiobook ZIP** contains current enhanced takes, production metadata, text, a timeline and assembled WAVs for complete chapters. An incomplete chapter still contributes its available individual takes and missing-passage information. Simple-listening audio is separate and is not included by this export. Voice-example request/take archives and WAVs are not included in either ZIP. Neither export is a replacement for a full data-directory backup.
 
 ## Troubleshooting
+
+Open **Settings → Troubleshooting → Download troubleshooting log** after a playback or buffering problem. The JSON contains the newest 5,000 local events across books, newest first; use `GET /api/diagnostics?book_id=<book-id>&limit=5000` for one book. The normal download uses `/api/diagnostics?limit=5000`. Match `job_id`, `segment_id`, `session_id` and timestamps to saved job details. Event codes distinguish request/poll/preparation/cache issues from media errors and waiting/resumption. Numeric HTTP/media codes and playback rate are included when known; server events identify failed or stopped listening jobs.
+
+Logs exclude book text, API keys, URLs, stack traces and free-form browser messages. They remain local in SQLite, with duplicate suppression, at most 120 accepted client events per minute, and retention of the newest 5,000 events. The table is created lazily and additively. Browser/server reporting is best effort: a disabled network or logging error must not stop narration, so a missing event does not prove nothing happened. This is a troubleshooting window, not a complete audit trail, and it cannot recover an earlier toast that was never recorded. Export promptly when preserving a particular incident matters; it is separate from the analysis export and resource ledger.
 
 | Symptom | What to inspect and do |
 | --- | --- |
@@ -229,7 +240,10 @@ The **audiobook ZIP** contains current enhanced takes, production metadata, text
 | Audio is missing after editing voices/directions | The selected recipe changed. Earlier files remain retained, but old audio is not automatically treated as matching new instructions. Generate the affected take or restore its earlier recipe to reuse a compatible archived take. |
 | Device narration is unavailable or silent | Confirm macOS `say`, an installed selected voice, ffmpeg and ordinary access to macOS speech services. A restricted tool sandbox can prevent audible output even when `say` exits successfully; validation rejects empty/silent results. |
 | Gemini audio is rejected | Inspect safe status/model/voice information. The adapter rejects malformed, truncated, empty or silent audio; valid WAV structure still does not prove spoken-text fidelity. Retry only the selected passage when appropriate. |
-| New simple-listening passages have gaps | Generation is on demand, one passage at a time; this is not a streaming or prefetching engine. Cached passages replay locally. Background preparation is planned. |
+| New simple-listening passages have gaps | Watch the saved-audio buffer at the selected speed. Warmup and lookahead prepare serially within chapter/passage bounds; they cannot make a consistently slow provider outrun 2.5× listening. Use Prepare rest of chapter, wait until it finishes, then press Play. Completed audio stays cached. |
+| Simple preparation stops with an error | Saved clips remain playable. Inspect the message, then choose Retry preparation when ready. No paid POST is automatically repeated; a current request may have completed after a lost response, so the API checks cache and matching active work first. |
+| A voice example stops or will not play | Read its inline error and saved `voice_preview` job. A sample uses the selected provider and shared playback speed; generation may need a key/device, while an intact matching cache does not. Close the example to return to the paused book. Retry only when ready for a possible new charge. |
+| Saved simple audio fails to play | Playback stops further lookahead. Explicit Play rechecks local server cache before any new synthesis. A malformed WAV or content-hash mismatch cannot be reused; a new uncached request may incur charges. |
 | Highlighting does not follow individual words | Current timing is passage-level. There is no word-alignment result to enable yet. |
 | Search finds too few results | Queries are literal lexical terms, with all terms required in a passage. Try fewer terms; confirm reading-order scope and available books. Search does not resolve pronouns or infer character identity. Missing SQLite FTS5 is reported as unavailable. |
 | Removed books still use disk | Removal is reversible archiving. Restore under Removed items; permanent purge is not implemented. Do not manually delete shared history/assets to simulate a supported purge. |

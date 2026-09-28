@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +32,7 @@ from .processing import BudgetReached
 from .account_checks import check_account
 from .audio import assemble_audio, list_system_voices, render_fingerprint, synthesize, validate_audio
 from .config import data_directory
+from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .series import SeriesRepository
@@ -103,6 +106,30 @@ class ListenRequest(StrictModel):
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
     segment_id: str
+
+
+class VoicePreviewRequest(StrictModel):
+    provider: Literal['system', 'gemini'] = 'system'
+    voice: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=200)
+    segment_id: str | None = Field(default=None, max_length=200)
+    character_id: str | None = Field(default=None, max_length=200)
+    direction: str | None = Field(default=None, max_length=3000)
+    segment_direction: str | None = Field(default=None, max_length=3000)
+
+
+class DiagnosticRequest(StrictModel):
+    event: Literal['listen_request_failed', 'listen_poll_failed', 'listen_job_failed',
+                   'buffer_failed', 'cache_read_failed', 'playback_media_error',
+                   'playback_play_rejected', 'playback_waiting', 'playback_resumed', 'preview_failed']
+    book_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['book_id'] + '$', max_length=36)
+    segment_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['segment_id'] + '$', max_length=40)
+    session_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['session_id'] + '$', max_length=64)
+    job_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['job_id'] + '$', max_length=32)
+    playback_rate: float | None = Field(default=None, strict=True, ge=.1, le=8, allow_inf_nan=False)
+    http_status: int | None = Field(default=None, strict=True, ge=100, le=599)
+    media_error_code: int | None = Field(default=None, strict=True, ge=1, le=4)
+    operation: Literal['request', 'poll', 'play', 'prefetch', 'media', 'prepare', 'settle', 'cache_read'] | None = None
 
 
 class SettingsRequest(StrictModel):
@@ -328,7 +355,7 @@ class Runtime:
             self.store.update_job(job_id, status="running", message="Starting…")
             operation()
             self.check_cancel(job_id)
-            self.store.update_job(job_id, status="completed", message="Ready to listen" if job["kind"] in {"render", "listen"} else "Analysis ready for review")
+            self.store.update_job(job_id, status="completed", message="Ready to listen" if job["kind"] in {"render", "listen", "voice_preview"} else "Analysis ready for review")
         except BudgetReached as exc:
             self.store.update_job(job_id, status="budget_limited", message=str(exc))
         except (Cancelled, InterruptedError):
@@ -344,6 +371,24 @@ class Runtime:
             message = message[:1200]
             self.store.update_job(job_id, status="failed", error=message,
                                   message="Stopped on an error. Validated chapter work is saved." if job["kind"] == "analyze" else "Stopped on an error. Completed takes are saved.")
+        finally:
+            if job['kind'] in {'listen', 'voice_preview'}:
+                try:
+                    settled = self.store.job(job_id)
+                    state = settled['status']
+                    if state in {'failed', 'cancelled', 'interrupted'}:
+                        if job['kind'] == 'listen':
+                            event = 'listen_job_failed' if state == 'failed' else 'listen_job_stopped'
+                        else:
+                            event = 'voice_preview_failed' if state == 'failed' else 'voice_preview_stopped'
+                        record_safely(self.store, event,
+                                      book_id=job['book_id'], segment_id=job.get('segment_id'),
+                                      session_id=job.get('session_id'), job_id=job_id,
+                                      provider=job.get('provider'), operation='worker', status=state)
+                except Exception:
+                    # Diagnostic/storage failure cannot replace the actual job
+                    # result or turn a stopped request into another attempt.
+                    pass
 
     def render(self, book_id, request):
         with self.store.lock:
@@ -499,8 +544,27 @@ def create_app(data_dir: Path | None = None):
     async def invalid(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        if request.url.path == '/api/diagnostics':
+            # FastAPI's default validation body echoes invalid input. A
+            # rejected accidental message/key must not enter this log API's
+            # response either, even though it was never stored.
+            return JSONResponse({'detail': 'Invalid diagnostic event fields.'}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
     def rt(request):
         return request.app.state.runtime
+
+    @app.post('/api/diagnostics')
+    def record_diagnostic(body: DiagnosticRequest, request: Request):
+        fields = body.model_dump(exclude_none=True)
+        event = fields.pop('event')
+        return record_safely(rt(request).store, event, source='client', **fields)
+
+    @app.get('/api/diagnostics')
+    def diagnostics(request: Request, book_id: str | None = None, limit: int = 100):
+        return DiagnosticRepository(rt(request).store).events(book_id=book_id, limit=limit)
 
     def status(runtime):
         voices = list_system_voices()
@@ -1057,7 +1121,18 @@ def create_app(data_dir: Path | None = None):
                                                     provider=body.provider, model=session['model'], cached=True, kind='narration') as metrics:
                     metrics['audio_seconds'] = cached['duration']
                 return {'session': session, 'audio': cached, 'cached': True}
+            # A lost HTTP response or overlapping playback/prefetch request
+            # must join the existing work, not start another paid attempt.
+            pending = next((job for job in store.jobs(book_id, limit=None)
+                            if job['kind'] == 'listen' and job['status'] in ACTIVE
+                            and not job.get('cancel_requested')
+                            and job.get('session_id') == session['id']
+                            and job.get('segment_id') == body.segment_id), None)
+            if pending:
+                return {'session': session, 'job': pending, 'cached': False}
             runtime.require_idle(book_id)
+            if runtime.stopping.is_set():
+                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before preparing more audio.')
             key = runtime.api_key if body.provider == 'gemini' else None
             if body.provider == 'gemini' and not key:
                 raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
@@ -1074,8 +1149,27 @@ def create_app(data_dir: Path | None = None):
                     audio = repository.render_passage(book_id, session['id'], body.segment_id, key, synthesizer=synthesize,
                                                        check_cancel=lambda: runtime.check_cancel(job['id']))
                     metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
+                    if audio.get('cache_hit'):
+                        metrics['cached'] = True
                 store.update_job(job['id'], progress=1, audio=audio)
-            runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+            try:
+                future = runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+            except RuntimeError:
+                store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
+                                 message='No narration was started. Restart Bardic and try again.')
+                record_safely(store, 'listen_submit_failed', book_id=book_id, segment_id=body.segment_id,
+                              session_id=session['id'], job_id=job['id'], provider=body.provider,
+                              operation='submit', status='failed')
+                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+            def settle_cancelled(future):
+                if future.cancelled():
+                    state = 'interrupted' if runtime.stopping.is_set() else 'cancelled'
+                    store.update_job(job['id'], status=state,
+                                     cancel_requested=True, message='Stopped before narration started. No provider request was sent.')
+                    record_safely(store, 'listen_job_stopped', book_id=book_id, segment_id=body.segment_id,
+                                  session_id=session['id'], job_id=job['id'], provider=body.provider,
+                                  operation='worker', status=state)
+            future.add_done_callback(settle_cancelled)
             return {'session': session, 'job': job, 'cached': False}
 
     @app.get('/api/books/{book_id}/listen/takes')
@@ -1087,6 +1181,77 @@ def create_app(data_dir: Path | None = None):
     def listen_audio(book_id: str, asset_id: str, request: Request):
         from .listening import ListeningRepository
         return FileResponse(ListeningRepository(rt(request).store).asset_path(book_id, asset_id), media_type='audio/wav')
+
+    @app.post('/api/books/{book_id}/voice-preview')
+    def voice_preview(book_id: str, body: VoicePreviewRequest, request: Request):
+        from .voice_previews import VoicePreviewRepository
+        from .resources import ResourceLedger
+        runtime = rt(request)
+        store = runtime.store
+        repository = VoicePreviewRepository(store)
+        with store.lock:
+            store.require_active(book_id)
+            model = body.model or (runtime.preferences['tts_model'] if body.provider == 'gemini' else None)
+            preview = repository.prepare(book_id, body.provider, body.voice, model,
+                                         segment_id=body.segment_id, character_id=body.character_id,
+                                         direction=body.direction, segment_direction=body.segment_direction)
+            cached = repository.cached(book_id, preview['id'])
+            if cached:
+                with ResourceLedger(store).operation(book_id, 'voice_preview', unit_key=preview['id'],
+                        chapter_id=preview['chapter_id'], provider=body.provider, model=preview['model'],
+                        cached=True, kind='narration') as metrics:
+                    metrics['audio_seconds'] = cached['duration']
+                return {'preview': preview, 'audio': cached, 'cached': True}
+            pending = next((job for job in store.jobs(book_id, limit=None)
+                            if job['kind'] == 'voice_preview' and job['status'] in ACTIVE
+                            and not job.get('cancel_requested') and job.get('preview_id') == preview['id']), None)
+            if pending:
+                return {'preview': preview, 'job': pending, 'cached': False}
+            runtime.require_idle(book_id)
+            if runtime.stopping.is_set():
+                raise HTTPException(503, 'The local worker is stopping. Restart Bardic before previewing a voice.')
+            key = runtime.api_key if body.provider == 'gemini' else None
+            if body.provider == 'gemini' and not key:
+                raise HTTPException(400, 'Add a Gemini API key in Settings first, or choose a device voice.')
+            if body.provider == 'system' and not (shutil.which('say') and shutil.which('ffmpeg')):
+                raise HTTPException(400, 'Device narration requires macOS say and ffmpeg.')
+            job = store.create_job(book_id, 'voice_preview', 1)
+            job = store.update_job(job['id'], preview_id=preview['id'], preview=preview,
+                                   segment_id=preview['segment_id'], provider=body.provider,
+                                   model=preview['model'], phase='voice_preview')
+            def work():
+                with ResourceLedger(store).operation(book_id, 'voice_preview', run_id=job['id'], unit_key=preview['id'],
+                        chapter_id=preview['chapter_id'], provider=body.provider, model=preview['model'], kind='narration') as metrics:
+                    audio = repository.render(book_id, preview['id'], key, synthesizer=synthesize,
+                                              check_cancel=lambda: runtime.check_cancel(job['id']))
+                    metrics.update(audio_seconds=audio['duration'], output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
+                    if audio.get('cache_hit'):
+                        metrics['cached'] = True
+                store.update_job(job['id'], progress=1, audio=audio)
+            try:
+                future = runtime.pool.submit(runtime.run, job, work, (key,) if key else ())
+            except RuntimeError:
+                store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
+                                 message='No narration was started. Restart Bardic and try again.')
+                record_safely(store, 'voice_preview_submit_failed', book_id=book_id,
+                              segment_id=preview['segment_id'], job_id=job['id'],
+                              provider=body.provider, operation='submit', status='failed')
+                raise HTTPException(503, 'The local narration worker could not accept this request. No narration was started.') from None
+            def settle_cancelled(future):
+                if future.cancelled():
+                    state = 'interrupted' if runtime.stopping.is_set() else 'cancelled'
+                    store.update_job(job['id'], status=state,
+                                     cancel_requested=True, message='Stopped before narration started. No provider request was sent.')
+                    record_safely(store, 'voice_preview_stopped', book_id=book_id,
+                                  segment_id=preview['segment_id'], job_id=job['id'],
+                                  provider=body.provider, operation='worker', status=state)
+            future.add_done_callback(settle_cancelled)
+            return {'preview': preview, 'job': job, 'cached': False}
+
+    @app.get('/api/books/{book_id}/voice-preview/audio/{asset_id}')
+    def voice_preview_audio(book_id: str, asset_id: str, request: Request):
+        from .voice_previews import VoicePreviewRepository
+        return FileResponse(VoicePreviewRepository(rt(request).store).asset_path(book_id, asset_id), media_type='audio/wav')
 
     @app.get("/api/books/{book_id}/artifacts")
     def artifacts(book_id: str, request: Request, kind: str | None = None, stage: str | None = None,

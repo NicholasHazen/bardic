@@ -208,3 +208,146 @@ def test_invalid_configuration_never_creates_a_session(setup, provider, voice, m
     with store.connect() as conn:
         assert conn.execute('SELECT count(*) FROM listening_sessions').fetchone()[0] == 0
     assert not calls
+
+
+def test_same_text_reuses_across_passage_ids_books_and_restart_with_real_provenance(setup):
+    store, repo, book, calls, render = setup
+    segment = book['segments'][0]
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    first = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=render)
+    with store.connect() as conn:
+        original_id, original_body = conn.execute('SELECT id,body FROM listening_takes').fetchone()
+    # New source IDs and offsets must not become new paid synthesis requests.
+    repeated = parse_book('repeat.txt', f"{segment['text']}\n\n{segment['text']}".encode())
+    store.save_book(repeated)
+    repo = ListeningRepository(Store(store.root))
+    repeated_session = repo.session(repeated['id'], 'gemini', 'Kore')
+    for target in repeated['segments']:
+        reused = repo.render_passage(repeated['id'], repeated_session['id'], target['id'],
+                                     synthesizer=lambda *_: pytest.fail('Equivalent speech should be reused'))
+        assert reused['cache_hit'] is True
+        assert reused['asset_id'] == first['asset_id']
+        assert reused['fingerprint'] == first['fingerprint'], 'Do not invent a new producer fingerprint'
+        assert reused['source_anchor']['fingerprint'] != first['fingerprint']
+        assert reused['source_anchor']['book_id'] == repeated['id']
+        assert reused['source_anchor']['start'] == target['start']
+        assert reused['recipe'] != first['recipe']
+        with store.connect() as conn:
+            reused_row = conn.execute('SELECT body FROM listening_takes WHERE id=?', (reused['reuse']['take_id'],)).fetchone()
+        assert reused_row, 'Every reuse dependency references an actual retained take'
+        assert json.loads(reused_row[0])['asset_id'] == first['asset_id']
+    assert len(calls) == 1
+    assert len(repo.takes(repeated['id'], repeated_session['id'])['takes']) == len(repeated['segments']) == 2
+    assert repo.asset_path(book['id'], first['asset_id']).stat().st_ino != repo.asset_path(repeated['id'], first['asset_id']).stat().st_ino
+    with store.connect() as conn:
+        assert conn.execute('SELECT body FROM listening_takes WHERE id=?', (original_id,)).fetchone()[0] == original_body
+
+
+def test_legacy_source_cache_hit_builds_shared_index_without_rewriting_take(setup):
+    store, repo, book, calls, render = setup
+    segment = book['segments'][0]
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    # Build a realistic pre-index row without new metadata using only synthetic
+    # test data. The repository never removes immutability guards in production.
+    from bardic.listening import _hash
+    from bardic.take_archive import produce_take
+    _, passage, narrator, identity, recipe = repo._inputs(book['id'], session['id'], segment['id'])
+    old = produce_take(passage, narrator, {}, 'gemini', session['model'], None,
+                       store.root / 'listen-audio' / book['id'], synthesizer=render)
+    old.update(session_id=session['id'], segment_id=segment['id'], recipe=recipe,
+               source_anchor=identity, created_at='2026-09-27T00:00:00+00:00')
+    old_body = json.dumps(old)
+    with store.connect() as conn:
+        conn.execute('INSERT INTO listening_takes VALUES (?,?,?,?,?,?,?)',
+                     (_hash([book['id'], recipe, old['asset_id']]), book['id'], session['id'],
+                      segment['id'], recipe, old['asset_id'], old_body))
+    assert repo.cached(book['id'], session['id'], segment['id'])['asset_id'] == old['asset_id']
+    with store.connect() as conn:
+        assert conn.execute('SELECT count(*) FROM listening_synthesis_cache').fetchone()[0] == 1
+        assert conn.execute('SELECT body FROM listening_takes').fetchone()[0] == old_body
+    another = parse_book('another.txt', segment['text'].encode())
+    store.save_book(another)
+    another_session = repo.session(another['id'], 'gemini', 'Kore')
+    assert repo.cached(another['id'], another_session['id'], another['segments'][0]['id'])['asset_id'] == old['asset_id']
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('change', ['voice', 'model', 'provider', 'text', 'audio_version', 'cache_version'])
+def test_shared_cache_never_reuses_changed_speech_inputs(setup, monkeypatch, change):
+    store, repo, book, calls, render = setup
+    segment = book['segments'][0]
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    old = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=render)
+    text = segment['text'] + (' Again.' if change == 'text' else '')
+    another = parse_book('another.txt', text.encode())
+    store.save_book(another)
+    if change == 'audio_version':
+        monkeypatch.setattr('bardic.audio._RECIPE_VERSION', 999)
+    if change == 'cache_version':
+        monkeypatch.setattr('bardic.listening.SYNTHESIS_CACHE_VERSION', 999)
+    other = repo.session(another['id'], 'system' if change == 'provider' else 'gemini',
+                         'Puck' if change == 'voice' else 'Kore',
+                         'gemini-3.8-flash-lite-tts' if change == 'model' else None)
+    assert repo.cached(another['id'], other['id'], another['segments'][0]['id']) is None
+    new = repo.render_passage(another['id'], other['id'], another['segments'][0]['id'], synthesizer=render)
+    assert len(calls) == 2
+    assert new['synthesis_key'] != old['synthesis_key']
+    assert 'reuse' not in new
+
+
+def test_valid_but_tampered_wav_never_counts_as_cache_hit(setup):
+    store, repo, book, calls, render = setup
+    segment = book['segments'][0]
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    first = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=render)
+    # The WAV decoder accepts these bytes; the retained content hash must not.
+    repo.asset_path(book['id'], first['asset_id']).write_bytes(wav_bytes(frames=5000))
+    assert repo.cached(book['id'], session['id'], segment['id']) is None
+    another = parse_book('another.txt', segment['text'].encode())
+    store.save_book(another)
+    other = repo.session(another['id'], 'gemini', 'Kore')
+    assert repo.cached(another['id'], other['id'], another['segments'][0]['id']) is None
+    second = repo.render_passage(another['id'], other['id'], another['segments'][0]['id'], synthesizer=render)
+    assert second['asset_id'] != first['asset_id'] and len(calls) == 2
+
+
+def test_failed_reuse_copy_does_not_start_paid_fallback_or_publish_take(setup, monkeypatch):
+    store, repo, book, calls, render = setup
+    segment = book['segments'][0]
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=render)
+    another = parse_book('another.txt', segment['text'].encode())
+    store.save_book(another)
+    other = repo.session(another['id'], 'gemini', 'Kore')
+    def full_disk(*_args):
+        raise OSError('Test disk full')
+    monkeypatch.setattr('bardic.listening.shutil.copyfile', full_disk)
+    with pytest.raises(OSError, match='Test disk full'):
+        repo.render_passage(another['id'], other['id'], another['segments'][0]['id'], synthesizer=render)
+    assert len(calls) == 1
+    assert repo.takes(another['id'], other['id'])['takes'] == []
+
+
+def test_cache_version_bump_retains_new_identity_even_when_audio_bytes_are_identical(setup, monkeypatch):
+    store, repo, book, calls, render = setup
+    session = repo.session(book['id'], 'gemini', 'Kore')
+    segment = book['segments'][0]
+    fixed_audio = wav_bytes(frames=2500)
+    def deterministic(*args):
+        metadata = render(*args)
+        args[-1].write_bytes(fixed_audio)
+        return metadata
+    first = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic)
+    with store.connect() as conn:
+        old_id, old_body = conn.execute('SELECT id,body FROM listening_takes').fetchone()
+    monkeypatch.setattr('bardic.listening.SYNTHESIS_CACHE_VERSION', 2)
+    second = repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic)
+    assert second['asset_id'] == first['asset_id'] and second['recipe'] == first['recipe']
+    assert second['synthesis_key'] != first['synthesis_key']
+    assert len(calls) == 2 and 'reuse' not in second
+    with store.connect() as conn:
+        assert conn.execute('SELECT count(*) FROM listening_takes').fetchone()[0] == 2
+        assert conn.execute('SELECT body FROM listening_takes WHERE id=?', (old_id,)).fetchone()[0] == old_body
+    assert repo.cached(book['id'], session['id'], segment['id'])['synthesis_key'] == second['synthesis_key']
+    assert repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=deterministic)['cache_hit'] is True
+    assert len(calls) == 2

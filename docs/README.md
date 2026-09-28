@@ -41,6 +41,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [PROGRESSIVE-ANALYSIS-PLAN.md](PROGRESSIVE-ANALYSIS-PLAN.md) records the progressive analysis design, original defects, implementation sequence and milestone evidence. Its opening findings describe the pre-update system.
 - [RESEARCH-PIPELINE.md](RESEARCH-PIPELINE.md) records source parsing, analysis and alignment research.
 - [RESEARCH-VOICE.md](RESEARCH-VOICE.md) records dated narration API, voice design and pricing research. Recheck official sources before relying on a rate or adding a provider capability.
+- [WORD-HIGHLIGHTING.md](WORD-HIGHLIGHTING.md) proposes reusable word timing through local forced alignment, with source-mapping rules, quality limits and a staged implementation plan.
 
 ## Maintaining the documentation
 

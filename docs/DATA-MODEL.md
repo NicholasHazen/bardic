@@ -11,6 +11,8 @@ This document describes current storage as of 2026-09-27. Read [architecture](AR
 | Current cast, scenes, performance, metadata | `books.body` | Mutable projection, with captured artifact versions for supported scopes. |
 | Current enhanced take selection | `takes` | Mutable selection; overlaid onto book JSON when read. |
 | Simple listening take history | `listening_takes` and WAV files | Independent retained history keyed by source/session recipe. |
+| Voice example history | `voice_preview_requests`, `voice_preview_takes` and WAV files | Immutable book-scoped effective requests and independent audition takes. |
+| Equivalent simple speech lookup | `listening_synthesis_cache` | Rebuildable content-key index pointing to actual retained takes; source identity remains in take history. |
 | Accepted model results for fast reuse | `analysis_units` | Replaceable/rejectable cache; original accepted outputs retained in artifacts. |
 | Analysis progress | `analysis_checkpoints`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
 | Current character references | `character_references` | Replaced with a published checkpoint. |
@@ -19,6 +21,7 @@ This document describes current storage as of 2026-09-27. Read [architecture](AR
 | Current artifact selections | `artifact_heads` | Mutable pointers; removable without deleting history. |
 | Spend/usage | `analysis_attempts`, `resource_operations`, events | Durable tracked measurements/reservations, with explicit unknowns. |
 | Search | `passage_search`, `search_books` | Rebuildable derived index. |
+| Operational diagnostics | `diagnostic_events` | Rotating local troubleshooting log; newest 5,000 events, not retained analysis/take provenance. |
 
 No single table replaces the others. In particular, a checkpoint is not an immutable archive, an artifact head is not proof of semantic correctness, and a reported HTTP success is not proof that the returned annotations passed validation.
 
@@ -60,7 +63,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [resources.py](../bardic/resources.py), and [search.py](../bardic/search.py). `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), and [search.py](../bardic/search.py). The inventory below covers 30 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -86,6 +89,16 @@ Jobs can be queued, running, completed, failed, cancelled, interrupted, or budge
 | `resource_operations` | PK `id`; `book_id`, `run_id`, `stage`, `body` | Local and narration leaf-operation measurements, updated from running to completion/failure. Analysis requests remain in their own ledger to avoid double counting. |
 
 An attempt's reserved tokens differ from reported tokens. `null` usage or cost is unknown, not zero. `cost_basis` distinguishes a conservative reservation from a usage estimate; pricing metadata records its date/source. Request and token allowances are counted per run, while the dollar guard includes all tracked analysis attempts for the book. New run IDs must not erase earlier spending.
+
+### Operational diagnostics
+
+| Table | Key and columns | Contract |
+| --- | --- | --- |
+| `diagnostic_events` | PK `id`; `created_at`, `source`, `event`, nullable `book_id`, `body`; indexes by book and source/time | Newest 5,000 allowlisted local browser/server events. Rows are deliberately pruned; this is not an immutable provenance archive. |
+
+The table and indexes are created additively when `DiagnosticRepository` is first instantiated; existing libraries need no source/take rewrite or destructive migration. Event bodies contain only validated operational IDs, operation enums, playback rate, HTTP/media error codes and, for server records, bounded provider/status enums. They exclude free-form messages, traces, URLs, source prose and credentials. Actual job records remain the place to inspect retained job errors; diagnostics link by IDs rather than copying error text.
+
+Identical persisted source/event/body records are suppressed within two seconds. At most 120 client events are persisted per rolling minute across the local instance; server events are not subject to that client rate limit. The browser also suppresses identical submissions for ten seconds. Each accepted insert prunes rows beyond the newest 5,000. These events are available through the separate diagnostics API/download, not the portable analysis provenance bundle. Failed logging is best effort and cannot alter job or playback outcomes. Unrecorded or pruned events remain unavailable.
 
 ### Series and library
 
@@ -141,16 +154,36 @@ Current snapshots and model results are different kinds on purpose. A scene-map 
 
 When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, accepted units/checkpoint units, observations, census, and membership. It marks unknown provenance and never reconstructs prompts or outputs that were already lost.
 
+### Voice examples
+
+| Table | Key and columns | Contract |
+| --- | --- | --- |
+| `voice_preview_requests` | PK `id`; `book_id`, JSON `body` | Retained version-1 effective request: preview metadata, exact bounded passage/demo text, performer, scene inputs and underlying audio fingerprint. |
+| `voice_preview_takes` | PK `id`; `preview_id` FK to requests, `book_id`, `asset_id`, JSON `body`; index by book/preview | Immutable independent take metadata and the actual WAV asset identity. |
+
+Both tables reject UPDATE and DELETE with SQLite triggers. Request IDs hash the canonical versioned recipe before the ID is added; the recipe includes book/source identity, exact text, provider/model/voice, effective character/scene/passage directions and audio recipe version through its fingerprint. Repeated equivalent requests retain the original row. Credentials and reader state are excluded; cast inputs are immutable snapshots rather than pointers to the mutable projection. The archive is separate from selected enhanced takes and simple-listening sessions; it does not support cross-book synthesis reuse or force-rerender selection.
+
+A source sample is an exact prefix capped at 400 Python Unicode code points. Its version-1 `source_anchor` stores book/chapter/passage IDs, exact start/end and SHA-256 of the prefix. The full original passage is validated against canonical text before extracting it. Demo samples use a versioned original fixed transcript and a null source anchor; they never claim invented book coordinates. Character-associated inputs include saved scene/passage cues and explicit unsaved direction overrides. Simple/generic narrator samples omit enhanced direction.
+
+Take IDs hash `[preview_id, asset_id]`. Metadata retains its producer fingerprint, preview ID, source anchor and creation time; WAV bytes live at `voice-previews/<book-id>/<asset-id>.wav`. Reuse checks both SHA-256 identity and valid WAV content. A character display-name edit retains a new request with the current name but can reuse an existing same-book take when every other source and performance input matches. An indexed fingerprint lookup narrows candidates; the new immutable take records version-1 `reuse` provenance with the actual retained `take_id` and `preview_id`, and omits the original provider usage so it does not imply a new charge. Existing version-1 requests remain readable and unchanged. Damaged/missing assets are skipped without deleting prior history; a new explicit request can generate a distinct retained replacement. Valid audio completed during cancellation stays saved. Library storage attributes preview request/take payloads and reports `voice_preview_bytes` separately. Full backups must include this third media tree; current analysis/audiobook exports do not include the preview archive or WAVs.
+
 ### Listening and search
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
 | `listening_sessions` | PK `(book_id, id)`; `body` | Deterministic single-narrator configuration: schema, book, provider, voice, model. |
 | `listening_takes` | PK `id`; `book_id`, `session_id`, `segment_id`, `recipe`, `asset_id`, `body` | Retained take metadata indexed by book/session/passage/recipe; update/delete triggers guard existing rows. |
+| `listening_synthesis_cache` | PK `(content_key, take_id)`; FK `take_id` to `listening_takes.id` | Rebuildable index of equivalent synthesis inputs. New takes and validated exact-source legacy cache hits populate it. |
 | `search_books` | PK `book_id`; `fingerprint` | Fingerprint of the currently indexed source/passages. |
 | `passage_search` | FTS5: unindexed `book_id`, `chapter_id`, `passage_id`; indexed `text`; tokenizer `unicode61` | Rebuildable literal-word passage index. SQLite also creates its internal FTS shadow tables. |
 
 A simple listening recipe includes the source/session/passage identity and underlying audio fingerprint. It deliberately excludes enhanced cast and stage direction. Before rendering or reuse, the exact source slice must match. Audio results may be retained after Stop if the in-flight generation completed, but that does not automatically resume playback.
+
+Synthesis-cache version 1 uses the effective audio fingerprint with a constant lookup-only passage ID, plus its cache schema version. It therefore includes exact text, provider/model, voice and the audio recipe version while excluding book/session/source location. The constant lookup ID is never sent to synthesis or published as a generated source identity. A valid cache hit checks both the WAV and the actual SHA-256 asset ID. Reuse across books copies the immutable bytes to the target book's directory, without overwriting an existing asset. Original source/take history remains unchanged.
+
+New take bodies may include `synthesis_key`. A reused take additionally stores `reuse = {schema_version:1, take_id, book_id, session_id, segment_id, recipe, fingerprint}`, pointing to an actual retained input take. Its own `recipe`, `source_anchor`, session and passage identify the new source binding; its top-level `fingerprint` remains the original generated performance fingerprint. Historical `resource_usage` is not copied into the new reuse event. `cache_hit` is a transient result flag, not a new immutable take field. The index can be repopulated from known current take keys and lazily validated exact-source legacy hits; old take bodies are not rewritten.
+
+The browser's warmup/lookahead/chapter-preparation intent is transient. Each requested passage has its own persisted job and take, but there is no durable chapter queue that starts itself after restart. Source/voice changes invalidate the relevant browser intent; completed reusable takes survive. See [listening behavior](LIBRARY-LISTENING-RESOURCES.md#independent-simple-listening) for scheduling bounds.
 
 Search only indexes valid anchored passages. Queries become quoted literal words joined with AND; result rank is lexical relevance, not identity confidence. The index is rebuilt when its source/passage fingerprint changes. If SQLite lacks FTS5, search reports unavailable while the rest of the library remains usable.
 
@@ -203,11 +236,12 @@ New libraries default to `.bardic/`, configurable with `BARDIC_DATA_DIR` (legacy
   originals/<book-id>/source.epub  # Or source.txt
   audio/<book-id>/<asset-id>.wav
   listen-audio/<book-id>/<asset-id>.wav
+  voice-previews/<book-id>/<asset-id>.wav
 ```
 
 Older enhanced audio may use a recipe fingerprint as its filename; current byte-addressed takes use a SHA-256 asset ID. Thumbnail bytes are inside SQLite. Export ZIPs are built in temporary directories and removed after their response. A manually created `backups/` folder may exist, but the application has no automatic backup scheduler.
 
-Library storage reports measure original/enhanced/simple-audio files. Per-book database figures are JSON/BLOB payload attribution, not physical SQLite page allocation. Shared database/WAL/SHM size is reported separately; indexes, free pages, and shared metadata cannot honestly be divided into exact book file sizes.
+Library storage reports measure original/enhanced/simple-audio/voice-preview files. Per-book database figures are JSON/BLOB payload attribution, not physical SQLite page allocation. Shared database/WAL/SHM size is reported separately; indexes, free pages, and shared metadata cannot honestly be divided into exact book file sizes.
 
 ### Current projections and artifact snapshots
 
@@ -234,7 +268,7 @@ The separate audiobook export contains current selected enhanced takes, `product
 
 ### Full backup boundary
 
-A recoverable local backup needs a consistent SQLite snapshot **and** the originals and both audio trees. A raw copy of only `library.sqlite3` while WAL is active may omit committed work; use SQLite's backup facility or stop the server before taking a consistent filesystem copy. Preserve project environment configuration separately if needed; it is not in the library or portable export. Restoration procedures must be exercised independently because the application does not yet provide a restore tool.
+A recoverable local backup needs a consistent SQLite snapshot **and** the originals and all three audio trees. A raw copy of only `library.sqlite3` while WAL is active may omit committed work; use SQLite's backup facility or stop the server before taking a consistent filesystem copy. Preserve project environment configuration separately if needed; it is not in the library or portable export. Restoration procedures must be exercised independently because the application does not yet provide a restore tool.
 
 ## Constraints for future changes
 

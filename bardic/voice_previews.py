@@ -1,0 +1,243 @@
+"""Bounded voice auditions with independent, immutable recipes and WAV takes.
+
+Previewing never edits casting, canonical text, or a reader's selected take.
+Retained requests snapshot their exact excerpt and delivery inputs before queueing.
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from urllib.parse import quote
+
+from .audio import AudioError, DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .store import now
+from .take_archive import produce_take
+
+
+VERSION = 1
+MAX_PREVIEW_CHARACTERS = 400
+DEMO_TEXT = 'The lantern glowed beside the open book. “Shall we begin?” she asked. Beyond the window, the quiet town was waiting for a story.'
+
+
+def _hash(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def _excerpt(text):
+    if len(text) <= MAX_PREVIEW_CHARACTERS:
+        return text
+    prefix = text[:MAX_PREVIEW_CHARACTERS]
+    # Keep the exact original prefix, including its punctuation and whitespace.
+    sentences = list(re.finditer(r'[.!?][”’\"\']?(?:\s|$)', prefix))
+    if sentences and sentences[-1].end() >= MAX_PREVIEW_CHARACTERS // 2:
+        return prefix[:sentences[-1].end()]
+    boundaries = list(re.finditer(r'\s+', prefix))
+    if boundaries and boundaries[-1].start() > 0:
+        return prefix[:boundaries[-1].start()]
+    return prefix
+
+
+def _speech_inputs(recipe):
+    # A display-name edit does not alter speech. Keep the recorded label in the
+    # immutable request while comparing every other retained input for reuse.
+    result = copy.deepcopy(recipe)
+    result['preview'].pop('id', None)
+    result['preview'].pop('character_name', None)
+    return result
+
+
+class VoicePreviewRepository:
+    def __init__(self, store):
+        self.store = store
+        with store.lock, store.connect() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS voice_preview_requests (
+                id TEXT PRIMARY KEY, book_id TEXT NOT NULL, body TEXT NOT NULL)''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS voice_preview_takes (
+                id TEXT PRIMARY KEY, preview_id TEXT NOT NULL, book_id TEXT NOT NULL,
+                asset_id TEXT NOT NULL, body TEXT NOT NULL,
+                FOREIGN KEY(preview_id) REFERENCES voice_preview_requests(id))''')
+            conn.execute('CREATE INDEX IF NOT EXISTS voice_preview_recipe ON voice_preview_takes(book_id,preview_id)')
+            conn.execute("""CREATE INDEX IF NOT EXISTS voice_preview_speech
+                ON voice_preview_requests(book_id,json_extract(body,'$.fingerprint'))""")
+            for table in ('voice_preview_requests', 'voice_preview_takes'):
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_no_{operation.lower()}
+                        BEFORE {operation} ON {table} BEGIN
+                        SELECT RAISE(ABORT, 'Voice previews are immutable'); END''')
+
+    def prepare(self, book_id, provider, voice=None, model=None, *, segment_id=None,
+                character_id=None, direction=None, segment_direction=None):
+        book = self.store.book(book_id)
+        if provider not in {'system', 'gemini'}:
+            raise ValueError('Choose system or Gemini narration.')
+        if direction is not None and not character_id:
+            raise ValueError('Performance direction requires a selected character.')
+        if segment_direction is not None and not (segment_id and character_id):
+            raise ValueError('Passage direction requires a selected passage and character.')
+        if voice is not None and (not isinstance(voice, str) or len(voice) > 256):
+            raise ValueError('Choose a valid narrator voice.')
+        if direction is not None and (not isinstance(direction, str) or len(direction) > 3000):
+            raise ValueError('Choose a valid performance direction.')
+        if segment_direction is not None and (not isinstance(segment_direction, str) or len(segment_direction) > 3000):
+            raise ValueError('Choose a valid passage direction.')
+        voice = voice.strip() if voice else ''
+        if provider == 'system':
+            if model not in (None, '', SYSTEM_MODEL):
+                raise ValueError('Device narration uses the installed macOS voice model.')
+            model = SYSTEM_MODEL
+        else:
+            voice, model = voice or 'Kore', model or DEFAULT_TTS_MODEL
+        segment = next((s for s in book['segments'] if s['id'] == segment_id), None)
+        if segment_id and segment is None:
+            raise KeyError('Passage not found in this book')
+        character = next((c for c in book['characters'] if c['id'] == character_id), None)
+        if character_id and character is None:
+            raise KeyError('Character not found in this book')
+        if character is not None and segment is None:
+            segment = next((s for s in book['segments'] if s.get('speaker_id') == character_id), None)
+        anchor, scene = None, {}
+        if segment is not None:
+            chapter = next((c for c in book['chapters'] if c['id'] == segment['chapter_id']), None)
+            start, end = segment.get('start'), segment.get('end')
+            if (chapter is None or type(start) is not int or type(end) is not int or
+                    not 0 <= start < end <= len(chapter['text']) or chapter['text'][start:end] != segment['text']):
+                raise ValueError('This passage does not match its original source. Repair its source mapping before previewing.')
+            text = _excerpt(segment['text'])
+            anchor = {'schema_version': VERSION, 'book_id': book_id, 'chapter_id': chapter['id'],
+                      'segment_id': segment['id'], 'start': start, 'end': start + len(text),
+                      'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
+            passage = {'id': segment['id'], 'text': text}
+            if character is not None:
+                passage.update({k: copy.deepcopy(segment[k]) for k in ('direction', 'cues') if k in segment})
+                if segment_direction is not None:
+                    passage['direction'] = segment_direction
+                selected_scene = next((s for s in book['scenes'] if s['id'] == segment.get('scene_id')), {})
+                scene = {k: selected_scene[k] for k in ('tone', 'direction') if k in selected_scene}
+        else:
+            passage = {'id': 'voice-preview-demo-v1', 'text': DEMO_TEXT}
+        performer = {'id': character_id or 'preview-narrator', 'voice': voice or 'Kore', 'system_voice': voice}
+        if character is not None:
+            performer['direction'] = character.get('direction', '') if direction is None else direction
+        fingerprint = render_fingerprint(passage, performer, scene, provider, model)
+        preview = {'schema_version': VERSION, 'book_id': book_id, 'text': passage['text'],
+                   'source': 'passage' if segment is not None else 'demo',
+                   'segment_id': segment['id'] if segment is not None else None,
+                   'chapter_id': segment['chapter_id'] if segment is not None else None,
+                   'character_id': character_id, 'character_name': character.get('name') if character is not None else None,
+                   'source_anchor': anchor, 'truncated': segment is not None and len(passage['text']) < len(segment['text']),
+                   'provider': provider, 'model': model, 'voice': voice}
+        recipe = {'schema_version': VERSION, 'preview': preview, 'passage': passage,
+                  'character': performer, 'scene': scene, 'fingerprint': fingerprint}
+        preview['id'] = _hash(recipe)
+        # No key, live device state, mutable cast projection, or selected audio
+        # is included. Identical requests keep their original retained recipe.
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO voice_preview_requests VALUES (?,?,?)',
+                         (preview['id'], book_id, json.dumps(recipe, ensure_ascii=False)))
+        return preview
+
+    def _request(self, book_id, preview_id):
+        self.store.book(book_id)
+        with self.store.lock, self.store.connect() as conn:
+            row = conn.execute('SELECT body FROM voice_preview_requests WHERE book_id=? AND id=?',
+                               (book_id, preview_id)).fetchone()
+        if not row:
+            raise KeyError('Voice preview not found')
+        return json.loads(row[0])
+
+    def _path(self, book_id, asset_id):
+        if (not isinstance(book_id, str) or re.fullmatch(r'[A-Za-z0-9_-]+', book_id) is None or
+                not isinstance(asset_id, str) or re.fullmatch(r'[a-f0-9]{64}', asset_id) is None):
+            raise KeyError('Voice preview audio not found')
+        return self.store.root / 'voice-previews' / book_id / f'{asset_id}.wav'
+
+    def _validated_asset(self, book_id, asset_id):
+        path = self._path(book_id, asset_id)
+        with path.open('rb') as source:
+            if hashlib.file_digest(source, 'sha256').hexdigest() != asset_id:
+                raise AudioError('Saved preview failed its content integrity check.')
+        return validate_audio(path)
+
+    def asset_path(self, book_id, asset_id):
+        self.store.book(book_id)
+        path = self._path(book_id, asset_id)
+        with self.store.lock, self.store.connect() as conn:
+            found = conn.execute('SELECT 1 FROM voice_preview_takes WHERE book_id=? AND asset_id=? LIMIT 1',
+                                 (book_id, asset_id)).fetchone()
+        if not found:
+            raise KeyError('Voice preview audio not found')
+        try:
+            self._validated_asset(book_id, asset_id)
+        except (OSError, EOFError, ValueError):
+            raise KeyError('Voice preview audio is missing or damaged') from None
+        return path
+
+    @staticmethod
+    def _present(book_id, metadata):
+        return {**metadata, 'available': True, 'mode': 'preview',
+                'url': f'/api/books/{quote(book_id, safe="")}/voice-preview/audio/{metadata["asset_id"]}'}
+
+    def cached(self, book_id, preview_id):
+        recipe = self._request(book_id, preview_id)
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('SELECT body FROM voice_preview_takes WHERE book_id=? AND preview_id=? ORDER BY rowid DESC',
+                                (book_id, preview_id)).fetchall()
+        for row in rows:
+            metadata = json.loads(row[0])
+            try:
+                duration = self._validated_asset(book_id, metadata['asset_id'])
+            except (OSError, EOFError, ValueError, KeyError):
+                continue
+            return {**self._present(book_id, metadata), 'duration': duration, 'cache_hit': True}
+        # Request IDs retain the historical character name. A rename may reuse
+        # the same speech, but source identity and every performance input must
+        # still match. The expression index narrows lookup before decoding.
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('''SELECT t.id,t.body,r.body FROM voice_preview_requests r
+                JOIN voice_preview_takes t ON t.preview_id=r.id
+                WHERE r.book_id=? AND json_extract(r.body,'$.fingerprint')=? AND r.id<>?
+                ORDER BY t.rowid DESC''', (book_id, recipe['fingerprint'], preview_id)).fetchall()
+        inputs = _speech_inputs(recipe)
+        for take_id, body, original_recipe in rows:
+            if _speech_inputs(json.loads(original_recipe)) != inputs:
+                continue
+            original = json.loads(body)
+            try:
+                duration = self._validated_asset(book_id, original['asset_id'])
+            except (OSError, EOFError, ValueError, KeyError):
+                continue
+            reused = {key: value for key, value in original.items() if key != 'resource_usage'}
+            reused.update(duration=duration, reuse={'schema_version': 1, 'take_id': take_id,
+                                                    'preview_id': original['preview_id']})
+            metadata = self._retain(book_id, recipe['preview'], reused)
+            return {**self._present(book_id, metadata), 'cache_hit': True}
+        return None
+
+    def _retain(self, book_id, preview, audio):
+        preview_id = preview['id']
+        metadata = {**audio, 'schema_version': VERSION, 'preview_id': preview_id,
+                    'source_anchor': preview['source_anchor'], 'created_at': now()}
+        identifier = _hash([preview_id, audio['asset_id']])
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO voice_preview_takes VALUES (?,?,?,?,?)',
+                         (identifier, preview_id, book_id, audio['asset_id'], json.dumps(metadata)))
+            return json.loads(conn.execute('SELECT body FROM voice_preview_takes WHERE id=?', (identifier,)).fetchone()[0])
+
+    def render(self, book_id, preview_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
+        check_cancel()
+        cached = self.cached(book_id, preview_id)
+        if cached:
+            return cached
+        recipe = self._request(book_id, preview_id)
+        preview = recipe['preview']
+        check_cancel()
+        audio = produce_take(recipe['passage'], recipe['character'], recipe['scene'], preview['provider'],
+                             preview['model'], api_key, self.store.root / 'voice-previews' / book_id,
+                             synthesizer=synthesizer)
+        metadata = self._retain(book_id, preview, audio)
+        # Keep successfully completed audio even when cancellation arrived during
+        # the provider call; Runtime performs the final playback cancellation.
+        return self._present(book_id, metadata)

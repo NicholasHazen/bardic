@@ -34,11 +34,13 @@ The project goal remains a local application that turns supplied fiction ebooks 
 | Incomplete collections | Implemented: missing/planned placeholders and supplied-volume scheduling. Missing books contribute no invented knowledge. Archived books are excluded from current earlier-book context. | [Series/library behavior](LIBRARY-LISTENING-RESOURCES.md) |
 | Series processing | Implemented: up to two concurrent discovery workers, later phases in reading order, child runs, bounded allowances, stop-on-failure scheduling and reusable results. No unattended retry daemon. | [Coordinator](../bardic/series_processing.py) |
 | Directed narration | Implemented: Gemini and installed macOS voices, one speaker passage per take, editable voice/direction, forced alternate takes and content-addressed WAV retention. Device voices ignore acting directions; cloud timbre and delivery still need auditioning. | [Voice research](RESEARCH-VOICE.md), [audio](../bardic/audio.py), [take archive](../bardic/take_archive.py) |
-| Simple listening | Implemented: one narrator, one requested passage at a time, separate cache, passage highlighting, pause/stop protection and chapter-boundary stopping. No whole-book preparation queue or simple-mode audio ZIP. | [Listening](LIBRARY-LISTENING-RESOURCES.md#independent-simple-listening), [listening module](../bardic/listening.py) |
+| Voice examples | Implemented: contextual or original demo samples beside simple narrator, cast voice and passage speaker controls; 400-character source-prefix cap, unsaved-choice snapshots, independent retained cache, shared player/speed and preserved reader bookmark. No narration monetary allowance or multi-take comparison UI. | [Examples](LIBRARY-LISTENING-RESOURCES.md#contextual-voice-examples), [preview archive](../bardic/voice_previews.py) |
+| Simple listening | Implemented: one narrator, shared panel/footer playback and speed, visible warmup, rate-aware bounded lookahead, explicit preparation of the remaining chapter, equivalent-speech cache across passages/books, passage highlighting, pause/stop protection and chapter-boundary stopping. Requests remain serial. No durable whole-book preparation queue or simple-mode audio ZIP. | [Listening](LIBRARY-LISTENING-RESOURCES.md#independent-simple-listening), [listening module](../bardic/listening.py) |
 | Synchronization and audio QA | Partial: sample-based passage boundaries and checks for corrupt, truncated, empty or all-zero audio. No word alignment, independent speech verification, pronunciation scoring or performance-quality guarantee. | [Synchronization research](RESEARCH-PIPELINE.md#passage-synchronization-now-word-alignment-later) |
 | Durable analysis and replay | Implemented: bounded transport/evidence retries, per-attempt reservations, accepted-unit caches, checkpoint recovery, rejected-response inspection and immutable artifact lineage. Lost pre-history outputs cannot be reconstructed. | [Storage](ARTIFACTS-AND-STORAGE.md), [processing](../bardic/processing.py) |
 | Search and graphs | Partial: literal lexical FTS5 search, earlier-volume filtering before result limits, typed story graph and artifact dependency graph. No vector index, learned semantic retrieval, interactive world timeline or separate graph database. | [Search](../bardic/search.py), [storage decision](ARTIFACTS-AND-STORAGE.md#storage-decision) |
 | Resource visibility | Implemented: per-stage/run attempts, retries, cache reuse, reported tokens, measured elapsed/local-thread CPU, audio/file volume, estimates and explicit unknowns. No account-wide invoice reconciliation or narration spending guard. | [Resource ledger](LIBRARY-LISTENING-RESOURCES.md#resource-ledger), [resources](../bardic/resources.py) |
+| Playback troubleshooting | Implemented: allowlisted browser/server events, job/passage correlation, bounded local retention and a Settings JSON download. Best-effort diagnostics are a rotating log, not a complete immutable audit. Older unrecorded errors remain unknown. | [Playback diagnostics](LIBRARY-LISTENING-RESOURCES.md#playback-diagnostics), [diagnostics](../bardic/diagnostics.py) |
 | Portable output | Partial: analysis JSON/JSONL ZIP with lineage and source, plus enhanced-audio ZIP with takes, complete chapter WAVs and timeline. No M4B, EPUB Media Overlays, analysis-bundle import or full take-comparison editor. | [Export contents](ARTIFACTS-AND-STORAGE.md#visibility-and-portability), [operations](OPERATIONS.md#exports-are-not-a-complete-backup) |
 
 ## Priority 1: trustworthy listening and controlled generation
@@ -56,15 +58,15 @@ Acceptance criteria:
 - Show reviewable speech discrepancies; require a bounded, explicit rerender decision. Failed verification must not trigger an unlimited paid retry loop.
 - Reader and exports use word timing only when valid; otherwise retain passage highlighting.
 
-[stable-ts](https://github.com/jianfch/stable-ts), [WhisperX](https://github.com/m-bain/whisperX), [Montreal Forced Aligner](https://montreal-forced-aligner.readthedocs.io/en/latest/installation.html), and a cloud alignment option are **research candidates**, not installed dependencies. See the dated [pipeline](RESEARCH-PIPELINE.md) and [voice](RESEARCH-VOICE.md) research before selecting one.
+The dated [word-highlighting proposal](WORD-HIGHLIGHTING.md) recommends benchmarking a local alignment-only worker before choosing a dependency. It documents source/audio-hash contracts, Apple Silicon uncertainties, and why the current Gemini TTS output contract is insufficient by itself. WhisperX and Montreal Forced Aligner are candidates; stable-ts is now archived and needs a maintenance assessment. No aligner is installed, and passage fallback remains required.
 
 ### R2. Performance quality, auditions and voice consistency — partial / planned
 
-Character voices and performance notes work now. The remaining goal is a production workflow that helps the user judge consistency and acting quality across long fiction.
+Character voices, performance notes and bounded **Hear example** auditions work now. Examples snapshot unsaved selections, use an exact source prefix or demo text, reuse independent cached audio and leave the reader bookmark/cast selections intact. Each Gemini sample can incur charges; this is a per-click text bound, not a dollar allowance. The remaining goal is a production workflow that helps the user judge consistency and acting quality across long fiction.
 
 Acceptance criteria:
 
-- Audition the same short scene with selected models/voices under an explicit small allowance; retain exact recipes, costs and alternate takes for comparison.
+- Extend the implemented single-example auditions to a scene/model/voice comparison workflow under an explicit small monetary allowance. Exact preview recipes/takes and reported usage already persist; comparison, alternate-take selection and a narration spending guard remain open.
 - Offer a take-comparison/selection UI without replacing original files or losing earlier performance notes.
 - Evaluate longer contextual takes against current short passages for seams, pacing, fidelity and retry cost. Keep passage-to-audio mapping explicit if chunk size changes.
 - If voice design is added, retain the provider ID, creation recipe, audition, creation/expiry metadata and user selection. Handle an expired/unavailable voice without silently substituting one.
@@ -72,16 +74,16 @@ Acceptance criteria:
 
 Additional TTS adapters, including the previously researched ElevenLabs option, remain optional. OpenAI/Anthropic support for analysis does not imply an implemented narration adapter. Automatic voice cloning is not part of the current commitment.
 
-### R3. Narration allowances and simple-mode preparation — engineering follow-up / planned
+### R3. Narration allowances and preparation — partial / engineering follow-up
 
-Current analysis guards do **not** cap enhanced narration, simple listening or account checks. Simple listening prevents uncontrolled continuation by requesting one passage at a time and stopping at chapter boundaries; it is not a monetary ceiling.
+Current analysis guards do **not** cap enhanced narration, simple listening or account checks. Simple listening now has a visible short warmup, bounded speed-aware lookahead and explicit preparation of the remaining chapter. Matching speech is reused locally, duplicate active passage requests join one job, and preparation stops on error/cancellation. These bounds are not a monetary ceiling, and sustained 2.5× playback has no provider-throughput guarantee.
 
 Acceptance criteria:
 
-- Add an explicit narration estimate/allowance covering every attempted take, including force regeneration, failed or uncertain requests, and future preparation queues.
+- Add an explicit narration estimate/allowance covering every attempted take, including force regeneration, failed or uncertain requests, and warmup/lookahead/chapter preparation.
 - Decide whether allowances are per action, book, series or account before presenting a “total budget.” Explain which historical spend is included and how unknown prices stop guarded work.
 - Retain successful takes when a limit is reached. Cache reuse must add no new provider charge, and request uncertainty must not become zero cost.
-- For optional chapter/book preparation, show the exact scope and provider, obtain an explicit start action, use bounded concurrency, persist progress, and make cancellation stop future scheduling.
+- Chapter preparation already shows its passage scope/provider, requires an explicit start, uses one request at a time, and preserves completed takes when stopped. A durable preparation plan with restart-resume state, whole-book scope and monetary estimates remains future work; the current browser queue does not start itself after restart.
 - Define whether simple-mode audio has a separate export or joins a generalized export selector. It must remain independent of enhanced cast assignments and takes.
 
 ### R4. Representative long-book validation — engineering follow-up
@@ -151,7 +153,7 @@ Acceptance criteria:
 
 - Add M4B chapters/metadata and EPUB Media Overlays against measured passage or validated word timing. Round-trip source IDs, chapter order and audio duration; label partial output explicitly.
 - Design an analysis-bundle import with schema/version checks, content hashes, dependency closure, identity-collision handling and previewable changes. Imported history must not invent missing provenance or execute instructions from payloads.
-- Provide a consistent full-library backup/restore workflow that includes SQLite, originals and both audio stores. An analysis ZIP alone is not a complete media backup.
+- Provide a consistent full-library backup/restore workflow that includes SQLite, originals and all audio stores, including voice examples. An analysis ZIP alone is not a complete media backup.
 - Preserve the independent simple-listening mode in exports and restores; its audio must never masquerade as an enhanced character performance.
 
 [EPUB 3.3](https://www.w3.org/TR/epub-33/) and [SQLite's backup API](https://sqlite.org/backup.html) are the existing reference points. Exact portable-reader/device support remains to be tested.

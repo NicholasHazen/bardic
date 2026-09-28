@@ -60,6 +60,27 @@ A preference-only request:
 
 Analysis model IDs may be custom syntactically valid IDs; the provider validates actual support when used. IDs contain 1–200 letters, digits, dots, underscores, colons, or hyphens, starting with a letter or digit. Key values are limited to 500 characters. TTS choices are restricted to the app's configured list. Prefer `/api/status` over assuming a fixed list. Identical account checks reuse an in-memory result for 30 seconds; checks are tied to the key/model configuration. Details: [provider setup](ANALYSIS-PROVIDERS.md), [account checks](ACCOUNT-CHECKS.md), [model catalog source](../bardic/model_catalog.py).
 
+## Local troubleshooting diagnostics
+
+| Route | Request / response |
+| --- | --- |
+| `POST /api/diagnostics` | Best-effort local operational event; strict allowlisted body below. Returns `{recorded:true,id}` or `{recorded:false,reason,...}`. No model requests. |
+| `GET /api/diagnostics?book_id=...&limit=100` | Newest events first: `{events:[...],retention_limit:5000}`. Optional valid book UUID filters results; `limit` defaults to 100 and accepts 1–5000. |
+
+Settings downloads `/api/diagnostics?limit=5000` as `bardic-diagnostics.json`. Events contain their ID, timestamp, `source` (`client` or `server`), `event` code and validated operational fields. Empty results do not establish that playback had no errors: logging is best effort, older events are pruned, and past unrecorded messages cannot be recovered.
+
+A minimal synthetic report:
+
+```json
+{"event":"playback_play_rejected","operation":"play","playback_rate":2.5}
+```
+
+Client `event` accepts `listen_request_failed`, `listen_poll_failed`, `listen_job_failed`, `buffer_failed`, `cache_read_failed`, `playback_media_error`, `playback_play_rejected`, `playback_waiting`, or `playback_resumed`. Optional fields are `book_id`, `segment_id`, `session_id`, `job_id`, `playback_rate`, `http_status`, `media_error_code`, and `operation`. Use real application IDs from responses: identifiers are format-validated; passage/session/job IDs require a book ID. Numeric fields are strict: finite playback rate 0.1–8, HTTP status 100–599, and media error code 1–4. `operation` accepts `request`, `poll`, `play`, `prefetch`, `media`, `prepare`, `settle`, or `cache_read`.
+
+Free-form messages, stacks, URLs, source text, credentials and unknown fields are forbidden. Invalid DTOs receive a generic HTTP 422 response that does not echo rejected inputs. Server records may additionally contain bounded provider/job-status values; clients cannot set the event source or these server-only fields. Listen-worker failure/stop and submission-failure events correlate to saved jobs without copying their error strings.
+
+Identical persisted events are coalesced within two seconds; no more than 120 client events are accepted per rolling minute across the instance. The browser also suppresses identical reports for ten seconds. Suppression returns `recorded:false` with `reason: "duplicate"` or `"rate_limited"`; logging/storage failure can return `"unavailable"`. Each accepted insert retains only the newest 5,000 events. Callers must not treat missing diagnostic persistence as a narration failure or retry paid work because of it. This rotating log is separate from retained analysis provenance and resource accounting. Sources: [diagnostics repository](../bardic/diagnostics.py), [browser reporter](../bardic/static/diagnostics.js), [operations](OPERATIONS.md#troubleshooting).
+
 ## Books and library lifecycle
 
 | Route | Behavior |
@@ -193,13 +214,15 @@ Active statuses are `queued` and `running`; terminal outcomes include `completed
 
 A remote request already sent can complete and be billed after cancellation. Validated outputs and completed audio are retained. On restart, incomplete jobs become interrupted. Resume uses the relevant analyze/render/listen/process endpoint rather than reviving an old job ID.
 
-## Enhanced narration, simple listening, and audio downloads
+## Enhanced narration, simple listening, voice examples, and audio downloads
 
 | Route | Behavior |
 | --- | --- |
 | `POST /api/books/{book_id}/render` | Enhanced production job. `{provider:"system"|"gemini", scene_id?, segment_id?, force:false}`. Omitted selectors select the whole book; both selectors, if given, are intersected. |
 | `GET /api/audio/{book_id}/{segment_id}` | Current valid enhanced passage WAV. Stale/unavailable selection returns 404. |
 | `GET /api/books/{book_id}/audio-assets/{asset_id}` | Retained enhanced audio asset bytes for that book. |
+| `POST /api/books/{book_id}/voice-preview` | Explicit bounded voice sample from an exact source prefix or the original demo. See request/response contract below. |
+| `GET /api/books/{book_id}/voice-preview/audio/{asset_id}` | Retained preview WAV, scoped to its owning book and verified against a saved take. |
 | `POST /api/books/{book_id}/listen` | One simple narrator for one selected passage. See request and response shapes below. |
 | `GET /api/books/{book_id}/listen/takes?session_id=...` | `{session, takes:[{segment_id,audio}]}` for saved matching simple takes. No generation. |
 | `GET /api/books/{book_id}/listen/audio/{asset_id}` | Retained simple-listening WAV, scoped to the owning book. |
@@ -215,9 +238,29 @@ A simple-listening request:
 
 For Gemini, select `provider: "gemini"`, a supported voice/model, or omit `model` to use the configured TTS preference. `segment_id` is required; `provider` defaults to `system`. Optional `voice` and `model` strings are limited to 256 and 200 characters respectively. Simple listening has its own narrator session, recipe archive, and audio directory. It does not overwrite cast voices, scene notes, enhanced selected takes, or enhanced artifacts.
 
-A cache hit returns `{"session":{...},"audio":{...},"cached":true}` immediately, even if the provider key/device is no longer available. New work returns `{"session":{...},"job":{...},"cached":false}`. Poll that job; when completed its `audio` includes `url`, duration, provider/model/voice, asset/recipe identity, and `mode: "simple"`. Failure/cancellation remains a job outcome. Finished simple audio can be recovered through `/listen/takes` after cancellation.
+A cache hit returns `{"session":{...},"audio":{...},"cached":true}` immediately, even if the provider key/device is no longer available. Lookup first checks the exact source/session recipe, then equivalent simple speech inputs across retained passages/books. The latter includes exact text, voice, provider/model and versioned synthesis recipe; it validates WAV integrity and the actual content hash before retaining a new source-bound reuse record. Audio may include `synthesis_key` and a version-1 `reuse` pointer to the original retained take. The original producer fingerprint stays unchanged; the target `recipe` and `source_anchor` describe its new source binding. `cache_hit` is a transient result flag.
 
-The API creates only the requested passage. The browser controls sequential playback and stops simple autoplay at the chapter boundary. Simple listening has no separate TTS budget field in its request. Analysis ZIPs include saved simple-listening session/take metadata when those tables exist; neither export includes the separate simple-listening WAVs. Audiobook ZIPs package enhanced production audio. Sources: [audio.py](../bardic/audio.py), [take archive](../bardic/take_archive.py), [listening.py](../bardic/listening.py), [listening API tests](../tests/test_listen_api.py).
+New work returns `{"session":{...},"job":{...},"cached":false}`. A duplicate request for the same active session and passage returns the existing queued/running job with this same shape instead of starting another synthesis. A job with cancellation requested is never joined; conflicting busy-book work remains a conflict. Poll that job; when completed its `audio` includes `url`, duration, provider/model/voice, asset/recipe identity, and `mode: "simple"`. Failure/cancellation remains a job outcome. Finished simple audio can be recovered through `/listen/takes` after cancellation. Do not automatically repeat a generation POST following an uncertain network response; the browser retries only bounded read-only status polling.
+
+The API creates only the requested passage; there is no separate bulk or streaming endpoint. The browser coordinates warmup, bounded lookahead and the explicit Prepare rest of chapter action by serially calling this endpoint. Warmup aims for 10 listening seconds with at most three passages; lookahead aims for 45 listening seconds with at most 12 future passages. Speed and current clip position affect the target, and automatic continuation stays in the chapter. Chapter preparation starts at the selected passage, saves the remainder without autoplay, and stops scheduling on cancellation/error. These queues do not resume themselves after a browser/server restart.
+
+Simple listening has no separate TTS budget field or narration spending cap. The UI shows chapter passage scope and a cloud-charge warning, not a monetary estimate. Analysis ZIPs include saved simple-listening session/take metadata when those tables exist; neither export includes the separate simple-listening WAVs. Audiobook ZIPs package enhanced production audio. Sources: [audio.py](../bardic/audio.py), [take archive](../bardic/take_archive.py), [listening.py](../bardic/listening.py), [listening API tests](../tests/test_listen_api.py).
+
+### Voice example requests
+
+```json
+{"provider":"gemini","voice":"Leda","segment_id":"segment-id","character_id":"character-id","direction":"Warm and measured.","segment_direction":"Quietly."}
+```
+
+`provider` is `system` (default) or `gemini`. Optional fields: `voice` (256 characters), `model`, `segment_id`, `character_id` (200 each), and `direction`/`segment_direction` (3,000 each). Omit `model` to use the configured Gemini TTS preference or `macos-say` for device narration. Device requests reject a different model. There is no caller-supplied transcript field: text is always resolved from the stored book or fixed demo. `direction` requires `character_id`; `segment_direction` requires both a passage and character. Unknown fields are rejected.
+
+An explicit passage is used even when auditioning an unsaved speaker assignment. Otherwise a selected character uses its first attributed passage, falling back to the original demo when none exists; neither selector means demo text. The browser prefers the currently selected passage for that character, then its first passage in the current chapter, before leaving the fallback to the server. References or name mentions do not substitute for attributed speech. A passage sample is an exact original prefix of at most 400 Python Unicode code points, preferentially ending at a sentence/word boundary. It includes a validated chapter-local `source_anchor`; source text is never rewritten. `truncated` identifies a shortened sample.
+
+With a character, the recipe includes its effective direction plus the saved scene tone/direction, passage direction and cues. Optional direction fields snapshot unsaved editor choices. Without a character, simple-narrator samples omit enhanced performance inputs. Requests do not modify cast, source, reading position or selected simple/enhanced takes.
+
+A cache hit returns `{preview, audio, cached:true}` before checking provider availability. New work returns `{preview, job, cached:false}`; matching active non-cancelled preview requests join the same job. Other active book/series work prevents new synthesis. The `voice_preview` job has one unit and retains its `preview` and completed `audio`; preview metadata includes ID, exact sample text, source/demo label, source anchor, character/passage/chapter IDs, provider/model/voice and truncation state. Audio has `mode:"preview"`, content asset ID, duration and a local URL. Matching reuse is book-scoped and includes source and effective performance recipe; it is independent of both enhanced and simple caches.
+
+The worker snapshots configuration/key before queueing and checks cancellation before synthesis. A successfully completed in-flight take can be saved after Stop while stale playback stays cancelled. There is no generation POST retry or narration dollar cap. Gemini examples can incur charges; resource operations use stage `voice_preview`, preserving reported usage and unknown costs. Saved request/take rows and WAVs remain in the full library backup; these preview archives are not currently included in the analysis or audiobook ZIP. Source: [preview repository](../bardic/voice_previews.py), [API tests](../tests/test_voice_preview_api.py).
 
 ## Pipeline inspection, artifacts, graph, search, and portable export
 

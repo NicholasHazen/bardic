@@ -13,12 +13,15 @@ const safeRead = (key, fallback = null) => {
 const safeWrite = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Reading remains usable without browser storage. */ } };
 const state = {status:null, books:[], book:null, chapterId:null, segmentId:null, tab:'read', jobs:[], poll:null, selectionVersion:0, audioSegmentId:null, pendingOffset:0, lastSave:0, loading:false, settingsBusy:false, accountChecksPending:new Set(), analysisSummary:null, analysisError:null, referenceCache:new Map(), referenceVersion:0};
 const audio = new Audio();
-audio.preload = 'metadata';
-audio.playbackRate = Number(safeRead('bardic:speed', 1)) || 1;
+audio.preload = 'auto';
+// Loading or clearing a media source resets playbackRate to defaultPlaybackRate.
+audio.defaultPlaybackRate = audio.playbackRate = Number(safeRead('bardic:speed', 1)) || 1;
 let toastTimer;
 let playGeneration = 0;
 let preparingListen = false;
 let previewEnhanced = false;
+let mediaBuffering = false;
+const listeningPreloads = new Map();
 
 function toast(message, error = false) {
   clearTimeout(toastTimer);
@@ -215,11 +218,117 @@ function saveProgress() {
   safeWrite('bardic:lastBook', state.book.id);
 }
 function stopAudio({clear = false} = {}) {
-  playGeneration++; preparingListen = false;
+  window.BardicVoicePreview?.stop();
+  finishVoicePreview();
+  playGeneration++; preparingListen = false; mediaBuffering = false;
   window.BardicListen?.stop(state.book);
+  clearListeningPreloads();
   audio.pause();
   if (clear) { audio.removeAttribute('src'); audio.load(); state.audioSegmentId = null; state.pendingOffset = 0; previewEnhanced = false; }
   updatePlayer();
+}
+function setPlaybackRate(rate) {
+  if (![.75,1,1.25,1.5,1.75,2,2.25,2.5].includes(Number(rate))) return;
+  audio.defaultPlaybackRate = audio.playbackRate = Number(rate);
+  $('#playback-speed').value = String(rate);
+  safeWrite('bardic:speed', audio.playbackRate);
+  updateListeningBuffer(); renderReader(); updatePlayer();
+}
+function beginVoicePreview() {
+  const offset = state.voicePreview?.offset ?? (state.audioSegmentId === state.segmentId ? audio.currentTime || 0 : state.pendingOffset || 0);
+  saveProgress();
+  stopAudio({clear:true});
+  state.pendingOffset = offset;
+  state.voicePreview = {bookId:state.book.id, offset, audio:null};
+  renderReader(); updatePlayer();
+}
+function finishVoicePreview() {
+  const preview = state.voicePreview;
+  if (!preview) return;
+  state.voicePreview = null;
+  playGeneration++;
+  audio.pause(); audio.removeAttribute('src'); audio.load();
+  state.audioSegmentId = null;
+  if (state.book?.id === preview.bookId) state.pendingOffset = preview.offset;
+  $('#voice-preview-panel').hidden = true;
+  renderReader(); updatePlayer(); saveProgress();
+}
+async function playVoicePreview(take, preview) {
+  const current = state.voicePreview;
+  if (!current || current.bookId !== state.book?.id) return;
+  current.audio = take; current.preview = preview;
+  audio.src = take.url; audio.load();
+  try { await audio.play(); }
+  catch (error) {
+    if (state.voicePreview === current && error.name !== 'AbortError') {
+      reportPlaybackIssue('playback_play_rejected', {operation:'play'});
+      toast('The voice example could not start. Press Play example to try again.', true);
+    }
+  }
+  if (state.voicePreview === current) updatePlayer();
+}
+function startVoicePreview(config, label) {
+  if (!state.book) return;
+  void window.BardicVoicePreview?.start(state.book, config, label);
+}
+function auditionCharacter(form, provider) {
+  const character = characterById(form.dataset.characterForm);
+  if (!character) return;
+  const chosen = segmentById(state.segmentId);
+  const passage = chosen?.speaker_id === character.id ? chosen :
+    chapterSegments().find(item => item.speaker_id === character.id);
+  startVoicePreview({provider, character_id:character.id,
+    ...(passage ? {segment_id:passage.id} : {}),
+    voice:form.elements[provider === 'system' ? 'system_voice' : 'voice'].value,
+    model:provider === 'system' ? 'macos-say' : state.status.tts_model,
+    direction:form.elements.direction.value}, `${character.name} · ${provider === 'system' ? 'Device' : 'Gemini'}`);
+}
+function auditionPassage(form) {
+  const character = characterById(form.elements.speaker_id.value);
+  if (!character) return;
+  const provider = $('#render-provider').value;
+  startVoicePreview({provider, character_id:character.id, segment_id:form.dataset.segmentForm,
+    voice:provider === 'system' ? character.system_voice || '' : character.voice || 'Kore',
+    model:provider === 'system' ? 'macos-say' : state.status.tts_model,
+    segment_direction:form.elements.direction.value}, `${character.name} · Passage example`);
+}
+function setupVoicePreviews() {
+  window.BardicVoicePreview?.configure({
+    onStart:beginVoicePreview, onReady:playVoicePreview,
+    beforeRequest:book => window.BardicListen?.waitForStopped?.(book),
+    onState:() => updatePlayer(), onStop:finishVoicePreview,
+  });
+}
+function clearListeningPreloads() {
+  for (const media of listeningPreloads.values()) { media.removeAttribute('src'); media.load(); }
+  listeningPreloads.clear();
+}
+function updateListeningBuffer() {
+  if (!state.book || state.voicePreview || !simpleActive() || audio.paused || preparingListen) return;
+  const segment = segmentById(state.segmentId);
+  if (!segment) return;
+  window.BardicListen?.updatePlayback?.(state.book, segment, {playbackRate:audio.playbackRate, currentTime:audio.currentTime || 0});
+  // Warm only the next two locally generated files. Fetching these URLs cannot
+  // start synthesis and never crosses a chapter or narrator selection.
+  const segments = chapterSegments();
+  const index = segments.findIndex(item => item.id === segment.id);
+  const urls = new Set(segments.slice(index + 1, index + 3).map(item => listeningAudio(item)?.url).filter(Boolean));
+  for (const [url, media] of listeningPreloads) {
+    if (!urls.has(url)) { media.removeAttribute('src'); media.load(); listeningPreloads.delete(url); }
+  }
+  for (const url of urls) {
+    if (!listeningPreloads.has(url)) {
+      const media = new Audio(); media.preload = 'auto'; media.src = url;
+      listeningPreloads.set(url, media); media.load();
+    }
+  }
+}
+function reportPlaybackIssue(event, details = {}) {
+  const example = state.voicePreview ? window.BardicVoicePreview?.getState() : null;
+  window.BardicDiagnostics?.record(event, {book_id:state.book?.id,
+    segment_id:state.voicePreview ? state.voicePreview.preview?.segment_id : state.segmentId,
+    ...(example?.jobId ? {job_id:example.jobId} : {}),
+    playback_rate:audio.playbackRate,operation:'media',...details});
 }
 function renderLibrary() {
   $('#library-list').innerHTML = state.books.length ? state.books.map(book => `<button class="library-item ${state.book?.id === book.id ? 'active' : ''}" data-book="${escapeHTML(book.id)}" ${state.book?.id === book.id ? 'aria-current="true"' : ''}><span class="cover-thumb" aria-hidden="true">${book.cover?.url ? `<img src="${escapeHTML(book.cover.url)}" alt="" loading="lazy">` : escapeHTML((book.title || 'B').charAt(0))}</span><span><strong>${escapeHTML(book.title || 'Untitled')}</strong><small>${escapeHTML(book.author || 'Personal edition')}</small></span></button>`).join('') : '<p class="sidebar-hint">Your next great listen starts here.</p>';
@@ -313,11 +422,27 @@ function renderBook() {
 }
 function renderReader() {
   window.BardicListen?.render($('#simple-listen'), state.book, {
-    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, busy:Boolean(busyJob()),
+    status:state.status, chapterId:state.chapterId, segmentId:state.segmentId, playbackRate:audio.playbackRate, busy:Boolean(busyJob()),
+    playing:!audio.paused && !state.voicePreview, preparing:preparingListen, previewing:Boolean(state.voicePreview),
     onChange:() => { renderReader(); updatePlayer(); },
     onStop:() => { stopAudio({clear:true}); previewEnhanced = false; },
     onPlay:id => startSegment(id || state.segmentId, {autoplay:true}),
-    onJob:job => { if (job && job.book_id === state.book?.id) { const index = state.jobs.findIndex(j => j.id === job.id); if (index < 0) { state.jobs.unshift(job); pollJobs(false); } else state.jobs[index] = job; renderJob(); } },
+    onToggle:() => { if (state.voicePreview) window.BardicVoicePreview?.stop(); return togglePlayback(); },
+    onRateChange:setPlaybackRate,
+    beforeChapterPrepare:() => window.BardicVoicePreview?.waitForStopped?.(),
+    onPreview:config => startVoicePreview(config, `${config.voice || 'Default device voice'} · Narrator example`),
+    onJob:job => {
+      if (!job || job.book_id !== state.book?.id) return;
+      const index = state.jobs.findIndex(j => j.id === job.id);
+      if (index < 0) state.jobs.unshift(job); else state.jobs[index] = job;
+      renderJob();
+      // The component stops polling when playback intent is cancelled. Keep a
+      // single lightweight status poll alive until all known jobs settle,
+      // including an older cancelled request left in the banner.
+      if (busyJob() && !state.poll && !state.jobPollToken) {
+        state.poll = setTimeout(() => pollJobs(false, {jobsOnly:true}), 1600);
+      }
+    },
   });
   const chapter = currentChapter();
   if (!chapter) return;
@@ -345,7 +470,7 @@ function renderReader() {
   $('#previous-chapter').disabled = chapterIndex === 0;
   $('#next-chapter').disabled = chapterIndex === state.book.chapters.length - 1;
   const ready = segments.filter(listeningReady).length;
-  $('#reader-hint').textContent = simpleActive() ? 'Press play for one narrator and passage highlighting. Audio is prepared as needed; playback stops at the end of this chapter.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Create a narration in the studio, then press play to follow each passage.';
+  $('#reader-hint').textContent = simpleActive() ? 'Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. Playback stops at the chapter boundary; highlighting follows each passage.' : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Create a narration in the studio, then press play to follow each passage.';
   renderPassageDetail();
 }
 function renderPassageDetail() {
@@ -436,7 +561,7 @@ function renderCast() {
   const provider = book.analysis?.provider || 'local';
   const attribution = provider === 'local' ? 'Local draft' : `${analysisLabels[provider] || provider} analysis${book.analysis?.model ? ` · ${book.analysis.model}` : ''}`;
   $('#analysis-note').textContent = `${attribution} · ${book.analysis?.status === 'reviewed' ? 'Edited by you.' : 'Review the cast and speaker assignments before narration.'}${noteText ? ` ${noteText}` : ''}`;
-  $('#cast-grid').innerHTML = book.characters.map(character => `<form class="cast-card" data-character-form="${escapeHTML(character.id)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="voice-fields"><div><label class="field-label" for="voice-${escapeHTML(character.id)}">Gemini voice</label><input id="voice-${escapeHTML(character.id)}" name="voice" list="gemini-voices" value="${escapeHTML(character.voice || 'Kore')}" placeholder="Kore"></div><div><label class="field-label" for="system-${escapeHTML(character.id)}">Device voice</label><select id="system-${escapeHTML(character.id)}" name="system_voice">${systemVoiceOptions(character.system_voice)}</select></div></div><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save voice ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
+  $('#cast-grid').innerHTML = book.characters.map(character => `<form class="cast-card" data-character-form="${escapeHTML(character.id)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="voice-fields"><div><label class="field-label" for="voice-${escapeHTML(character.id)}">Gemini voice</label><input id="voice-${escapeHTML(character.id)}" name="voice" list="gemini-voices" value="${escapeHTML(character.voice || 'Kore')}" placeholder="Kore"><button type="button" class="button subtle voice-example" data-preview-character="gemini" aria-label="Hear ${escapeHTML(character.name)} with Gemini voice">Hear example</button></div><div><label class="field-label" for="system-${escapeHTML(character.id)}">Device voice</label><select id="system-${escapeHTML(character.id)}" name="system_voice">${systemVoiceOptions(character.system_voice)}</select><button type="button" class="button subtle voice-example" data-preview-character="system" aria-label="Hear ${escapeHTML(character.name)} with device voice">Hear example</button></div></div><p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved voice and direction are included. Gemini examples may incur charges.</p><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save voice ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
 }
 function speakerOptions(selected) {
   return state.book.characters.map(character => `<option value="${escapeHTML(character.id)}" ${character.id === selected ? 'selected' : ''}>${escapeHTML(character.name)}</option>`).join('');
@@ -493,7 +618,7 @@ function renderStudio() {
   $('#script-meta').textContent = `${scenes.length} ${scenes.length === 1 ? 'scene' : 'scenes'} · ${segments.length} passages`;
   $('#scene-list').innerHTML = scenes.map((scene, index) => {
     const items = segments.filter(s => s.scene_id === scene.id || scene.segment_ids?.includes(s.id));
-    return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
+    return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage">Hear example</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
   }).join('') || '<div class="empty-state">No scenes here yet. Analyze the story to draft a performance script.</div>';
   renderAnalysisProgress();
   updateBusyControls();
@@ -522,14 +647,15 @@ function updateHighlight({scroll = false} = {}) {
   }
   renderPassageDetail();
 }
-async function startSegment(id, {autoplay = true, offset = 0, scroll = false, enhanced = false} = {}) {
+async function startSegment(id, {autoplay = true, offset = 0, scroll = false, enhanced = false, continuation = false} = {}) {
   const segment = segmentById(id);
   if (!segment) return;
+  window.BardicVoicePreview?.stop();
   // Repeated passage clicks share the pending request. Selecting another
   // passage or a studio preview stops that request's playback intent.
   if (preparingListen && state.segmentId === id && !enhanced) return;
-  if (preparingListen) window.BardicListen?.stop(state.book);
-  preparingListen = false;
+  if (!continuation || enhanced) { window.BardicListen?.stop(state.book); clearListeningPreloads(); }
+  preparingListen = false; mediaBuffering = false;
   const playToken = ++playGeneration;
   const bookVersion = state.selectionVersion;
   const bookId = state.book.id;
@@ -537,12 +663,18 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
   audio.pause();
   state.segmentId = id;
   if (segment.chapter_id !== state.chapterId) { state.chapterId = segment.chapter_id; renderReader(); renderStudio(); }
+  else renderReader();
   updateHighlight({scroll});
   let selectedAudio = listeningAudio(segment);
-  if (simpleActive() && !selectedAudio && autoplay) {
+  if (simpleActive() && autoplay) {
     preparingListen = true; updatePlayer();
-    try { selectedAudio = await window.BardicListen.ensure(state.book, segment); }
-    catch (error) { if (playToken === playGeneration) toast(error.message, true); }
+    try {
+      const settled = await window.BardicVoicePreview?.waitForStopped?.();
+      if (settled === false || playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId) return;
+      const listen = window.BardicListen;
+      selectedAudio = await (listen.prepare ? listen.prepare(state.book, segment, {playbackRate:audio.playbackRate, offset}) : listen.ensure(state.book, segment));
+    }
+    catch (error) { selectedAudio = null; if (playToken === playGeneration) toast(error.message, true); }
     if (playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId || state.segmentId !== id) return;
     preparingListen = false;
     if (!selectedAudio) { updatePlayer(); return; }
@@ -564,33 +696,83 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
     audio.currentTime = Math.min(offset, Math.max(0, audio.duration - .01));
   }
   if (autoplay) {
-    try { await audio.play(); } catch (error) { if (playToken === playGeneration && error.name !== 'AbortError') toast('Playback could not start. Press play to try again.', true); }
+    try { await audio.play(); }
+    catch (error) {
+      if (playToken === playGeneration) {
+        window.BardicListen?.stop(state.book); clearListeningPreloads();
+        if (error.name !== 'AbortError') {
+          reportPlaybackIssue('playback_play_rejected', {operation:'play'});
+          toast('Playback could not start. Press play to try again.', true);
+        }
+      }
+    }
   }
   if (playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId) return;
-  updatePlayer(); saveProgress();
+  updatePlayer(); saveProgress(); updateListeningBuffer();
 }
 async function togglePlayback() {
   if (!state.book) return;
+  if (state.voicePreview) {
+    if (!state.voicePreview.audio) { window.BardicVoicePreview?.stop(); return; }
+    if (!audio.paused) audio.pause();
+    else {
+      const preview = state.voicePreview;
+      try { await audio.play(); }
+      catch (error) {
+        if (state.voicePreview === preview && error.name !== 'AbortError') {
+          reportPlaybackIssue('playback_play_rejected', {operation:'play'});
+          toast('The voice example could not play. Try the example again.', true);
+        }
+      }
+    }
+    updatePlayer(); return;
+  }
   if (preparingListen) { stopAudio({clear:true}); return; }
   if (!audio.paused) { stopAudio(); saveProgress(); return; }
   const segment = segmentById(state.segmentId) || chapterSegments()[0];
   if (!segment) return;
-  if (state.audioSegmentId === segment.id && audio.getAttribute('src') === listeningAudio(segment)?.url) {
-    const playToken = ++playGeneration;
-    try { await audio.play(); } catch { if (playToken === playGeneration) toast('Playback could not start. Try selecting the passage again.', true); }
-  } else await startSegment(segment.id, {offset:state.pendingOffset});
+  const offset = state.audioSegmentId === segment.id && audio.getAttribute('src') === listeningAudio(segment)?.url
+    ? audio.currentTime || 0 : state.pendingOffset;
+  await startSegment(segment.id, {offset});
 }
 function orderedSegments() {
   return state.book ? state.book.chapters.flatMap(chapter => state.book.segments.filter(segment => segment.chapter_id === chapter.id)) : [];
 }
-async function moveSegment(delta, autoplay = !audio.paused) {
+async function moveSegment(delta, autoplay = !audio.paused, continuation = false) {
   const segments = orderedSegments();
   const index = segments.findIndex(s => s.id === state.segmentId);
   const next = segments[index + delta];
-  if (next) await startSegment(next.id, {autoplay, scroll:true});
+  if (next) await startSegment(next.id, {autoplay, scroll:true, continuation});
 }
 function updatePlayer() {
   if (!state.book) return;
+  if (state.voicePreview) {
+    const preview = window.BardicVoicePreview?.getState() || {};
+    const loading = preview.status === 'loading';
+    const sample = preview.preview || state.voicePreview.preview;
+    const hasAudio = Boolean(state.voicePreview.audio);
+    $('#voice-preview-panel').hidden = false;
+    $('#voice-preview-title').textContent = preview.label || 'Voice example';
+    $('#voice-preview-message').textContent = preview.error || (loading ? 'Preparing a short voice example…' : 'Your reading is paused. Close the example to return to your place.');
+    $('#voice-preview-source').textContent = sample ? `${sample.source === 'demo' ? 'Demo text · no assigned passage' : 'From your book'}${sample.truncated ? ' · Short excerpt' : ''}` : 'One short example. Matching saved audio is reused.';
+    $('#voice-preview-text').textContent = sample?.text || '';
+    $('#player-title').textContent = preview.label || 'Voice example';
+    $('#player-subtitle').textContent = 'Voice example · Shared playback speed';
+    $('#play-button').innerHTML = icon(loading || !audio.paused ? 'pause' : 'play');
+    $('#play-button').disabled = !loading && !hasAudio;
+    $('#play-button').setAttribute('aria-label', loading ? 'Stop preparing example' : audio.paused ? 'Play example' : 'Pause example');
+    $('#play-button').classList.toggle('is-playing', loading || !audio.paused);
+    $('#previous-segment').disabled = true; $('#next-segment').disabled = true;
+    const duration = hasAudio && Number.isFinite(audio.duration) ? audio.duration : state.voicePreview.audio?.duration || 0;
+    $('#elapsed').textContent = formatTime(hasAudio ? audio.currentTime : 0);
+    $('#duration').textContent = formatTime(duration);
+    $('#audio-progress').max = duration || 1;
+    $('#audio-progress').value = hasAudio ? Math.min(audio.currentTime || 0, duration) : 0;
+    $('#audio-progress').disabled = !hasAudio || !duration;
+    return;
+  }
+  $('#voice-preview-panel').hidden = true;
+  $('#play-button').disabled = false;
   const segment = segmentById(state.segmentId);
   const chapter = currentChapter();
   const isPlaying = preparingListen || !audio.paused;
@@ -599,7 +781,11 @@ function updatePlayer() {
   $('#play-button').setAttribute('aria-label', preparingListen ? 'Stop preparing narration' : isPlaying ? 'Pause' : 'Play');
   $('#player-title').textContent = chapter?.title || state.book.title;
   const index = chapterSegments().findIndex(s => s.id === state.segmentId);
-  $('#player-subtitle').textContent = segment ? `${simpleActive() ? 'Simple narrator' : characterById(segment.speaker_id)?.name || 'Narrator'} · Passage ${index + 1}${preparingListen ? ' · Preparing…' : listeningReady(segment) ? '' : ' · Not narrated'}` : 'Choose a passage to begin';
+  const buffer = simpleActive() ? window.BardicListen?.getBuffer?.(state.book) : null;
+  const bufferLabel = preparingListen || mediaBuffering ? ' · Buffering…' : buffer && !audio.paused ? ` · ${Math.floor(buffer.seconds || 0)}s buffered` : '';
+  const narrator = window.BardicListen?.getSelection?.(state.book);
+  const voiceLabel = simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
+  $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
   const duration = state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration) ? audio.duration : listeningAudio(segment)?.duration || 0;
   const elapsed = state.audioSegmentId === state.segmentId ? audio.currentTime || 0 : state.pendingOffset || 0;
   $('#elapsed').textContent = formatTime(elapsed);
@@ -636,37 +822,61 @@ function renderJob() {
   updateBusyControls();
   renderProduction();
 }
-async function pollJobs(refreshBookOnComplete = true) {
+async function pollJobs(refreshBookOnComplete = true, {jobsOnly = false} = {}) {
   clearTimeout(state.poll);
+  state.poll = null;
   const id = state.book?.id;
   if (!id) return;
-  const previous = state.jobs;
+  const token = {id, selectionVersion:state.selectionVersion};
+  state.jobPollToken = token;
+  const current = () => state.jobPollToken === token && id === state.book?.id && token.selectionVersion === state.selectionVersion;
+  const previous = state.jobs.slice();
+  const wasBusy = Boolean(busyJob());
+  const schedule = delay => {
+    if (!current() || !busyJob()) return;
+    const onlyListening = state.jobs.filter(job => ['queued','running'].includes(job.status)).every(job => ['listen','voice_preview'].includes(job.kind));
+    state.poll = setTimeout(() => pollJobs(!onlyListening, {jobsOnly:onlyListening}), delay);
+  };
   try {
-    const [jobsResult, analysisResult] = await Promise.allSettled([
-      request(`/api/jobs?book_id=${encodeURIComponent(id)}`),
-      request(`/api/books/${encodeURIComponent(id)}/analysis`),
-    ]);
-    if (id !== state.book?.id) return;
-    if (analysisResult.status === 'fulfilled') { state.analysisSummary = analysisResult.value; state.analysisError = null; }
-    else state.analysisError = `Could not load chapter progress: ${analysisResult.reason.message}`;
-    renderAnalysisProgress();
+    const requests = [request(`/api/jobs?book_id=${encodeURIComponent(id)}`)];
+    if (!jobsOnly) requests.push(request(`/api/books/${encodeURIComponent(id)}/analysis`));
+    const [jobsResult, analysisResult] = await Promise.allSettled(requests);
+    if (!current()) return;
+    if (analysisResult) {
+      if (analysisResult.status === 'fulfilled') { state.analysisSummary = analysisResult.value; state.analysisError = null; }
+      else state.analysisError = `Could not load chapter progress: ${analysisResult.reason.message}`;
+      renderAnalysisProgress();
+    }
     if (jobsResult.status === 'rejected') throw jobsResult.reason;
     const response = jobsResult.value;
-    state.jobs = (Array.isArray(response) ? response : response.jobs || []).sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    const refreshed = [...(Array.isArray(response) ? response : response.jobs || [])];
+    // A passage can start or finish through onJob while this GET is in flight.
+    // Retain those newer callbacks rather than reviving an older status or
+    // forgetting the next queued request when an earlier snapshot arrives.
+    for (const local of state.jobs) {
+      if (previous.find(job => job.id === local.id) === local) continue;
+      const index = refreshed.findIndex(job => job.id === local.id);
+      if (index < 0) refreshed.push(local);
+      else if ((local.updated_at || '') > (refreshed[index].updated_at || '')) refreshed[index] = local;
+    }
+    state.jobs = refreshed.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
     renderJob();
+    if (Boolean(busyJob()) !== wasBusy) { renderReader(); updatePlayer(); }
     const transitioned = state.jobs.some(job => !['running','queued'].includes(job.status) && previous.some(old => old.id === job.id && ['running','queued'].includes(old.status)));
-    if (refreshBookOnComplete && (transitioned || !busyJob())) {
+    if (!jobsOnly && refreshBookOnComplete && (transitioned || !busyJob())) {
       const book = await request(`/api/books/${encodeURIComponent(id)}`);
-      if (id === state.book?.id) {
+      if (current()) {
         state.referenceCache.clear(); state.referenceVersion++;
         applyBook(book);
         $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences));
         await refreshLibrary();
       }
     }
-    if (busyJob()) state.poll = setTimeout(() => pollJobs(true), 1600);
+    schedule(1600);
   } catch (error) {
-    if (id === state.book?.id) { toast(`Could not check job status: ${error.message}`, true); if (busyJob()) state.poll = setTimeout(() => pollJobs(true), 5000); }
+    if (current()) { toast(`Could not check job status: ${error.message}`, true); schedule(5000); }
+  } finally {
+    if (state.jobPollToken === token) state.jobPollToken = null;
   }
 }
 async function startJob(kind, scope = {}) {
@@ -728,6 +938,8 @@ $('#cast-grid').addEventListener('toggle', event => {
   if (event.target.matches('[data-character-references]') && event.target.open) loadCharacterReferences(event.target.dataset.characterReferences);
 }, true);
 $('#cast-grid').addEventListener('click', event => {
+  const example = event.target.closest('[data-preview-character]');
+  if (example) { auditionCharacter(example.closest('[data-character-form]'), example.dataset.previewCharacter); return; }
   const retry = event.target.closest('[data-retry-references]');
   if (retry) loadCharacterReferences(retry.dataset.retryReferences, {retry:true});
   const more = event.target.closest('[data-more-references]');
@@ -746,7 +958,7 @@ $('#cast-grid').addEventListener('click', event => {
   setChapter(reference.dataset.referenceChapter, {scroll:false});
   const segment = segmentById(reference.dataset.referenceSegment);
   if (segment) state.segmentId = segment.id;
-  setTab('read'); updateHighlight({scroll:true}); updatePlayer(); saveProgress();
+  renderReader(); setTab('read'); updateHighlight({scroll:true}); updatePlayer(); saveProgress();
   const selected = $$('.passage').find(node => node.dataset.segment === state.segmentId);
   selected?.focus({preventScroll:true});
 });
@@ -754,7 +966,15 @@ $('#analysis-progress').addEventListener('click', event => {
   const chapter = event.target.closest('[data-analysis-chapter]');
   if (chapter) { setChapter(chapter.dataset.analysisChapter, {scroll:false}); $('#studio-chapter').focus(); }
 });
-$('#scene-list').addEventListener('click', event => { const scene = event.target.closest('[data-render-scene]'); const segment = event.target.closest('[data-render-segment]'); const play = event.target.closest('[data-play-segment]'); if (scene) startJob('render',{scene_id:scene.dataset.renderScene}); else if (segment) startJob('render',{segment_id:segment.dataset.renderSegment,force:true}); else if (play) startSegment(play.dataset.playSegment, {enhanced:true}); });
+$('#scene-list').addEventListener('click', event => { const example = event.target.closest('[data-preview-speaker]'); if (example) { auditionPassage(example.closest('[data-segment-form]')); return; } const scene = event.target.closest('[data-render-scene]'); const segment = event.target.closest('[data-render-segment]'); const play = event.target.closest('[data-play-segment]'); if (scene) startJob('render',{scene_id:scene.dataset.renderScene}); else if (segment) startJob('render',{segment_id:segment.dataset.renderSegment,force:true}); else if (play) startSegment(play.dataset.playSegment, {enhanced:true}); });
+for (const selector of ['#cast-grid','#scene-list']) {
+  $(selector).addEventListener('input', event => {
+    if (state.voicePreview && event.target.matches('input,textarea,select')) window.BardicVoicePreview?.stop();
+  });
+  $(selector).addEventListener('change', event => {
+    if (state.voicePreview && event.target.matches('input,textarea,select')) window.BardicVoicePreview?.stop();
+  });
+}
 $('#export-link').addEventListener('click', event => { const ready = state.book?.segments.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.segments.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
 $('#analyze-button').addEventListener('click', () => { renderProduction(); $('#progressive-production').scrollIntoView({behavior:'smooth', block:'start'}); $('#progressive-production select')?.focus(); });
 $('#analysis-scope').addEventListener('change', renderAnalysisProgress);
@@ -850,34 +1070,63 @@ $('#settings-dialog').addEventListener('close', clearKeyInputs);
 
 // Clip-boundary synchronization: no fabricated word timing.
 $('#play-button').addEventListener('click', togglePlayback);
+$('#close-voice-preview').addEventListener('click', () => window.BardicVoicePreview?.stop());
+$('#player-listen-settings').addEventListener('click', () => {
+  setTab('read');
+  $('#simple-listen').scrollIntoView({behavior:'smooth',block:'center'});
+  $('#simple-listen [data-listen-field="voice"]')?.focus({preventScroll:true});
+});
 $('#previous-segment').addEventListener('click', () => moveSegment(-1));
 $('#next-segment').addEventListener('click', () => moveSegment(1));
 $('#playback-speed').value = String(audio.playbackRate);
-$('#playback-speed').addEventListener('change', event => { audio.playbackRate = Number(event.target.value); safeWrite('bardic:speed',audio.playbackRate); });
+$('#playback-speed').addEventListener('change', event => setPlaybackRate(event.target.value));
 $('#audio-progress').addEventListener('input', event => {
   const time = Number(event.target.value);
+  if (state.voicePreview) { if (state.voicePreview.audio && Number.isFinite(audio.duration)) audio.currentTime = time; updatePlayer(); return; }
   if (state.audioSegmentId === state.segmentId && Number.isFinite(audio.duration)) { audio.currentTime = time; saveProgress(); }
   else if (listeningReady(segmentById(state.segmentId))) { state.pendingOffset = time; startSegment(state.segmentId,{autoplay:false,offset:time}); }
   updatePlayer();
 });
-audio.addEventListener('loadedmetadata', () => { if (state.pendingOffset > 0) { audio.currentTime = Math.min(state.pendingOffset, Math.max(0,audio.duration - .01)); state.pendingOffset = 0; } updatePlayer(); });
-audio.addEventListener('timeupdate', () => { updatePlayer(); if (Date.now() - state.lastSave > 1000) { saveProgress(); state.lastSave = Date.now(); } });
-audio.addEventListener('play', updatePlayer);
-audio.addEventListener('pause', () => { updatePlayer(); saveProgress(); });
+audio.addEventListener('loadedmetadata', () => { if (!state.voicePreview && state.pendingOffset > 0) { audio.currentTime = Math.min(state.pendingOffset, Math.max(0,audio.duration - .01)); state.pendingOffset = 0; } updatePlayer(); });
+audio.addEventListener('timeupdate', () => { updatePlayer(); updateListeningBuffer(); if (Date.now() - state.lastSave > 1000) { saveProgress(); state.lastSave = Date.now(); } });
+audio.addEventListener('play', () => { updatePlayer(); renderReader(); });
+audio.addEventListener('waiting', () => { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); });
+audio.addEventListener('stalled', () => { if (!audio.paused) { mediaBuffering = true; reportPlaybackIssue('playback_waiting'); updatePlayer(); } });
+audio.addEventListener('playing', () => { if (mediaBuffering) reportPlaybackIssue('playback_resumed'); mediaBuffering = false; updatePlayer(); updateListeningBuffer(); });
+audio.addEventListener('pause', () => { updatePlayer(); saveProgress(); renderReader(); });
 audio.addEventListener('ended', async () => {
+  if (state.voicePreview) { window.BardicVoicePreview?.stop(); return; }
   if (preparingListen || !state.audioSegmentId || state.audioSegmentId !== state.segmentId) return;
   if (previewEnhanced) { stopAudio({clear:true}); renderReader(); saveProgress(); return; }
   const segments = orderedSegments();
   const index = segments.findIndex(segment => segment.id === state.segmentId);
   if (index >= 0 && index < segments.length - 1 && (!simpleActive() || window.BardicListen.allowsAdvance(state.book, segments[index], segments[index+1]))) {
-    await moveSegment(1,true);
+    await moveSegment(1,true,true);
   } else {
+    window.BardicListen?.stop(state.book); clearListeningPreloads();
     updatePlayer(); saveProgress();
     toast(simpleActive() ? 'Chapter complete. Choose the next chapter when you are ready.' : 'The end. A good place to linger.');
   }
 });
-audio.addEventListener('error', () => { if (audio.getAttribute('src')) { updatePlayer(); toast('This audio take could not be loaded. Try regenerating it in the studio.',true); } });
-window.addEventListener('pagehide', saveProgress);
+audio.addEventListener('error', () => {
+  if (!audio.getAttribute('src')) return;
+  if (state.voicePreview) {
+    reportPlaybackIssue('playback_media_error', {media_error_code:audio.error?.code});
+    window.BardicVoicePreview?.stop();
+    toast('The voice example could not be loaded. Your reading position is saved; try the example again.', true);
+    return;
+  }
+  const simple = simpleActive();
+  const segment = segmentById(state.segmentId);
+  const offset = audio.currentTime || state.pendingOffset || 0;
+  reportPlaybackIssue('playback_media_error', {media_error_code:audio.error?.code});
+  stopAudio({clear:true});
+  state.pendingOffset = offset;
+  if (simple) window.BardicListen?.forgetAudio?.(state.book, segment);
+  updatePlayer(); saveProgress();
+  toast(simple ? 'Saved narration could not be loaded. Press Play to check the local cache and try again.' : 'This audio take could not be loaded. Try regenerating it in the studio.',true);
+});
+window.addEventListener('pagehide', () => { saveProgress(); stopAudio(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
 document.addEventListener('keydown', event => { if (event.code === 'Space' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.repeat && !event.target.closest('input,textarea,select,button,[role="button"],a,dialog') && state.book) { event.preventDefault(); togglePlayback(); } });
 
@@ -892,4 +1141,5 @@ async function init() {
     $('#fatal-error').textContent = `The local studio could not connect: ${error.message}. Check that the Bardic server is running, then reload this page.`;
   }
 }
+setupVoicePreviews();
 init();

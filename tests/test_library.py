@@ -207,7 +207,7 @@ def test_invalid_placeholder_order_has_no_effect(library, position):
 
 def test_storage_counts_files_and_payload_without_assigning_shared_database(library, tmp_path):
     store, repository, book = library
-    for folder, size in (('originals', 17), ('audio', 31), ('listen-audio', 23)):
+    for folder, size in (('originals', 17), ('audio', 31), ('listen-audio', 23), ('voice-previews', 13)):
         directory = store.root / folder / book['id']
         directory.mkdir(parents=True)
         (directory / 'file').write_bytes(b'x' * size)
@@ -219,7 +219,8 @@ def test_storage_counts_files_and_payload_without_assigning_shared_database(libr
         assert summary['storage']['original_bytes'] == 17
         assert summary['storage']['audio_bytes'] == 31
         assert summary['storage']['simple_listen_bytes'] == 23
-        assert summary['storage']['file_bytes'] == 71
+        assert summary['storage']['voice_preview_bytes'] == 13
+        assert summary['storage']['file_bytes'] == 84
         assert summary['storage']['database_payload_bytes'] > 0
         assert 'database_bytes' not in summary['storage']
         shared = repository.snapshot()['storage']

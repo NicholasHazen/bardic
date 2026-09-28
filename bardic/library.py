@@ -104,7 +104,7 @@ def _payload_bytes(conn, book_id):
                          ('character_observations', 'body'), ('analysis_units', 'body'), ('analysis_attempts', 'body'),
                          ('book_preprocessing', 'body'), ('pipeline_events', 'body'), ('artifact_versions', 'payload'),
                          ('book_covers', 'body'), ('resource_operations', 'body'), ('listening_sessions', 'body'),
-                         ('listening_takes', 'body')):
+                         ('listening_takes', 'body'), ('voice_preview_requests', 'body'), ('voice_preview_takes', 'body')):
         if table in tables:
             total += conn.execute(f'SELECT COALESCE(SUM(length(CAST({field} AS BLOB))),0) FROM {table} WHERE book_id=?',
                                   (book_id,)).fetchone()[0]
@@ -137,6 +137,7 @@ class LibraryRepository:
             original = _file_bytes(self.store.root / 'originals' / book_id, boundary=self.store.root)
             audio = _file_bytes(self.store.root / 'audio' / book_id, boundary=self.store.root)
             listening = _file_bytes(self.store.root / 'listen-audio' / book_id, boundary=self.store.root)
+            previews = _file_bytes(self.store.root / 'voice-previews' / book_id, boundary=self.store.root)
             result = {k: deepcopy(book.get(k)) for k in ('id', 'title', 'author', 'created_at', 'source_name', 'analysis')}
             result.update(archived=bool(removed), archived_at=removed[0] if removed else None,
                           section_count=len(chapters), chapter_count=sum(c.get('kind') == 'chapter' for c in chapters)
@@ -149,7 +150,8 @@ class LibraryRepository:
                           cover={'width': cover[0], 'height': cover[1], 'sha256': cover[2],
                                  'url': f'/api/books/{book_id}/cover?v={cover[2]}'} if cover else None,
                           storage={'original_bytes': original, 'audio_bytes': audio,
-                                   'simple_listen_bytes': listening, 'file_bytes': original + audio + listening,
+                                   'simple_listen_bytes': listening, 'voice_preview_bytes': previews,
+                                   'file_bytes': original + audio + listening + previews,
                                    'database_payload_bytes': _payload_bytes(conn, book_id),
                                    'note': 'File sizes are measured. Database payload bytes exclude shared pages, indexes and free space.'})
             return result

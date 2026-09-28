@@ -2528,3 +2528,14 @@ textarea {
 .model-catalog-toolbar .field-help { margin: 0; flex: 1; }
 .model-catalog-toolbar button { flex-shrink: 0; }
 @media (max-width: 540px) { .model-catalog-toolbar { align-items: flex-start; flex-direction: column; gap: 6px; } }
+
+/* Voice auditions use the same transport as reading, with a distinct sample. */
+.voice-example { margin-top:8px; font-size:11px; padding:7px 11px; }
+.voice-example-note { font-size:11px; line-height:1.6; color:var(--muted, #777b71); margin:10px 0 16px; }
+.player-settings-link { padding:2px 0; border:0; background:none; text-align:left; color:#3e604e; font-size:10px; text-decoration:underline; text-underline-offset:3px; cursor:pointer; }
+.voice-preview-panel { position:fixed; bottom:99px; left:var(--sidebar); right:0; z-index:21; max-height:230px; overflow:auto; padding:18px 40px; border-top:1px solid #dce0d0; background:#fcfbf5; box-shadow:0 -8px 25px #28392b0b; }
+.voice-preview-panel > div { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.voice-preview-panel p { margin:8px 0; font-size:12px; line-height:1.6; }
+.voice-preview-panel small { font-size:10px; color:#667461; }
+#voice-preview-text { font-family:Georgia,serif; font-size:16px; max-width:850px; }
+@media(max-width:760px) { .voice-preview-panel { left:0; bottom:105px; padding:14px 18px; max-height:220px; } .player-settings-link { font-size:8px; } }

@@ -13,6 +13,7 @@ function click(container, action){
   container.listeners.click({target:{closest:selector => selector === '[data-listen-action]' ? {dataset:{listenAction:action}} : null}});
 }
 function change(container,field,value){ container.listeners.change({target:{dataset:{listenField:field},value}}); }
+function speed(container,value){ container.listeners.change({target:{dataset:{listenSpeed:''},value}}); }
 const book = {id:'book-9',revision:1,chapters:[{id:'chapter-1'},{id:'chapter-2'}],segments:[
   {id:'segment-1',chapter_id:'chapter-1',start:0,end:11,text:'Mara spoke.',speaker_id:'mara',direction:'Whisper.',audio:{url:'/enhanced.wav',duration:1,asset_id:'enhanced'}},
   {id:'segment-2',chapter_id:'chapter-1',start:12,end:25,text:'Elio replied.',speaker_id:'elio',direction:'Louder.'},
@@ -87,6 +88,64 @@ function ordinary(call){
   assert.equal(persisted.provider,'gemini');
   assert.equal(persisted.voices.gemini,'Leda');
   assert.equal(persisted.model,'gemini-3.8-flash-lite-tts');
+
+  // Audition controls are passive until clicked, use the contextual source, and
+  // do not turn an enhanced reader into simple listening or start its queue.
+  const auditions=environment(()=>{throw new Error('An audition callback must not prepare listening audio');});
+  const auditionContainer=new Container();
+  const previews=[],rates=[];
+  let toggles=0,auditionStops=0,auditionPlay;
+  const auditionHooks=options({playbackRate:2.5,onPreview:value=>previews.push(JSON.parse(JSON.stringify(value))),
+    onRateChange:rate=>rates.push(rate),onToggle:()=>toggles++,onStop:()=>auditionStops++,onPlay:id=>{auditionPlay=id;}});
+  await auditions.api.render(auditionContainer,book,auditionHooks);
+  assert.match(auditionContainer.innerHTML,/Hear example/);
+  assert.match(auditionContainer.innerHTML,/value="2.5" selected>2.5×/);
+  click(auditionContainer,'preview');
+  assert.deepEqual(previews.at(-1),{provider:'system',voice:'',model:'macos-say',segment_id:'segment-1'});
+  assert.equal(auditions.api.enabled(book),false);
+  assert.equal(auditionStops,0);
+  assert.equal(auditions.calls.length,0);
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,segmentId:'missing',chapterId:'chapter-2'});
+  click(auditionContainer,'preview');
+  assert.equal(previews.at(-1).segment_id,'segment-3','Missing current passage falls back only within the selected chapter');
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,segmentId:'missing',chapterId:'missing'});
+  click(auditionContainer,'preview');
+  assert.equal(previews.at(-1).segment_id,null,'A context without source requests generic demo text');
+  change(auditionContainer,'provider','gemini');
+  change(auditionContainer,'voice','Leda');
+  change(auditionContainer,'model','gemini-3.8-flash-lite-tts');
+  await auditions.api.render(auditionContainer,book,auditionHooks);
+  click(auditionContainer,'preview');
+  assert.deepEqual(previews.at(-1),{provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-lite-tts',segment_id:'segment-1'});
+  assert.deepEqual(JSON.parse(JSON.stringify(auditions.api.getSelection(book))),{provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-lite-tts',mode:'enhanced'});
+  const selection=auditions.api.getSelection(book);selection.voice='Puck';
+  assert.equal(auditions.api.getSelection(book).voice,'Leda','Selection snapshots cannot mutate narrator state');
+  assert.equal(auditions.api.getSelection({id:'absent'}),null);
+
+  // Both speed selectors and transport surfaces delegate to the single player.
+  const stopsBeforeSpeed=auditionStops;
+  speed(auditionContainer,'2.25');speed(auditionContainer,'100');speed(auditionContainer,'invalid');
+  assert.deepEqual(rates,[2.25]);
+  assert.equal(auditionStops,stopsBeforeSpeed,'A speed change cannot cancel listening or an audition');
+  assert.equal(auditions.calls.length,0);
+  assert.equal(auditions.api.enabled(book),false);
+  click(auditionContainer,'start');
+  assert.equal(auditionPlay,'segment-1','Starting from enhanced mode activates simple playback');
+  assert.equal(toggles,0);
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:true,playbackRate:2.25});
+  assert.match(auditionContainer.innerHTML,/aria-label="Pause simple listening">Pause/);
+  assert.match(auditionContainer.innerHTML,/value="2.25" selected>2.25×/);
+  click(auditionContainer,'start');
+  assert.equal(toggles,1);
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:false,preparing:true});
+  assert.match(auditionContainer.innerHTML,/aria-label="Stop preparing narration">Preparing…/);
+  click(auditionContainer,'start');
+  assert.equal(toggles,2,'The same control can stop a warmup through the shared transport');
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:false,previewing:true});
+  assert.match(auditionContainer.innerHTML,/data-listen-action="preview"[^>]*disabled/);
+  assert.match(auditionContainer.innerHTML,/aria-label="Play simple listening">Play/);
+  assert.equal(previews.length,4,'Passive renders never restart an audition');
+  assert.equal(auditions.calls.length,0);
 
   // A persisted session only reads its local take index, once per revision.
   const savedConfig={mode:'simple',provider:'system',voices:{system:'',gemini:'Kore'},model:'gemini-3.8-flash-tts',sessionId:'session-1',sessionKey:JSON.stringify(['system','','macos-say'])};

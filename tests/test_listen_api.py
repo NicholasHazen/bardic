@@ -176,3 +176,170 @@ def test_book_and_session_scopes_invalid_inputs_archive_and_busy_guards(client, 
     archived = client.post(base,json={'provider':'gemini','segment_id':book['segments'][0]['id']})
     assert archived.status_code == 400
     assert client.get(audio['url']).status_code == 200, 'Archiving retains readable saved assets'
+
+
+def test_cross_book_cached_speech_works_without_key_and_has_zero_new_usage(client, renderer):
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    started = begin(client, book)
+    audio = wait_job(client, started['job']['id'])['audio']
+    other = import_text(client, book['segments'][0]['text'])
+    runtime.api_key = ''
+    reused = begin(client, other)
+    assert reused['cached'] is True and 'job' not in reused
+    assert reused['audio']['asset_id'] == audio['asset_id']
+    assert reused['audio']['reuse']['book_id'] == book['id']
+    assert client.get(reused['audio']['url']).content == client.get(audio['url']).content
+    assert len(calls) == 1 and runtime.store.jobs(other['id']) == []
+    usage = [row for row in client.get(f"/api/books/{other['id']}/resources").json()['operations']
+             if row['stage'] == 'simple_listen']
+    assert len(usage) == 1 and usage[0]['cached'] is True
+    assert usage[0]['request_count'] == 0 and usage[0]['estimated_cost_usd'] == 0
+
+
+def test_queued_equivalent_books_recheck_cache_before_spending(client, renderer):
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    other = import_text(client, book['segments'][0]['text'])
+    entered, release = threading.Event(), threading.Event()
+    def occupy_worker():
+        entered.set()
+        assert release.wait(5)
+    runtime.pool.submit(occupy_worker)
+    try:
+        assert entered.wait(2)
+        first, second = begin(client, book), begin(client, other)
+        assert first['cached'] is False and second['cached'] is False
+    finally:
+        release.set()
+    one = wait_job(client, first['job']['id'])
+    two = wait_job(client, second['job']['id'])
+    assert one['status'] == two['status'] == 'completed'
+    assert one['audio']['asset_id'] == two['audio']['asset_id']
+    assert two['audio']['cache_hit'] is True and len(calls) == 1
+    usage = client.get(f"/api/books/{other['id']}/resources", params={'run_id': second['job']['id']}).json()['operations']
+    assert len(usage) == 1 and usage[0]['cached'] is True
+    assert usage[0]['request_count'] == 0 and usage[0]['estimated_cost_usd'] == 0
+
+
+@pytest.mark.parametrize('state', ['queued', 'running'])
+def test_duplicate_active_listen_requests_join_one_job(client, renderer, monkeypatch, state):
+    calls, synthesize = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    entered, release = threading.Event(), threading.Event()
+    def block():
+        entered.set()
+        assert release.wait(5), 'Test worker was not released'
+    if state == 'queued':
+        runtime.pool.submit(block)
+    else:
+        def blocked_render(*args):
+            block()
+            return synthesize(*args)
+        monkeypatch.setattr('bardic.app.synthesize', blocked_render)
+    try:
+        first = begin(client, book)
+        assert entered.wait(2)
+        # A missing/replaced key cannot make the same snapshotted request spend
+        # again or fail while its already-authorized job continues.
+        runtime.api_key = ''
+        duplicate = begin(client, book)
+        assert duplicate['job']['id'] == first['job']['id']
+        assert duplicate['job']['status'] == state
+        assert len(runtime.store.jobs(book['id'])) == 1
+        changed = client.post(f"/api/books/{book['id']}/listen", json={
+            'provider': 'gemini', 'voice': 'Puck', 'segment_id': book['segments'][0]['id']})
+        assert changed.status_code == 409
+    finally:
+        release.set()
+    assert wait_job(client, first['job']['id'])['status'] == 'completed'
+    assert len(calls) == 1 and calls[0]['key'] == 'offline-key'
+
+
+def test_cancelled_queued_job_is_not_joined_or_started_later(client, renderer):
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    entered, release = threading.Event(), threading.Event()
+    def occupy_worker():
+        entered.set()
+        assert release.wait(5)
+    runtime.pool.submit(occupy_worker)
+    try:
+        assert entered.wait(2)
+        first = begin(client, book)
+        cancelled = client.post(f"/api/jobs/{first['job']['id']}/cancel").json()
+        assert cancelled['status'] == 'cancelled'
+        replacement = begin(client, book)
+        assert replacement['job']['id'] != first['job']['id']
+    finally:
+        release.set()
+    assert wait_job(client, replacement['job']['id'])['status'] == 'completed'
+    assert wait_job(client, first['job']['id'])['status'] == 'cancelled'
+    assert len(calls) == 1
+
+
+def test_cancel_requested_running_job_cannot_be_joined(client, renderer, monkeypatch):
+    _, synthesize = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    entered, release = threading.Event(), threading.Event()
+    def blocked(*args):
+        entered.set()
+        assert release.wait(5)
+        return synthesize(*args)
+    monkeypatch.setattr('bardic.app.synthesize', blocked)
+    try:
+        first = begin(client, book)
+        assert entered.wait(2)
+        assert client.post(f"/api/jobs/{first['job']['id']}/cancel").json()['cancel_requested']
+        response = client.post(f"/api/books/{book['id']}/listen", json={
+            'provider': 'gemini', 'voice': 'Kore', 'segment_id': book['segments'][0]['id']})
+        assert response.status_code == 409
+    finally:
+        release.set()
+    assert wait_job(client, first['job']['id'])['status'] == 'cancelled'
+
+
+def test_executor_rejection_settles_failed_job_without_spend_and_allows_retry(client, renderer, monkeypatch):
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    def rejected(*_args):
+        raise RuntimeError('Test worker unavailable')
+    with monkeypatch.context() as scoped:
+        scoped.setattr(runtime.pool, 'submit', rejected)
+        response = client.post(f"/api/books/{book['id']}/listen", json={
+            'provider': 'gemini', 'voice': 'Kore', 'segment_id': book['segments'][0]['id']})
+    assert response.status_code == 503
+    jobs = runtime.store.jobs(book['id'])
+    assert len(jobs) == 1 and jobs[0]['status'] == 'failed'
+    assert calls == []
+    retry = begin(client, book)
+    assert wait_job(client, retry['job']['id'])['status'] == 'completed'
+    assert len(calls) == 1
+
+
+def test_executor_cancellation_settles_unstarted_listen_job(client, renderer, monkeypatch):
+    from concurrent.futures import Future
+    calls, _ = renderer
+    runtime = client.app.state.runtime
+    runtime.api_key = 'offline-key'
+    book = import_text(client)
+    pending = Future()
+    monkeypatch.setattr(runtime.pool, 'submit', lambda *_args: pending)
+    started = begin(client, book)
+    runtime.stopping.set()
+    assert pending.cancel()
+    settled = runtime.store.job(started['job']['id'])
+    assert settled['status'] == 'interrupted' and settled['cancel_requested'] is True
+    assert calls == []

@@ -27,7 +27,7 @@ function environment(prior = {}, unavailable = false) {
       getItem:key => { if (unavailable) throw new Error('Storage disabled'); return storage.get(key) ?? null; },
       setItem:(key, value) => { if (unavailable) throw new Error('Storage disabled'); storage.set(key, value); },
     },
-    clearTimeout, stopAudio:()=>{}, renderBook:()=>{}, pollJobs:async()=>{}, refreshStatus:async()=>{},
+    clearTimeout, stopAudio:()=>{}, renderBook:()=>{}, renderReader:()=>{}, updatePlayer:()=>{}, updateListeningBuffer:()=>{}, pollJobs:async()=>{}, refreshStatus:async()=>{},
     refreshLibrary:async()=>{ scope.reader.state.books = books; },
     request:async url => books.find(book => url === `/api/books/${book.id}`),
     toast:message => { throw new Error(message); },
@@ -36,9 +36,10 @@ function environment(prior = {}, unavailable = false) {
     between('const $ =', 'function toast('),
     source.split('\n').find(line => line.startsWith('const progressKey =')),
     between('function saveProgress(', 'function stopAudio('),
+    between('function setPlaybackRate(', 'function beginVoicePreview('),
     between('async function selectBook(', 'function applyBook('),
     source.split('\n').find(line => line.startsWith("$('#playback-speed').addEventListener")),
-    between('async function init(', '\ninit();'),
+    between('async function init(', '\nsetupVoicePreviews();'),
     'globalThis.reader = {state,audio,init,saveProgress,safeRead};',
   ].join('\n'), scope);
   return {reader:scope.reader, storage, nodes};
@@ -58,10 +59,12 @@ test('legacy last book, reading position, and speed survive the rename', async (
   assert.equal(reader.state.segmentId, 's2');
   assert.equal(reader.state.pendingOffset, 12.5);
   assert.equal(reader.audio.playbackRate, 1.5);
+  assert.equal(reader.audio.defaultPlaybackRate, 1.5, 'Media load must retain the selected rate');
   assert.deepEqual(JSON.parse(storage.get('bardic:progress:legacy')), legacyProgress);
   assert.equal(JSON.parse(storage.get('bardic:lastBook')), 'legacy');
   nodes.get('#playback-speed').listeners.change({target:{value:'2'}});
   assert.equal(reader.audio.playbackRate, 2);
+  assert.equal(reader.audio.defaultPlaybackRate, 2);
   assert.equal(JSON.parse(storage.get('bardic:speed')), 2);
   for (const [key, value] of Object.entries(prior)) assert.equal(storage.get(key), value);
 });
