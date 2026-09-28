@@ -15,7 +15,7 @@ class Container {
   querySelector() { return null; }
 }
 const voice = (id, extra = {}) => ({id, provider:'breeze', name:id, description:'', origin:'designed', current_version:1, is_default:false,
-  assignable:true, versions:[{version:1, provider_voice_id:id, made:'designed', created_at:'2026-09-27T00:00:00Z', audition_url:`/api/voices/${id}/versions/1/audition`, server_state:'ok'}],
+  assignable:true, versions:[{version:1, provider_voice_id:id, made:'designed', created_at:'2026-09-27T00:00:00Z', audition:{url:`/api/voices/${id}/versions/1/audition`}, server_state:'ok'}],
   usage:[], source:null, warnings:[], ...extra});
 function library(extra = {}) {
   return {voices:[
@@ -42,6 +42,7 @@ function environment(responses = {}) {
       calls.push(call);
       const key = `${call.method} ${url.split('?')[0]}`;
       const data = typeof responses[key] === 'function' ? responses[key](call) : responses[key] ?? {};
+      if (data.status_code) return {ok:false, status:data.status_code, json:async () => ({detail:data.detail, code:data.code})};
       return {ok:true, status:200, json:async () => data};
     }};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/voices.js'), 'utf8'), scope);
@@ -56,7 +57,7 @@ function environment(responses = {}) {
 
 test('a Gemini create needs a fresh cost confirmation for every click', async () => {
   const created = geminiDraft({candidates:[{id:'c1', kind:'gemini_voice', provider_voice_id:'voice_x', seed:null, description:'<b>bold</b>', sample_text:'',
-    audio_url:'/api/voices/drafts/vd_gem/candidates/c1/audio', duration:3.2, created_at:'2026-09-27T00:00:00Z', expires_at:null, discarded:false}]});
+    audio:{url:'/api/voices/drafts/vd_gem/candidates/c1/audio'}, duration:3.2, created_at:'2026-09-27T00:00:00Z', expires_at:null, discarded:false}]});
   const env = environment({'PATCH /api/voices/drafts/vd_gem':geminiDraft(), 'POST /api/voices/drafts/vd_gem/generate':created});
   env.api.render(env.container, env.options({library:library({drafts:[geminiDraft()]})}));
   env.api.openDraft(env.container, geminiDraft());
@@ -94,7 +95,7 @@ test('a Gemini create needs a fresh cost confirmation for every click', async ()
 
 test('Breeze previews use the chosen count and save as a new version assigned to the character', async () => {
   const withCandidate = breezeDraft({candidates:[{id:'c1', kind:'breeze_preview', preview_id:'prv_1', seed:7, provider_voice_id:null, description:'Warmer.',
-    sample_text:'Stay, she said.', audio_url:'/api/voices/drafts/vd_brz/candidates/c1/audio', duration:2.5, created_at:'2026-09-27T00:00:00Z', expires_at:'2026-09-28T00:00:00Z', discarded:false}]});
+    sample_text:'Stay, she said.', audio:{url:'/api/voices/drafts/vd_brz/candidates/c1/audio'}, duration:2.5, created_at:'2026-09-27T00:00:00Z', expires_at:'2026-09-28T00:00:00Z', discarded:false}]});
   const saved = {voice:voice('vl_mara', {name:'Mara <alto>', current_version:2}), book:{id:'book-b'}};
   const env = environment({'POST /api/voices/drafts/vd_brz/generate':withCandidate, 'POST /api/voices/drafts/vd_brz/save':saved});
   env.api.render(env.container, env.options({library:library({drafts:[breezeDraft()]})}));
@@ -163,8 +164,8 @@ test('unfinished drafts can be resumed or abandoned from the list, and version r
 
 test('switching versions and the default voice are confirmed and explain re-voicing', async () => {
   const two = voice('vl_mara', {name:'Mara', current_version:2, versions:[
-    {version:1, provider_voice_id:'mara', made:'designed', server_state:'ok', audition_url:null},
-    {version:2, provider_voice_id:'mara-v2', made:'designed', server_state:'changed', audition_url:'/a2'}]});
+    {version:1, provider_voice_id:'mara', made:'designed', server_state:'ok', audition:{url:'/a1'}},
+    {version:2, provider_voice_id:'mara-v2', made:'designed', server_state:'changed', audition:{url:'/a2'}}]});
   const env = environment({'POST /api/voices/vl_mara/current':two, 'POST /api/voices/defaults':{defaults:{breeze:'vl_mara'}}});
   env.api.render(env.container, env.options({library:library({voices:[voice('vl_narr', {name:'Narrator', is_default:true,
     usage:[{book_id:'b', book_title:'B', character_id:'n', character_name:'Narrator', follows:'default'}]}), two]})}));
@@ -179,4 +180,19 @@ test('switching versions and the default voice are confirmed and explain re-voic
   env.click('confirm');
   await settle();
   assert.deepEqual(env.calls.at(-1).body, {provider:'breeze', voice_id:'vl_mara'});
+});
+
+test('errors show the server detail, a hint keyed on the code, and a recorded provider failure reloads the library', async () => {
+  let refresh = {status_code:502, code:'provider_error', detail:'Gemini returned HTTP 500 while listing voices. Try again later.'};
+  const env = environment({'POST /api/voices/gemini/refresh':() => refresh});
+  env.api.render(env.container, env.options({library:library()}));
+  env.click('refresh-gemini');
+  await settle();
+  assert.match(env.container.innerHTML, /Gemini returned HTTP 500 while listing voices/);
+  assert.equal(env.hooks.changes, 1, 'The saved error state is reloaded');
+  refresh = {status_code:400, code:'gemini_key_missing', detail:'No Gemini API key is configured.'};
+  env.click('refresh-gemini');
+  await settle();
+  assert.match(env.container.innerHTML, /No Gemini API key is configured\. Add a Gemini API key in Settings first\./);
+  assert.equal(env.hooks.changes, 1, 'A refused request changes nothing, so nothing is reloaded');
 });
