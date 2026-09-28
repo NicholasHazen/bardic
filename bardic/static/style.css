@@ -498,7 +498,7 @@ main {
   text-overflow:ellipsis;
   overflow:hidden;
 }
-.player-book span {
+.player-book #player-subtitle {
   display:block;
   color:var(--muted);
   margin-top:5px;
@@ -573,13 +573,6 @@ main {
   border-radius:4px;
   cursor:pointer;
   text-align-last:center;
-}
-.sync-label {
-  font-size:12px;
-  color:var(--muted);
-  white-space:nowrap;
-  align-items:center;
-  gap:5px;
 }
 
 .notice {
@@ -1288,8 +1281,8 @@ textarea {
   font-size:12px;
   line-height:1.7;
   padding:12px;
-  background:var(--canvas);
-  color:#996746;
+  background:var(--tone-bad-bg);
+  color:var(--tone-bad-text);
   border-radius:4px;
   margin-top:14px;
 }
@@ -1313,10 +1306,10 @@ textarea {
   margin:60px auto;
   max-width:560px;
   border:1px solid var(--line);
-  background:var(--canvas);
+  background:var(--tone-bad-bg);
   padding:25px;
   border-radius:6px;
-  color:#936951;
+  color:var(--tone-bad-text);
   font-size:13px;
 }
 .empty-state {
@@ -1482,7 +1475,7 @@ textarea {
   .player-book {
     align-self:center;
   }
-  .player-book span {
+  .player-book #player-subtitle {
     line-height:1.6;
     white-space:nowrap;
     margin-top:4px;
@@ -1720,16 +1713,15 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .player-controls .icon-button { width:40px; }
 .play-button { width:42px; height:42px; }
 .player-book strong { font-size:13px; font-weight:600; }
-.player-book span { font-size:11px; }
+.player-book #player-subtitle { font-size:11px; }
 .player-settings-link { font-size:11px; min-height:28px; color:var(--green); }
 .player-settings-link:hover { text-decoration:underline; }
 .player-timeline { margin-top:2px; }
 .player-timeline time { font-size:10px; }
-.player-timeline input { min-height:18px; }
+.player-timeline input { min-height:24px; }
 .player-options select { min-height:36px; font-size:12px; width:65px; padding:4px; text-align:center; }
 .player-progress { margin:3px 0 0; font-size:10px; color:var(--muted); text-align:center; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .player-progress:empty { display:none; }
-.sync-label { display:none; }
 .mini-cover { color:white; background:var(--green); border:0; border-radius:3px; }
 .voice-preview-panel { background:var(--white); border-color:var(--line); }
 .voice-preview-panel small { font-size:12px; }
@@ -1874,10 +1866,14 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .scene-direction { grid-template-columns:1fr; }
   .segment-row { padding:16px; grid-template-columns:18px minmax(0,1fr); }
   .segment-toolbar input { min-width:120px; }
-  .player { height:144px; grid-template-columns:minmax(0,1fr) 65px; grid-template-rows:54px 62px; padding:10px 20px; gap:4px 12px; }
+  .player { height:144px; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:54px 62px; padding:10px 20px; gap:4px 12px; }
+  /* Phones: the status pill replaces the subtitle and shares a line with Narrator & speed. */
+  .player-book > div:last-child { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:2px 8px; }
+  .player-book > div:last-child > strong { grid-column:1 / -1; }
+  .player-book #player-subtitle { display:none; }
+  .player-book .player-status { margin:0; }
   .player-book { grid-column:1; grid-row:1; }
   .player-book strong { font-size:12px; }
-  .player-book span { font-size:11px; max-width:none; margin:0; }
   .player-settings-link { font-size:11px; min-height:24px; padding:0; }
   .player-options { grid-column:2; grid-row:1; }
   .player-center { grid-column:1/-1; grid-row:2; display:grid; grid-template-columns:128px minmax(0,1fr); gap:0 18px; align-items:center; }
@@ -2023,4 +2019,11 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .lifecycle[data-expanded=false] .lifecycle-toggle { margin-left:auto; }
   .workspace-nav .tabs { gap:var(--space-4); }
   .app-page { padding-top:var(--space-3); }
+}
+/* Book tabs on narrow phones: short labels so the row fits without sideways scrolling.
+   Only one label is displayed at a time, so each tab keeps one accessible name. */
+.tab-label-short { display:none; }
+@media (max-width:420px) {
+  .workspace-nav .tab .tab-label { display:none; }
+  .workspace-nav .tab .tab-label-short { display:inline; }
 }

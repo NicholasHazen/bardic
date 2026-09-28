@@ -78,3 +78,12 @@ def test_toasts_are_readable():
     error_bg = re.search(r'\.toast\.error \{\s*background:(#[0-9a-fA-F]{6})', style).group(1)
     assert re.search(r'\.toast \{[^}]*color:var\(--paper\)', style)
     assert ratio(T['color-bg'], T['color-text']) >= 4.5 and ratio(T['color-bg'], error_bg) >= 4.5
+
+
+@pytest.mark.parametrize('selector', ['.inline-error', '.fatal-error'])
+def test_error_blocks_use_tone_tokens_that_meet_aa(selector):
+    style = (STATIC / 'style.css').read_text(encoding='utf-8')
+    body = re.search(re.escape(selector) + r' \{([^}]*)\}', style).group(1)
+    fg = re.search(r'(?<![-\w])color:var\(--([\w-]+)\)', body).group(1)
+    bg = re.search(r'background:var\(--([\w-]+)\)', body).group(1)
+    assert ratio(T[fg], T[bg]) >= 4.5, f'{selector}: {fg} on {bg} is {ratio(T[fg], T[bg]):.2f}'

@@ -125,7 +125,7 @@ body.reader-mode .player {
   padding-bottom:calc(12px + env(safe-area-inset-bottom)); padding-left:max(20px, env(safe-area-inset-left)); padding-right:max(20px, env(safe-area-inset-right));
   background:var(--reader-chrome); color:var(--reader-ink); border-top-color:var(--reader-line);
 }
-body.reader-mode .player-book span, body.reader-mode .player-timeline time, body.reader-mode .player-progress { color:var(--reader-muted); }
+body.reader-mode .player-book #player-subtitle, body.reader-mode .player-timeline time, body.reader-mode .player-progress { color:var(--reader-muted); }
 body.reader-mode .player-settings-link { color:var(--reader-accent); }
 body.reader-mode .player .play-button { background:var(--reader-accent); color:var(--reader-accent-ink); }
 body.reader-mode .player .icon-button { color:var(--reader-ink); }
@@ -159,19 +159,12 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 .listen-sheet-where { margin:14px 0 6px; font-size:14px; color:var(--muted); }
 .listen-sheet-where strong { color:var(--ink); font-weight:600; }
 .listen-sheet-field { margin-top:16px; }
-.listen-sheet-providers { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:6px; }
-.listen-sheet-providers button {
-  display:grid; gap:2px; text-align:left; padding:10px 12px; min-height:58px; border:1px solid var(--line); border-radius:10px; background:var(--white);
-}
-.listen-sheet-providers button strong { font-size:14px; font-weight:600; }
-.listen-sheet-providers button small { font-size:11px; color:var(--muted); line-height:1.3; }
-.listen-sheet-providers button[aria-checked=true] { border-color:var(--green); box-shadow:inset 0 0 0 1px var(--green); background:var(--green-light); }
+.listen-sheet .choice[data-kind=cards] { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+.listen-sheet .choice[data-kind=chips] > button { min-width:54px; min-height:var(--control-touch); font-variant-numeric:tabular-nums; }
+.listen-sheet .choice[data-kind=segmented] > button { min-height:var(--control-touch); }
 .listen-sheet-voice { display:flex; gap:8px; margin-top:6px; }
 .listen-sheet-voice select { flex:1; min-width:0; min-height:44px; font-size:15px; }
 .listen-sheet-voice .button { min-height:44px; white-space:nowrap; }
-.listen-sheet-speeds { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-.listen-sheet-speeds button { min-width:54px; min-height:44px; border:1px solid var(--line); border-radius:999px; background:var(--white); font-size:13px; font-variant-numeric:tabular-nums; }
-.listen-sheet-speeds button[aria-checked=true] { background:var(--green); border-color:var(--green); color:white; }
 .listen-sheet-toggle { display:flex; align-items:center; gap:10px; margin-top:16px; min-height:44px; font-size:14px; }
 .listen-sheet-toggle input { width:20px; height:20px; accent-color:var(--green); }
 .listen-sheet .field-help { margin-top:8px; }
@@ -188,11 +181,17 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 }
 @keyframes listen-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } .reader-bar { transition:none; } }
+/* Phones: a bottom sheet. The actions stay in view while the choices scroll. */
 @media (max-width:620px) {
-  .listen-sheet-providers { grid-template-columns:1fr; }
-  .listen-sheet-providers button { min-height:48px; grid-template-columns:auto 1fr; align-items:center; gap:10px; }
+  .listen-sheet[open] { width:100%; max-width:100%; margin:auto 0 0; max-height:88dvh; border-radius:var(--radius-2xl) var(--radius-2xl) 0 0; border-bottom:0; padding:16px 16px 0; }
+  .listen-sheet .modal-header h2 { font-size:var(--text-2xl); }
+  .listen-sheet .choice[data-kind=cards] { grid-template-columns:1fr; gap:var(--space-1-5); }
+  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:baseline; gap:var(--space-2); }
+  .listen-sheet-field { margin-top:12px; }
   .listen-sheet-voice { flex-wrap:wrap; }
   .listen-sheet-voice .button { flex:1; }
+  .listen-sheet-toggle { margin-top:8px; }
+  .listen-sheet-actions { position:sticky; bottom:0; z-index:1; margin:12px -16px 0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:var(--color-bg); border-top:1px solid var(--color-border); }
   .listen-sheet-actions .button { flex:1; }
 }
 

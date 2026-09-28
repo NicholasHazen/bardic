@@ -124,7 +124,7 @@ test('the shared speed callback keeps playback intent and saved audio without ca
   assert.equal(env.posts().filter(call=>call.body.segment_id==='p0').length,1,'The current passage is never generated again');
   assert.ok(!env.calls.some(call=>call.url.endsWith('/cancel')),'A speed choice does not cancel the listening job');
   assert.match(env.container.innerHTML,/aria-label="Pause listening">Pause/);
-  assert.match(env.container.innerHTML,/value="2.5" selected>2.5×/);
+  assert.match(env.container.innerHTML,/Ready ahead · \d+ seconds at 2\.5×/,'The ready-ahead figure follows the shared speed');
   env.api.stop(env.book);
 });
 
