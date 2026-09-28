@@ -22,6 +22,13 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.2.3 — 2026-09-28
+<!-- contract-sha256: dab500d3243131d0bc6e4ababa688e65e98950905e3298dc7fda4530163883bb -->
+
+Book language metadata (UI redesign phase 4). Additive.
+
+- The presented `Book` (from `getBook`, `importBook`, `createDemoBook` and every other operation returning the full book) gains `language`: a BCP 47 tag from the EPUB's `dc:language`, or null. The browser uses it to filter Mac voices to the book's language.
+
 ## 0.2.2 — 2026-09-28
 <!-- contract-sha256: 060b4323a8fda3dfa6232f5789ceac37771cb19a3115473485656930e727e17c -->
 

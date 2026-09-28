@@ -372,6 +372,10 @@ class Book(View):
     id: str = Field(description='Book UUID.')
     title: str = Field(description='Display title.')
     author: str = Field(description='Display author(s), comma-separated; may be empty.')
+    language: str | None = Field(
+        description='BCP 47 language tag from the EPUB\'s first usable `dc:language` (at most 35 characters, `_` read '
+                    'as `-`), or null for TXT files, EPUBs without one, the demo book and books imported before the '
+                    'field existed. Metadata only; it never changes text or spans.')
     source_name: str = Field(description='File name of the imported original (without directories), for example `story.epub`.')
     created_at: str = Field(description='ISO 8601 UTC import time.')
     revision: int = Field(description='Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change.')

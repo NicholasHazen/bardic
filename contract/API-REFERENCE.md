@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.2.2
+# Bardic 0.2.3
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -3055,6 +3055,7 @@ novel is several megabytes).
 | `id` | string | yes | Book UUID. |
 | `title` | string | yes | Display title. |
 | `author` | string | yes | Display author(s), comma-separated; may be empty. |
+| `language` | string \| null | yes | BCP 47 language tag from the EPUB's first usable `dc:language` (at most 35 characters, `_` read as `-`), or null for TXT files, EPUBs without one, the demo book and books imported before the field existed. Metadata only; it never changes text or spans. |
 | `source_name` | string | yes | File name of the imported original (without directories), for example `story.epub`. |
 | `created_at` | string | yes | ISO 8601 UTC import time. |
 | `revision` | integer | yes | Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change. |
