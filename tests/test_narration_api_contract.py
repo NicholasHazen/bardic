@@ -249,3 +249,23 @@ def test_listening_reads_do_not_run_schema_statements(client, renderer):
         runtime.store.connect = connect
     ddl = [s for s in statements if s.lstrip().upper().startswith(('CREATE', 'DROP', 'ALTER'))]
     assert ddl == []
+
+
+def test_narration_and_voice_messages_name_no_ui_location():
+    """Error texts, job errors and warnings describe the condition; the UI adds hints keyed on `code`."""
+    import io
+    import pathlib
+    import re
+    import tokenize
+    root = pathlib.Path(__file__).resolve().parents[1] / 'bardic'
+    location = re.compile(r'\bin (Settings|Cast|Voices|Studio)\b|\b(Settings|Analysis|Listen|Cast|Voices) tab\b')
+    found = []
+    for name in ('analysis.py', 'audio.py', 'breeze.py', 'gemini_voices.py', 'listening.py', 'performances.py',
+                 'voice_library.py', 'voice_previews.py', 'voice_routes.py', 'chapter_listening.py', 'take_archive.py',
+                 'pipeline/runner.py'):
+        source = (root / name).read_text()
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.STRING and not token.string.lstrip('rbfuRBFU').startswith(('"""', "'''")) \
+                    and location.search(token.string):
+                found.append(f'{name}:{token.start[0]}: {token.string}')
+    assert found == []

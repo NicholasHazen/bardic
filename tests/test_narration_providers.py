@@ -254,7 +254,7 @@ def test_catalog_pins_cloned_voices_and_rejects_designed_ones(fake_breeze):
     assert breeze.pin(catalog, None) == {"id": "narrator", "revision": voices["narrator"]["revision"], "seed": 42}
     with pytest.raises(ValueError, match="cannot narrate"):
         breeze.pin(catalog, "sailor")
-    with pytest.raises(ValueError, match="Refresh Breeze voices"):
+    with pytest.raises(ValueError, match="not in the last Breeze voice check"):
         breeze.pin(catalog, "missing")
 
 
@@ -300,7 +300,7 @@ def test_breeze_recipe_pins_revision_seed_and_direction(fake_breeze):
     assert audio.render_fingerprint(SEGMENT, changed, SCENE, "breeze", None) != base
     with pytest.raises(AudioError, match="Choose a Breeze voice"):
         audio.render_fingerprint(SEGMENT, {"id": "c"}, SCENE, "breeze", None)
-    with pytest.raises(AudioError, match="Refresh Breeze voices"):
+    with pytest.raises(AudioError, match="no voice revision"):
         audio.render_fingerprint(SEGMENT, {"voices": {"breeze": {"id": "narrator"}}}, SCENE, "breeze", None)
     with pytest.raises(AudioError, match="longer than Breeze accepts"):
         audio.render_fingerprint(SEGMENT, {**character, "direction": "x" * 1001}, SCENE, "breeze", None)

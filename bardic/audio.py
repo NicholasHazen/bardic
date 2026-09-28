@@ -259,7 +259,7 @@ def _gemini_recipe(segment: dict, character: dict, scene: dict, model: str | Non
     voice = (selection or {}).get("id") or "Kore"
     model = model or DEFAULT_TTS_MODEL
     if model not in TTS_MODELS:
-        raise AudioError("Unsupported Gemini TTS model. Choose a model listed in Settings.")
+        raise AudioError("The Gemini speech model is not a supported TTS model.")
     if not isinstance(voice, str) or not voice.strip() or len(voice) > 256:
         raise AudioError("The selected Gemini voice is invalid.")
     if model == "gemini-3.1-flash-tts-preview" and voice not in _VOICE_NAMES:
@@ -390,7 +390,7 @@ def _generate_gemini(recipe: dict, api_key: str | None, *, timeout: float | None
     from .tts_limits import LIMITER, classify_rate_limit, estimate_input_tokens
     publish_metrics(request_count=0, estimated_cost_usd=0., cost_basis='no_provider_request')
     if not api_key or not api_key.strip():
-        raise AudioError("Add a Gemini API key in Settings before generating cloud narration.")
+        raise AudioError("No Gemini API key is configured, so cloud narration cannot be generated.")
     if pace:
         # Callers that schedule their own sends (chapter chunks) reserve first.
         LIMITER.acquire(recipe["model"], estimate_input_tokens(recipe["text"]))

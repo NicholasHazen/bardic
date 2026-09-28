@@ -76,7 +76,7 @@ def normalize_base_url(value: str) -> str:
 def _config(config: Any) -> tuple[str, str]:
     base_url = (config or {}).get("base_url") if isinstance(config, dict) else None
     if not base_url:
-        raise AudioError("Add the Breeze server URL in Settings before generating Breeze narration.")
+        raise AudioError("No Breeze server URL is configured, so Breeze narration cannot be generated.")
     return base_url, ((config or {}).get("api_key") or "").strip()
 
 
@@ -140,7 +140,7 @@ def recipe_fields(segment: dict, character: dict, scene: dict, model: str | None
         raise AudioError("Choose a Breeze voice before generating Breeze narration.")
     revision = selection.get("revision")
     if not isinstance(revision, str) or not _REVISION.fullmatch(revision):
-        raise AudioError("Refresh Breeze voices in Settings, then choose this voice again.")
+        raise AudioError("The Breeze voice choice has no voice revision from a Breeze voice check.")
     seed = _seed(segment.get("seed"))
     if seed is None:
         seed = _seed(selection.get("seed"))
@@ -251,7 +251,7 @@ def pin(catalog: dict, voice_id: str | None, *, seed: int | None = None, setting
     voice_id = voice_id or (catalog or {}).get("default_voice_id")
     voice = voices.get(voice_id) if isinstance(voice_id, str) else None
     if voice is None:
-        raise ValueError("That Breeze voice is not in the last voice check. Refresh Breeze voices in Settings.")
+        raise ValueError("That Breeze voice is not in the last Breeze voice check.")
     if not voice["usable"]:
         raise ValueError(f"The Breeze voice '{voice_id}' cannot narrate. {voice['reason'] or ''}".strip())
     try:
@@ -290,7 +290,7 @@ _ERROR_HINTS = {
     "input_too_long": f"This text is longer than one Breeze request allows ({MAX_INPUT_CHARS:,} characters).",
     "segment_too_long": "A sentence in this passage is too long for Breeze to render in one piece.",
     "empty_input": "The passage has no speakable text.",
-    "invalid_api_key": "Check the Breeze API key in Settings.",
+    "invalid_api_key": "The Breeze server rejected the API key.",
     "invalid_value": "Breeze rejected a request setting.",
     "server_busy": "The Breeze server queue is full. Try again shortly.",
     "model_loading": "The Breeze model is still loading. Try again in a minute.",

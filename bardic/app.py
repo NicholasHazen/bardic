@@ -690,7 +690,7 @@ class Runtime:
                 return None
             default = self.narration_defaults().get("breeze")
             if not default:
-                return {"error": "Choose a Breeze voice for this character, or set a default Breeze voice in Voices."}
+                return {"error": "This character has no Breeze voice, and no default Breeze voice is set."}
             selection = {"library": default}
         reference = library_reference(selection)
         if reference is None:

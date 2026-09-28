@@ -39,7 +39,7 @@ def _field(item: dict, snake: str) -> Any:
 
 def _headers(api_key: str) -> dict[str, str]:
     if not api_key or not api_key.strip():
-        raise AudioError("Add a Gemini API key in Settings before managing Gemini voices.")
+        raise AudioError("No Gemini API key is configured, so Gemini voices cannot be managed.")
     return {"x-goog-api-key": api_key.strip(), "Content-Type": "application/json"}
 
 
