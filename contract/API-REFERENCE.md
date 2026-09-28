@@ -2261,14 +2261,11 @@ The library-wide voice library: voices, versions, defaults, drafts and Breeze cl
 
 Voices belong to the whole library, not to a book. Breeze requests are free but run on the owner's self-hosted GPU; every Gemini voice create is billed. Provider error text is never echoed: Gemini errors carry only the HTTP status and a fixed hint, Breeze errors keep only the server's error code.
 
-Local only: reads SQLite and the saved Breeze and Gemini checks; never contacts a provider. Returns live library voices, the defaults, open drafts, provider state and built-in voices. Each version's `server_state` compares it with the last saved Breeze check (for this URL) and the last Gemini listing (for this key).
-
-**Known defect:** after a Gemini refresh that failed (`providers.gemini.state` would be `error`), this route fails with a plain-text HTTP 500 until a refresh succeeds or the Gemini key changes, because the failed listing is stored as null and then iterated.
+Local only and read-only: reads SQLite and the saved Breeze and Gemini checks; never contacts a provider and never writes. Returns live library voices, the defaults, open drafts, provider state and built-in voices. Each version's `server_state` compares it with the last saved Breeze check (for this URL) and the last Gemini listing (for this key). When the last Gemini refresh failed, `providers.gemini.state` is `error` and this still returns 200.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryOverview](#schema-voicelibraryoverview) | Success. |
-| 500 | [Error](#schema-error) | Known defect: the last Gemini refresh for the current key failed (plain-text body, not JSON). |
 
 <a id="clonebreezevoice"></a>
 ### `POST /api/voices/breeze/clone`
@@ -2277,18 +2274,18 @@ Local only: reads SQLite and the saved Breeze and Gemini checks; never contacts 
 
 Multipart form upload. Creates a cloned voice on the Breeze server from a recording and its exact transcript (ID `bardic-` plus 8 hex digits, labelled with the new library voice ID), pins its revision, retains the server's reference clip as the audition (best effort; the voice is still created without it), and creates a library voice with `origin: "cloned"`. With both `book_id` and `character_id`, the voice records that character as its `source` and is assigned to it like a cast edit; a failed assignment is reported in `assignment_error`, never rolled back. With only one of the two, both are ignored. The Breeze server accepts recordings of 1–30 seconds (5–15 seconds of clean speech works best).
 
-**Not atomic:** the server voice is created before the book and character are looked up, so an unknown book or character returns 404 after the server voice exists, and no library voice is created for it.
+**Validated before upload.** The form, the book and the character are checked before the server voice is created. If the library record still cannot be written afterwards, or the server keeps the upload but its read-back fails, the server voice is deleted again, best effort, and the error detail says whether that worked.
 
 Request body (`multipart/form-data`): [CloneBreezeVoiceForm](#schema-clonebreezevoiceform)
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [BreezeVoiceCloned](#schema-breezevoicecloned) | Success. |
-| 400 | [Error](#schema-error) | `consent` is not exactly `true` ("Confirm that you have the speaker's consent to clone this voice."); a blank name or transcript; an empty recording or one over 20 MB ("Upload a recording of at most 20 MB."); or no Breeze server URL. |
+| 400 | [Error](#schema-error) | - `consent_required`: `consent` is not exactly `true`. - `voice_name_invalid`: `name` is blank. - `reference_text_missing`: `reference_text` is blank. - `recording_empty`: The recording is empty. - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `breeze_url_missing`: No Breeze server URL is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | "Book not found" or "Character not found in this book" (after the server voice was created; see description). |
+| 413 | [Error](#schema-error) | - `recording_too_large`: The recording is larger than 20 MB. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length audio, or a bad API key), or was unreachable. |
+| 502 | [Error](#schema-error) | - `provider_error`: The Breeze server refused or failed the clone (for example unreadable, silent or wrong-length audio, or a bad API key), or was unreachable. |
 
 <a id="setdefaultlibraryvoice"></a>
 ### `POST /api/voices/defaults`
@@ -2304,10 +2301,9 @@ Request body (`application/json`): [DefaultVoice](#schema-defaultvoice)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryDefaultsResult](#schema-voicelibrarydefaultsresult) | Success. |
-| 400 | [Error](#schema-error) | The voice is deleted or is not a Breeze voice ("Choose a Breeze voice from the library as the default."). |
+| 400 | [Error](#schema-error) | - `unknown_voice`: No library voice has the given `voice_id`. - `default_voice_invalid`: The voice is deleted or is not a Breeze voice. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. |
-| 409 | [Error](#schema-error) | A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
+| 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="createvoicedraft"></a>
@@ -2327,9 +2323,8 @@ Request body (`application/json`): [DraftCreate](#schema-draftcreate)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | The base voice is deleted or belongs to the other provider ("Iterate on an existing voice of the same provider."), or a filled-in value is too long (for example a character name over 100 characters). |
+| 400 | [Error](#schema-error) | - `unknown_book`: No book has the given `book_id`. - `unknown_character`: The book has no character with the given `character_id`. - `unknown_voice`: No library voice has the given `base_voice_id`. - `base_voice_unusable`: The base voice is deleted or belongs to the other provider. - `voice_name_invalid`: A filled-in name is longer than 100 characters. - `description_too_long`: A filled-in description is longer than 1,000 characters. - `sample_text_too_long`: A filled-in sample text is longer than 1,000 characters. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The book ("Book not found"), the character ("Character not found in this book") or the base voice ("Voice not found") does not exist. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="updatevoicedraft"></a>
@@ -2349,8 +2344,8 @@ Request body (`application/json`): [DraftEdit](#schema-draftedit)
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. |
-| 409 | [Error](#schema-error) | The draft is finished ("This voice draft is already finished."). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="abandonvoicedraft"></a>
@@ -2367,12 +2362,12 @@ Deletes every undiscarded Gemini candidate's stored voice from the Google projec
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | Gemini candidates need deleting and no Gemini key is loaded. |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also when some undiscarded Gemini candidates were made with a different Google API key ("Switch back to that key to delete them before abandoning this draft."). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | "Some stored Gemini candidates could not be deleted: …" (the first failure). |
+| 502 | [Error](#schema-error) | - `provider_error`: Some stored Gemini candidates could not be deleted (the detail names the first failure); the draft stays open. |
 
 <a id="getvoicedraftcandidateaudio"></a>
 ### `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`
@@ -2390,7 +2385,7 @@ Bardic's retained copy of a candidate's audio (24 kHz mono WAV). Available for d
 | --- | --- | --- |
 | 200 | `audio/wav` | Success. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Preview audio not found" when the candidate does not exist or has no retained audio. |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. - `audio_not_found`: The candidate has no retained audio. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
@@ -2409,12 +2404,12 @@ Marks the candidate discarded so it cannot be saved. A Gemini candidate's stored
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | A Gemini candidate needs deleting and no Gemini key is loaded. |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Candidate not found". |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also a Gemini candidate made with a different Google API key ("This candidate was made with a different Google API key."). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). - `candidate_not_found`: The draft has no candidate with this ID. |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Gemini delete failed; the candidate stays undiscarded. |
+| 502 | [Error](#schema-error) | - `provider_error`: The Gemini delete failed; the candidate stays undiscarded. |
 
 <a id="generatevoicedraftcandidates"></a>
 ### `POST /api/voices/drafts/{draft_id}/generate`
@@ -2425,7 +2420,7 @@ Synchronous: the request returns when generation finishes and returns the update
 
 **Breeze** (free, self-hosted GPU): generates `count` (1–3, default 2) previews of the draft description speaking the draft sample text, and retains each preview's audio. Takes roughly the audio length times `count`. `language_code`, `gender` and `confirm_cost` are ignored. With `book_id`, the request is recorded in that book's resource ledger (stage `voice_design`, cost basis `self_hosted`, $0).
 
-**Gemini** (billed): each call creates **one** stored, billed prompted voice in the Google project (`count` is ignored), named after the draft name (or "Bardic voice"), using the selected speech model when it is a design model, else the first design model. `confirm_cost: true` and `book_id` are required; the request is recorded in that book's resource ledger with an unknown cost (never recorded as $0). A create that times out or returns an unusable response is never resent and returns 502: the voice may exist and be billed, so refresh Gemini voices (`POST /api/voices/gemini/refresh`) and look for it in `project_voices`. If the returned sample cannot be stored, the candidate is kept without audio.
+**Gemini** (billed): each call creates **one** stored, billed prompted voice in the Google project (`count` is ignored), named after the draft name (or "Bardic voice"), using the selected speech model when it is a design model, else the first design model. `confirm_cost: true` and `book_id` are required; the request is recorded in that book's resource ledger with an unknown cost (never recorded as $0). A create that times out or returns an unusable response is never resent and returns 502 `provider_outcome_unknown`: the voice may exist and be billed, so refresh Gemini voices (`POST /api/voices/gemini/refresh`) and look for it in `project_voices`. If the returned sample cannot be stored, the candidate is kept without audio.
 
 Validation (400s) happens before the draft is claimed. While the request runs, the draft is `busy` and other generate, discard, abandon and save requests on it get 409.
 
@@ -2438,12 +2433,12 @@ Request body (`application/json`): [GenerateRequest](#schema-generaterequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraft](#schema-voicedraft) | Success. |
-| 400 | [Error](#schema-error) | The description is shorter than 3 characters; Gemini without `confirm_cost: true` ("Confirm that this creates a billed, stored Gemini voice."), without `book_id`, without a Gemini key, or with an invalid name, language tag or gender; Breeze without sample text or without a server URL; or the draft was finished by a concurrent request. |
+| 400 | [Error](#schema-error) | - `description_too_short`: The draft description has fewer than 3 characters. - `cost_not_confirmed`: Gemini: `confirm_cost` is not true. - `book_id_required`: Gemini: no `book_id` was given. - `unknown_book`: No book has the given `book_id`. - `voice_design_invalid`: Gemini: the draft name, language tag or gender is not accepted. - `sample_text_missing`: Breeze: the draft has no sample text. - `gemini_key_missing`: No Gemini API key is configured. - `breeze_url_missing`: No Breeze server URL is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Book not found" for an unknown `book_id`. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. Also when a concurrent request finished it during generation. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The provider request failed, or a billed Gemini create may or may not have happened (see description). Breeze also returns 502 when the preview audio cannot be converted locally. |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. Breeze also returns it when the preview audio cannot be converted locally. - `provider_outcome_unknown`: Gemini: a billed create timed out or returned an unusable response, so the voice may exist and be billed (see description). |
 
 <a id="savevoicedraft"></a>
 ### `POST /api/voices/drafts/{draft_id}/save`
@@ -2456,7 +2451,7 @@ Saves one undiscarded candidate as a new library voice (`mode: "new"`) or as a n
 
 `make_default: true` (Breeze only) then makes the voice the Breeze default. `assign` then assigns the voice to that character, exactly like a cast edit; a failed assignment is reported in `assignment_error` and never rolled back. `mode: "version"` re-voices every follower of the base voice, and `make_default` re-voices characters on Default, so both are refused with 409 while narration runs for affected books.
 
-**Not atomic:** a Breeze server voice is uploaded before the library record is written. If the record then fails (for example a whitespace-only name, or a base voice deleted meanwhile), the request fails and the uploaded server voice is left on the server without a library voice.
+**Validated before upload.** Every check below runs before a Breeze server voice is uploaded. If the library record still cannot be written after the upload (for example the base voice was deleted in the meantime), the uploaded server voice is deleted again, best effort, and the error detail says whether that worked. The same happens when the server keeps the upload but its read-back fails. The draft stays open, so the save can be retried.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2467,29 +2462,29 @@ Request body (`application/json`): [SaveRequest](#schema-saverequest)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceDraftSaved](#schema-voicedraftsaved) | Success. |
-| 400 | [Error](#schema-error) | The candidate does not exist or is discarded ("Choose a candidate that has not been discarded."); `mode: "version"` without a base voice; `make_default` for Gemini ("Only Breeze has a default voice."); no Breeze server URL or no Gemini key; or a whitespace-only `name` (after the Breeze upload; see description). |
+| 400 | [Error](#schema-error) | - `unknown_candidate`: The draft has no candidate with the given `candidate_id`. - `candidate_discarded`: The candidate was discarded. - `voice_name_invalid`: `name` is only whitespace. - `draft_has_no_base_voice`: `mode: "version"` for a draft not started from a base voice. - `default_breeze_only`: `make_default` for a Gemini draft. - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The draft does not exist ("Voice draft not found"), including a malformed draft ID. Also "Voice not found" when the base voice was deleted before a version save. |
-| 409 | [Error](#schema-error) | The draft is no longer open ("This voice draft is already finished."), or another request is working on it ("This voice draft is already working. Wait for it to finish."). Also a Gemini candidate made with a different Google API key, or A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
+| 404 | [Error](#schema-error) | - `voice_draft_not_found`: No voice draft has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `draft_finished`: The draft is already saved or abandoned. - `draft_busy`: Another generate, discard, abandon or save request is working on the draft. - `candidate_other_project`: A Gemini candidate that must be deleted or saved was made with a different Google API key than the current one. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. - `base_voice_deleted`: `mode: "version"` and the draft's base voice is deleted, including when it was deleted during the save. - `candidate_audio_missing`: Breeze: the candidate's retained audio file is missing, so it cannot be uploaded. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The Breeze upload or its read-back failed (Bardic's own message). |
+| 502 | [Error](#schema-error) | - `provider_error`: The Breeze upload or its read-back failed. |
 
 <a id="refreshgeminivoices"></a>
 ### `POST /api/voices/gemini/refresh`
 
 **List the Google project's stored voices** · operation `refreshGeminiVoices` · cost `network`
 
-Lists the Google project's stored `prompted` and `replicated` voices (metadata only; no generation, up to 5 pages of 100) and saves the listing with a hash of the key, so a listing made with another key is ignored. A provider failure is saved as `state: "error"` with a message rather than returned as an HTTP error. Returns `providers.gemini` of the library overview.
+Lists the Google project's stored `prompted` and `replicated` voices (metadata only; no generation, up to 5 pages of 100) and saves the listing with a hash of the key, so a listing made with another key is ignored. Returns `providers.gemini` of the library overview.
 
-**Known defect:** when the listing fails, the failure is saved and then this route (and `GET /api/voices`) fails with a plain-text HTTP 500 instead of returning `state: "error"`.
+When the listing fails (an HTTP error, no connection, or an unreadable response), the failure is saved first, so that `GET /api/voices` reports `providers.gemini.state: "error"` with the message, and then this returns 502 `provider_error`.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [VoiceLibraryGeminiStatus](#schema-voicelibrarygeministatus) | Success. |
-| 400 | [Error](#schema-error) | No Gemini API key is loaded ("Add a Gemini API key in Settings first."), or Gemini returned a body that is not JSON (the decoder message is the detail). |
+| 400 | [Error](#schema-error) | - `gemini_key_missing`: No Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 409 | [Error](#schema-error) | The Gemini key changed during the check ("Refresh again."); nothing is saved. |
-| 500 | [Error](#schema-error) | Known defect: the listing failed (see description; plain-text body). |
+| 409 | [Error](#schema-error) | - `gemini_key_changed`: The Gemini API key changed during the check; nothing is saved. Refresh again. |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 <a id="updatelibraryvoice"></a>
 ### `PATCH /api/voices/{voice_id}`
@@ -2498,7 +2493,7 @@ Lists the Google project's stored `prompted` and `replicated` voices (metadata o
 
 Changes the name and/or description; an omitted or null field is unchanged. Values are trimmed. Versions and pinned revisions do not change. For a Breeze voice, when a Breeze URL is configured, each distinct server voice behind its versions is renamed on the server best effort (the untrimmed values are sent; failures are ignored because the library record is authoritative). Gemini voices change locally only.
 
-The returned `LibraryVoice` is built without the saved provider checks, so each version's `server_state` is `unknown` (or `other_project` for a Gemini version made with another key) and `assignable`/`warnings` reflect only that. Call `GET /api/voices` for checked server states.
+The returned `LibraryVoice` compares each version with the same saved provider checks as `GET /api/voices` (read locally; this does not contact a provider to check).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2509,9 +2504,9 @@ Request body (`application/json`): [VoiceEdit](#schema-voiceedit)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
-| 400 | [Error](#schema-error) | The name is only whitespace ("The voice name must be 1–100 characters."). |
+| 400 | [Error](#schema-error) | - `voice_name_invalid`: The name is only whitespace. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Deleted voices also return 404. |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="deletelibraryvoice"></a>
@@ -2521,7 +2516,9 @@ Request body (`application/json`): [VoiceEdit](#schema-voiceedit)
 
 Deletes the voice's provider voices (optionally), then marks the library voice deleted. The record is kept as a tombstone: it disappears from `GET /api/voices`, its versions and history stay, and a Breeze server voice behind a deleted voice is never re-imported by a connection check. Characters still assigned to it fail closed: narration is refused with "The voice … was deleted. Choose another voice in the cast."
 
-**Provider deletion (`server`)**: when omitted, voices Bardic made (`origin` `designed` or `cloned`) are deleted on the provider, while voices imported from the Breeze server are removed from Bardic only. `server=true` deletes every distinct provider voice behind every version (Breeze server voices, or stored Gemini voices in the current Google project); `server=false` never touches the provider. A provider that says the voice is already gone (404) counts as deleted. Deletion is not atomic: if one of several provider voices fails to delete, the earlier ones are already gone, the library voice is not marked deleted, and the request fails; retrying is safe.
+**Provider deletion (`server`)**: when omitted, voices Bardic made (`origin` `designed` or `cloned`) are deleted on the provider, while voices imported from the Breeze server are removed from Bardic only. `server=true` deletes every distinct provider voice behind every version (Breeze server voices, or stored Gemini voices in the current Google project); `server=false` never touches the provider. A provider that says the voice is already gone (404) counts as deleted.
+
+**Partial failure is recorded and resumable.** Provider voices are deleted one at a time, and each deletion is recorded before the next starts. If one fails, the request returns 502 `provider_error` (the detail says how many are deleted), and the library voice stays live: the already-deleted versions report `server_state: "missing"`, and `warnings` says the deletion is unfinished. Deleting again skips the recorded ones, deletes the rest, then marks the voice deleted. `server_deleted` lists every provider voice the deletion removed, across attempts.
 
 Deleting an already-deleted voice returns 200 with an empty `server_deleted` and changes nothing. Refused while any narration job is active for a book that follows the voice.
 
@@ -2533,11 +2530,12 @@ Deleting an already-deleted voice returns 200 with an empty `server_deleted` and
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoiceDeleted](#schema-libraryvoicedeleted) | Success. |
-| 400 | [Error](#schema-error) | Provider deletion was requested and the provider is not usable: no Breeze server URL ("Add the Breeze server URL in Settings first, or choose another narrator."), no Gemini key ("Add a Gemini API key in Settings first."), or the provider request failed (a provider failure here is 400, not 502; the detail is Bardic's own message such as "Breeze returned HTTP 500…" or "Gemini returned HTTP 403 while deleting a voice…"). |
+| 400 | [Error](#schema-error) | - `breeze_url_missing`: No Breeze server URL is configured. - `gemini_key_missing`: No Gemini API key is configured. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. |
-| 409 | [Error](#schema-error) | The voice is the Breeze default ("Choose another default before deleting it."); a Gemini voice has a version made with a different Google API key and provider deletion was requested ("…or remove it from Bardic only." — retry with `server=false`); or A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). |
+| 409 | [Error](#schema-error) | - `voice_is_default`: The voice is the Breeze default; choose another default first. - `voice_other_project`: Provider deletion was requested for a Gemini voice with a version made with a different Google API key. Retry with `server=false` to remove it from Bardic only. - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 502 | [Error](#schema-error) | - `provider_error`: Deleting a provider voice failed. Earlier ones in this request are recorded as deleted; deleting again resumes. |
 
 <a id="setlibraryvoicecurrentversion"></a>
 ### `POST /api/voices/{voice_id}/current`
@@ -2548,7 +2546,7 @@ Makes an existing version the current one. Choosing the version that is already 
 
 This re-voices every character that follows the affected voice: selected takes made with the previous voice become out of date but stay in history, and rendering again after switching back reuses the archived WAV without a provider request. Refused with 409 while a `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book with a character following the voice.
 
-The returned `LibraryVoice` is built without the saved provider checks, so each version's `server_state` is `unknown` (or `other_project` for a Gemini version made with another key) and `assignable`/`warnings` reflect only that. Call `GET /api/voices` for checked server states.
+The returned `LibraryVoice` compares each version with the same saved provider checks as `GET /api/voices` (read locally; this does not contact a provider to check).
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2559,10 +2557,10 @@ Request body (`application/json`): [CurrentVersion](#schema-currentversion)
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 200 | [LibraryVoice](#schema-libraryvoice) | Success. |
-| 400 | [Error](#schema-error) | The version does not exist ("That version does not exist."). |
+| 400 | [Error](#schema-error) | - `unknown_version`: The voice has no version with the given number. |
 | 403 | [Error](#schema-error) | A browser write from another origin was rejected by the write guard (see Transport and security). |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Deleted voices also return 404. |
-| 409 | [Error](#schema-error) | A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice ("Narration is being prepared for a book that uses this voice…"). |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). Deleted voices also return it. |
+| 409 | [Error](#schema-error) | - `narration_active`: A `render`, `listen`, `listen_chapter` or `voice_preview` job is queued or running for a book whose characters follow an affected voice. |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
 
 <a id="getlibraryvoiceaudition"></a>
@@ -2581,11 +2579,11 @@ Returns the version's retained audition WAV (Bardic's 24 kHz mono copy of the au
 | --- | --- | --- |
 | 200 | `audio/wav` | Success. |
 | 206 | `audio/wav` | Partial content for a `Range` request (served from a file; see `Content-Range`). |
-| 400 | [Error](#schema-error) | A provider fetch is needed and the provider is not configured: no Breeze server URL, or no Gemini API key; or Gemini returned a body that is not JSON. |
-| 404 | [Error](#schema-error) | The library voice does not exist ("Voice not found"), including a malformed voice ID. Also "Voice version not found", or "No audition audio is available for this voice." when the provider has no sample. |
+| 400 | [Error](#schema-error) | - `breeze_url_missing`: A provider fetch is needed and no Breeze server URL is configured. - `gemini_key_missing`: A provider fetch is needed and no Gemini API key is configured. |
+| 404 | [Error](#schema-error) | - `voice_not_found`: No library voice has this ID (including a malformed ID). - `voice_version_not_found`: The voice has no version with this number. - `audio_not_found`: Nothing is retained and the provider has no sample for this version. |
 | 416 |  | The requested `Range` cannot be satisfied (empty body; see `Content-Range`). |
 | 422 | [Error](#schema-error) | The request failed validation: a missing, extra or out-of-range field or parameter. |
-| 502 | [Error](#schema-error) | The provider request failed (Bardic's own message; provider text is not echoed). |
+| 502 | [Error](#schema-error) | - `provider_error`: The provider refused or failed the request, or was unreachable. The detail is Bardic's own sentence; provider text is not echoed. |
 
 ## Schemas
 
@@ -3983,7 +3981,27 @@ A named library voice with its versions ("VoiceView").
 | `versions` | list of [LibraryVoiceVersion](#schema-libraryvoiceversion) | yes | All versions, oldest first. |
 | `usage` | list of [LibraryVoiceUsage](#schema-libraryvoiceusage) | yes | Characters (in non-archived books) that follow this voice. |
 | `source` | [VoiceCharacterContext](#schema-voicecharactercontext) \| null | yes | The character the voice was designed or cloned for, or null. |
-| `warnings` | list of string | yes | Human-readable problems: the current version changed on the Breeze server (narration refused), is missing from the server, was made with another Google key, or the selected Gemini speech model accepts only built-in voices. |
+| `warnings` | list of string | yes | Human-readable problems: an unfinished deletion already removed some of its provider voices (delete it again to finish), the current version changed on the Breeze server (narration refused), is missing from the server, was made with another Google key, or the selected Gemini speech model accepts only built-in voices. |
+
+<a id="schema-libraryvoiceaudition"></a>
+### LibraryVoiceAudition
+
+A voice version's audition clip (`GET /api/voices/{voice_id}/versions/{version}/audition`).
+
+Always present. When Bardic retained the clip (24 kHz mono WAV), `asset_id`, `duration` and `created_at` are
+set. When it did not, they are null and the URL fetches the Breeze reference clip or Gemini sample from the
+provider on each request. `voice` is the version's provider voice ID. `model` is the design model for a
+designed version, and null for a cloned or imported version, whose clip is a recording.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed. |
+| `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
+| `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
+| `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
+| `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when unknown. |
 
 <a id="schema-libraryvoicedeleted"></a>
 ### LibraryVoiceDeleted
@@ -3993,7 +4011,7 @@ Result of deleting a library voice.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `deleted` | string | yes | The library voice ID. |
-| `server_deleted` | list of string | yes | Provider voice IDs deleted on the provider in this request, sorted. Empty when removed from Bardic only, or when the voice was already deleted. |
+| `server_deleted` | list of string | yes | Provider voice IDs this deletion removed on the provider, sorted, including those removed by earlier attempts that failed part-way. Empty when removed from Bardic only, or when the voice was already deleted. |
 
 <a id="schema-libraryvoicerecipe"></a>
 ### LibraryVoiceRecipe
@@ -4034,8 +4052,8 @@ One immutable version of a library voice: one fixed provider voice.
 | `made` | `"designed"` \| `"cloned"` \| `"imported"` | yes | How this version was made: saved from a design draft, cloned from an uploaded recording, or imported from the Breeze server by a connection check. |
 | `created_at` | string | yes | When the version was saved (ISO 8601 UTC). |
 | `expires_at` | string \| null | yes | Gemini: when Google deletes the stored voice (the provider's timestamp string; stored voices live about one year). Null for Breeze or when unknown. |
-| `server_state` | `"ok"` \| `"changed"` \| `"missing"` \| `"unknown"` \| `"other_project"` | yes | Result of comparing this version with the last saved provider check, computed locally. `ok`: present (Breeze: same revision). `changed`: Breeze only, the server voice changed since it was saved. `missing`: not in the last check. `unknown`: no check to compare with (Breeze never checked or checked against another URL; Gemini project voices not refreshed with the current key; or a single-voice response, which never compares). `other_project`: Gemini only, made with a different Google API key than the current one. |
-| `audition_url` | string | yes | Root-relative URL of this version's audition WAV (`GET /api/voices/{voice_id}/versions/{version}/audition`). |
+| `server_state` | `"ok"` \| `"changed"` \| `"missing"` \| `"unknown"` \| `"other_project"` | yes | Result of comparing this version with the last saved provider check, computed locally in every response that returns a voice. `ok`: present (Breeze: same revision). `changed`: Breeze only, the server voice changed since it was saved. `missing`: not in the last check, or already deleted on the provider by an unfinished deletion of this voice. `unknown`: no check to compare with (Breeze never checked or checked against another URL; Gemini project voices never listed with the current key, or the last listing failed). `other_project`: Gemini only, made with a different Google API key than the current one. |
+| `audition` | [LibraryVoiceAudition](#schema-libraryvoiceaudition) | yes | This version's audition clip. |
 | `recipe` | [LibraryVoiceRecipe](#schema-libraryvoicerecipe) | yes | How the version was made. |
 
 <a id="schema-limits"></a>
@@ -6306,7 +6324,26 @@ One generated candidate in a design draft.
 | `created_at` | string | yes | When the candidate was generated (ISO 8601 UTC). |
 | `expires_at` | string \| null | yes | Provider expiry timestamp string: the Breeze preview's expiry (about 24 hours; irrelevant to saving, which uploads the retained clip) or the Gemini stored voice's expiry. Null when not reported. |
 | `discarded` | boolean | yes | True once discarded (explicitly, or by abandoning the draft). |
-| `audio_url` | string \| null | yes | Root-relative URL of the retained audio (`GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`), or null when none was retained. |
+| `audio` | [VoiceDraftCandidateAudio](#schema-voicedraftcandidateaudio) \| null | yes | The retained audio, or null when none was retained (a Gemini sample that could not be stored). |
+
+<a id="schema-voicedraftcandidateaudio"></a>
+### VoiceDraftCandidateAudio
+
+Bardic's retained copy of a candidate's audio (24 kHz mono WAV).
+
+Served by `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`. `voice` is the Gemini `voice_…`
+ID, or null for a Breeze preview, which is not a server voice. `model` is the Breeze model or the Gemini
+design model used.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Root-relative URL of the audio bytes (WAV unless stated otherwise). |
+| `asset_id` | string \| null | yes | SHA-256 hex of the file the URL serves (content address), or null when the bytes are not content-addressed. |
+| `duration` | number \| null | yes | Length of this audio in seconds, or null when unknown. |
+| `provider` | string \| null | yes | Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown. |
+| `model` | string \| null | yes | Speech model that produced the bytes, or null when unknown. |
+| `voice` | string \| null | yes | Provider voice actually used, or null when unknown. |
+| `created_at` | string \| null | yes | ISO 8601 UTC time the audio was retained, or null when unknown. |
 
 <a id="schema-voicedraftsaved"></a>
 ### VoiceDraftSaved
@@ -6419,14 +6456,14 @@ Gemini voice-design state and the last listing of the Google project's stored vo
 | --- | --- | --- | --- |
 | `has_api_key` | boolean | yes | True when a Gemini API key is loaded (the key is never returned). |
 | `tts_model` | string | yes | The selected Gemini speech model preference. |
-| `state` | `"unchecked"` \| `"ready"` \| `"error"` | yes | `unchecked`: never refreshed with the current key (a listing made with another key is ignored). `ready` or `error`: the last refresh result. |
+| `state` | `"unchecked"` \| `"ready"` \| `"error"` | yes | `unchecked`: never refreshed with the current key (a listing made with another key is ignored). `ready` or `error`: the last refresh result. After `error`, `stored_count` is null, `project_voices` is empty and Gemini versions report `server_state` `unknown` until a refresh succeeds. |
 | `message` | string | yes | Human-readable result, for example "3 stored voices in this Google project."; empty when unchecked. |
 | `checked_at` | string \| null | yes | When the last refresh with the current key finished (ISO 8601 UTC), or null. |
 | `design_models` | list of string | yes | Gemini speech models that accept designed voices. |
 | `designed_voices_supported` | boolean | yes | True when `tts_model` is one of `design_models`. Otherwise Gemini library voices are not assignable. |
 | `stored_count` | integer \| null | yes | Number of stored voices in the last listing; null when never listed or the last refresh failed. |
 | `limit` | integer | yes | Google's stored-voice limit per project (200). |
-| `project_voices` | list of [VoiceLibraryGeminiProjectVoice](#schema-voicelibrarygeminiprojectvoice) | yes | Stored voices from the last successful listing with the current key, newest first. |
+| `project_voices` | list of [VoiceLibraryGeminiProjectVoice](#schema-voicelibrarygeminiprojectvoice) | yes | Stored voices from the last refresh with the current key, newest first. Empty when never listed or when the last refresh failed. |
 
 <a id="schema-voicelibraryoverview"></a>
 ### VoiceLibraryOverview

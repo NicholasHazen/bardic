@@ -74,6 +74,13 @@ def _request(method: str, url: str, api_key: str, *, timeout: float = 30.0, acti
     return response
 
 
+def _json(response: httpx.Response, action: str) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        raise AudioError(f"Gemini returned an unreadable response while {action}. Try again later.") from None
+
+
 def _voice(item: Any) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -96,7 +103,7 @@ def list_voices(api_key: str, *, types=("prompted", "replicated")) -> list[dict]
         params = [("type", kind) for kind in types] + [("page_size", "100")]
         if token:
             params.append(("page_token", token))
-        body = _request("GET", VOICES_URL, api_key, params=params, action="listing voices").json()
+        body = _json(_request("GET", VOICES_URL, api_key, params=params, action="listing voices"), "listing voices")
         for item in body.get("voices", []) if isinstance(body, dict) else []:
             voice = _voice(item)
             if voice and (not types or voice["type"] in types):
@@ -158,7 +165,8 @@ def create_voice(api_key: str, *, model: str, display_name: str, description: st
 def voice_sample(api_key: str, voice_id: str) -> bytes | None:
     if not _VOICE_ID.fullmatch(voice_id or ""):
         raise AudioError("That Gemini voice id is invalid.")
-    return _sample(_request("GET", f"{VOICES_URL}/{voice_id}", api_key, action="reading a voice").json())
+    body = _json(_request("GET", f"{VOICES_URL}/{voice_id}", api_key, action="reading a voice"), "reading a voice")
+    return _sample(body) if isinstance(body, dict) else None
 
 
 def delete_voice(api_key: str, voice_id: str) -> None:

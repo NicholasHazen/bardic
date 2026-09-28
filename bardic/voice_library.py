@@ -5,7 +5,9 @@ voice: a Breeze server voice pinned to its revision, or a Gemini ``voice_...``
 id. Characters follow a voice's current version, so saving a new version or
 switching back re-voices them, while older versions stay re-renderable and
 their takes stay in history. Versions are append-only; names, descriptions
-and the current-version pointer are the only mutable voice fields.
+and the current-version pointer are the only mutable voice fields, besides
+deletion bookkeeping (``deleted_at`` and the provider voices an unfinished
+deletion already removed, ``server_deleted``).
 
 Nothing here contacts a provider. Resolution of an assignment to a concrete
 provider voice reads only SQLite, so saved takes validate offline.
@@ -24,7 +26,7 @@ from uuid import uuid4
 
 from .audio import _LEGACY_VOICE_FIELDS, PROVIDERS, SAMPLE_RATE, AudioError, _normalize, _wave_info
 from .store import now
-from .errors import NotFound
+from .errors import Conflict, Invalid, NotFound
 
 VERSION = 1
 LIBRARY_PROVIDERS = ("breeze", "gemini")
@@ -161,12 +163,15 @@ class VoiceLibrary:
             raise NotFound('voice_not_found', 'Voice not found')
         return voices[0]
 
-    @staticmethod
-    def _text(value, limit, label, *, required=False) -> str:
+    _TEXT_CODES = {'The voice name': 'voice_name_invalid', 'The description': 'description_too_long',
+                   'The sample text': 'sample_text_too_long'}
+
+    @classmethod
+    def _text(cls, value, limit, label, *, required=False) -> str:
         if value is None:
             value = ''
         if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
-            raise ValueError(f'{label} must be {"1" if required else "0"}–{limit} characters.')
+            raise Invalid(cls._TEXT_CODES[label], f'{label} must be {"1" if required else "0"}–{limit} characters.')
         return value.strip()
 
     @staticmethod
@@ -263,12 +268,27 @@ class VoiceLibrary:
             if not voices or voices[0].get('deleted_at'):
                 raise NotFound('voice_not_found', 'Voice not found')
             if version not in {entry['version'] for entry in voices[0]['versions']}:
-                raise ValueError('That version does not exist.')
+                raise Invalid('unknown_version', 'The voice has no version with that number.')
             if version != voices[0]['current_version']:
                 self._save(conn, voices[0], current_version=version)
                 self._event(conn, 'current_changed', voice_id=voice_id, version=version,
                             previous=voices[0]['current_version'])
         return self.voice(voice_id)
+
+    def note_server_deleted(self, voice_id: str, provider_voice_id: str) -> None:
+        """Record that one provider voice behind this voice is gone.
+
+        A deletion that fails part-way stays visible (the voice reports those
+        versions as missing), and a retry resumes instead of starting over.
+        """
+        with self.store.lock, self.store.connect() as conn:
+            voices = self._rows(conn, voice_id)
+            if not voices:
+                raise NotFound('voice_not_found', 'Voice not found')
+            done = list(voices[0].get('server_deleted') or [])
+            if provider_voice_id not in done:
+                self._save(conn, voices[0], server_deleted=[*done, provider_voice_id])
+                self._event(conn, 'server_voice_deleted', voice_id=voice_id, provider_voice_id=provider_voice_id)
 
     def tombstone(self, voice_id: str, *, server_deleted: list[str] | None = None) -> dict:
         with self.store.lock, self.store.connect() as conn:
@@ -312,7 +332,7 @@ class VoiceLibrary:
         if base_voice_id is not None:
             base = self.voice(base_voice_id)
             if base.get('deleted_at') or base['provider'] != provider:
-                raise ValueError('Iterate on an existing voice of the same provider.')
+                raise Invalid('base_voice_unusable', 'The base voice is deleted or belongs to the other provider.')
         draft = {'schema_version': VERSION, 'id': f'vd_{uuid4().hex[:16]}', 'provider': provider,
                  'base_voice_id': base_voice_id, 'context': context,
                  'name': self._text(name, MAX_NAME, 'The voice name'),
@@ -358,14 +378,14 @@ class VoiceLibrary:
 
         def apply(draft):
             if draft['status'] != 'open':
-                raise ValueError('This voice draft is already finished.')
+                raise Conflict('draft_finished', 'The voice draft is already finished.')
             draft.update(fields)
         return self.change_draft(draft_id, apply)
 
     def add_candidates(self, draft_id: str, candidates: list[dict]) -> dict:
         def apply(draft):
             if draft['status'] != 'open':
-                raise ValueError('This voice draft is already finished.')
+                raise Conflict('draft_finished', 'The voice draft is already finished.')
             for candidate in candidates:
                 draft['candidates'].append({'id': f'c{len(draft["candidates"]) + 1}', 'discarded': False,
                                             'created_at': now(), **copy.deepcopy(candidate)})

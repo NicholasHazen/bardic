@@ -571,7 +571,15 @@ def clone(config: Any, *, voice_id: str, name: str, audio: bytes, filename: str,
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename or "recording")[:100] or "recording"
     response = _call(config, "POST", "/v1/voices/clone", data=data, files={"reference_audio": (safe_name, audio)},
                      timeout=120.0, expected=(200, 201))
-    return _pinned_voice(config, _json(response))
+    try:
+        return _pinned_voice(config, _json(response))
+    except AudioError:
+        # The server voice exists but cannot be pinned; nothing will record it, so remove it (best effort).
+        try:
+            delete_voice(config, voice_id)
+        except AudioError:
+            pass
+        raise
 
 
 def update_voice(config: Any, voice_id: str, *, name: str | None = None, description: str | None = None) -> None:
