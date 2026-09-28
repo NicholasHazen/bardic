@@ -52,6 +52,7 @@ Book structure repair accepts only an equal chapter count and exact canonical te
 | Field | Meaning |
 | --- | --- |
 | `id`, `title`, `author`, `source_name`, `created_at`, `revision` | Book identity, editable display metadata, safe original filename, and projection revision. |
+| `language` | BCP 47 tag from the EPUB's first well-formed `dc:language` (`_` read as `-`), or `null` for TXT, an EPUB without one, and books imported before it existed. Metadata only: it chooses the default Mac voice menu and never changes canonical text or spans. Not refreshed by **Refresh metadata** yet. |
 | `structure_version` | Structure interpretation version, separate from book revision and artifact schema. |
 | `chapters[]` | Ordered source containers with `id`, `index`, `title`, `text`, `kind`, `title_source`, `source_href`, optional `narrative_order`, and `logical_sections`. |
 | `characters[]` | Book-local cast, including `narrator` and `unassigned`, with name/aliases, description/direction, evidence, per-provider voice choices (`voices`), edit flags, and profile freshness/provenance fields. |

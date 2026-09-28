@@ -62,25 +62,12 @@ function ordinary(call){
   assert.equal(env.api.enabled(book),false);
   assert.equal(env.api.resolve(book,book.segments[0]),book.segments[0].audio);
   assert.ok(container.innerHTML.includes('Start listening'));
-  assert.ok(container.innerHTML.includes('keeps going through the book'),'Continuous listening is the default');
-  assert.ok(container.innerHTML.includes('data-listen-field="continuous" checked'));
-  assert.ok(container.innerHTML.includes('aria-label="Narrator voice"'));
-  assert.match(container.innerHTML, /data-listen-options >(?:\s*)<summary data-listen-summary>More listening options/,
-    'Advanced controls start collapsed');
-  const advancedStart=container.innerHTML.indexOf('<details');
-  assert.ok(container.innerHTML.indexOf('data-listen-action="start"') < advancedStart,
-    'The explicit start action is visible without opening advanced settings');
-  assert.ok(container.innerHTML.indexOf('Mac voices run on the Bardic computer') < advancedStart,
-    'Provider and privacy disclosures stay beside the start action');
-  assert.ok(container.innerHTML.indexOf('data-listen-action="prepare-chapter"') > advancedStart,
-    'Chapter preparation remains available in the advanced disclosure');
-  container.disclosure={open:true};
+  assert.equal(env.api.choices(book).continuous,true,'Continuous listening is the default');
+  assert.ok(env.api.choices(book).voices.length>0,'The sheet has the narrator menu');
+  assert.doesNotMatch(container.innerHTML,/data-listen-field|data-listen-options/,'More options holds no narrator or expert controls');
+  assert.ok(container.innerHTML.includes('data-listen-action="start"'),'The explicit start action is in More options');
   await env.api.render(container,book,hooks);
-  assert.match(container.innerHTML, /data-listen-options open>/, 'Redraws preserve an opened disclosure');
-  container.disclosure.open=false;
-  await env.api.render(container,book,hooks);
-  assert.match(container.innerHTML, /data-listen-options >/,'Redraws preserve a closed disclosure');
-  assert.equal(env.calls.length,0,'Opening or closing advanced options never requests audio');
+  assert.equal(env.calls.length,0,'Redrawing More options never requests audio');
   click(container,'start');
   assert.equal(env.api.enabled(book),true);
   assert.equal(playId,'segment-1');
@@ -110,8 +97,8 @@ function ordinary(call){
   change(container,'provider','gemini');
   change(container,'voice','Leda');
   change(container,'model','gemini-3.8-flash-lite-tts');
-  assert.ok(container.innerHTML.includes('Google bills each request, including examples'));
-  assert.ok(container.innerHTML.includes('value="Leda" selected'));
+  assert.equal(env.api.choices(book).paid,true,'Gemini is marked paid for the sheet');
+  assert.equal(env.api.choices(book).voice,'Leda');
   assert.match(container.drawer.summary.textContent,/Full cast · recorded passages only.*Leda.*Gemini · paid/);
   assert.equal(container.drawer.open,false,'Changing narrator settings does not force open the drawer');
   const persisted=JSON.parse(env.storage.get('bardic:listen:book-9'));
@@ -128,8 +115,6 @@ function ordinary(call){
   const auditionHooks=options({playbackRate:2.5,onPreview:value=>previews.push(JSON.parse(JSON.stringify(value))),
     onRateChange:rate=>rates.push(rate),onToggle:()=>toggles++,onStop:()=>auditionStops++,onPlay:id=>{auditionPlay=id;}});
   await auditions.api.render(auditionContainer,book,auditionHooks);
-  assert.match(auditionContainer.innerHTML,/Hear example/);
-  assert.match(auditionContainer.innerHTML,/value="2.5" selected>2.5×/);
   click(auditionContainer,'preview');
   assert.deepEqual(previews.at(-1),{provider:'system',voice:'',model:'macos-say',segment_id:'segment-1'});
   assert.equal(auditions.api.enabled(book),false);
@@ -143,8 +128,8 @@ function ordinary(call){
   assert.equal(previews.at(-1).segment_id,null,'A context without source requests generic demo text');
   change(auditionContainer,'provider','gemini');
   change(auditionContainer,'voice','Leda');
-  change(auditionContainer,'model','gemini-3.8-flash-lite-tts');
-  await auditions.api.render(auditionContainer,book,auditionHooks);
+  // The speech model is a Settings choice (Narration, Advanced) that every book follows.
+  await auditions.api.render(auditionContainer,book,{...auditionHooks,status:{...status,tts_model:'gemini-3.8-flash-lite-tts'}});
   click(auditionContainer,'preview');
   assert.deepEqual(previews.at(-1),{provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-lite-tts',segment_id:'segment-1'});
   assert.deepEqual(JSON.parse(JSON.stringify(auditions.api.getSelection(book))),{provider:'gemini',voice:'Leda',model:'gemini-3.8-flash-lite-tts',mode:'enhanced'});
@@ -164,7 +149,6 @@ function ordinary(call){
   assert.equal(toggles,0);
   await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:true,playbackRate:2.25});
   assert.match(auditionContainer.innerHTML,/aria-label="Pause listening">Pause/);
-  assert.match(auditionContainer.innerHTML,/value="2.25" selected>2.25×/);
   click(auditionContainer,'start');
   assert.equal(toggles,1);
   await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:false,preparing:true});
@@ -172,7 +156,6 @@ function ordinary(call){
   click(auditionContainer,'start');
   assert.equal(toggles,2,'The same control can stop a warmup through the shared transport');
   await auditions.api.render(auditionContainer,book,{...auditionHooks,playing:false,previewing:true});
-  assert.match(auditionContainer.innerHTML,/data-listen-action="preview"[^>]*disabled/);
   assert.match(auditionContainer.innerHTML,/aria-label="Play with one narrator">Play/);
   assert.equal(previews.length,4,'Passive renders never restart an audition');
   // Gemini simple mode may read job status and a local chapter preview, but
@@ -208,7 +191,7 @@ function ordinary(call){
   const preferredContainer=new Container();
   await preferred.api.render(preferredContainer,book,options());
   assert.equal(preferred.api.enabled(book),false);
-  assert.ok(preferredContainer.innerHTML.includes('value="Samantha" selected'));
+  assert.equal(preferred.api.choices(book).voice,'Samantha','The newer saved narrator is restored');
   assert.equal(preferred.calls.length,0,'Restoring preferences must not start narration');
 
   // Stop while POST is pending cancels its late job and cannot return playable audio.

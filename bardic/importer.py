@@ -199,7 +199,21 @@ def _cover_thumbnail(package, package_path, manifest, read):
     return None
 
 
-def _epub(data: bytes) -> tuple[str, str, list[dict], str | None]:
+# BCP 47 shape only (primary subtag plus optional subtags); anything else is dropped.
+LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,7}$")
+
+
+def _language(package) -> str | None:
+    """The package's first well-formed dc:language, as metadata only."""
+    for element in package.iter():
+        if _tag(element) == "language":
+            value = "".join(element.itertext()).strip().replace("_", "-")
+            if len(value) <= 35 and LANGUAGE_TAG.match(value):
+                return value
+    return None
+
+
+def _epub(data: bytes) -> tuple[str, str, list[dict], str | None, str | None]:
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
@@ -267,7 +281,8 @@ def _epub(data: bytes) -> tuple[str, str, list[dict], str | None]:
         if not chapters:
             raise ValueError("No readable text was found in the EPUB's reading order.")
         from .structure import describe_epub_structure
-        return title, author, describe_epub_structure(package, package_path, manifest, read, chapters), _cover_thumbnail(package, package_path, manifest, read)
+        return (title, author, describe_epub_structure(package, package_path, manifest, read, chapters),
+                _cover_thumbnail(package, package_path, manifest, read), _language(package))
 
 
 def _text_chapters(text: str) -> list[tuple[str, str]]:
@@ -375,9 +390,9 @@ def parse_book(filename: str, data: bytes) -> dict:
     safe_name = filename.replace("\\", "/").rsplit("/", 1)[-1]
     extension = PurePosixPath(safe_name).suffix.lower()
     fallback_title = PurePosixPath(safe_name).stem.replace("_", " ").strip() or "Untitled book"
-    cover_data = None
+    cover_data = language = None
     if extension == ".epub":
-        title, author, chapter_texts, cover_data = _epub(data)
+        title, author, chapter_texts, cover_data, language = _epub(data)
     elif extension == ".txt":
         try:
             text = data.decode("utf-8-sig")
@@ -391,6 +406,9 @@ def parse_book(filename: str, data: bytes) -> dict:
     else:
         raise ValueError("Supported formats are DRM-free .epub and UTF-8 .txt files.")
     book = {"id": str(uuid.uuid4()), "title": title or fallback_title, "author": author, "source_name": safe_name,
+            # Book language (BCP 47) from EPUB metadata; TXT has none. Metadata only: it
+            # picks narrator voices and never touches the canonical text or spans.
+            "language": language,
             "created_at": datetime.now(timezone.utc).isoformat(), "chapters": [], "characters": _base_characters(),
             "scenes": [], "segments": [], "analysis": {"provider": "local", "status": "draft", "notes": "Imported text. Analyze the book to draft cast and performance directions."}, "revision": 1, "structure_version": 2}
     for index, chapter_data in enumerate(chapter_texts):

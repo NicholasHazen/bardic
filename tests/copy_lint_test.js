@@ -24,14 +24,8 @@ const BANNED = [
 
 // Each exception says why it is legitimate. Matching is by file and exact text fragment.
 const ALLOW = [
-  {file:'bardic/static/listen.js', text:'Full chunk length', why:'Expert control inside the narrator sheet\'s More options disclosure; listen.js copy belongs to the copy pass (phase 2 copy owner) and moves to Settings in phase 4.'},
-  {file:'bardic/static/listen.js', text:'Each chunk is one request', why:'Expert "Prepare before listening" help inside More options; same owner and phase as above.'},
-  {file:'bardic/static/listen.js', text:'quick-start chunks first, then full chunks', why:'Expert queue explanation inside More options; same owner and phase as above.'},
-  {file:'bardic/static/listen.js', text:'large chunks', why:'Gemini cost disclosure inside More options; wording owned by the listen.js copy pass.'},
-  // listen.js renders only inside the narrator sheet's More options now (index.html #simple-listen).
-  ...['as each chunk finishes', 'Planning the next chunk', 'The remaining chunks need more requests', 'timing inside a chunk is estimated', 'How quickly the first chunk arrives']
-    .map(text => ({file:'bardic/static/listen.js', text, why:'Chapter-queue status and expert controls inside the narrator sheet\'s More options; listen.js copy belongs to the phase 2 copy pass.'})),
-  {file:'bardic/static/listen.js', text:'Listening settings', why:'The aria-label that names the More options region itself (not a reference to another control); listen.js copy belongs to the copy pass.'},
+  // Phase 4 moved the expert chunk controls to Settings (Narration, Advanced) and reworded
+  // the listen.js status copy, so listen.js needs no exceptions. Add one here with a reason.
 ];
 
 // ---- Extraction ------------------------------------------------------------------------

@@ -107,7 +107,7 @@ test('Gemini Play starts one chapter job, waits for its chunk, and never request
   await settle();
 });
 
-test('queue, stop generating, marks and chunk presets', async () => {
+test('queue, stop generating and marks; request sizes live in Settings', async () => {
   const env = environment({takes:() => [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)},{segment_id:'p1',audio:clip('p1','chunk-a',3,6)},
     {segment_id:'p2',audio:clip('p2','chunk-b',0,4)}]});
   await env.init();
@@ -133,12 +133,12 @@ test('queue, stop generating, marks and chunk presets', async () => {
   env.click('stop-generating');
   await settle(40);
   assert.ok(env.calls.some(call => call.url === '/api/jobs/job-1/cancel'));
+  // First audio and request lengths are Settings (Narration, Advanced), not listening controls.
+  const before = env.calls.length;
   env.change('chunk-preset','largest');
   await settle();
-  assert.deepEqual(env.calls.at(-1).body,{listen_chunking:{ramp_seconds:[],target_seconds:420,concurrency:2}});
-  env.change('chunk-length','999');
-  await settle();
-  assert.notEqual(env.calls.at(-1).body?.listen_chunking?.target_seconds,999,'unknown lengths are ignored');
+  assert.ok(!env.calls.slice(before).some(call => call.url === '/api/settings'),'More options never writes global settings');
+  assert.doesNotMatch(env.container.innerHTML,/chunk-preset|chunk-length|data-listen-field="model"/);
 });
 
 test('quota-limited job offers resume and explains the reset', async () => {
@@ -412,4 +412,31 @@ test('continuous: listening does not run on into back matter', async () => {
   assert.equal(chapterPosts(env).length,0,'notes or an index are not narrated automatically');
   assert.equal(env.api.allowsAdvance(book,book.segments[11],book.segments[12]),false);
   env.api.stop(env.book);
+});
+
+test('the sleep timer cancels a job continuous listening queued, as Pause does, and the pill says so', async () => {
+  const env = environment({takes:chapterA,chapterPost:startsNext});
+  await env.init();
+  await playing(env);
+  assert.equal(chapterPosts(env).length,1,'continuous listening queued the next chapter');
+  const scope = {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/listen-status.js'),'utf8'),scope);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../bardic/static/player.js'),'utf8'),scope);
+  let clock = 0, playingNow = true;
+  // app.js wires pause to the Pause button, which stops listening with {pause:true}.
+  scope.BardicPlayer.attach({now:() => clock, setInterval:() => 0, clearInterval() {}, playing:() => playingNow,
+    pause:() => { playingNow = false; env.api.stop(env.book,{pause:true}); }});
+  scope.BardicPlayer.setSleep('30');
+  clock += 31 * 60 * 1000;
+  scope.BardicPlayer.tickSleep();
+  assert.equal(playingNow,false);
+  assert.equal(cancels(env),1,'the automatically queued job is cancelled');
+  assert.match(env.container.innerHTML,/Paused\. Preparing ahead was cancelled/);
+  env.state.jobs = [nextChapterJob('cancelled')];
+  await settle();
+  // Pause is not "stopped by you": the pill reads Paused, and says nothing more is requested.
+  const input = env.api.statusInput(env.book);
+  const next = {...input,job:{...nextChapterJob('cancelled'),chapter_id:'chapter-a'},jobCancelledByPause:true,remainingSeconds:10};
+  assert.equal(scope.BardicListenStatus.compute({...next,started:true}).state,'paused');
+  assert.equal(scope.BardicListenStatus.compute({...next,jobCancelledByPause:false}).state,'stopped-by-you');
 });
