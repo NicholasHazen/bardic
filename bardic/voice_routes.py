@@ -502,7 +502,11 @@ def register(app, rt, edit):
                     created = gemini_voices.create_voice(key, model=model, display_name=draft["name"] or "Bardic voice",
                                                          description=draft["description"], language_code=body.language_code,
                                                          gender=body.gender)
-                    stored = runtime.voices.store_audio(created["sample"]) if created.get("sample") else None
+                    # The voice now exists (and is billed); a local sample failure must not lose its record.
+                    try:
+                        stored = runtime.voices.store_audio(created["sample"]) if created.get("sample") else None
+                    except (AudioError, ValueError, OSError):
+                        stored = None
                     candidates = [{"kind": "gemini_voice", "provider_voice_id": created["id"], "seed": None,
                                    "preview_id": None, "description": draft["description"], "sample_text": None,
                                    "asset_id": stored["asset_id"] if stored else None,
@@ -574,9 +578,13 @@ def register(app, rt, edit):
         except KeyError:
             raise HTTPException(404, "Voice draft not found") from None
         try:
-            stored = [c["provider_voice_id"] for c in draft["candidates"]
-                      if c["kind"] == "gemini_voice" and not c["discarded"]]
-            failures = delete_quietly(gemini_key(runtime), stored) if stored else []
+            live = [c for c in draft["candidates"] if c["kind"] == "gemini_voice" and not c["discarded"]]
+            key = gemini_key(runtime) if live else None
+            if any(c.get("project") != key_hash(key) for c in live):
+                # Another project's voice cannot be deleted with this key; a 404 would look like success.
+                raise HTTPException(409, "Some candidates were made with a different Google API key. "
+                                         "Switch back to that key to delete them before abandoning this draft.")
+            failures = delete_quietly(key, [c["provider_voice_id"] for c in live]) if live else []
             if failures:
                 raise HTTPException(502, f"Some stored Gemini candidates could not be deleted: {failures[0]}")
 
@@ -653,9 +661,11 @@ def register(app, rt, edit):
             cleanup = []
             if provider == "gemini":
                 # Unchosen candidates are stored, billed voices; remove them from the project.
-                cleanup = delete_quietly(key, [c["provider_voice_id"] for c in draft["candidates"]
-                                               if c["kind"] == "gemini_voice" and not c["discarded"]
-                                               and c["id"] != candidate["id"]])
+                unchosen = [c for c in draft["candidates"] if c["kind"] == "gemini_voice" and not c["discarded"]
+                            and c["id"] != candidate["id"]]
+                cleanup = delete_quietly(key, [c["provider_voice_id"] for c in unchosen if c.get("project") == key_hash(key)])
+                if any(c.get("project") != key_hash(key) for c in unchosen):
+                    cleanup.append("Some unchosen candidates were made with a different Google API key and remain stored in that project.")
 
             def apply(current):
                 current["status"] = "saved"

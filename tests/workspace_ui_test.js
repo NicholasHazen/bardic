@@ -31,7 +31,7 @@ function environment(respond) {
     {id:'two', title:'Winter road', author:'Hannah Snow', chapters:[{id:'c2', title:'Second'}], segments:[], characters:[]},
   ];
   const state = {book:books[0], books, chapterId:'c1', segmentId:'s1', tab:'read', libraryView:false, selectionVersion:0, loading:false, referenceCache:new Map(), referenceVersion:0};
-  const tabs = ['read','cast','voices','studio'].map(name => { const tab = node(`#${name}-tab`); tab.dataset.tab = name; tab.setAttribute('aria-current', 'false'); return tab; });
+  const tabs = ['read','cast','voices','studio','analysis'].map(name => { const tab = node(`#${name}-tab`); tab.dataset.tab = name; tab.setAttribute('aria-current', 'false'); return tab; });
   const libraryItems = books.map(book => { const item = node(`[data-book="${book.id}"]`); item.dataset.book = book.id; return item; });
   const calls = {requests:0, stops:0, saves:0};
   const media = {plays:0, generations:0, paused:true, pause(){ this.paused = true; }, async play(){ this.plays++; }};
@@ -211,21 +211,23 @@ test('workspace tabs use one tab stop and Arrow, Home, End select and focus pane
     return prevented;
   };
   assert.equal(key(0, 'ArrowLeft'), true);
-  assert.equal(state.tab, 'studio');
-  assert.equal(tabs[3].focused, true);
-  assert.equal(node('#studio-view').hidden, false);
+  assert.equal(state.tab, 'analysis', 'ArrowLeft from the first tab wraps to the last');
+  assert.equal(tabs[4].focused, true);
+  assert.equal(node('#analysis-view').hidden, false);
   assert.equal(node('#read-view').hidden, true);
-  assert.equal(node('#voices-view').hidden, true);
-  assert.deepEqual(tabs.map(tab => tab.tabIndex), [-1,-1,-1,0]);
-  assert.deepEqual(tabs.map(tab => tab.attributes.get('aria-selected')), ['false','false','false','true']);
+  assert.equal(node('#studio-view').hidden, true);
+  assert.deepEqual(tabs.map(tab => tab.tabIndex), [-1,-1,-1,-1,0]);
+  assert.deepEqual(tabs.map(tab => tab.attributes.get('aria-selected')), ['false','false','false','false','true']);
   assert.equal(tabs.some(tab => tab.attributes.has('aria-current')), false);
-  assert.equal(key(3, 'ArrowRight'), true);
+  assert.equal(key(4, 'ArrowLeft'), true);
+  assert.equal(state.tab, 'studio');
+  assert.equal(key(4, 'ArrowRight'), true);
   assert.equal(state.tab, 'read');
   assert.equal(key(1, 'ArrowRight'), true);
   assert.equal(state.tab, 'voices', 'Voices sits between Cast and Studio');
   assert.equal(node('#voices-view').hidden, false);
-  key(0, 'End'); assert.equal(state.tab, 'studio');
-  key(3, 'Home'); assert.equal(state.tab, 'read');
+  key(0, 'End'); assert.equal(state.tab, 'analysis');
+  key(4, 'Home'); assert.equal(state.tab, 'read');
   assert.equal(key(0, 'Tab'), false);
 });
 

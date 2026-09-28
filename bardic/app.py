@@ -40,6 +40,9 @@ from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
 from .lan import allowed_hosts
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
+from .pipeline import default_registry
+from .pipeline.api import build_router as pipeline_router
+from .pipeline.repository import PipelineRepository
 from .series import SeriesRepository
 from .structure import repair_structure, transform_checkpoint_structure
 from .store import InstanceLock, Store
@@ -230,6 +233,7 @@ class Runtime:
     def __init__(self, root: Path):
         self.instance_lock = InstanceLock(root.resolve())
         self.store = Store(root)
+        PipelineRepository(self.store).recover_interrupted()
         self.voices = VoiceLibrary(self.store)
         # Voice drafts with a generation request in flight (a per-draft lock).
         self.voice_busy: set[str] = set()
@@ -644,7 +648,7 @@ class Runtime:
         except QuotaReached as exc:
             self.store.update_job(job_id, status="quota_limited", message=str(exc), resume_after=exc.resume_after)
         except (Cancelled, InterruptedError):
-            message = ("Stopped. Validated chapter work is saved; analyze again to resume." if job["kind"] == "analyze"
+            message = ("Stopped. Validated chapter work is saved; analyze again to resume." if job["kind"] in {"analyze", "pipeline"}
                        else "Stopped. Finished chunks are saved; prepare the chapter again to resume." if job["kind"] == "listen_chapter"
                        else "Stopped. Completed takes are saved; generate again to resume.")
             self.store.update_job(job_id, status="interrupted" if self.stopping.is_set() else "cancelled", message=message)
@@ -656,7 +660,7 @@ class Runtime:
                     message = message.replace(key, "[redacted]")
             message = message[:1200]
             self.store.update_job(job_id, status="failed", error=message,
-                                  message="Stopped on an error. Validated chapter work is saved." if job["kind"] == "analyze" else "Stopped on an error. Completed takes are saved.")
+                                  message="Stopped on an error. Validated chapter work is saved." if job["kind"] in {"analyze", "pipeline"} else "Stopped on an error. Completed takes are saved.")
         finally:
             CANCEL_CHECK.reset(cancel_token)
             if job['kind'] in {'listen', 'voice_preview'}:
@@ -1164,8 +1168,20 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404, "Item not found")
             if "speaker_id" in fields and fields["speaker_id"] not in {c["id"] for c in book["characters"]}:
                 raise HTTPException(400, "Choose a character in this book's cast")
+            before = copy.deepcopy(item)
             if collection == "characters":
                 runtime.merge_voices(item, fields)
+            # Per-field edit locks, only for values that actually changed: editors
+            # submit whole forms, so an unchanged description must not become locked.
+            # An item edited before per-field tracking existed stays wholly locked.
+            changed = {name for name, value in fields.items() if before.get(name) != value}
+            if item.get("voices") != before.get("voices"):
+                changed.add("voices")
+            prior = item.get("edited_fields") if isinstance(item.get("edited_fields"), list) else (["*"] if item.get("edited") else [])
+            item["edited_fields"] = sorted(set(prior) | changed)
+            if collection == "characters" and fields.get("name") and fields["name"] != item.get("name"):
+                # Remember replaced names so later discovery resolves them to this character.
+                item["former_names"] = list(dict.fromkeys([*item.get("former_names", []), item["name"]]))
             item.update(fields)
             item["edited"] = True
             if collection == "segments" and "speaker_id" in fields:
@@ -1208,7 +1224,10 @@ def create_app(data_dir: Path | None = None):
             runtime.merge_voices(character, fields)
             character.update(fields)
             character["edited"] = True
+            # The owner set only these fields; generated profile text may fill the rest.
+            character["edited_fields"] = sorted(set(fields) | {"name"})
             book["characters"].append(character)
+            book["revision"] = book.get("revision", 0) + 1
             runtime.store.save_book(book)
             return runtime.present(book)
 
@@ -1795,6 +1814,8 @@ def create_app(data_dir: Path | None = None):
         except Exception:
             shutil.rmtree(temp, ignore_errors=True)
             raise
+
+    app.include_router(pipeline_router(default_registry()))
 
     app.mount("/static", StaticFiles(directory=STATIC), name="assets")
     app.mount("/", StaticFiles(directory=STATIC, html=True), name="studio")

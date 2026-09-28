@@ -107,6 +107,7 @@ Useful targeted suites:
 | EPUB/text extraction and structure | `pytest -q tests/test_importer.py tests/test_series_structure_api.py` |
 | Provider configuration and model catalog | `pytest -q tests/test_model_catalog.py tests/test_catalog_settings_api.py tests/test_provider_settings.py tests/test_analysis_providers.py` |
 | Progressive analysis, evidence and budgets | `pytest -q tests/test_progressive.py tests/test_progressive_api.py tests/test_evidence.py tests/test_processing.py tests/test_preprocessing.py` |
+| Analysis pipeline steps, versions and acceptance | `pytest -q tests/test_analysis_pipeline.py tests/test_analysis_pipeline_ui.py`; also run `node tests/analysis_pipeline_ui_test.js` |
 | Artifacts, graph, search and export | `pytest -q tests/test_artifacts.py tests/test_progressive_artifacts.py tests/test_pipeline_view_api.py tests/test_search.py` |
 | Series identities and execution | `pytest -q tests/test_series.py tests/test_series_lifecycle.py tests/test_series_processing.py tests/test_series_processing_ui.py` |
 | Simple listening and reader playback | `pytest -q tests/test_listening.py tests/test_listen_api.py tests/test_listen_ui.py tests/test_listen_player.py` |
@@ -165,7 +166,7 @@ SQLite uses WAL and foreign keys. Store operations share an `RLock`; connections
 
 The workspace separates the library landing view from the selected book. Returning to **Library** preserves playback; reopening the selected book does not create a new listening session. Title/author filtering is local. The **Read & listen**, **Cast**, **Voices**, and **Studio** views use linked tab/tabpanel semantics, a single tab stop, and Left/Right/Home/End navigation. The chapter selector above the reader and the contents list share the same chapter-selection path. Keep these controls available on narrow layouts.
 
-Use progressive disclosure for secondary controls: **Story analysis** holds stage planning, coverage and spending allowances; **Plan analysis** reveals it before scrolling and focusing the controls. Series membership/identity tools follow the cast in **Series & continuity**, and pipeline/resource inspectors follow the script in **Production details**. Each provider's settings and optional account checks also have their own disclosures. Opening settings for a missing provider key must reveal that provider before focusing its key field; native validation must also reveal the disclosure containing an invalid field. Disclosure changes must preserve existing feature mount IDs, unsaved input values and explicit generation boundaries.
+The **Analysis** tab is the primary way to run text analysis; Cast's **Analyze the story** and Studio's **Understand** step open it. Use progressive disclosure for secondary controls: **Classic story analysis** (the older phase runs, recorded in Analysis history as outside changes) holds stage planning, coverage and spending allowances; **Plan analysis** reveals it before scrolling and focusing the controls. Series membership/identity tools follow the cast in **Series & continuity**, and pipeline/resource inspectors follow the script in **Production details**. Each provider's settings and optional account checks also have their own disclosures. Opening settings for a missing provider key must reveal that provider before focusing its key field; native validation must also reveal the disclosure containing an invalid field. Disclosure changes must preserve existing feature mount IDs, unsaved input values and explicit generation boundaries.
 
 Browser storage writes use the `bardic:` prefix and fall back to old `spintails:` values on reads. Preserve that compatibility when changing preference or reading-position storage. JavaScript feature interfaces use the `Bardic` prefix shown below.
 
@@ -173,6 +174,7 @@ Browser storage writes use the `bardic:` prefix and fall back to old `spintails:
 | --- | --- |
 | `BardicSeries` — [series.js](../bardic/static/series.js) | `render(container, book)` loads membership, explicit identity links, and prior context. |
 | `BardicProduction` — [production.js](../bardic/static/production.js) | `render(container, book, {provider, chapterId, busy, scanModel, model, onStart, onRefresh})`; `onStart(payload)` dispatches a reviewed per-book plan. |
+| `BardicAnalysisPipeline` — [analysis-pipeline.js](../bardic/static/analysis-pipeline.js) | `render(container, book, {busy, status, onJobStarted, onBookChanged})` paints the Analysis tab. It loads nothing until its panel is visible, and polls only while a pipeline run is active and the panel is shown. Dropdown changes save settings and never start work; runs need a previewed plan and Confirm (with its fingerprint); Accept needs an impact preview and Confirm (with `expected_revision`), then calls `onBookChanged`, which reloads the book, open references, the library and the voice library. |
 | `BardicPipeline` — [pipeline.js](../bardic/static/pipeline.js) | `render(container, book, {busy})`; reads stage status, history, graph, search and exports. It does not dispatch model work. |
 | `BardicResources` — [resources.js](../bardic/static/resources.js) | `render(container, book, {busy})`; paged run/stage/operation measurements. |
 | `BardicLibrary` — [library.js](../bardic/static/library.js) | `render(container, {busy, onChange, onSelectBook, onSelectSeries, books?, series?, storage?})`; `refresh(container)` explicitly reloads the snapshot. Selection callbacks receive IDs. |
@@ -215,6 +217,8 @@ Diagnostics deliberately accept event/operation enums and bounded operational id
 A custom model ID can already be selected without adding a new provider. A local LLM provider, embeddings, and external batch execution are not implemented simply by entering such an ID.
 
 ### Add an analysis stage or change a recipe
+
+New analysis work should normally be a pipeline step: follow [adding, changing or removing a step](ANALYSIS-PIPELINE.md#adding-changing-or-removing-a-step). The registry, runner, caching, versioning, acceptance, API and UI are generic. The rest of this section applies to the older phase pipeline.
 
 Define the stage's source inputs, output schema, validator, and stable unit key in [progressive.py](../bardic/progressive.py). Include inputs that actually affect the result in the recipe identity; avoid invalidating unrelated work. Save the input recipe/dependencies and accepted output through [ProcessingStore](../bardic/processing.py). Keep rejected output distinguishable from accepted knowledge. Emit events tied to the precise attempt, so HTTP success does not imply validation success.
 
