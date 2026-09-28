@@ -18,7 +18,7 @@ This document describes current storage as of 2026-09-28. Read [architecture](AR
 | Cast performance take history | `performance_takes` and WAV files | Immutable passage takes keyed by performance, passage and source key. Independent of the Studio `takes` selection. |
 | Accepted model results for fast reuse | `analysis_units` | Replaceable/rejectable cache; original accepted outputs retained in artifacts. |
 | Analysis progress | `analysis_checkpoints`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
-| Current character references | `character_references` | Replaced with a published checkpoint. |
+| Current character references | `character_references` | Current-book projection of accepted discovery, profiles and directing evidence plus cast-name mentions, rebuilt by pipeline sync and decisions ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). A phase-engine checkpoint still replaces it until the next sync. |
 | Validated observations | `character_observations` | Append-only by repository convention, deduplicated by content. |
 | Output/provenance history | `artifact_versions`, `artifact_dependencies` | Immutable, including when no longer current. |
 | Current artifact selections | `artifact_heads` | Mutable pointers; removable without deleting history. |
@@ -116,7 +116,7 @@ Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.
 | `settings` | PK `id`; `body` | Saved preferences; excludes API keys. |
 | `takes` | PK `(book_id, segment_id)`; `body` | Currently selected enhanced take metadata. Replacing a selection does not delete archived audio. |
 | `analysis_checkpoints` | PK `book_id`; `fingerprint`, `body` | Current working book, stage/chapter completion and references, with compatibility unit state. One current checkpoint per book. |
-| `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current published references, indexed by book/character and book/chapter. |
+| `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current references, indexed by book/character and book/chapter. Rows written by the evidence projection carry `step`, `version_id` (the accepted `step_output` artifact), `origin` and `projection`; their ID hashes their content. Each row passes the same exact-span check as observations. The rebuild digest and drop counts live in `pipeline_state.body.evidence`. |
 
 Jobs can be queued, running, completed, failed, cancelled, interrupted, or budget-limited depending on the worker outcome. A restart interrupts active jobs/checkpoints rather than guessing that remote requests were never sent. Historical jobs remain useful status records but are not a substitute for attempt-level billing evidence.
 
@@ -157,7 +157,7 @@ Identical persisted source/event/body records are suppressed within two seconds.
 
 Observation IDs hash their content, excluding the new recording timestamp. Replaying a checkpoint uses `INSERT OR IGNORE`; a changed interpretation becomes a distinct observation. Retention requires the current committed chapter, character, exact source span, and quote to match. Kinds are `profile_evidence`, `dialogue`, and `mention`.
 
-Current references can be replaced or cleared without deleting observations. Later analysis queries observations only through confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter hash and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every historical observation indiscriminately.
+Current references can be replaced or cleared without deleting observations. The evidence projection writes no observations (owner decision, 2026-09-28): series context reads this table, and appending accepted evidence would change later volumes' prompts during a series run. The phase engine remains the only writer until the series-memory follow-up decides otherwise. Later analysis queries observations only through confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter hash and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every historical observation indiscriminately.
 
 Moving a book to another series clears its current character links, while historical observations/artifacts remain. Assigning an actual book to a missing/planned position removes that placeholder. Archiving a series retains books, membership, links, originals, and audio. Archiving a book hides it from ordinary library results and later-book context. Direct reads can still find removed items for restoration. Removing a placeholder deletes only that placeholder, not an actual book.
 

@@ -51,6 +51,24 @@ def initialize_schema(conn):
             retain_observations(conn, book_id, references)
 
 
+REFERENCE_KINDS = frozenset({"profile_evidence", "dialogue", "mention"})
+
+
+def reference_is_valid(ref, chapters, characters):
+    """True when a reference is an exact span of committed source for a real character.
+
+    ``chapters`` maps chapter IDs to chapters; ``characters`` is the set of
+    eligible character IDs (narrator and unassigned excluded). Offsets are
+    zero-based Python code points with an exclusive end. Nothing is repaired.
+    """
+    chapter = chapters.get(ref.get("chapter_id"))
+    start, end = ref.get("start"), ref.get("end")
+    return bool(ref.get("character_id") in characters and chapter and type(start) is int and type(end) is int
+                and 0 <= start < end <= len(chapter["text"])
+                and chapter["text"][start:end] == ref.get("quote")
+                and ref.get("kind") in REFERENCE_KINDS)
+
+
 def retain_observations(conn, book_id, references):
     """Append valid reference observations inside the caller's publication transaction.
 
@@ -71,12 +89,8 @@ def retain_observations(conn, book_id, references):
     saved = []
     for ref in references:
         cid, chapter_id = ref.get("character_id"), ref.get("chapter_id")
-        chapter = chapters.get(chapter_id)
         start, end = ref.get("start"), ref.get("end")
-        if (cid not in characters or not chapter or type(start) is not int or type(end) is not int
-                or not 0 <= start < end <= len(chapter["text"])
-                or chapter["text"][start:end] != ref.get("quote")
-                or ref.get("kind") not in {"profile_evidence", "dialogue", "mention"}):
+        if not reference_is_valid(ref, chapters, characters):
             continue
         observation = {
             "book_id": book_id, "character_id": cid, "chapter_id": chapter_id,
