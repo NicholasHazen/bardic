@@ -308,7 +308,7 @@ Step-based analysis with versioned, reviewable outputs. The contract and semanti
 | `GET /api/books/{id}/analysis-pipeline` | Per-step accepted/total scopes, origins, stale scopes, pending candidates, latest version, active and recent runs. Records outside changes first. |
 | `POST /api/books/{id}/analysis-pipeline/plan` | `{steps, chapter_ids?, configs?}` → units, cached units, requests, token/cost estimates, `inputs_pending`, `fingerprint`. No model calls. |
 | `POST /api/books/{id}/analysis-pipeline/runs` | `{steps, mode: serial|parallel, chapter_ids?, configs?, gates?, concurrency: 1–4, fresh, limits, expected_fingerprint?}` → `{job, run}`. Job kind `pipeline`; cancel through the jobs API. 409 when the plan fingerprint changed or a job is active. |
-| `GET …/steps/{step}/versions` | Version history with state (`candidate`, `accepted`, `partly_accepted`, `superseded`, `rejected`, `running`, `empty`) and recent decisions. |
+| `GET …/steps/{step}/versions` | Version history with state (`candidate`, `accepted`, `partly_accepted`, `superseded`, `same_as_accepted`, `rejected`, `running`, `empty`) and recent decisions. |
 | `GET …/steps/{step}/versions/{id}` | Generic result table (`stats`, `columns`, paged `rows`) diffed by row ID against `compare` (`accepted`, another version, or `none`), with `changed_only` and `scope` filters. `{id}` may be `accepted`. |
 | `POST …/versions/{id}/preview` | `{scopes?}` → changed scopes, conflicts with manual edits, audio takes invalidated, downstream steps affected, `revision`. |
 | `POST …/versions/{id}/accept` | `{scopes?, expected_revision?}`. Accepting an older version is rollback. 409 while another non-pipeline job changes the book. |

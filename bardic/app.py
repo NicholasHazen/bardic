@@ -1168,11 +1168,17 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404, "Item not found")
             if "speaker_id" in fields and fields["speaker_id"] not in {c["id"] for c in book["characters"]}:
                 raise HTTPException(400, "Choose a character in this book's cast")
+            before = copy.deepcopy(item)
             if collection == "characters":
                 runtime.merge_voices(item, fields)
-            # Per-field edit locks; an item edited before this existed stays wholly locked.
+            # Per-field edit locks, only for values that actually changed: editors
+            # submit whole forms, so an unchanged description must not become locked.
+            # An item edited before per-field tracking existed stays wholly locked.
+            changed = {name for name, value in fields.items() if before.get(name) != value}
+            if item.get("voices") != before.get("voices"):
+                changed.add("voices")
             prior = item.get("edited_fields") if isinstance(item.get("edited_fields"), list) else (["*"] if item.get("edited") else [])
-            item["edited_fields"] = sorted(set(prior) | set(fields))
+            item["edited_fields"] = sorted(set(prior) | changed)
             if collection == "characters" and fields.get("name") and fields["name"] != item.get("name"):
                 # Remember replaced names so later discovery resolves them to this character.
                 item["former_names"] = list(dict.fromkeys([*item.get("former_names", []), item["name"]]))
@@ -1218,7 +1224,10 @@ def create_app(data_dir: Path | None = None):
             runtime.merge_voices(character, fields)
             character.update(fields)
             character["edited"] = True
+            # The owner set only these fields; generated profile text may fill the rest.
+            character["edited_fields"] = sorted(set(fields) | {"name"})
             book["characters"].append(character)
+            book["revision"] = book.get("revision", 0) + 1
             runtime.store.save_book(book)
             return runtime.present(book)
 

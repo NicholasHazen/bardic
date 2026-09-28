@@ -102,8 +102,12 @@ def stale_scopes(repository, registry, conn, book_id):
     return result
 
 
-def preview(repository, registry, conn, book, step, versions, valid_audio=None):
-    """What accepting ``versions`` ({scope: artifact_id}) would change."""
+def preview(repository, registry, conn, book, step, versions, valid_audio=None, prepare=None):
+    """What accepting ``versions`` ({scope: artifact_id}) would change.
+
+    ``prepare(work, book)`` applies the same side effects accept will (e.g. a
+    device voice for a newly added character) before takes are compared.
+    """
     accepted, heads = _accepted(repository, conn, book['id'], step.id)
     payloads = repository.payloads(conn, versions.values())
     for scope, identifier in versions.items():
@@ -117,30 +121,36 @@ def preview(repository, registry, conn, book, step, versions, valid_audio=None):
         accepted = {scope: accepted[scope] for scope in versions if heads.get(scope) != versions[scope]}
     work = deepcopy(book)
     conflicts = step.apply(work, accepted)
+    if prepare:
+        prepare(work, book)
     changed = sorted(scope for scope, identifier in versions.items() if heads.get(scope) != identifier)
-    audio = 0
+    # Only takes this acceptance invalidates. A take already hidden by a voice
+    # switch stays stored so switching the voice back restores it.
+    invalidated = []
     if valid_audio:
         for before, after in zip(book['segments'], work['segments']):
             if before.get('audio') and valid_audio(book, before) and not valid_audio(work, after):
-                audio += 1
+                invalidated.append(after['id'])
     downstream = [s for s in registry.downstream(step.id) if repository.heads(conn, book['id'], s)] if changed else []
     return {'step_id': step.id, 'changed_scopes': changed, 'unchanged_scopes': sorted(set(versions) - set(changed)),
-            'conflicts': [c.as_dict() for c in conflicts], 'audio_takes_invalidated': audio,
-            'downstream_steps_affected': downstream, 'book': work}
+            'conflicts': [c.as_dict() for c in conflicts], 'audio_takes_invalidated': len(invalidated),
+            'downstream_steps_affected': downstream, 'book': work, 'invalidated_segment_ids': invalidated}
 
 
 def accept(store, repository, registry, book_id, step, versions, *, mode='user', step_run_id=None,
-           valid_audio=None, finalize=None, expected_revision=None):
+           valid_audio=None, prepare=None, expected_revision=None):
     """Select versions and republish the projection in one transaction."""
     with store.lock, store.connect() as conn:
         book = store._hydrate(_book_row(conn, book_id), conn)
         if expected_revision is not None and book.get('revision', 0) != expected_revision:
             raise RevisionConflict('The book changed since this preview. Review the impact again before accepting.')
         sync(repository, registry, conn, book)
-        impact = preview(repository, registry, conn, book, step, versions, valid_audio)
+        impact = preview(repository, registry, conn, book, step, versions, valid_audio, prepare)
         work = impact.pop('book')
-        if finalize:
-            finalize(work)
+        invalidated = set(impact.pop('invalidated_segment_ids'))
+        for segment in work['segments']:
+            if segment['id'] in invalidated:
+                segment['audio'] = None
         decision = repository.decide(conn, book_id, step.id, 'accept', versions, mode=mode, step_run_id=step_run_id)
         work['revision'] = book.get('revision', 0) + 1
         store._save_book(conn, work)

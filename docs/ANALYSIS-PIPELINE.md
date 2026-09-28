@@ -16,6 +16,7 @@ Thoroughness is the model choice. There is no separate effort parameter: an econ
 | Scope | The granularity at which a step's output is versioned and accepted: `book`, `chapter` or `character`. |
 | Unit | One cacheable piece of work inside a run: one LLM request or one local computation, belonging to one scope. |
 | Version | An immutable `step_output` artifact for one step and scope. Artifact identity is content-addressed, so an identical result reuses the existing version. |
+| Version state | `candidate` (waiting for review), `accepted`, `partly_accepted`, `superseded` (accepted earlier, since replaced), `same_as_accepted` (an unaccepted run whose content equals the accepted version), `rejected`, `running`, `empty`. Accepted states come from decisions, never from coincidental equality. |
 | Step version (UI "version") | All scope versions produced by one execution of one step, with its provider/model, the accepted inputs it read and unit counts (`pipeline_step_runs`). |
 | Accepted version | The artifact head for `step_output` / `<step>:<scope>`. Candidates are recorded without moving the head. |
 | Decision | An append-only accept/reject record with its mode: `user`, `auto`, `baseline` or `external`. |
@@ -67,7 +68,7 @@ A candidate version records as dependencies the accepted input versions it read 
 2. Compute the impact.
 3. Append the decision and move the heads.
 4. Apply the step's accepted versions to the book through the step's projector.
-5. Assign default local voices, clear takes whose recipe changed, and save.
+5. Give a default device voice only to characters this acceptance adds (an explicit **Default** choice on an existing character is kept), clear only the takes that were valid before and are not after this acceptance, and save. Takes already hidden by a voice-library switch stay stored, so switching the voice back still restores them.
 
 `expected_revision` (returned by preview) rejects an accept if the book changed after the preview. Preview reports:
 
@@ -76,7 +77,7 @@ A candidate version records as dependencies the accepted input versions it read 
 - audio takes that will need re-rendering;
 - steps downstream that have accepted versions.
 
-Manual edits are field-level locks. Editing a character, passage or scene records `edited_fields`; the pipeline never overwrites a listed field. For example, a voice-only character edit no longer freezes that character's profile, and a speaker correction keeps the speaker (and its confidence and evidence) while delivery notes can still update. Items edited before per-field tracking existed stay wholly locked. The older phase pipeline keeps its original all-or-nothing `edited` behavior.
+Manual edits are field-level locks. Editing a character, passage or scene records in `edited_fields` the fields whose value actually changed (editors submit whole forms); the pipeline never overwrites a listed field. Result tables show a **Your edit (kept)** column for profiles and passages so a locked value is visible. For example, a voice-only character edit no longer freezes that character's profile, and a speaker correction keeps the speaker (and its confidence and evidence) while delivery notes can still update. Items edited before per-field tracking existed stay wholly locked. The older phase pipeline keeps its original all-or-nothing `edited` behavior.
 
 Projectors never delete characters or passages, and never change source text or offsets. Rolling back discovery therefore does not remove a character someone may have voiced; it changes which evidence feeds profiles. Renaming a character records the replaced name in `former_names`. Discovery resolves later mentions of it to the same character instead of creating a duplicate, without showing it as an alias. A scene map version replaces a chapter's scene breaks unless a manually edited scene would be dropped, in which case the current breaks are kept and reported as a conflict. Rolling back does not yet reattach earlier audio takes whose recipe matches again; they remain retained on disk and in artifact history.
 

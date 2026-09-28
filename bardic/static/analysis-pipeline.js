@@ -13,7 +13,7 @@
   const POLL_MS = 2000;
   const TIERS = [['economy', 'Economy · quick and inexpensive'], ['balanced', 'Balanced'], ['deep', 'Deep · most thorough'], ['other', 'Other models']];
   const VERSION_STATES = {running:'Running', candidate:'Waiting for review', accepted:'Accepted', partly_accepted:'Partly accepted',
-    rejected:'Rejected', superseded:'Superseded', empty:'No results'};
+    rejected:'Rejected', superseded:'Superseded', same_as_accepted:'Same as accepted', empty:'No results'};
   const RUN_STATUS = {queued:'Queued', running:'Running', completed:'Completed', failed:'Failed', cancelled:'Cancelled',
     interrupted:'Interrupted', budget_limited:'Allowance reached', skipped:'Skipped'};
   const PROVIDERS = {local:'Local', gemini:'Gemini', openai:'OpenAI', anthropic:'Anthropic'};
@@ -87,7 +87,8 @@
     stopTimer(panel);
   }
 
-  const hidden = panel => Boolean(panel.observer) && panel.container.hidden === true;
+  // Hidden either as a tab panel or because an ancestor (the whole book workspace in Library view) is hidden.
+  const hidden = panel => Boolean(panel.observer) && (panel.container.hidden === true || Boolean(panel.container.closest?.('[hidden]')));
   const base = panel => `/api/books/${path(panel.bookId)}/analysis-pipeline`;
   const current = (panel, bookId, key, seq) => panel.bookId === bookId && panel.seq[key] === seq;
   const stepDef = (panel, id) => panel.defs?.steps?.find(step => step.id === id) || null;
@@ -112,7 +113,10 @@
     return `${providerName(item.provider)}${item.model ? ` · ${item.model}` : ''}`;
   }
   const isRestore = item => Boolean(item) && (item.state === 'superseded' || item.origin === 'baseline' || item.origin === 'external');
-  const canAccept = item => Boolean(item) && !['running', 'empty', 'accepted'].includes(item.state) && (item.scope_count || 0) > 0;
+  const canAccept = item => Boolean(item) && !['running', 'empty', 'accepted', 'same_as_accepted'].includes(item.state) && (item.scope_count || 0) > 0;
+  // Accepting rewrites the book, which the server refuses while another kind of job is changing it.
+  const acceptBlocked = panel => panel.busy && !panel.overview?.active_run
+    ? 'Another job is working on this book. Accept or restore after it finishes.' : null;
 
   function blocked(panel) {
     if (panel.overview?.active_run) return 'A pipeline run is in progress. Wait for it to finish, or cancel it from the job banner.';
@@ -228,7 +232,7 @@
       const steps = value.steps || [];
       const units = steps.reduce((sum, step) => sum + (step.units || 0), 0);
       const missing = missingKeys(panel, plan.body.configs);
-      const problem = blocked(panel) || limitsProblem(panel) || (missing.length ? `Add an API key in Voices & settings first: ${missing.join(', ')}.` : null) || (!units ? 'Nothing to run: these steps have no work for the current inputs.' : null);
+      const problem = blocked(panel) || limitsProblem(panel) || (missing.length ? `Add an API key in Providers & settings first: ${missing.join(', ')}.` : null) || (!units ? 'Nothing to run: these steps have no work for the current inputs.' : null);
       const cost = step => step.method === 'plain' ? 'Free' : money(step.estimated_cost_usd);
       const guard = panel.run.budgetOn ? `${money(Number(panel.run.budget))} dollar guard` : 'no dollar guard';
       body = `<div class="ap-table-wrap"><table><caption class="sr-only">Estimated work per step</caption><thead><tr><th scope="col">Step</th><th scope="col">Units</th><th scope="col">Reused</th><th scope="col">Requests</th><th scope="col">Input tokens (est.)</th><th scope="col">Output allowance</th><th scope="col">Estimated cost</th></tr></thead><tbody>${steps.map(step => `<tr><th scope="row">${escapeHtml(step.label || step.step_id)}<small>${step.method === 'plain' ? 'Runs locally · free' : `${escapeHtml(providerName(step.provider))} · ${escapeHtml(step.model || 'no model')}`}</small>${step.note ? `<small class="ap-plan-step-note">${escapeHtml(step.note)}</small>` : ''}</th><td>${number(step.units)}</td><td>${number(step.cached_units)}</td><td>${number(step.requests)}</td><td>${number(step.estimated_input_tokens)}</td><td>${number(step.output_token_allowance)}</td><td>${escapeHtml(cost(step))}</td></tr>`).join('')}</tbody></table></div><dl class="ap-plan-totals"><div><dt>Model requests</dt><dd>${number(value.requests)}</dd></div><div><dt>Reused results</dt><dd>${number(value.cached_units)}</dd></div><div><dt>Input tokens (est.)</dt><dd>${number(value.estimated_input_tokens)}</dd></div><div><dt>Estimated cost</dt><dd>${escapeHtml(value.requests ? money(value.estimated_cost_usd) : 'Free')}</dd></div></dl>${value.estimated_cost_usd == null && value.requests ? '<p class="ap-note">A model in this plan has no known price, so the cost cannot be estimated. The request and token limits still apply.</p>' : ''}${panel.run.fresh && value.cached_units ? '<p class="ap-note">Fresh samples is on: the reused results above will be requested again, so actual requests and cost can exceed this estimate up to your limits.</p>' : ''}${value.note ? `<p class="ap-help">${escapeHtml(value.note)}</p>` : ''}<p class="ap-help">Limits for this run: ${number(Number(panel.run.maxRequests))} requests · ${escapeHtml(guard)} · ${escapeHtml(panel.run.mode === 'parallel' ? 'side by side where possible' : 'one after another')} · ${escapeHtml(panel.run.concurrency)} at once.</p>${problem ? `<p class="ap-error" role="alert">${escapeHtml(problem)}</p>` : ''}<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="confirm-run" data-ap-key="confirm-run" ${problem || plan.starting ? 'disabled' : ''}>${plan.starting ? 'Starting…' : value.requests ? `Confirm and run · up to ${escapeHtml(plural(value.requests, 'request'))}` : 'Confirm and run locally'}</button></div>`;
@@ -290,7 +294,7 @@
     const reason = blocked(panel);
     const method = def.method === 'plain'
       ? '<p class="ap-local">Runs locally, free. No model or API key is used.</p>'
-      : `<div class="ap-field-row"><div class="ap-field"><label for="ap-provider-${id}">Provider</label><select id="ap-provider-${id}" name="ap_provider" data-ap-key="provider">${(panel.defs.providers || []).map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === pendingProvider ? 'selected' : ''}>${escapeHtml(provider.label || providerName(provider.id))}${providerHasKey(panel, provider.id) ? '' : ' · no API key'}</option>`).join('')}</select>${providerHasKey(panel, pendingProvider) ? '' : '<p class="ap-note">This provider has no API key. Add one in Voices &amp; settings before running this step.</p>'}</div>${modelField(panel, def)}</div><p class="ap-help">Book text is sent to the provider you choose.</p>`;
+      : `<div class="ap-field-row"><div class="ap-field"><label for="ap-provider-${id}">Provider</label><select id="ap-provider-${id}" name="ap_provider" data-ap-key="provider">${(panel.defs.providers || []).map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === pendingProvider ? 'selected' : ''}>${escapeHtml(provider.label || providerName(provider.id))}${providerHasKey(panel, provider.id) ? '' : ' · no API key'}</option>`).join('')}</select>${providerHasKey(panel, pendingProvider) ? '' : '<p class="ap-note">This provider has no API key. Add one in Providers &amp; settings before running this step.</p>'}</div>${modelField(panel, def)}</div><p class="ap-help">Book text is sent to the provider you choose.</p>`;
     const chapterField = def.chapter_scoped ? `<div class="ap-field"><label for="ap-chapter-${id}">Sections to process</label><select id="ap-chapter-${id}" name="ap_chapter" data-ap-key="chapter"><option value="">All story sections</option>${chapters(panel).map(chapter => `<option value="${escapeHtml(chapter.id)}" ${chapter.id === panel.chapterId ? 'selected' : ''}>${escapeHtml(chapter.title || chapter.id)}${chapter.kind && chapter.kind !== 'chapter' ? ` (${escapeHtml(String(chapter.kind).replaceAll('_', ' '))})` : ''}</option>`).join('')}</select><p class="ap-help">This choice also applies to section-based steps in Run selected.</p></div>` : '';
     const gate = `<fieldset class="ap-gate"><legend>After a run</legend><label class="ap-check"><input type="radio" name="ap_gate" value="auto" data-ap-key="gate-auto" ${settings.gate !== 'review' ? 'checked' : ''}> Accept automatically</label><label class="ap-check"><input type="radio" name="ap_gate" value="review" data-ap-key="gate-review" ${settings.gate === 'review' ? 'checked' : ''}> Hold for my review</label></fieldset>`;
     const notes = [
@@ -342,7 +346,8 @@
     if (!item || panel.versions?.stepId !== panel.selected) { put(panel, 'result', ''); return; }
     const restore = isRestore(item);
     const working = panel.working || panel.impact?.loading || panel.impact?.accepting;
-    const actions = `${canAccept(item) ? `<button type="button" class="button primary" data-ap-action="accept" data-ap-key="accept" ${working ? 'disabled' : ''}>${restore ? 'Restore this version' : 'Accept'}</button>` : ''}${item.state === 'candidate' ? `<button type="button" class="button subtle" data-ap-action="reject" data-ap-key="reject" ${working ? 'disabled' : ''}>Reject</button>` : ''}`;
+    const blockedAccept = acceptBlocked(panel);
+    const actions = `${canAccept(item) ? `<button type="button" class="button primary" data-ap-action="accept" data-ap-key="accept" ${working || blockedAccept ? 'disabled' : ''} ${blockedAccept ? `title="${escapeHtml(blockedAccept)}"` : ''}>${restore ? 'Restore this version' : 'Accept'}</button>` : ''}${item.state === 'candidate' ? `<button type="button" class="button subtle" data-ap-action="reject" data-ap-key="reject" ${working ? 'disabled' : ''}>Reject</button>` : ''}`;
     const view = panel.view;
     const others = (panel.versions.items || []).filter(other => other.id !== item.id && (other.scope_count || 0) > 0);
     const compare = `<label>Compare with<select name="ap_compare" data-ap-key="compare"><option value="accepted" ${view.compare === 'accepted' ? 'selected' : ''}>Accepted version</option>${others.map(other => `<option value="${escapeHtml(other.id)}" ${view.compare === other.id ? 'selected' : ''}>${escapeHtml(`${VERSION_STATES[other.state] || other.state} · ${versionSource(other)} · ${when(other.created_at)}`)}</option>`).join('')}<option value="none" ${view.compare === 'none' ? 'selected' : ''}>Nothing</option></select></label>`;
@@ -615,7 +620,7 @@
     if (!plan?.value || plan.loading || plan.starting) return;
     const problem = blocked(panel) || limitsProblem(panel);
     const missing = missingKeys(panel, plan.body.configs);
-    if (problem || missing.length) { plan.error = problem || `Add an API key in Voices & settings first: ${missing.join(', ')}.`; paint(panel); return; }
+    if (problem || missing.length) { plan.error = problem || `Add an API key in Providers & settings first: ${missing.join(', ')}.`; paint(panel); return; }
     const body = {...plan.body, gates:plan.gates, mode:panel.run.mode === 'parallel' ? 'parallel' : 'serial',
       concurrency:Number(panel.run.concurrency) || 1, fresh:Boolean(panel.run.fresh), limits:limits(panel),
       expected_fingerprint:plan.value.fingerprint};
@@ -646,7 +651,7 @@
 
   async function previewAccept(panel) {
     const item = versionItem(panel, panel.versionId);
-    if (!canAccept(item)) return;
+    if (!canAccept(item) || acceptBlocked(panel)) return;
     const bookId = panel.bookId;
     const stepId = panel.selected;
     const seq = ++panel.seq.impact;

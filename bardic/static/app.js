@@ -853,7 +853,16 @@ function renderCast() {
       : NARRATION_PROVIDERS.includes($('#render-provider')?.value) ? $('#render-provider').value : 'breeze';
   }
   renderCastProviderSwitch();
+  // A job finishing re-renders Cast; carry over text the owner typed but has not saved.
+  const unsaved = new Map($$('#cast-grid [data-character-form]').map(form => [form.dataset.characterForm,
+    $$('textarea[name], input[type="text"][name]', form).filter(field => field.value !== field.defaultValue).map(field => [field.name, field.value])]));
   $('#cast-grid').innerHTML = castCharacters(book).map(character => `<form class="cast-card${state.highlightCharacter === character.id ? ' highlighted' : ''}" data-character-form="${escapeHTML(character.id)}" data-cast-provider="${escapeHTML(state.castProvider)}"><div class="cast-card-top"><div class="character-avatar" aria-hidden="true">${escapeHTML((character.name || '?').charAt(0))}</div><div><h3>${escapeHTML(character.name)}</h3><div class="cast-role">${character.id === 'narrator' ? 'THE STORYTELLER' : character.id === 'unassigned' ? 'DIALOGUE TO REVIEW' : 'CHARACTER VOICE'}</div></div></div><label class="field-label" for="description-${escapeHTML(character.id)}">Character &amp; vocal profile</label><textarea id="description-${escapeHTML(character.id)}" name="description" maxlength="3000" rows="3" placeholder="What the text tells us about this voice…">${escapeHTML(character.description || '')}</textarea><div class="cast-voice">${castVoiceBlock(character)}</div><label class="field-label" for="direction-${escapeHTML(character.id)}">Performance direction</label><textarea id="direction-${escapeHTML(character.id)}" name="direction" maxlength="3000" rows="2" placeholder="Warm, measured, with a dry sense of humor…">${escapeHTML(character.direction || '')}</textarea>${renderCharacterReferences(character, openReferences.has(character.id))}<div class="card-footer"><span class="save-state">${character.aliases?.length ? `Also: ${escapeHTML(character.aliases.join(', '))}` : 'Changes affect future takes'}</span><button type="submit" class="button subtle">Save ${icon('check')}</button></div></form>`).join('') + `<form class="cast-card new-character" id="add-character-form"><div class="cast-card-top"><div class="character-avatar">${icon('plus')}</div><div><h3>A missing voice?</h3><div class="cast-role">ADD TO THE CAST</div></div></div><p class="field-help">Add a character, then assign their dialogue in the production script.</p><label class="field-label" for="new-character-name">Character name</label><input id="new-character-name" name="name" required maxlength="100" placeholder="A name from your story"><div class="card-footer"><span></span><button class="button subtle" type="submit">Add character ${icon('plus')}</button></div></form>`;
+  for (const form of $$('#cast-grid [data-character-form]')) {
+    for (const [name, value] of unsaved.get(form.dataset.characterForm) || []) {
+      const field = $$('textarea[name], input[type="text"][name]', form).find(node => node.name === name);
+      if (field) field.value = value;
+    }
+  }
   if (state.highlightCharacter) {
     const card = $$('#cast-grid [data-character-form]').find(node => node.dataset.characterForm === state.highlightCharacter);
     if (card) {
@@ -902,7 +911,7 @@ function renderProduction() {
   window.BardicPipeline?.render($('#pipeline-inspector'), state.book, {busy: Boolean(busyJob())});
   window.BardicAnalysisPipeline?.render($('#analysis-view'), state.book, {busy: Boolean(busyJob()), status: state.status,
     onJobStarted: async job => { if (!job || job.book_id !== state.book?.id) return; if (!state.jobs.some(j => j.id === job.id)) state.jobs.unshift(job); renderJob(); await pollJobs(true); },
-    onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); state.referenceCache.clear(); state.referenceVersion++; applyBook(book); } });
+    onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); if (state.book?.id !== id) return; state.referenceCache.clear(); state.referenceVersion++; applyBook(book); $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences)); await refreshLibrary(); void loadVoiceLibrary(); } });
   window.BardicProduction?.render($('#progressive-production'), state.book, {
     provider: $('#analysis-provider').value, chapterId: state.chapterId, busy: Boolean(busyJob()),
     scanModel: state.status?.preprocess_models_by_provider?.[$('#analysis-provider').value],
@@ -922,7 +931,7 @@ function renderStudio() {
   $('#scene-list').innerHTML = scenes.map((scene, index) => {
     const items = segments.filter(s => s.scene_id === scene.id || scene.segment_ids?.includes(s.id));
     return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage">Hear example</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
-  }).join('') || '<div class="empty-state">No scenes here yet. Analyze the story to draft a performance script.</div>';
+  }).join('') || '<div class="empty-state">No scenes here yet. Run the Analysis tab to draft a performance script.</div>';
   renderAnalysisProgress();
   updateBusyControls();
   renderProduction();
@@ -1313,6 +1322,8 @@ async function pollJobs(refreshBookOnComplete = true, {jobsOnly = false} = {}) {
         applyBook(book);
         $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences));
         await refreshLibrary();
+        // New or merged characters change which voices are in use.
+        if (typeof loadVoiceLibrary === 'function') void loadVoiceLibrary();
       }
     }
     schedule(1600);
@@ -1496,7 +1507,8 @@ for (const selector of ['#cast-grid','#scene-list']) {
 $('#export-link').addEventListener('click', event => { const ready = state.book?.segments.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.segments.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
 $('#analyze-button').addEventListener('click', openAnalysisPlanning);
 $('#analysis-scope').addEventListener('change', renderAnalysisProgress);
-$('#analyze-from-cast').addEventListener('click', () => { setTab('studio'); $('#analysis-provider').focus(); });
+$('#analyze-from-cast').addEventListener('click', () => { setTab('analysis', {focus:true}); });
+$('#studio-analysis-link')?.addEventListener('click', () => { setTab('analysis', {focus:true}); });
 $('#render-button').addEventListener('click', () => startJob('render'));
 $('#render-provider').addEventListener('change', () => {
   $('#render-provider').dataset.chosen = 'true'; updateProviderHint();

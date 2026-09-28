@@ -294,6 +294,44 @@ def test_gemini_abandon_deletes_every_stored_candidate(client, servers):
     assert library(client)["drafts"] == []
 
 
+def test_gemini_cleanup_never_deletes_with_another_projects_key(client, servers):
+    _, fake_gemini = servers
+    runtime = client.app.state.runtime
+    runtime.api_keys["gemini"] = "key-a"
+    book = import_text(client)
+    draft = client.post("/api/voices/drafts", json={"provider": "gemini", "name": "Sailor",
+                                                     "description": "A gravelly old sailor."}).json()
+    for _ in range(2):
+        draft = client.post(f"/api/voices/drafts/{draft['id']}/generate",
+                            json={"book_id": book["id"], "confirm_cost": True}).json()
+    runtime.api_keys["gemini"] = "key-b"
+    refused = client.post(f"/api/voices/drafts/{draft['id']}/abandon")
+    assert refused.status_code == 409 and fake_gemini.deleted == []
+    third = client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"book_id": book["id"], "confirm_cost": True}).json()
+    saved = client.post(f"/api/voices/drafts/{draft['id']}/save",
+                        json={"candidate_id": third["candidates"][-1]["id"], "name": "Sailor"}).json()
+    # Key A's unchosen candidates stay (and are reported); nothing was deleted with key B.
+    assert fake_gemini.deleted == [] and "different Google API key" in saved["cleanup_error"]
+
+
+def test_a_billed_gemini_voice_is_kept_when_its_sample_cannot_be_stored(client, servers, monkeypatch):
+    _, fake_gemini = servers
+    runtime = client.app.state.runtime
+    runtime.api_keys["gemini"] = "gemini-test-key"
+    book = import_text(client)
+
+    def broken(_data):
+        raise AudioError("The sample could not be decoded.")
+
+    monkeypatch.setattr(runtime.voices, "store_audio", broken)
+    draft = client.post("/api/voices/drafts", json={"provider": "gemini", "name": "Guide",
+                                                     "description": "A patient mountain guide."}).json()
+    made = client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"book_id": book["id"], "confirm_cost": True})
+    assert made.status_code == 200, made.text
+    candidate = made.json()["candidates"][0]
+    assert candidate["provider_voice_id"] == "voice_0001" and candidate["audio_url"] is None
+
+
 def test_a_busy_draft_refuses_a_second_generation(client, servers):
     connect(client)
     draft = client.post("/api/voices/drafts", json={"provider": "breeze", "name": "A", "description": "Calm narrator."}).json()

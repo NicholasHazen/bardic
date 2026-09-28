@@ -405,6 +405,28 @@ test('a failed acceptance changes nothing and requires a fresh impact review', a
   assert.ok(!panel.includes('confirm-accept'));
 });
 
+test('accept waits while another job changes the book, and identical versions are not offered', async () => {
+  const env = environment();
+  const container = new Container();
+  // A listening or render job (not a pipeline run) is active: the server would refuse to accept.
+  await env.render(container, book, {status, busy:true});
+  await settle();
+  const panel = container.regions.result.innerHTML;
+  assert.match(panel, /data-ap-action="accept"[^>]*disabled/);
+  assert.ok(panel.includes('Accept or restore after it finishes.'));
+  click(container, 'ap-action', 'accept');
+  await settle();
+  assert.ok(!env.calls.some(call => call.url.endsWith('/preview')), 'no impact request while blocked');
+
+  const same = environment(call => call.method === 'GET' && new URL(call.url, 'http://localhost').pathname.endsWith('/versions')
+    ? {data:{items:[{...versions.items[0], state:'same_as_accepted'}], decisions:[]}} : ordinary(call));
+  const other = new Container();
+  await same.render(other, book, {status});
+  await settle();
+  assert.ok(!other.regions.result.innerHTML.includes('data-ap-action="accept"'));
+  assert.ok(other.regions.result.innerHTML.includes('Same as accepted') || other.regions.versions?.innerHTML?.includes('Same as accepted'));
+});
+
 test('reject is offered for candidates and refreshes the history', async () => {
   const env = environment();
   const container = new Container();

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Integration fixes across Cast, Voices and Analysis:
+  - Saving a Cast card now records as edited only the fields that changed, so a voice-only save no longer locks the character's profile text.
+  - Accepting an analysis version clears only the takes that acceptance invalidates, keeping takes hidden by a voice switch. It gives device voices only to newly added characters, and updates the Cast attribution line.
+  - Unsaved Cast text survives a job finishing.
+  - Version history distinguishes **Same as accepted** and **Superseded** from runs waiting for review.
+  - Cast's **Analyze the story** and Studio's first step open the Analysis tab.
+  - Gemini voice cleanup never deletes with a different project's key (abandon refuses; save reports the leftovers). A billed Gemini voice is kept even if its sample cannot be stored locally.
 - Added `./bardicctl` to manage servers. `install` runs Bardic from the main checkout as the macOS LaunchAgent `local.bardic`: it starts at login, restarts after a crash, and is owned by launchd rather than the session that started it. `status`, `start`, `stop`, `restart`, `logs` and `uninstall` control it. `status` also identifies a hand-started or detached server on the port. Commands that interrupt the service:
   - refuse while jobs are active, or when the server cannot report its jobs, unless `--force` is given;
   - need `--yes` when run from a linked worktree;

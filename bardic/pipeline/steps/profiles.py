@@ -84,14 +84,20 @@ class ProfilesStep(Step):
         return conflicts
 
     def summarize(self, book, payloads):
-        names = {c['id']: c['name'] for c in book['characters']}
+        characters = {c['id']: c for c in book['characters']}
+        names = {cid: c['name'] for cid, c in characters.items()}
+
+        def edits(scope):
+            # Fields a person edited in Cast keep their value whichever version is accepted.
+            character = characters.get(scope, {})
+            return ', '.join(name for name in ('description', 'direction') if locked(character, name))
         rows = [{'id': scope, 'scope': scope, 'name': names.get(scope, scope), 'priority': p.get('profile_priority') or '',
                  'description': p.get('description', ''), 'direction': p.get('direction', ''),
-                 'evidence': len(p.get('evidence') or [])}
+                 'evidence': len(p.get('evidence') or []), 'edited': edits(scope)}
                 for scope, p in payloads.items()]
         rows.sort(key=lambda row: row['name'].casefold())
         return {'stats': {'profiles': len(rows), 'refined': sum(bool(p.get('profile_refined')) for p in payloads.values())},
                 'columns': [{'key': 'name', 'label': 'Character'}, {'key': 'priority', 'label': 'Effort'},
                             {'key': 'description', 'label': 'Profile'}, {'key': 'direction', 'label': 'Voice direction'},
-                            {'key': 'evidence', 'label': 'Quotes'}],
+                            {'key': 'evidence', 'label': 'Quotes'}, {'key': 'edited', 'label': 'Your edit (kept)'}],
                 'rows': rows}

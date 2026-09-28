@@ -127,22 +127,36 @@ def step_settings(runtime, registry):
 
 def _versions_view(repository, registry, conn, book_id, step, step_runs):
     heads = repository.heads(conn, book_id, step.id)
-    rejected, once_accepted = {}, set()
+    rejected, once_accepted, accepted_artifacts = {}, set(), set()
     for decision in repository.decisions(book_id, step.id, limit=5000):
         if decision['action'] == 'reject':
             rejected.setdefault(decision.get('step_run_id'), decision['created_at'])
         else:
             once_accepted.add(decision.get('step_run_id'))
+            accepted_artifacts.update(decision.get('versions', {}).values())
     items = []
     for run in step_runs:
         scopes = run.get('scopes', {})
         accepted = [s for s, i in scopes.items() if heads.get(s) == i]
-        state = ('running' if run['status'] in ACTIVE else
-                 'accepted' if scopes and len(accepted) == len(scopes) else
-                 'partly_accepted' if accepted else
-                 'rejected' if run['id'] in rejected else
-                 'superseded' if run['id'] in once_accepted else
-                 'empty' if not scopes else 'candidate')
+        # "Accepted" is a decision, not a coincidence: content-addressed versions
+        # make an identical rerun share the accepted artifact without anyone accepting it.
+        decided = run['id'] in once_accepted
+        if run['status'] in ACTIVE:
+            state = 'running'
+        elif not scopes:
+            state = 'empty'
+        elif decided and len(accepted) == len(scopes):
+            state = 'accepted'
+        elif decided and accepted:
+            state = 'partly_accepted'
+        elif run['id'] in rejected:
+            state = 'rejected'
+        elif len(accepted) == len(scopes):
+            state = 'same_as_accepted'
+        elif decided or set(scopes.values()) <= accepted_artifacts:
+            state = 'superseded'
+        else:
+            state = 'candidate'
         items.append({**{k: run.get(k) for k in ('id', 'run_id', 'step_id', 'step_version', 'origin', 'provider', 'model', 'status',
                                                    'units', 'error', 'created_at', 'completed_at', 'chapter_ids',
                                                    'unchanged_scopes', 'incomplete_scopes')},
@@ -164,6 +178,20 @@ def audio_checker(runtime):
             entry = casts[id(book)] = (book, runtime.resolved_cast(book))
         return runtime.valid_audio(book, segment, entry[1])
     return check
+
+
+def new_character_voices(runtime):
+    """Give only characters this acceptance adds a default device voice.
+
+    Existing characters keep their choices, including an explicit Default
+    (no device voice), which the owner may have set in Cast.
+    """
+    def prepare(work, before):
+        existing = {c['id'] for c in before['characters']}
+        added = [c for c in work['characters'] if c['id'] not in existing]
+        if added:
+            runtime.assign_local_voices({'characters': added})
+    return prepare
 
 
 def build_router(registry: Registry):
@@ -327,15 +355,19 @@ def build_router(registry: Registry):
         return dict(run.get('scopes', {})), run
 
     def accept_versions(runtime, book_id, step, versions, step_run_id, *, mode, expected_revision=None):
-        def finalize(book):
-            runtime.assign_local_voices(book)
-            cast = runtime.resolved_cast(book)
-            for segment in book['segments']:
-                if segment.get('audio') and not runtime.valid_audio(book, segment, cast):
-                    segment['audio'] = None
-        return projection.accept(runtime.store, PipelineRepository(runtime.store), registry, book_id, step, versions,
-                                 mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime), finalize=finalize,
-                                 expected_revision=expected_revision)
+        repository = PipelineRepository(runtime.store)
+        run = repository.step_run(book_id, step_run_id) if step_run_id else None
+        voices = new_character_voices(runtime)
+
+        def prepare(work, before):
+            voices(work, before)
+            if step.method == 'llm' and run and run.get('origin') == 'run':
+                # The reader and Cast summarize who produced the current analysis.
+                work['analysis'] = {'provider': run['provider'], 'model': run['model'], 'status': 'partial',
+                                    'phase': step.id, 'notes': f'{step.label} accepted in the Analysis tab.'}
+        return projection.accept(runtime.store, repository, registry, book_id, step, versions,
+                                 mode=mode, step_run_id=step_run_id, valid_audio=audio_checker(runtime),
+                                 prepare=prepare, expected_revision=expected_revision)
 
     def require_decidable(runtime, book_id):
         runtime.store.require_active(book_id)
@@ -425,8 +457,10 @@ def build_router(registry: Registry):
             book = runtime.store.book(book_id)
             with runtime.store.connect() as conn:
                 projection.sync(repository, registry, conn, book)
-                impact = projection.preview(repository, registry, conn, book, step, chosen, audio_checker(runtime))
+                impact = projection.preview(repository, registry, conn, book, step, chosen, audio_checker(runtime),
+                                            new_character_voices(runtime))
         impact.pop('book')
+        impact.pop('invalidated_segment_ids')
         return {**impact, 'revision': book.get('revision', 0)}
 
     @router.post('/api/books/{book_id}/analysis-pipeline/steps/{step_id}/versions/{version_id}/accept')

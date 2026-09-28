@@ -181,6 +181,7 @@ class DirectingStep(Step):
     def summarize(self, book, payloads):
         names = {c['id']: c['name'] for c in book['characters']}
         texts = {s['id']: (s['text'], s['kind']) for s in book['segments']}
+        current = {s['id']: s for s in book['segments']}
         order = {s['id']: i for i, s in enumerate(book['segments'])}
         rows, scenes = [], 0
         for scope, payload in payloads.items():
@@ -192,7 +193,10 @@ class DirectingStep(Step):
                              'kind': kind, 'text': text if len(text) <= 160 else text[:157] + '…',
                              'speaker': names.get(values.get('speaker_id'), values.get('speaker_id') or ''),
                              'confidence': values.get('confidence'), 'direction': values.get('direction') or '',
-                             'cues': ', '.join(values.get('cues') or [])})
+                             'cues': ', '.join(values.get('cues') or []),
+                             # Fields a person edited keep their value whichever version is accepted.
+                             'edited': ', '.join(name for name in ('speaker_id', 'direction', 'cues')
+                                                 if locked(current.get(segment_id, {}), name)).replace('speaker_id', 'speaker')})
         rows.sort(key=lambda row: order.get(row['id'], len(order)))
         dialogue = [r for r in rows if r['kind'] == 'dialogue']
         unassigned = sum(payloads[r['scope']]['segments'][r['id']].get('speaker_id') == 'unassigned' for r in dialogue)
@@ -200,5 +204,6 @@ class DirectingStep(Step):
                           'unassigned_dialogue': unassigned, 'attributed_dialogue': len(dialogue) - unassigned},
                 'columns': [{'key': 'scene', 'label': 'Scene'}, {'key': 'text', 'label': 'Passage'},
                             {'key': 'speaker', 'label': 'Speaker'}, {'key': 'confidence', 'label': 'Confidence'},
-                            {'key': 'direction', 'label': 'Delivery'}, {'key': 'cues', 'label': 'Cues'}],
+                            {'key': 'direction', 'label': 'Delivery'}, {'key': 'cues', 'label': 'Cues'},
+                            {'key': 'edited', 'label': 'Your edit (kept)'}],
                 'rows': rows}

@@ -199,8 +199,10 @@ def test_full_run_auto_accepts_in_order_and_reuses_validated_units(client):
     assert job['status'] == 'completed', job
     assert client.provider.calls.count('discovery') == 2 and client.provider.calls.count('profiles') == 2
     assert speakers(client, book['id']) == ['Mara', 'Mara', 'Mara']
-    characters = {c['name']: c for c in client.get(f"/api/books/{book['id']}").json()['characters']}
+    current = client.get(f"/api/books/{book['id']}").json()
+    characters = {c['name']: c for c in current['characters']}
     assert characters['Elio']['description'] == 'Refined Elio.'
+    assert (current['analysis']['provider'], current['analysis']['model']) == ('openai', MODEL)
     assert latest(client, book['id'], 'directing')['state'] == 'accepted'
     calls = len(client.provider.calls)
     job, _ = run(client, book['id'], ['discovery'])
@@ -440,3 +442,72 @@ def test_cancelling_a_queued_run_settles_it(client):
             break
         time.sleep(.01)
     assert overview['active_run'] is None and overview['recent_runs'][0]['status'] == 'cancelled'
+
+
+def test_accept_keeps_takes_it_did_not_invalidate(client):
+    book = import_book(client)
+    store = client.app.state.runtime.store
+    segment = book['segments'][1]
+    # A take already hidden by an earlier voice change (its recipe no longer matches).
+    store.save_take(book['id'], segment['id'], {'provider': 'system', 'model': 'say', 'fingerprint': 'stale', 'asset_id': 'kept'})
+    job, _ = run(client, book['id'], ['census', 'structure'])
+    assert job['status'] == 'completed'
+    assert store.book(book['id'])['segments'][1]['audio']['asset_id'] == 'kept'
+
+
+def test_accept_only_gives_new_characters_a_device_voice(client, monkeypatch):
+    monkeypatch.setattr('bardic.app.list_system_voices', lambda: [{'id': 'Samantha', 'name': 'Samantha', 'locale': 'en-US'}])
+    book = import_book(client)
+    assert client.patch(f"/api/books/{book['id']}/characters/narrator", json={'voices': {'system': None}}).status_code == 200
+    job, _ = run(client, book['id'], ['census', 'discovery'])
+    assert job['status'] == 'completed'
+    cast = {c['id']: c for c in client.app.state.runtime.store.book(book['id'])['characters']}
+    assert 'system' not in cast['narrator'].get('voices', {})  # the explicit Default choice survives
+    mara = next(c for c in cast.values() if c['name'] == 'Mara')
+    assert mara['voices']['system'] == {'id': 'Samantha'}
+
+
+def test_added_character_locks_only_the_fields_the_owner_set(client):
+    book = import_book(client)
+    revision = client.get(f"/api/books/{book['id']}").json()['revision']
+    added = client.post(f"/api/books/{book['id']}/characters", json={'name': 'Wren'}).json()
+    wren = next(c for c in added['characters'] if c['name'] == 'Wren')
+    assert wren['edited_fields'] == ['name'] and not locked(wren, 'description')
+    assert added['revision'] == revision + 1
+
+
+def test_saving_a_whole_cast_form_locks_only_changed_fields(client):
+    book = import_book(client)
+    run(client, book['id'], ['discovery', 'profiles'])
+    elio = next(c for c in client.get(f"/api/books/{book['id']}").json()['characters'] if c['name'] == 'Elio')
+    # The Cast editor submits every field; only the voice actually changes.
+    saved = client.patch(f"/api/books/{book['id']}/characters/{elio['id']}",
+                         json={'description': elio['description'], 'direction': elio['direction'],
+                               'voices': {'gemini': {'id': 'Charon'}}})
+    assert saved.status_code == 200
+    elio = next(c for c in saved.json()['characters'] if c['id'] == elio['id'])
+    assert elio['edited_fields'] == ['voices']
+    client.patch(f"/api/books/{book['id']}/characters/{elio['id']}", json={'description': 'A tired ferryman.'})
+    table = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/profiles/versions/accepted").json()
+    assert next(r for r in table['rows'] if r['id'] == elio['id'])['edited'] == 'description'
+
+
+def test_version_states_reflect_decisions_not_coincidence(client):
+    book = import_book(client)
+    base = f"/api/books/{book['id']}/analysis-pipeline"
+    run(client, book['id'], ['census'])
+    first = latest(client, book['id'], 'census')
+    assert first['state'] == 'accepted'
+    # An identical rerun held for review shares the accepted artifact, but nobody accepted it.
+    run(client, book['id'], ['census'], gates={'census': 'review'})
+    identical = latest(client, book['id'], 'census')
+    assert identical['state'] == 'same_as_accepted'
+    client.post(f"/api/books/{book['id']}/characters", json={'name': 'Wren'})
+    run(client, book['id'], ['census'], gates={'census': 'review'})
+    newer = latest(client, book['id'], 'census')
+    assert newer['state'] == 'candidate' and step_state(client, book['id'], 'census')['pending_versions'] == 1
+    assert client.post(f"{base}/steps/census/versions/{newer['id']}/accept", json={}).status_code == 200
+    states = {v['id']: v['state'] for v in client.get(f"{base}/steps/census/versions").json()['items']}
+    assert states[newer['id']] == 'accepted' and states[first['id']] == 'superseded'
+    assert states[identical['id']] == 'superseded'  # its content was accepted before; it is not waiting
+    assert step_state(client, book['id'], 'census')['pending_versions'] == 0
