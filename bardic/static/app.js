@@ -311,11 +311,12 @@ function saveProgress() {
   safeWrite(progressKey(), {chapterId:state.chapterId, segmentId:state.segmentId, currentTime:time});
   safeWrite('bardic:lastBook', state.book.id);
 }
-function stopAudio({clear = false, keepAhead = false} = {}) {
+function stopAudio({clear = false, keepAhead = false, pause = false} = {}) {
   window.BardicVoicePreview?.stop();
   finishVoicePreview();
+  closePaidConsent();
   playGeneration++; preparingListen = false; mediaBuffering = false;
-  window.BardicListen?.stop(state.book, {keepAhead});
+  window.BardicListen?.stop(state.book, {keepAhead, pause});
   clearListeningPreloads();
   audio.pause();
   if (clear) { audio.removeAttribute('src'); audio.load(); state.audioSegmentId = null; state.pendingOffset = 0; previewEnhanced = false; }
@@ -671,7 +672,7 @@ function passageInView(element) {
 }
 function scrollToPassage(element) {
   const box = element.getBoundingClientRect(), band = readingBand();
-  element.scrollIntoView({behavior:'smooth', block:box.height > (band.bottom - band.top) * .6 ? 'start' : 'center'});
+  element.scrollIntoView({behavior:scrollMotion(), block:box.height > (band.bottom - band.top) * .6 ? 'start' : 'center'});
 }
 function updateFollowButton() {
   const active = state.readerMode && !audio.paused && activePassage();
@@ -680,7 +681,7 @@ function updateFollowButton() {
 
 // Listen sheet: narrator, voice and speed, then a short buffer, then the reader.
 const SHEET_SPEEDS = [.75,1,1.25,1.5,1.75,2,2.25,2.5];
-const SHEET_PROVIDER_NOTES = {system:'Free · voices on the Bardic computer', gemini:'Cloud · may incur charges', breeze:'Your Breeze server'};
+const SHEET_PROVIDER_NOTES = {system:'Free · voices on the Bardic computer', gemini:'Paid · Google bills each request', breeze:'Your Breeze server · no charge'};
 let listenSheetTimer = null, listenSheetHtml = '';
 function openListenSheet(tab = state.sheetTab || 'live') {
   if (!state.book) return;
@@ -752,21 +753,24 @@ function renderListenSheet() {
     const listening = !audio.paused && simpleActive();
     const previewing = Boolean(state.voicePreview);
     const note = choice.provider === 'gemini'
-      ? `Gemini narrates in large chunks paced to your request limits and may incur charges.${choice.continuous ? ' While you listen, the next chapter is queued about 10 minutes ahead.' : ''} Pause stops new requests.`
+      ? `Gemini is paid: it narrates in large chunks paced to your request limits, and Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost.${choice.continuous ? ' While you listen, the next chapter is queued about 10 minutes ahead.' : ''} Pause stops new requests.`
       : choice.provider === 'breeze' ? 'Breeze narrates at about real-time speed on your server; faster listening may pause to buffer.'
       : 'Device narration runs on the computer serving Bardic, with no charges.';
     const unavailable = choice.provider === 'gemini' ? 'Add a Gemini API key in Providers & settings to generate narration. Saved audio still plays.'
       : choice.provider === 'breeze' ? 'Connect Breeze and choose a voice to generate narration. Saved audio still plays.' : 'Device voices are unavailable on this server.';
     const performance = listen.getPerformance?.(state.book);
+    // Start is this session's consent for a billed narrator, so its label says so.
+    const askConsent = !listening && choice.provider === 'gemini' && choice.available && !paidConsentGiven();
     html = `${performance ? `<div class="listen-sheet-performance"><p>Playing the saved performance <strong>${escapeHTML(performance.name)}</strong>. Start listening below switches to live narration.</p><button type="button" class="button subtle" data-sheet-action="resume-performance">${listening ? 'Back to the performance' : 'Play the performance'}</button></div>` : ''}<p class="listen-sheet-where">${listening ? 'Listening to' : 'Starts at'} <strong>${escapeHTML(chapter?.title || state.book.title || '')}</strong>${!listening && state.pendingOffset ? ', where you left off' : ''}.</p>
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-provider-label">Narration</span><div class="listen-sheet-providers" role="radiogroup" aria-labelledby="listen-sheet-provider-label">${choice.providers.map(item => `<button type="button" role="radio" data-sheet-provider="${item.id}" aria-checked="${item.id === choice.provider}"><strong>${escapeHTML(item.label)}</strong><small>${escapeHTML(item.available ? SHEET_PROVIDER_NOTES[item.id] : 'Not set up')}</small></button>`).join('')}</div></div>
-      <div class="listen-sheet-field"><label class="field-label" for="listen-sheet-voice">Voice</label><div class="listen-sheet-voice"><select id="listen-sheet-voice">${choice.voices.map(voice => `<option value="${escapeHTML(voice.id)}" ${voice.id === choice.voice ? 'selected' : ''} ${voice.usable || voice.id === choice.voice ? '' : 'disabled'}>${escapeHTML(voice.name)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`).join('')}</select><button type="button" class="button subtle" data-sheet-action="example" ${choice.provider === 'breeze' && !choice.breezeVoiceReady ? 'disabled' : ''}>${previewing ? 'Stop example' : 'Hear example'}</button></div></div>
+      <div class="listen-sheet-field"><label class="field-label" for="listen-sheet-voice">Voice</label><div class="listen-sheet-voice"><select id="listen-sheet-voice">${choice.voices.map(voice => `<option value="${escapeHTML(voice.id)}" ${voice.id === choice.voice ? 'selected' : ''} ${voice.usable || voice.id === choice.voice ? '' : 'disabled'}>${escapeHTML(voice.name)}${voice.locale ? ` · ${escapeHTML(voice.locale)}` : ''}</option>`).join('')}</select><button type="button" class="button subtle" data-sheet-action="example" ${choice.provider === 'breeze' && !choice.breezeVoiceReady ? 'disabled' : ''}>${previewing ? 'Stop example' : choice.provider === 'gemini' ? 'Hear example · paid' : 'Hear example'}</button></div></div>
       <div class="listen-sheet-field"><span class="field-label" id="listen-sheet-speed-label">Speed</span><div class="listen-sheet-speeds" role="radiogroup" aria-labelledby="listen-sheet-speed-label">${SHEET_SPEEDS.map(rate => `<button type="button" role="radio" data-sheet-speed="${rate}" aria-checked="${rate === audio.playbackRate}">${rate}×</button>`).join('')}</div></div>
       <label class="listen-sheet-toggle"><input type="checkbox" data-sheet-continuous ${choice.continuous ? 'checked' : ''}> Keep going into the next chapter</label>
       <p class="field-help">${escapeHTML(note)}</p>
       ${choice.available ? '' : `<p class="inline-error">${escapeHTML(unavailable)}</p>`}
       ${state.listenError || choice.error ? `<p class="inline-error" role="alert">${escapeHTML(state.listenError || choice.error)}</p>` : ''}
-      <div class="listen-sheet-actions"><button type="button" class="button subtle" data-sheet-action="read">${state.readerMode ? 'Back to reading' : 'Just read'}</button><button type="button" class="button primary" data-sheet-action="start">${listening ? 'Continue listening' : 'Start listening'}</button></div>`;
+      ${askConsent ? '<p class="field-help listen-sheet-consent">Starting confirms paid Gemini narration for this book until you close this browser tab.</p>' : ''}
+      <div class="listen-sheet-actions"><button type="button" class="button subtle" data-sheet-action="read">${state.readerMode ? 'Back to reading' : 'Just read'}</button><button type="button" class="button primary" data-sheet-action="start">${listening ? 'Continue listening' : askConsent ? 'Start listening · Gemini (paid)' : 'Start listening'}</button></div>`;
   }
   // The browser reserializes innerHTML differently, so compare with what was written.
   if (listenSheetHtml === html && body.childElementCount) return;
@@ -934,6 +938,7 @@ async function selectBook(id) {
     if (version !== state.selectionVersion) return;
     state.libraryView = false;
     state.book = book;
+    state.renderConfirm = null;
     state.analysisSummary = null;
     state.analysisError = null;
     state.referenceCache.clear();
@@ -974,9 +979,10 @@ function renderBook() {
   const otherCount = book.chapters.length - narrativeCount;
   const structureLabel = narrativeCount ? `${narrativeCount} ${narrativeCount === 1 ? 'chapter' : 'chapters'}${otherCount ? ` · ${otherCount} other ${otherCount === 1 ? 'section' : 'sections'}` : ''}` : `${book.chapters.length} ${book.chapters.length === 1 ? 'section' : 'sections'}`;
   $('#book-byline').textContent = [book.author, structureLabel].filter(Boolean).join('  ·  ');
-  $('#cast-count').textContent = book.characters.filter(c => !['narrator','unassigned'].includes(c.id)).length;
-  const ready = book.segments.filter(playable).length;
-  $('#book-status').textContent = ready ? `${ready} of ${book.segments.length} passages narrated` : 'Ready to find its voice';
+  // The badge counts the cards the Cast tab shows: every voice you cast,
+  // including the Narrator and the voice for unassigned dialogue.
+  $('#cast-count').textContent = book.characters.length;
+  renderBookStatus();
   $('#export-link').href = `/api/books/${encodeURIComponent(book.id)}/export`;
   renderLibrary();
   renderReader();
@@ -986,6 +992,18 @@ function renderBook() {
   renderJob();
   setTab(state.tab, {reveal:false});
   updatePlayer();
+}
+// One status for the book: audio ready with your narrator and Studio takes.
+function renderBookStatus() {
+  const book = state.book;
+  if (!book) return;
+  const total = book.segments.length, listen = window.BardicListen;
+  const studio = book.segments.filter(playable).length;
+  const narrated = listen?.getSelection?.(book)?.mode === 'simple' ? book.segments.filter(segment => listen.resolve(book, segment)).length : 0;
+  const parts = [];
+  if (narrated) parts.push(`${narrated} of ${total} passages ready with your narrator`);
+  if (studio) parts.push(`${studio} of ${total} recorded in the Studio`);
+  $('#book-status').textContent = parts.join(' · ') || 'Not narrated yet';
 }
 function renderReader() {
   window.BardicListen?.render($('#simple-listen'), state.book, {
@@ -1001,7 +1019,9 @@ function renderReader() {
     onPreview:previewNarrator,
     onRefreshBreeze:() => refreshBreeze(),
     onJob:trackJob,
+    confirmPaid:run => requirePaidConsent(run),
   });
+  renderBookStatus();
   const chapter = currentChapter();
   if (!chapter) return;
   const chapterIndex = state.book.chapters.findIndex(c => c.id === chapter.id);
@@ -1022,7 +1042,7 @@ function renderReader() {
     content += escapeHTML(leading);
     const mark = marks.get(segment.id);
     const markClass = !mark ? '' : mark.status === 'ready' ? `listen-ready listen-chunk-${mark.chunk}${mark.start ? ' listen-chunk-start' : ''}` : `listen-${mark.status}`;
-    content += `<span class="passage ${sourceHasHeading && segment === segments[0] ? 'source-chapter-title' : ''} ${listeningReady(segment) ? 'rendered' : 'unrendered'} ${markClass} ${state.segmentId === segment.id ? 'active' : ''}" data-segment="${escapeHTML(segment.id)}" tabindex="0" role="button" aria-label="${escapeHTML(`${listeningReady(segment) ? 'Play' : 'Select'} passage, ${characterById(segment.speaker_id)?.name || 'Narrator'}: ${segment.text}`)}" ${state.segmentId === segment.id ? 'aria-current="true"' : ''}>${escapeHTML(segment.text)}</span>`;
+    content += `<span class="passage ${sourceHasHeading && segment === segments[0] ? 'source-chapter-title' : ''} ${listeningReady(segment) ? 'rendered' : 'unrendered'} ${markClass} ${state.segmentId === segment.id ? 'active' : ''}" data-segment="${escapeHTML(segment.id)}" tabindex="0" role="button" aria-label="${escapeHTML(`Go to passage, ${characterById(segment.speaker_id)?.name || 'Narrator'}: ${segment.text}`)}" ${state.segmentId === segment.id ? 'aria-current="true"' : ''}>${escapeHTML(segment.text)}</span>`;
     if (match >= cursor) cursor = match + segment.text.length;
   }
   content += escapeHTML(chapter.trailing_text ?? chapter.text.substring(cursor));
@@ -1038,7 +1058,9 @@ function renderReader() {
   const ready = segments.filter(listeningReady).length;
   const chunkedListening = simpleActive() && chunkedProvider(window.BardicListen?.getSelection?.(state.book)?.provider);
   renderReaderBar();
-  $('#reader-hint').textContent = chunkedListening ? 'Press play to start or join the chapter queue. Gemini prepares large chunks at your request limits; playback begins when your passage is ready. Underlines show ready, generating and queued text; timing inside a chunk is estimated.' : simpleActive() ? `Press play to warm up a short buffer, then listen while the next passages prepare. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. Tap a passage to listen. Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
+  // Tapping text moves your place; it plays from there only while already playing.
+  const tapHint = 'Tap a passage (or press Enter) to move your place; press Play or Space to listen from there.';
+  $('#reader-hint').textContent = chunkedListening ? `${tapHint} Play starts or joins the chapter queue: Gemini prepares large chunks at your request limits, and playback begins when your passage is ready. Jumping to a passage that is not ready yet starts a new quick-start chunk, which uses extra requests. Underlines show ready, generating and queued text; timing inside a chunk is estimated.` : simpleActive() ? `${tapHint} Play warms up a short buffer, then keeps preparing the next passages. For faster listening, prepare the rest of the chapter first. ${window.BardicListen?.isContinuous?.(state.book) ? 'Playback continues into the next chapter' : 'Playback stops at the chapter boundary'}; highlighting follows each passage.` : ready ? `${ready} of ${segments.length} passages in this chapter are ready. ${tapHint} Highlighting follows each complete passage.` : 'Read at your own pace, or open Listening settings to choose a narrator and start listening. For character voices and directed performances, visit the Studio.';
   renderPassageDetail();
 }
 function trackJob(job) {
@@ -1064,7 +1086,7 @@ function renderPassageDetail() {
   const panel = $('#passage-detail');
   panel.hidden = !segment;
   if (!segment) return;
-  const character = simpleActive() ? {name:'Simple narrator', direction:'One voice, with passage highlighting. Enhanced performance settings are preserved.'} : characterById(segment.speaker_id);
+  const character = simpleActive() ? {name:'One narrator', direction:'One voice, with passage highlighting. Full-cast settings are kept.'} : characterById(segment.speaker_id);
   panel.innerHTML = `<span class="eyebrow">CURRENT PASSAGE</span><div class="passage-speaker">${escapeHTML(character?.name || 'Unassigned')}</div><p class="passage-note">${escapeHTML((!simpleActive() && segment.direction) || character?.direction || 'A natural, unhurried reading.')}</p><span class="passage-state ${listeningReady(segment) ? '' : 'missing'}">${listeningReady(segment) ? `${formatTime(listeningAudio(segment)?.duration)} · ${escapeHTML(listeningAudio(segment)?.provider || 'Audio ready')}` : segment.audio ? 'Take needs regeneration' : 'Not narrated yet'}</span>`;
 }
 // The cast shows one provider's voices at a time (the Cast provider switch).
@@ -1076,8 +1098,8 @@ function castVoiceBlock(character, provider = state.castProvider) {
   const id = escapeHTML(character.id);
   const options = helpers ? helpers.castOptions(provider, value, state.voiceLibrary, state.status) : '<option value="">Default</option>';
   const warnings = helpers ? helpers.castWarnings(provider, value, state.voiceLibrary, state.status) : [];
-  const note = provider === 'gemini' ? 'Gemini examples may incur charges.' : provider === 'breeze' ? 'Breeze examples run on your Breeze server.' : 'Device examples stay on this computer.';
-  return `<label class="field-label" for="voice-${id}">${escapeHTML(NARRATION_LABELS[provider] || provider)} voice</label><div class="cast-voice-row"><select id="voice-${id}" name="voice_choice" data-cast-voice="${escapeHTML(provider)}">${options}</select><button type="button" class="button subtle voice-example" data-preview-character="${escapeHTML(provider)}" aria-label="Hear ${escapeHTML(character.name)} with this ${escapeHTML(NARRATION_LABELS[provider] || provider)} voice">Hear example</button></div>${warnings.length ? `<ul class="cast-voice-warnings">${warnings.map(text => `<li>${escapeHTML(text)}</li>`).join('')}</ul>` : ''}<p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved choices are included. ${note}</p>`;
+  const note = provider === 'gemini' ? 'Each Gemini example is one paid request.' : provider === 'breeze' ? 'Breeze examples run on your Breeze server.' : 'Device examples stay on this computer.';
+  return `<label class="field-label" for="voice-${id}">${escapeHTML(NARRATION_LABELS[provider] || provider)} voice</label><div class="cast-voice-row"><select id="voice-${id}" name="voice_choice" data-cast-voice="${escapeHTML(provider)}">${options}</select><button type="button" class="button subtle voice-example" data-preview-character="${escapeHTML(provider)}" aria-label="Hear ${escapeHTML(character.name)} with this ${escapeHTML(NARRATION_LABELS[provider] || provider)} voice${provider === 'gemini' ? ' (paid request)' : ''}">${provider === 'gemini' ? 'Hear example · paid' : 'Hear example'}</button></div>${warnings.length ? `<ul class="cast-voice-warnings">${warnings.map(text => `<li>${escapeHTML(text)}</li>`).join('')}</ul>` : ''}<p class="voice-example-note">Examples use this character’s text, or demo text if none is assigned. Unsaved choices are included. ${note}</p>`;
 }
 // Cast order: the implicit Narrator and Unassigned dialogue come first.
 function castCharacters(book) {
@@ -1199,7 +1221,7 @@ function renderCast() {
   if (state.highlightCharacter) {
     const card = $$('#cast-grid [data-character-form]').find(node => node.dataset.characterForm === state.highlightCharacter);
     if (card) {
-      card.scrollIntoView?.({behavior:'smooth', block:'center'});
+      card.scrollIntoView?.({behavior:scrollMotion(), block:'center'});
       $('select[name="voice_choice"]', card)?.focus?.({preventScroll:true});
     }
     state.highlightCharacter = null;
@@ -1210,7 +1232,7 @@ function speakerOptions(selected) {
 }
 function renderAnalysisProgress() {
   if (!state.book) return;
-  $('#analysis-scope-note').textContent = $('#analysis-scope').value === 'chapter' ? currentChapter()?.title || '' : `${state.book.chapters.length} chapters, processed one at a time`;
+  $('#analysis-scope-note').textContent = $('#analysis-scope').value === 'chapter' ? currentChapter()?.title || '' : `${state.book.chapters.length} ${state.book.chapters.length === 1 ? 'chapter' : 'chapters'}, processed one at a time`;
   const panel = $('#analysis-progress');
   const open = Boolean($('details', panel)?.open);
   const focusedChapter = document.activeElement?.dataset.analysisChapter;
@@ -1258,16 +1280,18 @@ function renderProduction() {
 }
 function renderStudio() {
   const segments = chapterSegments();
+  const paidRender = $('#render-provider')?.value === 'gemini';
   $('#studio-chapter').innerHTML = state.book.chapters.map(chapter => `<option value="${escapeHTML(chapter.id)}" ${chapter.id === state.chapterId ? 'selected' : ''}>${escapeHTML(chapter.title)}</option>`).join('');
   const scenes = state.book.scenes.filter(scene => scene.chapter_id === state.chapterId);
-  $('#script-meta').textContent = `${scenes.length} ${scenes.length === 1 ? 'scene' : 'scenes'} · ${segments.length} passages`;
+  $('#script-meta').textContent = `${scenes.length} ${scenes.length === 1 ? 'scene' : 'scenes'} · ${segments.length} ${segments.length === 1 ? 'passage' : 'passages'}`;
   $('#scene-list').innerHTML = scenes.map((scene, index) => {
     const items = segments.filter(s => s.scene_id === scene.id || scene.segment_ids?.includes(s.id));
-    return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage">Hear example</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
+    return `<section class="scene-card"><div class="scene-header"><div><span class="eyebrow">SCENE ${String(index + 1).padStart(2,'0')}${scene.tone ? ` · ${escapeHTML(scene.tone)}` : ''}</span><h3>${escapeHTML(scene.title || `Scene ${index + 1}`)}</h3>${scene.summary ? `<p>${escapeHTML(scene.summary)}</p>` : ''}</div><button class="button subtle render-action" data-render-scene="${escapeHTML(scene.id)}">${icon('play')} Narrate scene</button></div><div class="render-confirm" data-render-confirm-host="${escapeHTML(scene.id)}" hidden></div><form class="scene-direction" data-scene-form="${escapeHTML(scene.id)}"><div><label class="field-label" for="scene-direction-${escapeHTML(scene.id)}">SCENE DIRECTION</label><textarea id="scene-direction-${escapeHTML(scene.id)}" name="direction" maxlength="3000" rows="1" placeholder="The emotional setting, pacing, and subtext…">${escapeHTML(scene.direction || '')}</textarea></div><button class="button subtle" type="submit">Save</button></form><div class="scene-passages">${items.map((segment, segmentIndex) => `<form class="segment-row" data-segment-form="${escapeHTML(segment.id)}"><span class="segment-number">${String(segmentIndex + 1).padStart(2,'0')}</span><div><p class="segment-text">${escapeHTML(segment.text)}</p><div class="segment-toolbar"><label class="sr-only" for="speaker-${escapeHTML(segment.id)}">Passage speaker</label><select id="speaker-${escapeHTML(segment.id)}" name="speaker_id">${speakerOptions(segment.speaker_id)}</select><button type="button" class="button subtle" data-preview-speaker="${escapeHTML(segment.id)}" aria-label="Hear selected speaker on this passage${paidRender ? ' (paid request)' : ''}">${paidRender ? 'Hear example · paid' : 'Hear example'}</button><label class="sr-only" for="segment-direction-${escapeHTML(segment.id)}">Passage performance direction</label><input id="segment-direction-${escapeHTML(segment.id)}" name="direction" maxlength="3000" value="${escapeHTML(segment.direction || '')}" placeholder="Performance note…"><button class="button subtle" type="submit" aria-label="Save passage changes">Save</button><button class="button subtle render-action" type="button" data-render-segment="${escapeHTML(segment.id)}" title="${playable(segment) ? 'Generate this passage again' : 'Generate this passage'}${paidRender ? ' · one paid Gemini request' : ''}">${icon('spark')}${playable(segment) ? 'Retake' : 'Narrate'}</button>${playable(segment) ? `<button class="button subtle" type="button" data-play-segment="${escapeHTML(segment.id)}" aria-label="Preview passage">${icon('play')}</button>` : ''}</div><div class="segment-meta"><span class="clip-status ${playable(segment) ? '' : 'missing'}">${playable(segment) ? `Ready · ${formatTime(segment.audio.duration)} · ${escapeHTML(segment.audio.provider || '')}` : segment.audio ? 'Out of date · regenerate take' : 'Awaiting narration'}</span>${typeof segment.confidence === 'number' && segment.kind === 'dialogue' ? `<span>Speaker confidence ${Math.round(segment.confidence * 100)}%</span>` : ''}${segment.cues?.length ? `<span>${escapeHTML(segment.cues.map(c => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join(' · '))}</span>` : ''}</div></div></form>`).join('')}</div></section>`;
   }).join('') || '<div class="empty-state">No scenes here yet. Run the Analysis tab to draft a performance script.</div>';
   renderAnalysisProgress();
   updateBusyControls();
   renderProduction();
+  paintRenderConfirm();
 }
 function setTab(tab, {reveal = true, focus = false} = {}) {
   const WORKSPACE_TABS = ['read','cast','voices','studio','analysis'];
@@ -1312,7 +1336,7 @@ function showLibrary() {
   const heading = $('#welcome h1');
   heading?.setAttribute('tabindex', '-1');
   heading?.focus({preventScroll:true});
-  window.scrollTo({top:0, behavior:'smooth'});
+  window.scrollTo({top:0, behavior:scrollMotion()});
 }
 function navigateTabs(event) {
   const tabs = $$('.tab');
@@ -1322,13 +1346,18 @@ function navigateTabs(event) {
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
   setTab(tabs[next].dataset.tab, {focus:true});
 }
+// Script-driven scrolling jumps instead of animating for people who asked the
+// system to reduce motion.
+function scrollMotion() {
+  return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth';
+}
 function openListeningSettings() {
   if (state.readerMode) { openListenSheet(); return; }
   setTab('read');
   const panel = $('#simple-listen');
   const disclosure = panel.closest('details');
   if (disclosure) disclosure.open = true;
-  panel.scrollIntoView({behavior:'smooth',block:'center'});
+  panel.scrollIntoView({behavior:scrollMotion(),block:'center'});
   $('#simple-listen [data-listen-field="voice"]')?.focus({preventScroll:true});
 }
 function openAnalysisPlanning() {
@@ -1336,7 +1365,7 @@ function openAnalysisPlanning() {
   const panel = $('#progressive-production');
   const disclosure = panel.closest('details');
   if (disclosure) disclosure.open = true;
-  panel.scrollIntoView({behavior:'smooth', block:'start'});
+  panel.scrollIntoView({behavior:scrollMotion(), block:'start'});
   $('#progressive-production select')?.focus({preventScroll:true});
 }
 function setChapter(id, {scroll = true} = {}) {
@@ -1349,7 +1378,7 @@ function setChapter(id, {scroll = true} = {}) {
   state.segmentId = chapterSegments()[0]?.id;
   state.pendingOffset = 0;
   renderReader(); renderStudio(); updatePlayer(); saveProgress();
-  if (scroll) window.scrollTo({top:0, behavior:'smooth'});
+  if (scroll) window.scrollTo({top:0, behavior:scrollMotion()});
   if (keepListening && state.segmentId) void startSegment(state.segmentId, {autoplay:true});
 }
 function updateHighlight({scroll = false, force = false} = {}) {
@@ -1366,12 +1395,19 @@ function updateHighlight({scroll = false, force = false} = {}) {
 async function startSegment(id, {autoplay = true, offset = 0, scroll = false, enhanced = false, continuation = false} = {}) {
   const segment = segmentById(id);
   if (!segment) return;
+  // Any new start or move replaces a consent question that is still open.
+  closePaidConsent();
+  // The first Play of a billed narrator in this book and browser session asks
+  // first; nothing is requested until Confirm. Continuation is already consented.
+  if (autoplay && !enhanced && !continuation && simpleActive() &&
+      !requirePaidConsent(() => startSegment(id, {autoplay:true, offset, scroll}))) return;
   window.BardicVoicePreview?.stop();
   // Repeated passage clicks share the pending request. Selecting another
   // passage or a studio preview stops that request's playback intent.
   if (preparingListen && state.segmentId === id && !enhanced) return;
   // Moving to another passage keeps generation already queued ahead; Pause and Stop cancel it.
-  if (!continuation || enhanced) { window.BardicListen?.stop(state.book, {keepAhead:!enhanced}); clearListeningPreloads(); }
+  // Moving your place while nothing plays leaves listening (and any chapter preparation) alone.
+  if ((!continuation || enhanced) && (autoplay || enhanced || preparingListen || !audio.paused)) { window.BardicListen?.stop(state.book, {keepAhead:!enhanced}); clearListeningPreloads(); }
   preparingListen = false; mediaBuffering = false;
   const playToken = ++playGeneration;
   const bookVersion = state.selectionVersion;
@@ -1436,6 +1472,80 @@ async function startSegment(id, {autoplay = true, offset = 0, scroll = false, en
   if (playToken !== playGeneration || bookVersion !== state.selectionVersion || state.book?.id !== bookId) return;
   updatePlayer(); saveProgress(); updateListeningBuffer();
 }
+// A tap or Enter on the text moves the reading place. It plays from there only
+// when narration is already playing (then it jumps). Play, Space and media keys
+// are the ways to start listening.
+function narrationPlaying() { return !state.voicePreview && (preparingListen || !audio.paused); }
+function goToPassage(id) { return startSegment(id, {autoplay:narrationPlaying(), scroll:false}); }
+// Paid narration (Gemini) asks once per book per browser session, before the
+// first Play or preparation that may send requests. The consent is kept in
+// sessionStorage, so it ends with the tab; the narrator choice itself stays in
+// localStorage. Breeze (your GPU) and device voices are free per request.
+function paidSelection() {
+  const selection = window.BardicListen?.getSelection?.(state.book);
+  return selection?.provider === 'gemini' && selection.mode !== 'performance' ? selection : null;
+}
+function paidConsentGiven() {
+  const id = state.book?.id;
+  if (!id) return false;
+  if (state.paidConsent?.has(id)) return true;
+  try { return sessionStorage.getItem(`bardic:paid-listening:${id}`) === 'gemini'; } catch { return false; }
+}
+function grantPaidConsent() {
+  const id = state.book?.id;
+  if (!id) return;
+  (state.paidConsent ||= new Set()).add(id);
+  try { sessionStorage.setItem(`bardic:paid-listening:${id}`, 'gemini'); } catch { /* This page still remembers it. */ }
+}
+// True when run may go ahead now; otherwise shows the question and runs it
+// only after Confirm.
+function requirePaidConsent(run) {
+  if (!state.book || !paidSelection() || paidConsentGiven()) return true;
+  state.paidPrompt = {bookId:state.book.id, run};
+  paintPaidConsent();
+  return false;
+}
+function paidConsentPanel() {
+  let panel = $('#paid-consent');
+  if (panel || typeof document === 'undefined' || typeof document.createElement !== 'function') return panel;
+  panel = document.createElement('aside');
+  panel.id = 'paid-consent'; panel.className = 'paid-consent'; panel.hidden = true;
+  panel.setAttribute('aria-labelledby', 'paid-consent-title');
+  panel.addEventListener('click', event => {
+    const action = event.target.closest('[data-paid-consent]')?.dataset.paidConsent;
+    if (action === 'confirm') void confirmPaidConsent();
+    else if (action === 'narrator') { closePaidConsent(); openListeningSettings(); }
+    else if (action === 'cancel') closePaidConsent();
+  });
+  panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePaidConsent(); } });
+  $('#player')?.before?.(panel);
+  return panel;
+}
+function paintPaidConsent() {
+  const panel = paidConsentPanel();
+  if (!panel || !state.paidPrompt) return;
+  const narrator = window.BardicListen?.describe?.(state.book);
+  const voice = narrator?.voiceName ? `${narrator.voiceName} · ` : '';
+  const ahead = window.BardicListen?.isContinuous?.(state.book) ? ' While you listen, the next chapter is prepared ahead too.' : '';
+  panel.innerHTML = `<div><strong id="paid-consent-title">${escapeHTML(voice)}Gemini · paid narration</strong><p>Play sends the text from your place to the end of the chapter to Google in large chunks, paced to your request limits.${escapeHTML(ahead)} Google bills each request. Bardic has no price for Gemini speech, so it cannot show a cost. Pause stops new requests; finished audio is kept.</p><p class="field-help">Confirming covers this book until you close this browser tab.</p></div><div class="paid-consent-actions"><button type="button" class="button subtle" data-paid-consent="cancel">Cancel</button><button type="button" class="button subtle" data-paid-consent="narrator">Change narrator</button><button type="button" class="button primary" data-paid-consent="confirm">Play with Gemini · paid</button></div>`;
+  panel.hidden = false;
+  const player = $('#player')?.getBoundingClientRect?.();
+  if (player?.height && panel.style) panel.style.bottom = `${Math.round(player.height + 12)}px`;
+  panel.querySelector?.('[data-paid-consent="confirm"]')?.focus?.({preventScroll:true});
+}
+function closePaidConsent() {
+  if (!state.paidPrompt) return;
+  state.paidPrompt = null;
+  const panel = $('#paid-consent');
+  if (panel) { panel.hidden = true; panel.innerHTML = ''; }
+}
+function confirmPaidConsent() {
+  const prompt = state.paidPrompt;
+  closePaidConsent();
+  if (!prompt || prompt.bookId !== state.book?.id) return;
+  grantPaidConsent();
+  return prompt.run?.();
+}
 async function togglePlayback() {
   if (!state.book) return;
   if (state.voicePreview) {
@@ -1454,7 +1564,7 @@ async function togglePlayback() {
     updatePlayer(); return;
   }
   if (preparingListen) { stopAudio({clear:true}); return; }
-  if (!audio.paused) { stopAudio(); saveProgress(); return; }
+  if (!audio.paused) { stopAudio({pause:true}); saveProgress(); return; }
   const segment = segmentById(state.segmentId) || chapterSegments()[0];
   if (!segment) return;
   const offset = state.audioSegmentId === segment.id && audio.getAttribute('src') === listeningAudio(segment)?.url
@@ -1503,20 +1613,20 @@ function chapterPoint(timeline, time) {
   const within = Math.min(Math.max(0, time - entry.start), entry.seconds);
   return {entry, time:entry.start + within, fraction:entry.seconds ? within / entry.seconds : 0};
 }
-// Book progress counts source text, since most of a book has no audio yet.
-function bookFraction(segment, passageFraction) {
-  const order = new Map(state.book.chapters.map((chapter, index) => [chapter.id, index]));
-  const current = order.get(segment.chapter_id);
+// Reading progress counts source text for both the chapter and the book, so
+// the two percentages agree (on a one-chapter book they are equal). Most of a
+// book has no audio yet; the clock and the scrubber stay in audio seconds.
+function textFraction(list, segment, passageFraction) {
   let before = 0, total = 0, reached = false;
-  for (const item of state.book.segments) {
-    const length = textLength(item), position = order.get(item.chapter_id);
-    if (position === undefined) continue;
+  for (const item of list) {
+    const length = textLength(item);
     total += length;
     if (item.id === segment.id) { before += length * passageFraction; reached = true; }
-    else if (position < current || (position === current && !reached)) before += length;
+    else if (!reached) before += length;
   }
   return total ? before / total : 0;
 }
+function bookFraction(segment, passageFraction) { return textFraction(orderedSegments(), segment, passageFraction); }
 const chapterClock = (seconds, estimated) => `${estimated ? '~' : ''}${formatTime(seconds)}`;
 function seekChapter(time) {
   const {entry} = chapterPoint(chapterTimeline(), time);
@@ -1575,7 +1685,9 @@ function updatePlayer() {
   const bufferLabel = preparingListen || mediaBuffering ? ' · Buffering…' : buffer && !audio.paused ? ` · ${Math.floor(buffer.seconds || 0)}s buffered` : '';
   const narrator = window.BardicListen?.getSelection?.(state.book);
   const performance = window.BardicListen?.getPerformance?.(state.book);
-  const voiceLabel = performance ? `Performance · ${performance.name}` : simpleActive() ? `Simple · ${narrator?.voice || 'Default device voice'}` : `Cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
+  // A resolved voice name, never a raw library id; a billed narrator says so.
+  const described = narrator && window.BardicListen?.describe?.(state.book);
+  const voiceLabel = performance ? `Performance · ${performance.name}` : simpleActive() ? (described ? `${described.voiceName} · ${described.providerLabel}${described.paid ? ' · paid' : ''}` : 'One narrator') : `Full cast · ${characterById(segment?.speaker_id)?.name || 'Narrator'}`;
   $('#player-subtitle').textContent = segment ? `${voiceLabel} · Passage ${index + 1}${bufferLabel || (listeningReady(segment) ? '' : ' · Not narrated')}` : 'Choose a passage to begin';
   const timeline = chapterTimeline();
   const position = chapterPosition(timeline);
@@ -1583,7 +1695,7 @@ function updatePlayer() {
   const scrubbing = state.scrubTime !== undefined && position.entry;
   const target = scrubbing ? chapterPoint(timeline, state.scrubTime) : position;
   const shown = target.time;
-  const chapterPercent = timeline.total ? Math.round(shown / timeline.total * 100) : 0;
+  const chapterPercent = target.entry ? Math.round(textFraction(chapterSegments(), target.entry.segment, target.fraction) * 100) : 0;
   $('#elapsed').textContent = formatTime(shown);
   $('#duration').textContent = chapterClock(timeline.total, timeline.estimated);
   $('#audio-progress').max = timeline.total || 1;
@@ -1599,8 +1711,8 @@ function updatePlayer() {
 }
 function updateProviderHint() {
   const provider = $('#render-provider').value;
-  $('#render-description').textContent = provider === 'gemini' ? 'Expressive cloud narration. Sends text to Google; usage may be billed.'
-    : provider === 'breeze' ? 'Directed narration on your Breeze server. Sends passage text and performance notes over your local network; no per-request charge. Retake picks a new seed.'
+  $('#render-description').textContent = provider === 'gemini' ? 'Gemini · paid. Sends passage text to Google, one billed request per passage. Narrate book and Narrate scene show an estimate before anything is sent.'
+    : provider === 'breeze' ? 'Directed narration on your Breeze server. Sends passage text and performance notes over your local network; no per-request charge, but it uses that server\'s GPU. Narrate book and Narrate scene show an estimate first. Retake picks a new seed.'
     : 'Private, on-device narration. Performance notes are used by Gemini and Breeze.';
 }
 function updateAnalysisHint() {
@@ -1613,15 +1725,23 @@ function updateBusyControls(forceBusy = false) {
   const busy = forceBusy || Boolean(busyJob());
   $$('#render-button, #analyze-button, #analyze-from-cast, #analysis-provider, #analysis-scope, .render-action, #cast-grid input, #cast-grid textarea, #cast-grid select, #cast-grid button[type="submit"], #scene-list input, #scene-list textarea, #scene-list select, #scene-list button[type="submit"]').forEach(control => { control.disabled = busy; });
 }
+// Listening jobs report their own progress in the player; a finished one does
+// not need the banner.
+const LISTENING_JOB_KINDS = ['listen','listen_chapter','voice_preview'];
 function renderJob() {
   const banner = $('#job-banner');
-  const job = busyJob() || state.jobs[0];
+  // The banner shows a job while it runs, then its outcome until you dismiss it.
+  // A job that ended before this page watched it does not claim the banner.
+  const watched = state.watchedJobs ||= new Set(), dismissed = state.dismissedJobs ||= new Set();
+  for (const item of state.jobs) if (['running','queued'].includes(item.status)) watched.add(item.id);
+  const job = busyJob() || state.jobs.find(item => watched.has(item.id) && !dismissed.has(item.id) &&
+    !(item.status === 'completed' && LISTENING_JOB_KINDS.includes(item.kind)));
   if (!job) { banner.hidden = true; updateBusyControls(); return; }
   const active = ['running','queued'].includes(job.status);
   banner.hidden = false;
   banner.classList.toggle('failed', ['failed','interrupted','budget_limited','quota_limited'].includes(job.status));
-  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : job.kind === 'performance' ? 'Processing a performance' : 'Recording your story',completed:'Ready for you',failed:'Job stopped',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
-  banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job aria-label="Dismiss job status">${icon('close')}</button>`}`;
+  const labels = {queued:'Queued',running:job.kind === 'analyze' || job.kind === 'analysis' || job.kind === 'pipeline' ? 'Analyzing the story' : job.kind === 'listen_chapter' ? 'Preparing chapter audio' : job.kind === 'performance' ? 'Processing a performance' : 'Recording your story',completed:'Ready for you',failed:'Failed',cancelled:'Cancelled',interrupted:'Interrupted · ready to resume',budget_limited:'Allowance reached · saved work retained',quota_limited:'Daily request quota reached · saved audio kept'};
+  banner.innerHTML = `<span class="job-message"><span class="job-label">${escapeHTML(labels[job.status] || job.status)}</span>${job.error || job.message ? ` · ${escapeHTML(job.error || job.message)}` : ''}</span>${active ? `<progress value="${Number(job.progress) || 0}" max="${Number(job.total) || 1}" aria-label="Job progress"></progress><span>${Number(job.progress) || 0} / ${Number(job.total) || '…'}</span><button class="button subtle" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : `<button class="icon-button small" data-dismiss-job="${escapeHTML(job.id)}" aria-label="Dismiss job status">${icon('close')}</button>`}`;
   updateBusyControls();
   renderProduction();
 }
@@ -1684,13 +1804,14 @@ async function pollJobs(refreshBookOnComplete = true, {jobsOnly = false} = {}) {
     if (state.jobPollToken === token) state.jobPollToken = null;
   }
 }
-async function startJob(kind, scope = {}) {
+async function startJob(kind, scope = {}, {confirmed = false} = {}) {
   if (!state.book || busyJob()) return;
   const provider = $(kind === 'analyze' ? '#analysis-provider' : '#render-provider').value;
   if (cloudProviders.includes(provider) && !providerHasKey(provider)) { openSettings(provider); toast(`Add ${provider === 'gemini' ? 'a' : 'an'} ${analysisLabels[provider]} API key to use ${kind === 'analyze' ? 'story analysis' : 'narration'}.`); return; }
   if (provider === 'system' && state.status?.providers?.find(p => p.id === 'system')?.available === false) { toast('Device narration is unavailable on this server. Connect Gemini or Breeze in settings.', true); return; }
   const breeze = state.status?.providers?.find(p => p.id === 'breeze');
   if (kind === 'render' && provider === 'breeze' && breeze?.available !== true) { openSettings('breeze'); toast(breeze?.reason || 'Connect your Breeze server in Settings to narrate with Breeze.'); return; }
+  if (kind === 'render' && !confirmed && renderNeedsConfirm(provider, scope)) { void openRenderConfirm(scope, provider); return null; }
   const id = state.book.id;
   stopAudio({clear:true});
   updateBusyControls(true);
@@ -1702,6 +1823,105 @@ async function startJob(kind, scope = {}) {
     await pollJobs(true);
     return job;
   } catch (error) { toast(error.message, true); updateBusyControls(); return null; }
+}
+// Narrate book and Narrate scene with a billed (Gemini) or GPU-bound (Breeze)
+// provider show an estimate first; nothing is posted until its Confirm. Device
+// narration is free and starts at once, as does one passage (Narrate/Retake).
+function renderNeedsConfirm(provider, scope = {}) { return ['gemini','breeze'].includes(provider) && !scope.segment_id; }
+const plural = (count, word) => `${Number(count).toLocaleString()} ${word}${count === 1 ? '' : 's'}`;
+function approxSpan(seconds) {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+// A client estimate: the server decides reuse from each take's recipe, so the
+// reused count is approximate and requests are an upper bound.
+function renderEstimate(scope, provider) {
+  const book = state.book;
+  const selected = book.segments.filter(segment => !scope.scene_id || segment.scene_id === scope.scene_id);
+  const model = narrationModel(provider);
+  const reusable = selected.filter(segment => playable(segment) && segment.audio.provider === provider && (!model || !segment.audio.model || segment.audio.model === model));
+  const toNarrate = selected.filter(segment => !reusable.includes(segment));
+  const seconds = toNarrate.reduce((sum, segment) => sum + Math.max(.5, ((segment.end - segment.start) || segment.text?.length || 0) / 14), 0);
+  const scene = scope.scene_id ? book.scenes.find(item => item.id === scope.scene_id) || null : null;
+  const quota = provider === 'gemini' ? state.status?.tts_quota?.[model] || null : null;
+  return {provider, model, scene, passages:selected.length, reused:reusable.length, requests:toNarrate.length, seconds, quota,
+    remaining:quota ? Math.max(0, (Number(quota.rpd) || 0) - (Number(quota.requests_today) || 0)) : null,
+    rpm:provider === 'gemini' ? Number(state.status?.tts_limits?.[model]?.rpm) || null : null,
+    blockedSeconds:provider === 'gemini' ? Number(state.status?.tts_rate?.[model]?.daily_block_seconds) || 0 : 0};
+}
+function renderConfirmMarkup(pending) {
+  const estimate = renderEstimate(pending.scope, pending.provider);
+  const gemini = estimate.provider === 'gemini', name = NARRATION_LABELS[estimate.provider] || estimate.provider;
+  const chapter = estimate.scene && state.book.chapters.find(item => item.id === estimate.scene.chapter_id);
+  const scope = estimate.scene ? `Scene “${estimate.scene.title || 'Untitled scene'}”${chapter ? ` · ${chapter.title}` : ''}` : `Whole book · ${state.book.title || 'Untitled'}`;
+  const notes = [];
+  if (pending.loading) notes.push('<p class="ap-help" role="status">Checking today’s request count… Nothing is sent.</p>');
+  if (gemini) {
+    notes.push(`<p class="ap-help">Studio narration sends one request per passage to Google. Passages whose saved ${escapeHTML(name)} take still matches are reused without a request; the reused count is an estimate.${estimate.rpm ? ` At ${estimate.rpm} requests a minute this takes at least ${escapeHTML(approxSpan(estimate.requests / estimate.rpm * 60))}.` : ''}</p>`);
+    notes.push('<p class="ap-note">Cost: unknown. Bardic has no price for Gemini speech, so it cannot estimate the charge. Google bills each request; this is not free. There is no spending cap.</p>');
+    if (estimate.quota) {
+      const reset = new Date(estimate.quota.resets_at);
+      const resetText = Number.isNaN(reset.getTime()) ? '' : ` It resets at ${reset.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}.`;
+      notes.push(`<p class="ap-help">This library has used ${escapeHTML(estimate.quota.requests_today)} of ${escapeHTML(estimate.quota.rpd)} daily Gemini speech requests today, so ${escapeHTML(plural(estimate.remaining, 'request'))} ${estimate.remaining === 1 ? 'is' : 'are'} left.${escapeHTML(resetText)}</p>`);
+    } else if (!pending.loading) notes.push(`<p class="ap-help">Today’s Gemini request count could not be read${pending.statusError ? ` (${escapeHTML(pending.statusError)})` : ''}.</p>`);
+    if (estimate.blockedSeconds > 0) notes.push('<p class="ap-error" role="alert">Google has reported today’s request quota as used up. Requests will fail until the daily reset; recorded passages are kept.</p>');
+    else if (estimate.remaining !== null && estimate.requests > estimate.remaining) notes.push(`<p class="ap-error" role="alert">This needs more requests than remain today. The job stops at the daily limit; passages already recorded are kept, and you can narrate again after the reset.</p>`);
+  } else {
+    notes.push(`<p class="ap-help">Breeze narrates on your server with no per-request charge, but it uses that machine’s GPU, which it shares with self-hosted analysis. About ${escapeHTML(approxSpan(estimate.seconds))} of audio to make; Breeze runs at roughly real-time speed, so expect about that long. Passages whose saved Breeze take still matches are reused.</p>`);
+  }
+  const what = estimate.scene ? 'scene' : 'whole book';
+  const label = pending.starting ? 'Starting…' : gemini ? `Narrate ${what} · up to ${plural(estimate.requests, 'Gemini request')}` : `Narrate ${what} · ${plural(estimate.requests, 'passage')} on Breeze`;
+  return `<section class="ap-plan render-confirm-panel" aria-label="Narration estimate"><h3 tabindex="-1" data-render-confirm-heading>Review before narrating</h3><p class="ap-help">${escapeHTML(scope)} · ${escapeHTML(name)}${gemini ? ' · paid' : ' · your GPU'}. Nothing has been sent.</p>
+    <dl class="ap-plan-totals"><div><dt>Passages in scope</dt><dd>${escapeHTML(estimate.passages.toLocaleString())}</dd></div><div><dt>Already have audio (reused)</dt><dd>${escapeHTML(`about ${estimate.reused.toLocaleString()}`)}</dd></div><div><dt>${gemini ? 'Requests needed' : 'Passages to narrate'}</dt><dd>${escapeHTML(`up to ${estimate.requests.toLocaleString()}`)}</dd></div><div><dt>Cost</dt><dd>${gemini ? 'Unknown' : 'No charge'}</dd></div></dl>
+    ${notes.join('')}
+    <div class="ap-actions"><button type="button" class="button subtle" data-render-confirm-action="cancel">Cancel</button><button type="button" class="button primary" data-render-confirm-action="confirm" ${pending.loading || pending.starting || busyJob() ? 'disabled' : ''}>${escapeHTML(label)}</button></div></section>`;
+}
+function paintRenderConfirm() {
+  const pending = state.renderConfirm?.bookId === state.book?.id ? state.renderConfirm : null;
+  const html = pending ? renderConfirmMarkup(pending) : '';
+  const sceneId = pending?.scope.scene_id || null;
+  const host = $('#render-confirm');
+  if (host) { host.innerHTML = pending && !sceneId ? html : ''; host.hidden = !pending || Boolean(sceneId); }
+  $$('[data-render-confirm-host]').forEach(node => {
+    const shown = Boolean(sceneId) && node.dataset.renderConfirmHost === sceneId;
+    node.innerHTML = shown ? html : ''; node.hidden = !shown;
+  });
+}
+function focusRenderConfirm() {
+  const heading = $$('[data-render-confirm-heading]')[0];
+  heading?.scrollIntoView?.({behavior:scrollMotion(), block:'nearest'});
+  heading?.focus?.({preventScroll:true});
+}
+async function openRenderConfirm(scope, provider) {
+  if (!state.book) return;
+  const pending = state.renderConfirm = {scope:{...scope}, provider, bookId:state.book.id, loading:provider === 'gemini'};
+  paintRenderConfirm(); focusRenderConfirm();
+  if (provider !== 'gemini') return;
+  // Today's request count comes from a fresh, read-only status check.
+  try { await refreshStatus({syncSettings:false}); }
+  catch (error) { pending.statusError = error.message; }
+  if (state.renderConfirm !== pending) return;
+  pending.loading = false;
+  paintRenderConfirm();
+}
+function closeRenderConfirm() {
+  if (!state.renderConfirm) return;
+  state.renderConfirm = null;
+  paintRenderConfirm();
+}
+async function confirmRender() {
+  const pending = state.renderConfirm;
+  if (!pending || pending.loading || pending.starting || pending.bookId !== state.book?.id) return;
+  if ($('#render-provider').value !== pending.provider) {
+    closeRenderConfirm();
+    toast('The narration provider changed, so the estimate was closed. Choose Narrate again to see the new one.');
+    return;
+  }
+  pending.starting = true; paintRenderConfirm();
+  const job = await startJob('render', pending.scope, {confirmed:true});
+  if (state.renderConfirm !== pending) return;
+  if (job) closeRenderConfirm();
+  else { pending.starting = false; paintRenderConfirm(); }
 }
 // A seeded provider (Breeze) returns the same take for the same seed. Retaking
 // an existing take of that provider first saves a new random passage seed.
@@ -1773,7 +1993,7 @@ $('#reader-listen-setup')?.addEventListener('click', openListeningSettings);
 $('#studio-cast-link')?.addEventListener('click', () => setTab('cast', {focus:true}));
 $('#studio-script-link')?.addEventListener('click', () => {
   const heading = $('#script-heading');
-  heading?.scrollIntoView({behavior:'smooth',block:'start'});
+  heading?.scrollIntoView({behavior:scrollMotion(),block:'start'});
   heading?.focus({preventScroll:true});
 });
 $('#chapter-list').addEventListener('click', event => { const button = event.target.closest('[data-chapter]'); if (button) setChapter(button.dataset.chapter); });
@@ -1781,8 +2001,16 @@ $('#reader-chapter')?.addEventListener('change', event => setChapter(event.targe
 $('#previous-chapter').addEventListener('click', () => { const index = state.book.chapters.findIndex(c => c.id === state.chapterId); if (index > 0) setChapter(state.book.chapters[index - 1].id); });
 $('#next-chapter').addEventListener('click', () => { const index = state.book.chapters.findIndex(c => c.id === state.chapterId); if (index < state.book.chapters.length - 1) setChapter(state.book.chapters[index + 1].id); });
 $('#studio-chapter').addEventListener('change', event => setChapter(event.target.value, {scroll:false}));
-$('#reader-text').addEventListener('click', event => { const passage = event.target.closest('[data-segment]'); if (passage) startSegment(passage.dataset.segment); });
-$('#reader-text').addEventListener('keydown', event => { if (['Enter',' '].includes(event.key)) { const passage = event.target.closest('[data-segment]'); if (passage) { event.preventDefault(); startSegment(passage.dataset.segment); } } });
+$('#reader-text').addEventListener('click', event => { const passage = event.target.closest('[data-segment]'); if (passage) void goToPassage(passage.dataset.segment); });
+$('#reader-text').addEventListener('keydown', event => {
+  const passage = event.target.closest('[data-segment]');
+  if (!passage || !['Enter',' '].includes(event.key)) return;
+  event.preventDefault();
+  // Enter moves your place; Space is Play/Pause, starting from this passage.
+  if (event.key === 'Enter') void goToPassage(passage.dataset.segment);
+  else if (narrationPlaying()) void togglePlayback();
+  else void startSegment(passage.dataset.segment);
+});
 $('#cast-grid').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.target;
@@ -1861,8 +2089,16 @@ $('#analysis-scope').addEventListener('change', renderAnalysisProgress);
 $('#analyze-from-cast').addEventListener('click', () => { setTab('analysis', {focus:true}); });
 $('#studio-analysis-link')?.addEventListener('click', () => { setTab('analysis', {focus:true}); });
 $('#render-button').addEventListener('click', () => startJob('render'));
+$('#studio-view').addEventListener('click', event => {
+  const action = event.target.closest('[data-render-confirm-action]')?.dataset.renderConfirmAction;
+  if (action === 'confirm') void confirmRender();
+  else if (action === 'cancel') closeRenderConfirm();
+});
 $('#render-provider').addEventListener('change', () => {
   $('#render-provider').dataset.chosen = 'true'; updateProviderHint();
+  // An estimate describes one provider; a new provider needs a new estimate.
+  closeRenderConfirm();
+  if (state.book) renderStudio();
   // Choosing an unchecked Breeze server fetches its voice list once; no audio is generated.
   if ($('#render-provider').value === 'breeze' && state.status?.breeze?.state === 'unchecked') void refreshBreeze();
 });
@@ -1874,7 +2110,7 @@ $('#analysis-provider').addEventListener('change', async event => {
   catch (error) { $('#analysis-provider').value = state.status?.analysis_provider || 'local'; toast(error.message, true); }
   finally { event.target.disabled = false; updateAnalysisHint(); renderProduction(); }
 });
-$('#job-banner').addEventListener('click', async event => { const cancel = event.target.closest('[data-cancel-job]'); if (cancel) { cancel.disabled = true; try { await post(`/api/jobs/${encodeURIComponent(cancel.dataset.cancelJob)}/cancel`); await pollJobs(true); } catch (error) { toast(error.message,true); cancel.disabled = false; } } if (event.target.closest('[data-dismiss-job]')) $('#job-banner').hidden = true; });
+$('#job-banner').addEventListener('click', async event => { const cancel = event.target.closest('[data-cancel-job]'); if (cancel) { cancel.disabled = true; try { await post(`/api/jobs/${encodeURIComponent(cancel.dataset.cancelJob)}/cancel`); await pollJobs(true); } catch (error) { toast(error.message,true); cancel.disabled = false; } } const dismiss = event.target.closest('[data-dismiss-job]'); if (dismiss) { (state.dismissedJobs ||= new Set()).add(dismiss.dataset.dismissJob); renderJob(); } });
 
 // Import and provider settings.
 ['#sidebar-import','#import-button','#welcome-import','#header-import'].forEach(id => $(id).addEventListener('click', openImport));
@@ -2017,6 +2253,9 @@ $('#listen-sheet-body').addEventListener('click', event => {
   const action = target.dataset.sheetAction;
   if (action === 'start') {
     if (listen?.getPerformance?.(state.book)) listen.leavePerformance(state.book);
+    // Its label named the paid narrator, so this click is the session's consent.
+    const chosen = listen?.choices?.(state.book);
+    if (chosen?.provider === 'gemini' && chosen.available) grantPaidConsent();
     void startListening();
   }
   else if (action === 'resume-performance') void startListening();

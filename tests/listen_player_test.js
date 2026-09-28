@@ -8,6 +8,7 @@ function between(start,end){ const a=source.indexOf(start),b=source.indexOf(end,
 const functions=[
   between('function saveProgress(', 'function stopAudio('),
   between('function stopAudio(', 'function renderLibrary('),
+  between('function renderBookStatus(', 'function renderReader('),
   between('function renderReader(', 'function castVoiceBlock('),
   between('function setTab(', 'function updateHighlight('),
   between('async function startSegment(', 'function updateProviderHint('),

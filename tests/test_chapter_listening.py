@@ -383,6 +383,9 @@ def test_chapter_job_generates_contiguous_chunks_with_exact_source_and_clip_proj
     stages = [json.loads(body)['stage'] for (body,) in client.app.state.runtime.store.connect().execute('SELECT body FROM resource_operations')]
     assert stages.count('listen_chunk') == len(calls)
     assert requests_today(client.app.state.runtime.store, DEFAULT_TTS_MODEL) == len(calls)
+    # Status reports the same count, so a Studio estimate can compare with what is left today.
+    quota = client.get('/api/status').json()['tts_quota'][DEFAULT_TTS_MODEL]
+    assert quota['requests_today'] == len(calls) and quota['rpd'] >= 1 and quota['resets_at'] and quota['scope'] == 'this library'
     # Rows are immutable.
     with pytest.raises(Exception):
         with client.app.state.runtime.store.connect() as conn:

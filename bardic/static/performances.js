@@ -85,7 +85,8 @@
     if (job?.status === 'quota_limited') return `Paused at the daily request limit · ${ready}`;
     if (job?.status === 'budget_limited') return `Paused at the spending allowance · ${ready}`;
     if (job?.status === 'failed') return `Stopped on an error · ${ready}`;
-    if (['cancelled','interrupted'].includes(job?.status)) return `Stopped · ${ready}`;
+    if (job?.status === 'cancelled') return `Cancelled · ${ready}`;
+    if (job?.status === 'interrupted') return `Interrupted when Bardic stopped · ${ready}`;
     return progress.passages_total && progress.passages_ready >= progress.passages_total ? `Ready · ${span(progress.seconds_ready)} of listening` : ready;
   }
   function cardMarkup(panel, record) {
@@ -142,20 +143,20 @@
       <span class="field-label" id="performance-provider-label">Narration</span>
       <div class="performance-providers" role="radiogroup" aria-labelledby="performance-provider-label">${['system','gemini','breeze'].map(id => {
         const option = listen?.narratorOptions?.(book, id);
-        return `<button type="button" role="radio" data-performance-provider="${id}" aria-checked="${id === provider}"><strong>${PROVIDER_LABELS[id]}</strong><small>${option?.available === false ? 'Not set up' : id === 'gemini' ? 'Cloud' : id === 'breeze' ? 'Your server' : 'Free'}</small></button>`;
+        return `<button type="button" role="radio" data-performance-provider="${id}" aria-checked="${id === provider}"><strong>${PROVIDER_LABELS[id]}</strong><small>${option?.available === false ? 'Not set up' : id === 'gemini' ? 'Paid · cloud' : id === 'breeze' ? 'Your server' : 'Free'}</small></button>`;
       }).join('')}</div>
       ${form.mode === 'simple' ? `<label class="field-label" for="performance-voice">Voice</label><select id="performance-voice" data-performance-field="voice">${(narrator?.voices || []).map(item => `<option value="${escape(item.id)}" ${item.id === voice ? 'selected' : ''} ${item.usable || item.id === voice ? '' : 'disabled'}>${escape(item.name)}${item.locale ? ` · ${escape(item.locale)}` : ''}</option>`).join('')}</select>` : ''}
       <div class="performance-chapters-head"><span class="field-label" id="performance-chapters-label">Chapters</span><span><button type="button" class="button text-button" data-performance-action="all">All</button><button type="button" class="button text-button" data-performance-action="none">None</button></span></div>
       <div class="performance-chapters" role="group" aria-labelledby="performance-chapters-label">${book.chapters.map(chapter => {
         const ready = result?.chapters?.find(item => item.id === chapter.id);
-        return `<label><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${form.chapters.has(chapter.id) ? 'checked' : ''}><span>${escape(chapter.title || 'Untitled section')}</span><small>${ready ? `${ready.passages_ready}/${ready.passages_total} saved` : `${counts.get(chapter.id) || 0} passages`}</small></label>`;
+        return `<label><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${form.chapters.has(chapter.id) ? 'checked' : ''}><span>${escape(chapter.title || 'Untitled section')}</span><small>${ready ? `${ready.passages_ready}/${ready.passages_total} saved` : `${counts.get(chapter.id) || 0} ${counts.get(chapter.id) === 1 ? 'passage' : 'passages'}`}</small></label>`;
       }).join('')}</div>
       <p class="performance-summary" role="status">${escape(summary)}</p>
       ${quota ? `<p class="field-help">${escape(quota)}</p>` : ''}
       ${(result?.notes || []).map(note => `<p class="field-help">${escape(note)}</p>`).join('')}
       ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem)}</p>`).join('')}
       ${panel.formError ? `<p class="inline-error" role="alert">${escape(panel.formError)}</p>` : ''}
-      <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : 'Create performance'}</button></div>
+      <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="cancel-new">Cancel</button><button type="submit" class="button primary" ${!form.chapters.size || panel.creating || result?.problems?.length || narrator?.available === false ? 'disabled' : ''}>${panel.creating ? 'Starting…' : provider === 'gemini' && result?.passages_to_generate ? `Create performance · about ${escape(result.requests_estimate)} paid Gemini ${result.requests_estimate === 1 ? 'request' : 'requests'}` : 'Create performance'}</button></div>
     </form>`;
   }
   function paint(panel) {

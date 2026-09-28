@@ -11,6 +11,8 @@
   const sourceKey = segment => JSON.stringify([segment.id,segment.chapter_id,segment.start,segment.end,segment.text]);
   const PROVIDERS = ['system','gemini','breeze'];
   const PROVIDER_LABELS = {system:'Device',gemini:'Gemini',breeze:'Breeze'};
+  // Providers whose requests are billed. Breeze is free per request (your GPU).
+  const PAID = new Set(['gemini']);
   // Only Gemini chooses among speech models; device voices use the macOS model
   // and Breeze resolves its single model on the server.
   const modelFor = state => state.provider === 'gemini' ? state.model : state.provider === 'system' ? 'macos-say' : null;
@@ -133,15 +135,18 @@
   }
   // keepAhead: the listener is moving within the book while still listening,
   // so an automatically started chapter job is still wanted.
-  function stop(book, {keepAhead = false} = {}) {
+  // pause: the listener pressed Pause (the player, Space or a media key), so
+  // the message says Paused; Stop and every other caller say Stopped.
+  function stop(book, {keepAhead = false, pause = false} = {}) {
     const state = stateFor(book);
     if (!state) return;
     invalidate(state);
     const cancelledAhead = !keepAhead && cancelAutomatic(state);
-    state.message = cancelledAhead ? 'Stopped. Generation ahead of you was cancelled; finished audio is saved.'
+    const verb = pause ? 'Paused' : 'Stopped';
+    state.message = cancelledAhead ? `${verb}. Generation ahead of you was cancelled, so nothing more is requested; finished audio is saved.`
       : chunked(state) && state.chapter.job && !CHAPTER_TERMINAL.has(state.chapter.job.status)
-      ? 'Playback stopped. Chapter generation continues; use Stop generating to cancel it.'
-      : 'Stopped. Finished simple takes are saved for the next listen.';
+      ? `${pause ? 'Paused' : 'Playback stopped'}. Chapter generation continues; use Stop generating to cancel it.`
+      : `${verb}. Finished simple takes are saved for the next listen.`;
     paint(state.panel);
   }
   // A chapter job that continuous listening started on its own serves only the
@@ -775,6 +780,12 @@
     paint(state.panel);
   }
   const STOPPED = new Set(['failed','cancelled','interrupted','quota_limited','budget_limited']);
+  const STOPPED_HEADLINES = {
+    failed:'Chapter preparation failed · finished audio is saved',
+    cancelled:'Chapter preparation cancelled · finished audio is saved',
+    interrupted:'Chapter preparation interrupted when Bardic stopped · finished audio is saved',
+    budget_limited:'Spending allowance reached · finished audio is saved',
+  };
   const LIMITED = new Set(['quota_limited','budget_limited']);
   // A stopped job needs an explicit Resume, except one that Pause cancelled
   // because continuous listening had started it: nothing uncertain was lost.
@@ -1047,7 +1058,9 @@
       headline += !estimate.remainingSeconds ? '' : estimate.quotaBlocked ? ' · the rest needs requests after the daily reset'
         : Number.isFinite(estimate.etaSeconds) ? ` · done in ~${span(estimate.etaSeconds)}` : ' · some passages here are outside this job';
     } else if (job?.status === 'quota_limited') headline = 'Daily request quota reached · finished audio is saved';
-    else if (job && ['failed','cancelled','interrupted'].includes(job.status) && estimate.remainingSeconds) headline = 'Chapter preparation stopped · finished audio is saved';
+    // Each way a job can end keeps its own name: a failure, your cancel and an
+    // interrupted server are different events with different next steps.
+    else if (job && STOPPED_HEADLINES[job.status] && estimate.remainingSeconds) headline = STOPPED_HEADLINES[job.status];
     else headline = estimate.remainingSeconds ? 'Not queued yet' : 'Chapter ready';
     lines.push(`<div><span>${escape(headline)}</span><span>${estimate.readyPassages} of ${estimate.totalPassages} passages from here ready</span></div>`);
     lines.push(`<progress max="${estimate.readySeconds + estimate.remainingSeconds || 1}" value="${estimate.readySeconds}" aria-label="Chapter audio generated"></progress>`);
@@ -1055,6 +1068,7 @@
     if (estimate.remainingSeconds) {
       let safety;
       if (!active && job?.status === 'quota_limited') safety = {tone:'idle',text:'Generation is paused until the daily request quota resets. Choose Resume chapter after the reset; finished audio plays now.'};
+      else if (!active && job?.status === 'budget_limited') safety = {tone:'idle',text:'Generation stopped at the spending allowance. Finished audio plays now; Resume chapter asks for more.'};
       else if (!active) safety = {tone:'idle',text:'Queue the chapter to keep generating ahead of you.'};
       else if (estimate.quotaBlocked) safety = {tone:'warn',text:'The remaining chunks need more requests than are left today. Playback will stop where generation stops.'};
       else if (estimate.safe) safety = {tone:'safe',text:`Safe to listen at ${rate}× — generation should stay ahead of you.`};
@@ -1153,6 +1167,16 @@
     }
     return {breezeVoiceReady,available,availability,voices,selectedVoice};
   }
+  // The narrator as people should see it: a voice name (never a raw library
+  // id), the provider and whether its requests are billed.
+  function describe(book) {
+    const state = stateFor(book);
+    if (!state) return null;
+    const {voices,selectedVoice} = narratorChoices(state);
+    const voiceName = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name ||
+      (state.provider === 'system' ? 'Default device voice' : state.provider === 'breeze' ? 'Default Breeze voice' : selectedVoice || 'Kore');
+    return {mode:state.mode,provider:state.provider,providerLabel:PROVIDER_LABELS[state.provider] || state.provider,voiceName,paid:PAID.has(state.provider)};
+  }
   // A compact view of the narrator choice for the app's listen sheet.
   function choices(book) {
     const state = stateFor(book);
@@ -1180,7 +1204,7 @@
     const html = `<section class="simple-listen" aria-label="Listening settings">
       <div class="simple-listen-heading">
         <div><h3>Saved performance</h3><p>${escape(record?.name || 'Saved performance')}${record?.narrator_label ? ` · ${escape(record.narrator_label)}` : ''}</p></div>
-        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="performance" selected>Saved performance</option><option value="simple">One narrator</option><option value="enhanced">Studio voices</option></select></label>
+        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="performance" selected>Saved performance</option><option value="simple">One narrator</option><option value="enhanced">Full cast (Studio takes)</option></select></label>
       </div>
       <p class="simple-listen-note">${escape(status)}. Plays only audio this performance already has; nothing new is generated while you listen.</p>
       <div class="simple-listen-actions">
@@ -1241,11 +1265,11 @@
     const summary = drawer?.querySelector?.('#listening-summary');
     const narratorLabel = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name || selectedVoice || 'Default device voice';
     const providerLabel = PROVIDER_LABELS[state.provider] || state.provider;
-    const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Studio voices selected · Narrator setup';
-    const costLabel = state.provider === 'gemini' ? 'usage may incur charges' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free on this device';
+    const sourceLabel = state.mode === 'simple' ? 'One narrator' : 'Full cast selected · Narrator setup';
+    const costLabel = PAID.has(state.provider) ? 'paid' : state.provider === 'breeze' ? 'runs on your Breeze server' : 'free on this device';
     const selectionSummary = `${sourceLabel}: ${narratorLabel} / ${providerLabel} · ${costLabel}`;
     const providerNote = state.provider === 'gemini'
-      ? 'Gemini receives the chapter text in large chunks paced to your request limits, and may incur charges, including examples. No narration spending cap is enforced.'
+      ? 'Gemini is paid: it receives the chapter text in large chunks paced to your request limits, and Google bills each request, including examples. Bardic has no price for Gemini speech, so it cannot show a cost. No narration spending cap is enforced. The first Play in each browser session asks before sending anything.'
       : state.provider === 'breeze'
         ? 'Breeze narrates on your server over the local network, so passage text is sent there. There are no per-request charges. It generates at about real-time speed; prepare the chapter ahead for faster playback.'
         : 'Device narration stays on this computer and has no model charges.';
@@ -1274,12 +1298,12 @@
     if (disclosure) panel.optionsOpen = disclosure.open;
     const html = `<section class="simple-listen" aria-label="Listening settings">
       <div class="simple-listen-heading">
-        <div><h3>Listen your way</h3><p>${state.mode === 'simple' ? 'One narrator, ready when you are.' : 'Choose one narrator, or play your saved Studio voices.'}</p></div>
-        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>One narrator</option><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Studio voices</option></select></label>
+        <div><h3>Listen your way</h3><p>${state.mode === 'simple' ? 'One narrator, ready when you are.' : 'Choose one narrator, or play the full cast from your Studio takes.'}</p></div>
+        <label>Playback source<select data-listen-field="mode" aria-label="Listening mode"><option value="simple" ${state.mode === 'simple' ? 'selected' : ''}>One narrator</option><option value="enhanced" ${state.mode === 'enhanced' ? 'selected' : ''}>Full cast (Studio takes)</option></select></label>
       </div>
       <div class="simple-listen-settings">
-        <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · cloud</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · local network</option></select></label>
-        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !breezeVoiceReady) ? 'disabled' : ''}>Hear example</button></div>
+        <label>Provider<select data-listen-field="provider" aria-label="Simple narration provider"><option value="system" ${state.provider === 'system' ? 'selected' : ''}>Device voices · free & local</option><option value="gemini" ${state.provider === 'gemini' ? 'selected' : ''}>Gemini · paid cloud</option><option value="breeze" ${state.provider === 'breeze' ? 'selected' : ''}>Breeze · local network</option></select></label>
+        <div class="simple-listen-voice"><label>Narrator<select data-listen-field="voice" aria-label="Simple narrator voice">${voices.map(voiceOption).join('')}</select></label><button type="button" class="button subtle" data-listen-action="preview" title="${previewDescription}" ${panel.options.previewing || anyBusy || (state.provider === 'breeze' && !breezeVoiceReady) ? 'disabled' : ''}>${PAID.has(state.provider) ? 'Hear example · paid' : 'Hear example'}</button></div>
       </div>
       <p class="simple-listen-note simple-listen-disclosure">${escape(providerNote)}</p>
       ${!available && !canUseCache ? `<p class="simple-listen-unavailable">${escape(unavailableNote)}</p>` : ''}
@@ -1328,6 +1352,27 @@
     if (focusSelector) panel.container.querySelector(focusSelector)?.focus({preventScroll:true});
   }
 
+  // Queue chapter, Resume chapter, Prepare rest of chapter and Retry preparation.
+  function prepareAction(panel, action) {
+    const state = panel.state;
+    if (!state) return;
+    const segment = state.book.segments.find(item => item.id === (state.intent?.segmentId || panel.options.segmentId)) ||
+      state.book.segments.find(item => item.chapter_id === panel.options.chapterId);
+    if (!segment) return;
+    if (action === 'prepare-chapter' && chunked(state)) { void queueChapter(state,segment); return; }
+    if (action === 'retry' && state.intent?.type === 'play' && state.intent.phase === 'playing') {
+      state.error = '';
+      state.intent.blocked = false;
+      schedule(state);
+      paint(panel);
+      return;
+    }
+    const retryChapter = action === 'prepare-chapter' || state.intent?.type === 'chapter';
+    panel.options.onStop?.();
+    if (state.mode !== 'simple') change(panel,'mode','simple');
+    if (retryChapter) void prepareChapter(state.book,segment,{playbackRate:panel.options.playbackRate});
+    else { stop(state.book); state.error = ''; panel.options.onPlay?.(segment.id); }
+  }
   async function loadSaved(state, force = false) {
     if (!state.sessionId || state.sessionKey !== configKey(state)) return;
     const key = `${state.sessionId}:${state.book.revision}`;
@@ -1389,23 +1434,9 @@
         if (action === 'stop') { stop(panel.state.book); panel.options.onStop?.(); }
         if (action === 'stop-generating') { stopChapter(panel.state); return; }
         if (action === 'prepare-chapter' || action === 'retry') {
-          const state = panel.state;
-          const segment = state.book.segments.find(item => item.id === (state.intent?.segmentId || panel.options.segmentId)) ||
-            state.book.segments.find(item => item.chapter_id === panel.options.chapterId);
-          if (!segment) return;
-          if (action === 'prepare-chapter' && chunked(state)) { void queueChapter(state,segment); return; }
-          if (action === 'retry' && state.intent?.type === 'play' && state.intent.phase === 'playing') {
-            state.error = '';
-            state.intent.blocked = false;
-            schedule(state);
-            paint(panel);
-            return;
-          }
-          const retryChapter = action === 'prepare-chapter' || state.intent?.type === 'chapter';
-          panel.options.onStop?.();
-          if (state.mode !== 'simple') change(panel,'mode','simple');
-          if (retryChapter) void prepareChapter(state.book,segment,{playbackRate:panel.options.playbackRate});
-          else { stop(state.book); state.error = ''; panel.options.onPlay?.(segment.id); }
+          // These send new requests; a billed narrator needs this session's consent first.
+          if (panel.options.confirmPaid && !panel.options.confirmPaid(() => prepareAction(panel,action))) return;
+          prepareAction(panel,action);
         }
         if (action === 'start') {
           // A performance plays through the same toggle; it must never switch to live narration here.
@@ -1433,7 +1464,10 @@
       state = {book,version:0,takes:new Map(),queue:[],active:null,intent:null,job:null,knownJob:null,loading:false,error:'',message:'',loadedKey:null,
         chapter:{job:null,preview:null,previewKey:null,watching:false,waiters:[],takesMark:null,error:'',discovered:null,missing:0,
           autoJobId:null,autoStarting:null,pauseCancelled:null,retryAt:0,hold:false},
-        mode:prior.mode === 'simple' || (prior.mode === 'performance' && prior.performanceId) ? prior.mode : 'enhanced',
+        // A book with no saved choice starts with one narrator, unless it already
+        // has Studio takes to play. A saved choice (including Full cast) is kept.
+        mode:prior.mode === 'simple' || (prior.mode === 'performance' && prior.performanceId) ? prior.mode
+          : prior.mode === 'enhanced' || book.segments.some(segment => valid(segment.audio)) ? 'enhanced' : 'simple',
         performanceId:prior.mode === 'performance' ? prior.performanceId : null,performance:null,provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
         voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore',
           breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,library:options.voiceLibrary || null,
@@ -1499,6 +1533,6 @@
     paint(state.panel);
   }
   window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance,
-    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,isContinuous,setContinuous,
+    chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,describe,isContinuous,setContinuous,
     nextSegment,usePerformance,leavePerformance,getPerformance,refreshPerformance,narratorOptions};
 })();

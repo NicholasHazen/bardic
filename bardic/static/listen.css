@@ -75,3 +75,26 @@
 .passage.listen-queued { text-decoration-style: dashed; text-decoration-thickness: 1px; text-decoration-color: rgba(120,128,120,.35); }
 @keyframes listen-generating { 50% { text-decoration-color: rgba(99,81,109,.2); } }
 @media (prefers-reduced-motion: reduce) { .passage.listen-generating { animation: none; } }
+
+/* First paid Play per book and browser session: an inline question above the
+   player (workspace and reader view). JS sets its bottom offset to the player. */
+.paid-consent {
+  position:fixed; z-index:25; bottom:112px; left:calc(var(--sidebar, 0px) + 16px); right:16px; margin:0 auto; max-width:620px;
+  display:grid; gap:10px; padding:14px 16px; border:1px solid var(--line, #e5e1e7); border-radius:12px;
+  background:var(--white, #fff); color:var(--ink, #292730); box-shadow:inset 3px 0 var(--green, #63516d), 0 10px 30px #28392b1f;
+}
+.paid-consent[hidden] { display:none; }
+.paid-consent strong { font-size:.9rem; }
+.paid-consent p { margin:6px 0 0; font-size:.78rem; line-height:1.55; }
+.paid-consent .field-help { color:var(--muted, #6f6b75); }
+.paid-consent-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+@media (max-width: 600px) {
+  .paid-consent { left:12px; right:12px; }
+  .paid-consent-actions .button { flex:1 1 auto; }
+}
+.listen-sheet-consent { margin:0 0 10px; }
+
+/* Studio Narrate book / Narrate scene estimate (styled like the Analysis run preview). */
+.render-confirm[hidden] { display:none; }
+.render-confirm { margin:0 0 18px; }
+.render-confirm .ap-plan-totals dd { overflow-wrap:anywhere; }

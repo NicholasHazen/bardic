@@ -942,6 +942,16 @@ def create_app(data_dir: Path | None = None):
     def status(runtime):
         voices = list_system_voices()
         with runtime.store.lock:
+            # Today's Gemini speech requests for the selected model, so a whole-book
+            # or scene estimate can compare its request count with what is left.
+            tts_model = runtime.preferences["tts_model"]
+            tts_limits = runtime.preferences["tts_limits"].get(tts_model, dict(DEFAULT_TTS_LIMITS))
+            # The usage ledger's table appears with the first recorded operation;
+            # until then this library has recorded no requests. Status stays read-only.
+            with runtime.store.connect() as conn:
+                ledger = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_operations'").fetchone()
+            tts_quota = {tts_model: {"requests_today": requests_today(runtime.store, tts_model) if ledger else 0, "rpd": tts_limits["rpd"],
+                                     "resets_at": quota_day()[1].isoformat(), "scope": "this library"}}
             preferences = copy.deepcopy(runtime.preferences)
             preferences.pop("breeze_catalog", None)
             preferences.pop("gemini_voice_catalog", None)
@@ -965,6 +975,7 @@ def create_app(data_dir: Path | None = None):
                     "model_catalogs": {provider: runtime.model_catalog.view(provider, runtime.api_keys[provider]) for provider in ANALYSIS_CATALOG},
                     "system_voices": voices, "tts_models": TTS_MODELS, "analysis_models": ANALYSIS_MODELS,
                     "tts_rate": {model: LIMITER.view(model) for model in TTS_MODELS},
+                    "tts_quota": tts_quota,
                     "data_directory": str(runtime.store.root), "timing_kind": "segment"}
 
     @app.get("/api/status")
