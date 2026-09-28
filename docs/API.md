@@ -119,4 +119,5 @@ Rules that apply to every `may_charge` operation:
 - **Treat enumerated values as open sets.** Handle an unknown status, kind or state gracefully.
 - **Avoid internal fields.** Fields marked `x-bardic-internal` are storage bookkeeping (edit tracking, fingerprints, server paths) that reach the wire today. Do not depend on them; a later version may remove them.
 - **Operation IDs are stable.** Renaming one is a breaking change.
+- **Generate with defaults optional.** A request field with a documented default may be omitted. Configure generators accordingly: `defaultNonNullable: false` for openapi-typescript, which `npm run contract:codegen` uses and verifies. Response schemas carry no defaults; `required` states which response fields are always present.
 - **Pin the contract version.** `info.version` follows the rules in [`contract/CHANGELOG.md`](../contract/CHANGELOG.md). Pin it, and read the changelog before upgrading.

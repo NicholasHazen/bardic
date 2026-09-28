@@ -4,7 +4,7 @@ This guide describes the code in this checkout. Start with [README](../README.md
 
 ## Reproducible setup
 
-The application uses Python 3.11 or newer, FastAPI, SQLite, and browser JavaScript. Dependencies and version ranges are in [pyproject.toml](../pyproject.toml); resolved dependencies are in [uv.lock](../uv.lock). There is no `requirements.txt`, Node package installation, frontend bundler, or asset build step.
+The application uses Python 3.11 or newer, FastAPI, SQLite, and browser JavaScript. Dependencies and version ranges are in [pyproject.toml](../pyproject.toml); resolved dependencies are in [uv.lock](../uv.lock). There is no `requirements.txt`, frontend bundler, or asset build step. The app and its UI tests need no npm packages. [package.json](../package.json) pins development-only tools (openapi-typescript and TypeScript) for the contract code-generation check; install them with `npm ci`.
 
 For a new checkout:
 
@@ -22,7 +22,7 @@ uv run --frozen python -m bardic
 
 Open `http://127.0.0.1:8765`. Stop the process with Ctrl+C. To keep the owner's library running in the background instead, use the [service](OPERATIONS.md#run-as-a-service). Python dependencies must be available locally or downloaded during the first sync. The examples below use a POSIX shell; adapt environment assignment and virtual-environment paths for other shells.
 
-Node.js is required to execute the JavaScript tests. The tests use Node built-ins; no npm dependencies are needed. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
+Node.js is required to execute the JavaScript tests. The UI tests use Node built-ins and need no npm dependencies. Only `npm run contract:codegen` (and its pytest wrapper, which skips without `npm ci`) uses the pinned dev tools. Use a Node version that provides `node:test`, `structuredClone`, and `FormData` (Node 20+ is a practical baseline). The Python wrappers skip their JavaScript checks if `node` is absent, so a passing pytest run alone does not prove that the UI tests ran.
 
 Device narration additionally requires macOS `say`, installed voices, and `ffmpeg`. Other operating systems can run the app and use Gemini narration, but do not gain a local speech backend automatically. Provider adapters and format validation live in [audio.py](../bardic/audio.py).
 

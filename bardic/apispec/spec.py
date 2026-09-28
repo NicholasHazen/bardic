@@ -21,7 +21,7 @@ from .base import Error, Op, Tag
 # Semantic version of the contract (not of the server). While 0.x, a breaking
 # change bumps the minor version and an additive change bumps the patch
 # version. Every change is recorded in contract/CHANGELOG.md.
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 FAMILIES = ('system', 'library', 'series', 'books', 'inspection', 'listening', 'voices', 'pipeline')
 
@@ -97,6 +97,10 @@ reference is `contract/API-REFERENCE.md`.
   handle an unknown value gracefully.
   Configure code generators to accept unknown enum values (for example
   openapi-generator's `enumUnknownDefaultCase=true`).
+- A request field with a documented default is optional: omit it to get the
+  default. Configure generators accordingly (openapi-typescript:
+  `defaultNonNullable: false`). Response schemas carry no defaults; a response
+  field is always present exactly when it is listed in `required`.
 - Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later
   version may remove.
 - `info.version` follows the rules in `contract/CHANGELOG.md`.
@@ -185,6 +189,10 @@ def finalize(generated: dict) -> dict:
             raise ValueError(f'two different response models are named like {name}; give each view a unique name')
         if name in components and components[name] != definition:
             raise ValueError(f'response model {name} collides with a request schema of the same name')
+        # The server never fills defaults into responses; a `default` there only misleads generators
+        # into treating a sometimes-absent field as always present. Absence is stated by `required`.
+        for prop in definition.get('properties', {}).values():
+            prop.pop('default', None)
         components[name] = definition
 
     for path, methods in schema['paths'].items():

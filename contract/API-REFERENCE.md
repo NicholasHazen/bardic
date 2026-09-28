@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.1.0
+# Bardic 0.1.1
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -56,6 +56,10 @@ reference is `contract/API-REFERENCE.md`.
   handle an unknown value gracefully.
   Configure code generators to accept unknown enum values (for example
   openapi-generator's `enumUnknownDefaultCase=true`).
+- A request field with a documented default is optional: omit it to get the
+  default. Configure generators accordingly (openapi-typescript:
+  `defaultNonNullable: false`). Response schemas carry no defaults; a response
+  field is always present exactly when it is listed in `required`.
 - Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later
   version may remove.
 - `info.version` follows the rules in `contract/CHANGELOG.md`.
@@ -2498,9 +2502,9 @@ Token usage the provider reported for the check request. Absent counts were not 
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `input_tokens` | integer \| null |  | Input tokens. (default `null`) |
-| `output_tokens` | integer \| null |  | Output tokens. (default `null`) |
-| `total_tokens` | integer \| null |  | Total tokens (computed from input and output when not reported). (default `null`) |
+| `input_tokens` | integer \| null |  | Input tokens. |
+| `output_tokens` | integer \| null |  | Output tokens. |
+| `total_tokens` | integer \| null |  | Total tokens (computed from input and output when not reported). |
 
 <a id="schema-analysiscatalogmodel"></a>
 ### AnalysisCatalogModel
@@ -2526,8 +2530,8 @@ prices for standard text requests, not a bill.
 | `pricing_source_url` | string \| null | yes | Provider pricing page the prices came from, or null. |
 | `price_date` | string \| null | yes | Date (YYYY-MM-DD) the prices were recorded, or null. |
 | `availability` | `"unverified"` \| `"listed"` \| `"not_listed"` | yes | `unverified`: from the curated list, not checked (or the refresh listing was partial). `listed`: the provider listed it for this key in the last refresh. `not_listed`: a curated model the complete listing did not include. Listing proves visibility only, not working generation or credit. |
-| `price_valid_until` | string \| null |  | Last date (YYYY-MM-DD) the quoted price applies; absent when open-ended. Cost estimates treat the price as unknown after it. (default `null`) |
-| `price_input_token_limit` | integer \| null |  | Prompt size in tokens above which the quoted price does not apply; absent when none. (default `null`) |
+| `price_valid_until` | string \| null |  | Last date (YYYY-MM-DD) the quoted price applies; absent when open-ended. Cost estimates treat the price as unknown after it. |
+| `price_input_token_limit` | integer \| null |  | Prompt size in tokens above which the quoted price does not apply; absent when none. |
 
 <a id="schema-analysiscensus"></a>
 ### AnalysisCensus
@@ -2564,14 +2568,14 @@ fields appear once the run reaches that chapter.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Chapter ID. |
-| `title` | string \| null |  | Chapter title at the time the row was written. (default `null`) |
-| `stage` | `"discovery"` \| `"directing"` \| `"complete"` \| null |  | Last stage this chapter reached. Absent until a run works on the chapter. (default `null`) |
+| `title` | string \| null |  | Chapter title at the time the row was written. |
+| `stage` | `"discovery"` \| `"directing"` \| `"complete"` \| null |  | Last stage this chapter reached. Absent until a run works on the chapter. |
 | `status` | `"pending"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"budget_limited"` | yes | State of the chapter within its current stage. `interrupted` also covers a user cancellation and a server restart; `budget_limited` means a request/token/dollar allowance stopped the run. |
-| `completed_units` | integer \| null |  | Requests (units) finished for this chapter in its current stage. (default `null`) |
-| `total_units` | integer \| null |  | Requests (units) planned for this chapter in its current stage. (default `null`) |
-| `error` | string \| null |  | Human-readable failure text for this chapter, or null. Display only. (default `null`) |
-| `discovery_complete` | boolean \| null |  | True when character discovery covers this chapter (for newer cloud runs: validated discovery covers the whole chapter text). (default `null`) |
-| `directing_complete` | boolean \| null |  | True when passage direction for this chapter is complete and still matches the current cast. (default `null`) |
+| `completed_units` | integer \| null |  | Requests (units) finished for this chapter in its current stage. |
+| `total_units` | integer \| null |  | Requests (units) planned for this chapter in its current stage. |
+| `error` | string \| null |  | Human-readable failure text for this chapter, or null. Display only. |
+| `discovery_complete` | boolean \| null |  | True when character discovery covers this chapter (for newer cloud runs: validated discovery covers the whole chapter text). |
+| `directing_complete` | boolean \| null |  | True when passage direction for this chapter is complete and still matches the current cast. |
 
 <a id="schema-analysiscoverage"></a>
 ### AnalysisCoverage
@@ -2622,7 +2626,7 @@ Analysis model choices for one cloud provider: the curated list, or the last ref
 | `cached` | boolean | yes | True when a refresh returned a recent result without contacting the provider (successful listings are reused for an hour, failures for 30 seconds). |
 | `source_url` | string | yes | Provider documentation page for its models. |
 | `models` | list of [AnalysisCatalogModel](#schema-analysiscatalogmodel) | yes | Curated models first (in curated order), then models only the listing found, sorted by ID. |
-| `partial` | boolean \| null |  | Present after a successful refresh: true when the listing had more pages than were read, so unlisted curated models stay `unverified`. (default `null`) |
+| `partial` | boolean \| null |  | Present after a successful refresh: true when the listing had more pages than were read, so unlisted curated models stay `unverified`. |
 
 <a id="schema-analysisplan"></a>
 ### AnalysisPlan
@@ -2710,19 +2714,19 @@ Source text and model responses are never included.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `fingerprint` | string \| null |  | Internal; do not rely on it. Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). Absent when no checkpoint exists. (default `null`) |
+| `fingerprint` | string \| null |  | Internal; do not rely on it. Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). Absent when no checkpoint exists. |
 | `provider` | string \| null | yes | Analysis provider of the checkpoint: `local`, `gemini`, `openai` or `anthropic`; null when not started. |
 | `model` | string \| null | yes | Detailed-analysis model ID used, or null (local drafts and not started). |
 | `status` | `"not_started"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"budget_limited"` | yes | Overall state. `interrupted` covers cancellation and server restarts; `budget_limited` means a request/token/dollar allowance stopped the run. Validated work is kept in every case. |
-| `stage` | `"discovery"` \| `"preprocessing"` \| `"profiles"` \| `"directing"` \| `"complete"` \| null |  | Stage in progress or last reached. `preprocessing` is the free local census at the start of a cloud run; `complete` after success. (default `null`) |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| null |  | Requested cloud phase. Absent for local drafts and for checkpoints written before phases existed. (default `null`) |
-| `scan_model` | string \| null |  | Fast model used for discovery in cloud runs. Absent for local drafts. (default `null`) |
-| `completed_units` | integer \| null |  | Units (requests or batches) completed in the latest run. Absent only if a run failed before its first save. (default `null`) |
-| `total_units` | integer \| null |  | Units known so far for the latest run. A `full` run discovers more work as it goes, so this can grow. (default `null`) |
+| `stage` | `"discovery"` \| `"preprocessing"` \| `"profiles"` \| `"directing"` \| `"complete"` \| null |  | Stage in progress or last reached. `preprocessing` is the free local census at the start of a cloud run; `complete` after success. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| null |  | Requested cloud phase. Absent for local drafts and for checkpoints written before phases existed. |
+| `scan_model` | string \| null |  | Fast model used for discovery in cloud runs. Absent for local drafts. |
+| `completed_units` | integer \| null |  | Units (requests or batches) completed in the latest run. Absent only if a run failed before its first save. |
+| `total_units` | integer \| null |  | Units known so far for the latest run. A `full` run discovers more work as it goes, so this can grow. |
 | `current_chapter_id` | string \| null | yes | Chapter being worked on, or null between chapters, during profiles and when idle. |
-| `scope_chapter_id` | string \| null |  | The `chapter_id` the run was limited to, or null for the whole book. Absent when not started. (default `null`) |
-| `error` | string \| null |  | Human-readable failure text of the latest run, or null. Display only. (default `null`) |
-| `updated_at` | string \| null |  | ISO 8601 UTC time the checkpoint was last saved. Absent when not started. (default `null`) |
+| `scope_chapter_id` | string \| null |  | The `chapter_id` the run was limited to, or null for the whole book. Absent when not started. |
+| `error` | string \| null |  | Human-readable failure text of the latest run, or null. Display only. |
+| `updated_at` | string \| null |  | ISO 8601 UTC time the checkpoint was last saved. Absent when not started. |
 | `chapters` | list of [AnalysisChapterProgress](#schema-analysischapterprogress) | yes | One row per chapter of the book (as of the checkpoint). |
 
 <a id="schema-analysisusage"></a>
@@ -2837,9 +2841,9 @@ Breeze request details retained with a take.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `request_id` | string \| null |  | The server's `x-request-id`, truncated to 80 characters; null or absent when the server sent none. (default `null`) |
+| `request_id` | string \| null |  | The server's `x-request-id`, truncated to 80 characters; null or absent when the server sent none. |
 | `timing_accepted` | boolean | yes | Whether the server-reported sentence timing validated against the sent text. |
-| `vocal_event_markup` | list of string \| null |  | Lower-cased vocal event tags (for example `[laugh]`) found in the sent text; absent when none. (default `null`) |
+| `vocal_event_markup` | list of string \| null |  | Lower-cased vocal event tags (for example `[laugh]`) found in the sent text; absent when none. |
 
 <a id="schema-audiotakesentencespan"></a>
 ### AudioTakeSentenceSpan
@@ -2877,15 +2881,15 @@ takes may carry only some of these fields.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `input_tokens` | integer \| null |  | Reported input tokens (Gemini). (default `null`) |
-| `output_tokens` | integer \| null |  | Reported output (audio) tokens (Gemini). (default `null`) |
-| `cached_input_tokens` | integer \| null |  | Reported cached input tokens (Gemini). (default `null`) |
-| `usage_source` | string \| null |  | Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`. (default `null`) |
-| `estimated_cost_usd` | number \| null |  | Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze. (default `null`) |
-| `cost_basis` | string \| null |  | How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`. (default `null`) |
-| `price_as_of` | string \| null |  | Date of the price table used (Gemini). (default `null`) |
-| `price_source` | string \| null |  | Source of the price table (Gemini). (default `null`) |
-| `characters` | integer \| null |  | Characters the Breeze server reported synthesizing. (default `null`) |
+| `input_tokens` | integer \| null |  | Reported input tokens (Gemini). |
+| `output_tokens` | integer \| null |  | Reported output (audio) tokens (Gemini). |
+| `cached_input_tokens` | integer \| null |  | Reported cached input tokens (Gemini). |
+| `usage_source` | string \| null |  | Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`. |
+| `estimated_cost_usd` | number \| null |  | Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze. |
+| `cost_basis` | string \| null |  | How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`. |
+| `price_as_of` | string \| null |  | Date of the price table used (Gemini). |
+| `price_source` | string \| null |  | Source of the price table (Gemini). |
+| `characters` | integer \| null |  | Characters the Breeze server reported synthesizing. |
 
 <a id="schema-audiotakevoicelibrary"></a>
 ### AudioTakeVoiceLibrary
@@ -2924,14 +2928,14 @@ novel is several megabytes).
 | `source_name` | string | yes | File name of the imported original (without directories), for example `story.epub`. |
 | `created_at` | string | yes | ISO 8601 UTC import time. |
 | `revision` | integer | yes | Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change. |
-| `structure_version` | integer \| null |  | Version of the structure interpretation (currently 2). Absent on books imported before structure metadata; structure repair sets it. (default `null`) |
+| `structure_version` | integer \| null |  | Version of the structure interpretation (currently 2). Absent on books imported before structure metadata; structure repair sets it. |
 | `chapters` | list of [BookChapter](#schema-bookchapter) | yes | Source containers in reading order. |
 | `scenes` | list of [BookScene](#schema-bookscene) | yes | Scenes in reading order. |
 | `segments` | list of [BookPassage](#schema-bookpassage) | yes | All passages ("segments") in reading order. |
 | `characters` | list of [BookCharacter](#schema-bookcharacter) | yes | The book-local cast, including `narrator` and `unassigned`. |
 | `analysis` | [BookAnalysisSummary](#schema-bookanalysissummary) | yes | Who produced the current annotations. |
-| `cover` | [BookCover](#schema-bookcover) \| null |  | Cover thumbnail metadata; absent when the original had no usable cover. (default `null`) |
-| `metadata_edited` | [BookMetadataEdits](#schema-bookmetadataedits) \| null |  | Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves. (default `null`) |
+| `cover` | [BookCover](#schema-bookcover) \| null |  | Cover thumbnail metadata; absent when the original had no usable cover. |
+| `metadata_edited` | [BookMetadataEdits](#schema-bookmetadataedits) \| null |  | Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves. |
 
 <a id="schema-bookanalysissummary"></a>
 ### BookAnalysisSummary
@@ -2945,11 +2949,11 @@ analysis pipeline routes.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider` | string | yes | Who produced the current annotations: `local` (free heuristic draft, also at import), `gemini`, `openai`, `anthropic`, `local_llm`, or a self-hosted service (`novel_analyzer`, `booknlp`) accepted through the analysis pipeline. Open set. |
-| `model` | string \| null |  | Model ID used, or null/absent for local or service analysis. (default `null`) |
+| `model` | string \| null |  | Model ID used, or null/absent for local or service analysis. |
 | `status` | `"draft"` \| `"partial"` | yes | `draft`: a complete draft awaiting review (import, local or completed classic analysis). `partial`: staged work in progress or a pipeline step accepted; other parts may be missing or older. |
-| `notes` | string \| null |  | Human-readable explanation of the draft and what to review. Display only. The server writes it with every summary; treat an absent value as empty. (default `null`) |
-| `phase` | string \| null |  | Classic analysis phase that published this state (`scan`, `profiles`, `direct`, `full`) or the pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`). Absent for import and local drafts. (default `null`) |
-| `profiles_provisional` | boolean \| null |  | Classic progressive analysis only: true while character profiles still need whole-book discovery or refinement against current evidence. (default `null`) |
+| `notes` | string \| null |  | Human-readable explanation of the draft and what to review. Display only. The server writes it with every summary; treat an absent value as empty. |
+| `phase` | string \| null |  | Classic analysis phase that published this state (`scan`, `profiles`, `direct`, `full`) or the pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`). Absent for import and local drafts. |
+| `profiles_provisional` | boolean \| null |  | Classic progressive analysis only: true while character profiles still need whole-book discovery or refinement against current evidence. |
 
 <a id="schema-bookbreezesettings"></a>
 ### BookBreezeSettings
@@ -2958,10 +2962,10 @@ Optional Breeze sampling overrides of a pinned choice. No current API or UI sets
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `temperature` | number \| null |  | Sampling temperature override, 0.05-2.0. Absent or null keeps the Breeze voice's own setting. (default `null`) |
-| `cfg_scale` | number \| null |  | Classifier-free guidance scale override, 0.5-10.0. Absent or null keeps the voice's own setting. (default `null`) |
-| `top_p` | number \| null |  | Nucleus sampling probability override, 0.01-1.0. Absent or null keeps the voice's own setting. (default `null`) |
-| `top_k` | integer \| null |  | Top-k sampling override, an integer 1-1024. Absent or null keeps the voice's own setting. (default `null`) |
+| `temperature` | number \| null |  | Sampling temperature override, 0.05-2.0. Absent or null keeps the Breeze voice's own setting. |
+| `cfg_scale` | number \| null |  | Classifier-free guidance scale override, 0.5-10.0. Absent or null keeps the voice's own setting. |
+| `top_p` | number \| null |  | Nucleus sampling probability override, 0.01-1.0. Absent or null keeps the voice's own setting. |
+| `top_k` | integer \| null |  | Top-k sampling override, an integer 1-1024. Absent or null keeps the voice's own setting. |
 
 <a id="schema-bookchapter"></a>
 ### BookChapter
@@ -2979,11 +2983,11 @@ imported before structure metadata existed (no `structure_version`);
 | `index` | integer | yes | Zero-based position in import order. Sort by array order, not by this value; it can have gaps. |
 | `title` | string | yes | Display title (from navigation, heading, landmark, or a fallback such as "Section 3"). |
 | `text` | string | yes | Canonical reading text, never rewritten by analysis. Scene-break ornament lines (`***`, `---`, `•`, `⁂`) are replaced by the same number of spaces so offsets stay valid. All `start`/`end` offsets in the book are zero-based Unicode code-point offsets into this string, end-exclusive (not UTF-8 bytes, not UTF-16 indices). |
-| `kind` | `"chapter"` \| `"section"` \| `"front_matter"` \| `"back_matter"` \| `"recap"` \| null |  | Structural classification. `chapter` is a narrative chapter; `section` an unlabeled or multi-entry container that stays eligible for analysis; `front_matter`/`back_matter` non-story material; `recap` a "story so far" section. (default `null`) |
-| `title_source` | `"epub_nav"` \| `"epub_ncx"` \| `"heading"` \| `"landmark"` \| `"semantics"` \| `"fallback"` \| null |  | Where `title` came from. (default `null`) |
-| `source_href` | string \| null |  | Path of the EPUB spine document inside the archive; null for TXT imports. (default `null`) |
-| `logical_sections` | list of [BookLogicalSection](#schema-booklogicalsection) \| null |  | Table-of-contents entries inside this container (EPUB only; empty for TXT). (default `null`) |
-| `narrative_order` | integer \| null |  | 1-based number among `kind: chapter` containers only; absent for other kinds. Never an invented chapter number. (default `null`) |
+| `kind` | `"chapter"` \| `"section"` \| `"front_matter"` \| `"back_matter"` \| `"recap"` \| null |  | Structural classification. `chapter` is a narrative chapter; `section` an unlabeled or multi-entry container that stays eligible for analysis; `front_matter`/`back_matter` non-story material; `recap` a "story so far" section. |
+| `title_source` | `"epub_nav"` \| `"epub_ncx"` \| `"heading"` \| `"landmark"` \| `"semantics"` \| `"fallback"` \| null |  | Where `title` came from. |
+| `source_href` | string \| null |  | Path of the EPUB spine document inside the archive; null for TXT imports. |
+| `logical_sections` | list of [BookLogicalSection](#schema-booklogicalsection) \| null |  | Table-of-contents entries inside this container (EPUB only; empty for TXT). |
+| `narrative_order` | integer \| null |  | 1-based number among `kind: chapter` containers only; absent for other kinds. Never an invented chapter number. |
 | `trailing_text` | string | yes | Presented only: the chapter text after its last passage (usually whitespace). Together with each passage's `leading_text` and `text` it rebuilds `text` exactly. |
 
 <a id="schema-bookcharacter"></a>
@@ -3002,20 +3006,20 @@ separate). Every book has the reserved characters `narrator` and
 | `aliases` | list of string | yes | Other names that identify this character in the text. |
 | `description` | string | yes | Voice and personality profile (draft or reviewed). |
 | `direction` | string | yes | Standing performance direction for this character's voice. |
-| `evidence` | list of string \| null |  | Exact source quotations supporting the profile (at most 12). Absent on some characters saved by older versions; treat as empty. (default `null`) |
+| `evidence` | list of string \| null |  | Exact source quotations supporting the profile (at most 12). Absent on some characters saved by older versions; treat as empty. |
 | `voices` | map of string → [BookCharacterVoice](#schema-bookcharactervoice) | yes | Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: the system voice). Library references are shown as references, not resolved. Legacy `voice`/`system_voice` fields are folded in here. |
-| `former_names` | list of string \| null |  | Names replaced by a manual rename. Discovery still resolves them to this character; they are not aliases. (default `null`) |
-| `profile_refined` | boolean \| null |  | True once a profile refinement produced the description and direction. (default `null`) |
-| `profile_provider` | string \| null |  | Provider of the refined profile. (default `null`) |
-| `profile_model` | string \| null |  | Model of the refined profile. (default `null`) |
-| `profile_priority` | `"deep"` \| `"standard"` \| `"basic"` \| null |  | Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`. (default `null`) |
-| `profile_state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` \| null |  | Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined). (default `null`) |
-| `profile_provisional` | boolean \| null |  | Classic progressive analysis: true while the profile may still change. (default `null`) |
-| `profile_input_key` | string \| null |  | Internal; do not rely on it. Cache key of the profile request that produced the profile. (default `null`) |
-| `voice` | string \| null |  | Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`. (default `null`) |
-| `system_voice` | string \| null |  | Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`. (default `null`) |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
+| `former_names` | list of string \| null |  | Names replaced by a manual rename. Discovery still resolves them to this character; they are not aliases. |
+| `profile_refined` | boolean \| null |  | True once a profile refinement produced the description and direction. |
+| `profile_provider` | string \| null |  | Provider of the refined profile. |
+| `profile_model` | string \| null |  | Model of the refined profile. |
+| `profile_priority` | `"deep"` \| `"standard"` \| `"basic"` \| null |  | Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`. |
+| `profile_state` | `"reviewed"` \| `"current"` \| `"stale"` \| `"draft"` \| null |  | Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined). |
+| `profile_provisional` | boolean \| null |  | Classic progressive analysis: true while the profile may still change. |
+| `profile_input_key` | string \| null |  | Internal; do not rely on it. Cache key of the profile request that produced the profile. |
+| `voice` | string \| null |  | Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`. |
+| `system_voice` | string \| null |  | Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`. |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
 
 <a id="schema-bookcharactervoice"></a>
 ### BookCharacterVoice
@@ -3028,11 +3032,11 @@ device voice); `{id, revision, seed, settings?}` is a concrete Breeze pin.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `library` | string \| null |  | Library voice ID (`vl_` + 16 hex) whose current version is used. (default `null`) |
-| `id` | string \| null |  | Direct provider voice ID. (default `null`) |
-| `revision` | string \| null |  | Breeze pin: the voice revision from the last Breeze check. (default `null`) |
-| `seed` | integer \| null |  | Breeze pin: default take seed (0–4294967295). (default `null`) |
-| `settings` | [BookBreezeSettings](#schema-bookbreezesettings) \| null |  | Breeze pin: sampling overrides. (default `null`) |
+| `library` | string \| null |  | Library voice ID (`vl_` + 16 hex) whose current version is used. |
+| `id` | string \| null |  | Direct provider voice ID. |
+| `revision` | string \| null |  | Breeze pin: the voice revision from the last Breeze check. |
+| `seed` | integer \| null |  | Breeze pin: default take seed (0–4294967295). |
+| `settings` | [BookBreezeSettings](#schema-bookbreezesettings) \| null |  | Breeze pin: sampling overrides. |
 
 <a id="schema-bookcover"></a>
 ### BookCover
@@ -3071,8 +3075,8 @@ Which display metadata fields a person set; a later metadata refresh from the or
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `title` | boolean \| null |  | True when the title was set by hand. (default `null`) |
-| `author` | boolean \| null |  | True when the author was set by hand. (default `null`) |
+| `title` | boolean \| null |  | True when the title was set by hand. |
+| `author` | boolean \| null |  | True when the author was set by hand. |
 
 <a id="schema-bookmetadatarequest"></a>
 ### BookMetadataRequest
@@ -3104,15 +3108,15 @@ A passage ("segment"): the reader and narration unit, anchored to exact source o
 | `confidence` | number | yes | Attribution confidence from 0 to 1. Analysis leaves dialogue below 0.65 unassigned; a reviewed speaker assignment is 1.0. |
 | `direction` | string | yes | Performance direction for this passage (empty when none). |
 | `cues` | list of string | yes | Short performance cue labels, for example `quiet` or `urgent`. |
-| `evidence` | list of string \| null |  | Exact source quotations that justify the attribution (copied from the source, never model paraphrase). Absent until analysis sets it. (default `null`) |
-| `seed` | integer \| null |  | Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed means a new take. Ignored by Gemini and device narration. (default `null`) |
-| `speaker_check` | [BookSpeakerCheck](#schema-bookspeakercheck) \| null |  | BookNLP comparison; absent when not checked. (default `null`) |
-| `analysis_provider` | string \| null |  | Provider whose annotation is current for this passage (`local`, an LLM provider, `novel_analyzer` or `booknlp`). Absent before analysis; kept from the last analysis after a manual edit. (default `null`) |
-| `analysis_model` | string \| null |  | Model of that annotation; null for local or service providers. (default `null`) |
+| `evidence` | list of string \| null |  | Exact source quotations that justify the attribution (copied from the source, never model paraphrase). Absent until analysis sets it. |
+| `seed` | integer \| null |  | Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed means a new take. Ignored by Gemini and device narration. |
+| `speaker_check` | [BookSpeakerCheck](#schema-bookspeakercheck) \| null |  | BookNLP comparison; absent when not checked. |
+| `analysis_provider` | string \| null |  | Provider whose annotation is current for this passage (`local`, an LLM provider, `novel_analyzer` or `booknlp`). Absent before analysis; kept from the last analysis after a manual edit. |
+| `analysis_model` | string \| null |  | Model of that annotation; null for local or service providers. |
 | `audio` | [BookTake](#schema-booktake) \| null | yes | Presented: the selected enhanced take if still valid, else null. |
 | `leading_text` | string | yes | Presented only: chapter text between the previous passage (or the chapter start) and this passage, usually whitespace or a replaced scene-break ornament. |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
 
 <a id="schema-bookscene"></a>
 ### BookScene
@@ -3127,14 +3131,14 @@ not proof that the character is physically present.
 | --- | --- | --- | --- |
 | `id` | string | yes | Opaque scene ID. |
 | `chapter_id` | string | yes | The chapter containing every passage of this scene. |
-| `title` | string \| null |  | Display title, for example "Chapter One · Scene 2". Rarely absent after a pipeline acceptance that proposed none. (default `null`) |
-| `summary` | string \| null |  | Scene summary (draft or reviewed). Editable; at most 4,000 characters by hand. (default `null`) |
-| `tone` | string \| null |  | Emotional tone notes; `Unreviewed` at import. Used in enhanced narration recipes. (default `null`) |
-| `direction` | string \| null |  | Performance direction for the whole scene. Used in enhanced narration recipes. (default `null`) |
+| `title` | string \| null |  | Display title, for example "Chapter One · Scene 2". Rarely absent after a pipeline acceptance that proposed none. |
+| `summary` | string \| null |  | Scene summary (draft or reviewed). Editable; at most 4,000 characters by hand. |
+| `tone` | string \| null |  | Emotional tone notes; `Unreviewed` at import. Used in enhanced narration recipes. |
+| `direction` | string \| null |  | Performance direction for the whole scene. Used in enhanced narration recipes. |
 | `segment_ids` | list of string | yes | IDs of the scene's passages, in reading order. |
 | `character_ids` | list of string | yes | IDs of characters attributed to its passages (including `narrator`/`unassigned`). |
-| `edited` | boolean \| null |  | Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
-| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. (default `null`) |
+| `edited` | boolean \| null |  | Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
+| `edited_fields` | list of string \| null |  | Internal; do not rely on it. Names of fields edited by hand; `"*"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `"*"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing. |
 
 <a id="schema-bookseries"></a>
 ### BookSeries
@@ -3177,9 +3181,9 @@ speaker; the check only adjusts confidence and records disagreement.
 | --- | --- | --- | --- |
 | `source` | `"booknlp"` | yes | The checking method. |
 | `result` | `"agrees"` \| `"differs"` \| `"suggests"` \| `"not_in_cast"` \| `"narrator"` \| `"no_quote"` | yes | `agrees`/`differs`: BookNLP named the same/another cast member. `suggests`: the passage is unassigned and BookNLP names someone. `not_in_cast`: BookNLP's speaker matches no cast member. `narrator`: BookNLP heard a first-person narrator not in the cast. `no_quote`: BookNLP found no quotation for this passage. |
-| `speaker_id` | string \| null |  | Cast character ID BookNLP attributed, or null. (default `null`) |
-| `speaker` | string \| null |  | BookNLP's own name for the speaker, or null. (default `null`) |
-| `tag_conflict` | boolean \| null |  | True when BookNLP's own speech tag contradicts its speaker; then the comparison is only recorded. (default `null`) |
+| `speaker_id` | string \| null |  | Cast character ID BookNLP attributed, or null. |
+| `speaker` | string \| null |  | BookNLP's own name for the speaker, or null. |
+| `tag_conflict` | boolean \| null |  | True when BookNLP's own speech tag contradicts its speaker; then the comparison is only recorded. |
 
 <a id="schema-booktake"></a>
 ### BookTake
@@ -3194,16 +3198,16 @@ model, and its WAV file exists. Otherwise the passage's `audio` is null.
 | --- | --- | --- | --- |
 | `url` | string | yes | Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The `v` query changes when the selected audio changes, so the URL is safe to cache. |
 | `fingerprint` | string | yes | Internal; do not rely on it. Hex SHA-256 of the render recipe (the take's reuse identity). |
-| `asset_id` | string \| null |  | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content addressing, whose file is named by `fingerprint`. (default `null`) |
+| `asset_id` | string \| null |  | Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content addressing, whose file is named by `fingerprint`. |
 | `duration` | number | yes | Audio duration in seconds, measured from the WAV. |
 | `provider` | string | yes | Narration provider: `system` (device), `gemini` or `breeze`. |
-| `model` | string \| null |  | Speech model ID (`macos-say` for device narration). (default `null`) |
-| `voice` | string \| null |  | Concrete provider voice that performed the take. (default `null`) |
-| `voice_library` | [BookTakeVoiceLibrary](#schema-booktakevoicelibrary) \| null |  | Library voice that was followed, when the character used one. (default `null`) |
-| `voice_revision` | string \| null |  | Breeze only: the pinned server revision of the voice. (default `null`) |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: sentence timing, or null when the server's timing was not usable. (default `null`) |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. (default `null`) |
-| `resource_usage` | object \| null |  | Internal; do not rely on it. Measured provider usage for the request that produced the take (token counts, estimated cost in USD, cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage. (default `null`) |
+| `model` | string \| null |  | Speech model ID (`macos-say` for device narration). |
+| `voice` | string \| null |  | Concrete provider voice that performed the take. |
+| `voice_library` | [BookTakeVoiceLibrary](#schema-booktakevoicelibrary) \| null |  | Library voice that was followed, when the character used one. |
+| `voice_revision` | string \| null |  | Breeze only: the pinned server revision of the voice. |
+| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: sentence timing, or null when the server's timing was not usable. |
+| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
+| `resource_usage` | object \| null |  | Internal; do not rely on it. Measured provider usage for the request that produced the take (token counts, estimated cost in USD, cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage. |
 
 <a id="schema-booktakevoicelibrary"></a>
 ### BookTakeVoiceLibrary
@@ -3213,7 +3217,7 @@ The library voice and version that performed a take.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Library voice ID (`vl_` + 16 hex). |
-| `version` | integer \| null |  | Version number of that library voice. (default `null`) |
+| `version` | integer \| null |  | Version number of that library voice. |
 
 <a id="schema-breezevoicecloned"></a>
 ### BreezeVoiceCloned
@@ -3223,8 +3227,8 @@ Result of cloning a Breeze voice from a recording.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `voice` | [LibraryVoice](#schema-libraryvoice) | yes | The new cloned library voice. |
-| `book` | [Book](#schema-book) \| null |  | The full book document after assignment; present only when `book_id` and `character_id` were given and the assignment succeeded. (default `null`) |
-| `assignment_error` | string \| null |  | Present when the assignment failed. The voice is still created; nothing is rolled back. (default `null`) |
+| `book` | [Book](#schema-book) \| null |  | The full book document after assignment; present only when `book_id` and `character_id` were given and the assignment succeeded. |
+| `assignment_error` | string \| null |  | Present when the assignment failed. The voice is still created; nothing is rolled back. |
 
 <a id="schema-censuschapter"></a>
 ### CensusChapter
@@ -3420,11 +3424,11 @@ reference, not proof that the character is present in the scene.
 | `end` | integer | yes | Exclusive end offset in code points. |
 | `quote` | string | yes | The exact source text of the span. |
 | `kind` | `"dialogue"` \| `"mention"` \| `"profile_evidence"` | yes | `dialogue`: a passage attributed to the character. `mention`: the character's unique name or alias occurs in the text. `profile_evidence`: a quotation a discovery request cited as evidence. |
-| `confidence` | number \| null |  | Attribution confidence for `dialogue` (0–1); null otherwise. (default `null`) |
-| `provider` | string \| null |  | Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited dialogue attribution; null when unknown. Current analysis always writes `confidence`, `provider` and `model`; references retained from older versions may omit them. (default `null`) |
-| `model` | string \| null |  | Model that produced it, or null. (default `null`) |
-| `profile_description` | string \| null |  | `profile_evidence` only: the description proposed with this evidence. (default `null`) |
-| `profile_direction` | string \| null |  | `profile_evidence` only: the direction proposed with this evidence. (default `null`) |
+| `confidence` | number \| null |  | Attribution confidence for `dialogue` (0–1); null otherwise. |
+| `provider` | string \| null |  | Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited dialogue attribution; null when unknown. Current analysis always writes `confidence`, `provider` and `model`; references retained from older versions may omit them. |
+| `model` | string \| null |  | Model that produced it, or null. |
+| `profile_description` | string \| null |  | `profile_evidence` only: the description proposed with this evidence. |
+| `profile_direction` | string \| null |  | `profile_evidence` only: the direction proposed with this evidence. |
 
 <a id="schema-chunkingoptions"></a>
 ### ChunkingOptions
@@ -3492,16 +3496,16 @@ One stored diagnostic event. Only the fields that were sent (or set by the serve
 | `created_at` | string | yes | When the event was stored: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `source` | `"client"` \| `"server"` | yes | `client` events come from `POST /api/diagnostics`; `server` events from job workers. |
 | `event` | `"listen_request_failed"` \| `"listen_poll_failed"` \| `"listen_job_failed"` \| `"buffer_failed"` \| `"cache_read_failed"` \| `"playback_media_error"` \| `"playback_play_rejected"` \| `"playback_waiting"` \| `"playback_resumed"` \| `"preview_failed"` \| `"listen_job_stopped"` \| `"listen_submit_failed"` \| `"voice_preview_failed"` \| `"voice_preview_stopped"` \| `"voice_preview_submit_failed"` | yes | Event code. Client codes are those accepted by `POST /api/diagnostics`; server codes are `listen_job_failed`, `listen_job_stopped`, `listen_submit_failed`, `voice_preview_failed`, `voice_preview_stopped` and `voice_preview_submit_failed`. |
-| `book_id` | string \| null |  | Book ID. (default `null`) |
-| `segment_id` | string \| null |  | Passage ID. (default `null`) |
-| `session_id` | string \| null |  | Listening session ID. (default `null`) |
-| `job_id` | string \| null |  | Job ID. (default `null`) |
-| `playback_rate` | number \| null |  | Playback rate (0.1–8). (default `null`) |
-| `http_status` | integer \| null |  | HTTP status the client saw (100–599). (default `null`) |
-| `media_error_code` | integer \| null |  | HTML media error code (1–4). (default `null`) |
-| `operation` | `"request"` \| `"poll"` \| `"play"` \| `"prefetch"` \| `"media"` \| `"prepare"` \| `"settle"` \| `"cache_read"` \| `"worker"` \| `"submit"` \| null |  | What was happening. `worker` and `submit` are server-only. (default `null`) |
-| `status` | `"failed"` \| `"cancelled"` \| `"interrupted"` \| null |  | Server events: the job outcome. (default `null`) |
-| `provider` | `"gemini"` \| `"system"` \| `"breeze"` \| null |  | Server events: the narration provider. (default `null`) |
+| `book_id` | string \| null |  | Book ID. |
+| `segment_id` | string \| null |  | Passage ID. |
+| `session_id` | string \| null |  | Listening session ID. |
+| `job_id` | string \| null |  | Job ID. |
+| `playback_rate` | number \| null |  | Playback rate (0.1–8). |
+| `http_status` | integer \| null |  | HTTP status the client saw (100–599). |
+| `media_error_code` | integer \| null |  | HTML media error code (1–4). |
+| `operation` | `"request"` \| `"poll"` \| `"play"` \| `"prefetch"` \| `"media"` \| `"prepare"` \| `"settle"` \| `"cache_read"` \| `"worker"` \| `"submit"` \| null |  | What was happening. `worker` and `submit` are server-only. |
+| `status` | `"failed"` \| `"cancelled"` \| `"interrupted"` \| null |  | Server events: the job outcome. |
+| `provider` | `"gemini"` \| `"system"` \| `"breeze"` \| null |  | Server events: the narration provider. |
 
 <a id="schema-diagnosticevents"></a>
 ### DiagnosticEvents
@@ -3521,8 +3525,8 @@ Whether a diagnostic event was stored. `recorded: false` is not an error; do not
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `recorded` | boolean | yes | True when a new event was stored; false when it was skipped (see `reason`). |
-| `id` | string \| null |  | The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event. (default `null`) |
-| `reason` | `"duplicate"` \| `"rate_limited"` \| `"unavailable"` \| null |  | Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed, or the fields broke a rule checked after validation, such as a passage ID without a book ID). (default `null`) |
+| `id` | string \| null |  | The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event. |
+| `reason` | `"duplicate"` \| `"rate_limited"` \| `"unavailable"` \| null |  | Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed, or the fields broke a rule checked after validation, such as a passage ID without a book ID). |
 
 <a id="schema-diagnosticrequest"></a>
 ### DiagnosticRequest
@@ -3659,45 +3663,45 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). (default `null`) |
-| `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. (default `null`) |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. (default `null`) |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. (default `null`) |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). (default `null`) |
-| `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. (default `null`) |
-| `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. (default `null`) |
-| `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). (default `null`) |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. (default `null`) |
-| `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. (default `null`) |
-| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. (default `null`) |
-| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. (default `null`) |
-| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. (default `null`) |
-| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. (default `null`) |
-| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. (default `null`) |
-| `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). (default `null`) |
-| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). (default `null`) |
-| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). (default `null`) |
-| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). (default `null`) |
-| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. (default `null`) |
-| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. (default `null`) |
-| `performance_id` | string \| null |  | `performance`: the saved performance being prepared. (default `null`) |
-| `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. (default `null`) |
-| `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. (default `null`) |
-| `preview_id` | string \| null |  | `voice_preview`: the preview ID. (default `null`) |
-| `preview` | [VoicePreview](#schema-voicepreview) \| null |  | `voice_preview`: the preview request being rendered. (default `null`) |
-| `voice` | string \| null |  | `listen_chapter`: the Gemini voice. (default `null`) |
-| `intent` | `"play"` \| `"queue"` \| null |  | `listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`. (default `null`) |
-| `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. (default `null`) |
-| `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. (default `null`) |
-| `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. (default `null`) |
-| `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. (default `null`) |
-| `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. (default `null`) |
-| `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. (default `null`) |
-| `calibration` | [ChapterListenCalibration](#schema-chapterlistencalibration) \| null |  | `listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish. (default `null`) |
-| `projection` | list of [ChapterListenChunkPlan](#schema-chapterlistenchunkplan) \| null |  | `listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports. (default `null`) |
-| `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. (default `null`) |
-| `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. (default `null`) |
-| `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. (default `null`) |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
+| `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
+| `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
+| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |
+| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. |
+| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. |
+| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. |
+| `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
+| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). |
+| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
+| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. |
+| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `performance_id` | string \| null |  | `performance`: the saved performance being prepared. |
+| `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. |
+| `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. |
+| `preview_id` | string \| null |  | `voice_preview`: the preview ID. |
+| `preview` | [VoicePreview](#schema-voicepreview) \| null |  | `voice_preview`: the preview request being rendered. |
+| `voice` | string \| null |  | `listen_chapter`: the Gemini voice. |
+| `intent` | `"play"` \| `"queue"` \| null |  | `listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`. |
+| `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
+| `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
+| `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
+| `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
+| `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
+| `calibration` | [ChapterListenCalibration](#schema-chapterlistencalibration) \| null |  | `listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish. |
+| `projection` | list of [ChapterListenChunkPlan](#schema-chapterlistenchunkplan) \| null |  | `listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports. |
+| `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
+| `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
+| `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
 
 <a id="schema-jobchapterchunk"></a>
 ### JobChapterChunk
@@ -3718,14 +3722,14 @@ One chunk request a ``listen_chapter`` job has sent (or is sending), in send ord
 | `epoch` | integer | yes | Planning generation; increases after a truncation forces smaller re-planning. |
 | `status` | `"requesting"` \| `"done"` \| `"rate_limited"` \| `"truncated"` \| `"failed"` | yes | `requesting` while in flight; `done` when its audio was retained; `rate_limited` when the provider refused it with HTTP 429 (nothing generated; its passages are planned again); `truncated` when the audio was cut short or far too short and was discarded; `failed` on any other error (the job then stops). |
 | `started_at` | string | yes | When the request was sent: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
-| `finished_at` | string \| null |  | When the request finished; absent while `requesting`. ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. (default `null`) |
-| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated` or `failed` (at most 300 characters for `failed`). (default `null`) |
-| `duration` | number \| null |  | Seconds of audio received (`done`, `truncated`). (default `null`) |
-| `chunk_id` | string \| null |  | ID of the retained chunk audio (`done`). (default `null`) |
-| `latency` | number \| null |  | Measured seconds from send to response (`done`). (default `null`) |
-| `flags` | list of `"weak_alignment"` \| null |  | Quality flags (`done`). `weak_alignment`: fewer than 60% of passage boundaries matched, so passage clip times are rough. (default `null`) |
-| `matched` | integer \| null |  | Passage boundaries the aligner matched in the audio (`done`). (default `null`) |
-| `boundaries` | integer \| null |  | Passage boundaries the aligner tried to match (`done`). (default `null`) |
+| `finished_at` | string \| null |  | When the request finished; absent while `requesting`. ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated` or `failed` (at most 300 characters for `failed`). |
+| `duration` | number \| null |  | Seconds of audio received (`done`, `truncated`). |
+| `chunk_id` | string \| null |  | ID of the retained chunk audio (`done`). |
+| `latency` | number \| null |  | Measured seconds from send to response (`done`). |
+| `flags` | list of `"weak_alignment"` \| null |  | Quality flags (`done`). `weak_alignment`: fewer than 60% of passage boundaries matched, so passage clip times are rough. |
+| `matched` | integer \| null |  | Passage boundaries the aligner matched in the audio (`done`). |
+| `boundaries` | integer \| null |  | Passage boundaries the aligner tried to match (`done`). |
 
 <a id="schema-librarybookcover"></a>
 ### LibraryBookCover
@@ -3854,11 +3858,11 @@ How a voice version was made. Only keys with a non-null stored value are present
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | string \| null |  | The voice description (Breeze design prompt, Gemini prompted-voice input, or the clone/import description). (default `null`) |
-| `sample_text` | string \| null |  | Breeze: the text the auditioned clip speaks (design sample text or clone transcript). Absent for Gemini. (default `null`) |
-| `model` | string \| null |  | Gemini design model used, for example `gemini-3.8-flash-tts`. Gemini only. (default `null`) |
-| `language_code` | string \| null |  | Gemini language tag, for example `en-US`. Gemini only. (default `null`) |
-| `gender` | string \| null |  | Gemini gender hint (`female`, `male` or `neutral`). Gemini only; absent when none was given. (default `null`) |
+| `description` | string \| null |  | The voice description (Breeze design prompt, Gemini prompted-voice input, or the clone/import description). |
+| `sample_text` | string \| null |  | Breeze: the text the auditioned clip speaks (design sample text or clone transcript). Absent for Gemini. |
+| `model` | string \| null |  | Gemini design model used, for example `gemini-3.8-flash-tts`. Gemini only. |
+| `language_code` | string \| null |  | Gemini language tag, for example `en-US`. Gemini only. |
+| `gender` | string \| null |  | Gemini gender hint (`female`, `male` or `neutral`). Gemini only; absent when none was given. |
 
 <a id="schema-libraryvoiceusage"></a>
 ### LibraryVoiceUsage
@@ -3963,7 +3967,7 @@ chunk share the same file and play gaplessly.
 | `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
 | `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. (default `null`) |
+| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
 
 <a id="schema-listeningpassageaudio"></a>
 ### ListeningPassageAudio
@@ -3983,16 +3987,16 @@ A retained single-passage simple-listening take, ready to play.
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. (default `null`) |
+| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
 | `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
 | `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. (default `null`) |
+| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
 | `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
-| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. (default `null`) |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. (default `null`) |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. (default `null`) |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. (default `null`) |
-| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. (default `null`) |
+| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
+| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
+| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
+| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
+| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
 
 <a id="schema-listeningreuse"></a>
 ### ListeningReuse
@@ -4026,9 +4030,9 @@ changed on the server (new revision) starts a new session and keeps old takes.
 | `provider` | `"system"` \| `"gemini"` \| `"breeze"` | yes | Narration provider. |
 | `voice` | string | yes | Resolved provider voice ID. Empty string for the device default voice; Gemini defaults to `Kore`; a `library:` choice is stored as the provider voice it resolved to. |
 | `model` | string | yes | Speech model: `macos-say`, `breeze-tts-2`, or a Gemini TTS model. |
-| `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. (default `null`) |
-| `seed` | integer \| null |  | Breeze only: the pinned generation seed. (default `null`) |
-| `settings` | object \| null |  | Breeze only, when set: pinned speech settings for the voice (provider-defined keys). (default `null`) |
+| `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. |
+| `seed` | integer \| null |  | Breeze only: the pinned generation seed. |
+| `settings` | object \| null |  | Breeze only, when set: pinned speech settings for the voice (provider-defined keys). |
 
 <a id="schema-listeningsourceanchor"></a>
 ### ListeningSourceAnchor
@@ -4090,8 +4094,8 @@ Static capability flags of a narration provider.
 | `chunked_listening` | boolean | yes | Supports multi-passage chapter listening (Gemini only). |
 | `seeded_takes` | boolean | yes | A seed makes a take repeatable; a new seed makes a new take (Breeze only). |
 | `cost` | `"local"` \| `"cloud"` \| `"self_hosted"` | yes | `local`: this computer. `cloud`: billed provider requests. `self_hosted`: the owner's server, no per-request charge. |
-| `custom_voice_ids` | boolean \| null |  | Gemini only: accepts voice IDs beyond the prebuilt list. (default `null`) |
-| `speakers_per_take` | integer \| null |  | Gemini only: speakers in one request. (default `null`) |
+| `custom_voice_ids` | boolean \| null |  | Gemini only: accepts voice IDs beyond the prebuilt list. |
+| `speakers_per_take` | integer \| null |  | Gemini only: speakers in one request. |
 
 <a id="schema-narrationproviderinfo"></a>
 ### NarrationProviderInfo
@@ -4107,7 +4111,7 @@ The static contract of one narration provider (availability is reported in `prov
 | `default_voice` | string \| null | yes | Voice used when none is chosen (`Kore` for Gemini), or null. |
 | `requires` | `"none"` \| `"api_key"` \| `"server"` | yes | What must be configured before use. |
 | `capabilities` | [NarrationProviderCapabilities](#schema-narrationprovidercapabilities) | yes |  |
-| `voices` | list of [NarrationProviderVoice](#schema-narrationprovidervoice) \| null |  | Gemini only: the prebuilt voices. (default `null`) |
+| `voices` | list of [NarrationProviderVoice](#schema-narrationprovidervoice) \| null |  | Gemini only: the prebuilt voices. |
 
 <a id="schema-narrationprovidervoice"></a>
 ### NarrationProviderVoice
@@ -4169,12 +4173,12 @@ This is the stored record without its internal `cast_snapshot`, which responses 
 | `provider` | `"system"` \| `"gemini"` \| `"breeze"` | yes | Narration provider pinned at creation. |
 | `model` | string | yes | Speech model pinned at creation. |
 | `voice` | string \| null | yes | Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null. |
-| `session_id` | string \| null |  | Simple only: the pinned listening session. (default `null`) |
+| `session_id` | string \| null |  | Simple only: the pinned listening session. |
 | `created_at` | string | yes | ISO 8601 UTC. |
 | `updated_at` | string | yes | ISO 8601 UTC; changes on rename, archive and when a job starts. |
 | `archived` | boolean | yes | True when hidden from the default list (listed only with `archived=true`). Its audio is kept. |
 | `job_id` | string \| null | yes | Latest job ID, or null if no job was ever needed. |
-| `cast` | list of [PerformanceCastMember](#schema-performancecastmember) \| null |  | Cast only: the narrator and each speaker in the chosen chapters. (default `null`) |
+| `cast` | list of [PerformanceCastMember](#schema-performancecastmember) \| null |  | Cast only: the narrator and each speaker in the chosen chapters. |
 | `job` | [PerformanceJobSummary](#schema-performancejobsummary) \| null | yes | Summary of the latest job, or null. |
 | `progress` | [PerformanceProgress](#schema-performanceprogress) | yes |  |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`. |
@@ -4259,7 +4263,7 @@ A simple performance's chunk clip (the `/listen/takes` object relabelled).
 | `session_id` | string | yes | Listening session ID (64 hex) the chunk belongs to. |
 | `created_at` | string | yes | ISO 8601 UTC time the chunk was retained. |
 | `flags` | list of string | yes | Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. (default `null`) |
+| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result from `POST /listen`. |
 | `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
 
 <a id="schema-performanceedit"></a>
@@ -4324,16 +4328,16 @@ A simple performance's single-passage take (the `/listen/takes` object relabelle
 | `session_id` | string | yes | Listening session the take belongs to. |
 | `segment_id` | string | yes | Passage the take narrates. |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. (default `null`) |
+| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`. |
 | `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes; for reused bytes it stays the original producer fingerprint. |
 | `recipe` | string | yes | Internal; do not rely on it. Hash of the source-bound identity (`source_anchor`). |
-| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. (default `null`) |
+| `synthesis_key` | string \| null |  | Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes. |
 | `source_anchor` | [ListeningSourceAnchor](#schema-listeningsourceanchor) | yes | Internal; do not rely on it. The source binding this take applies to. |
-| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. (default `null`) |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. (default `null`) |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. (default `null`) |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. (default `null`) |
-| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. (default `null`) |
+| `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
+| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and for reused bytes. |
+| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
+| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
+| `voice_revision` | string \| null |  | Breeze only: voice revision that performed the take. |
 | `performance_id` | string | yes | ID of the performance (`pf_…`) this audio is listed for. |
 
 <a id="schema-performanceplan"></a>
@@ -4447,21 +4451,21 @@ older versions. Prompts, responses and credentials are never included.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Attempt ID. |
-| `run_id` | string \| null |  | Job ID of the run that sent it. (default `null`) |
-| `stage` | string \| null |  | Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID. (default `null`) |
-| `unit_key` | string \| null |  | Opaque cache key of the unit of work. (default `null`) |
-| `provider` | string \| null |  | Provider ID. (default `null`) |
-| `model` | string \| null |  | Model ID. (default `null`) |
-| `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"interrupted_unknown"` \| null |  | `reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not active, so the outcome is unknown. (default `null`) |
-| `created_at` | string \| null |  | ISO 8601 UTC reservation time. (default `null`) |
-| `completed_at` | string \| null |  | ISO 8601 UTC time the outcome was recorded; absent while reserved. (default `null`) |
-| `http_status` | integer \| null |  | Provider HTTP status code. A 200 does not mean the output passed validation. (default `null`) |
-| `input_tokens` | integer \| null |  | Reported input tokens; null when not reported. (default `null`) |
-| `output_tokens` | integer \| null |  | Reported output tokens; null when not reported. (default `null`) |
-| `reserved_input_tokens` | integer \| null |  | Input allowance reserved before sending (conservative). (default `null`) |
-| `reserved_output_tokens` | integer \| null |  | Output allowance reserved before sending. (default `null`) |
-| `charged_estimate_usd` | number \| null |  | Conservative USD estimate for this attempt; null when unknown. (default `null`) |
-| `input_artifact_id` | string \| null |  | Artifact ID of the retained request recipe (`analysis_input`). (default `null`) |
+| `run_id` | string \| null |  | Job ID of the run that sent it. |
+| `stage` | string \| null |  | Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID. |
+| `unit_key` | string \| null |  | Opaque cache key of the unit of work. |
+| `provider` | string \| null |  | Provider ID. |
+| `model` | string \| null |  | Model ID. |
+| `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"interrupted_unknown"` \| null |  | `reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not active, so the outcome is unknown. |
+| `created_at` | string \| null |  | ISO 8601 UTC reservation time. |
+| `completed_at` | string \| null |  | ISO 8601 UTC time the outcome was recorded; absent while reserved. |
+| `http_status` | integer \| null |  | Provider HTTP status code. A 200 does not mean the output passed validation. |
+| `input_tokens` | integer \| null |  | Reported input tokens; null when not reported. |
+| `output_tokens` | integer \| null |  | Reported output tokens; null when not reported. |
+| `reserved_input_tokens` | integer \| null |  | Input allowance reserved before sending (conservative). |
+| `reserved_output_tokens` | integer \| null |  | Output allowance reserved before sending. |
+| `charged_estimate_usd` | number \| null |  | Conservative USD estimate for this attempt; null when unknown. |
+| `input_artifact_id` | string \| null |  | Artifact ID of the retained request recipe (`analysis_input`). |
 | `validation_state` | `"accepted"` \| `"rejected"` \| `"unknown"` | yes | From retained events: `accepted` or `rejected` by output validation; `unknown` when no event links it. |
 
 <a id="schema-pipelinebookoverview"></a>
@@ -4513,9 +4517,9 @@ Features the inspector reports as present.
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `name` | string | yes | For a cast character, its name when the census ran (not refreshed to the current name); for a candidate, the name as found in the text. |
 | `priority` | string | yes | Heuristic profile effort: `deep`, `standard` or `basic`. |
 | `mentions` | integer | yes | Name mentions in eligible chapters. |
@@ -4584,9 +4588,9 @@ Every step in pipeline order, every provider, and the saved per-step settings.
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `scene` | string | yes | Scene title, or empty. |
 | `kind` | string | yes | Passage kind, for example `dialogue` or `narration`. |
 | `text` | string | yes | Passage text truncated to 160 characters. |
@@ -4606,9 +4610,9 @@ Every step in pipeline order, every provider, and the saved per-step settings.
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `chapter` | string | yes | Chapter title, or the chapter ID when the chapter no longer exists. |
 | `name` | string | yes | Character name as the model reported it in this range. |
 | `aliases` | string | yes | Comma-separated aliases. |
@@ -4629,11 +4633,11 @@ One retained analysis event (newest 100 for the book).
 | `unit_key` | string \| null | yes | Opaque unit cache key. |
 | `event` | `"started"` \| `"accepted"` \| `"cache_hit"` \| `"cache_rejected"` \| `"cache_superseded"` \| `"validation_rejected"` \| `"budget_limited"` \| `"failed"` \| `"cancelled"` | yes | What happened to the unit. |
 | `created_at` | string | yes | ISO 8601 UTC. |
-| `artifact_id` | string \| null |  | Related artifact: request recipe (`started`), accepted output, cached output or rejection record. (default `null`) |
-| `attempt_id` | string \| null |  | Related HTTP attempt, when known. (default `null`) |
-| `error` | string \| null |  | Redacted failure or rejection text. Display only. (default `null`) |
-| `cached_unit_key` | string \| null |  | For `cache_rejected` in classic runs: the unit key of the rejected cache entry. (default `null`) |
-| `repair` | boolean \| null |  | For step-pipeline `started`: true when this is an evidence-repair request. (default `null`) |
+| `artifact_id` | string \| null |  | Related artifact: request recipe (`started`), accepted output, cached output or rejection record. |
+| `attempt_id` | string \| null |  | Related HTTP attempt, when known. |
+| `error` | string \| null |  | Redacted failure or rejection text. Display only. |
+| `cached_unit_key` | string \| null |  | For `cache_rejected` in classic runs: the unit key of the rejected cache entry. |
+| `repair` | boolean \| null |  | For step-pipeline `started`: true when this is an evidence-repair request. |
 
 <a id="schema-pipelineinspector"></a>
 ### PipelineInspector
@@ -4664,7 +4668,7 @@ A job of this book, reduced to display fields. Full jobs are at `GET /api/jobs`.
 | `id` | string | yes | Job ID. |
 | `kind` | string | yes | Job kind, e.g. `analyze`, `pipeline`, `render`, `listen`, `listen_chapter`, `performance`, `voice_preview`. |
 | `status` | string | yes | Job status, e.g. `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, `budget_limited`, `quota_limited`. |
-| `phase` | string \| null |  | Classic analysis phase, present on `analyze` jobs. (default `null`) |
+| `phase` | string \| null |  | Classic analysis phase, present on `analyze` jobs. |
 | `progress` | integer | yes | Units completed so far, in kind-specific units (see `Job`); not a percentage. |
 | `total` | integer | yes | Units planned, in the same units; 0 when not yet known. May grow while running. |
 | `message` | string | yes | Progress or outcome text. Display only. |
@@ -4715,7 +4719,7 @@ Known work and estimates for one step of a plan.
 | `inputs_pending` | list of string | yes | Inputs also requested in this plan: the estimate uses their currently accepted results, and the real work depends on what the run produces. |
 | `missing_inputs` | list of string | yes | Required inputs with no accepted result that are not in this plan (a run would be refused). |
 | `scopes` | integer | yes | Number of distinct scopes the units cover. |
-| `note` | string \| null |  | Present when `inputs_pending` is not empty: display text explaining the caveat. (default `null`) |
+| `note` | string \| null |  | Present when `inputs_pending` is not empty: display text explaining the caveat. |
 
 <a id="schema-pipelineprofilesrow"></a>
 ### PipelineProfilesRow
@@ -4726,9 +4730,9 @@ Known work and estimates for one step of a plan.
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `name` | string | yes | The character's current name, or its character ID when it is no longer in the cast. |
 | `priority` | string | yes | Profile effort tier, or empty. |
 | `description` | string | yes | Character description (profile text) in this version, or empty. |
@@ -4750,7 +4754,7 @@ A provider a pipeline step can use. Each step lists which of these it accepts.
 | `needs` | `"api_key"` \| `"url"` | yes | What must be configured in Settings: an API key (cloud) or a server URL. |
 | `configured` | boolean | yes | A key or URL is set. It does not prove the server answers or the key works. |
 | `has_api_key` | boolean | yes | Older name for `configured` (also true when a URL is set). Same value. |
-| `models` | list of [PipelineProviderModel](#schema-pipelineprovidermodel) \| null |  | Present only for `local_llm`: curated models for the self-hosted server. (default `null`) |
+| `models` | list of [PipelineProviderModel](#schema-pipelineprovidermodel) \| null |  | Present only for `local_llm`: curated models for the self-hosted server. |
 
 <a id="schema-pipelineprovidermodel"></a>
 ### PipelineProviderModel
@@ -4779,9 +4783,9 @@ A curated model entry for the self-hosted LLM. Listing it does not prove the ser
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `kind` | `"Quotation"` \| `"Character"` | yes | `Quotation`: a passage BookNLP attributed (row ID is the passage ID). `Character`: a character BookNLP found in the chapter. Capitalized display labels. |
 | `text` | string | yes | Passage text truncated to 160 characters, or a character summary. |
 | `booknlp` | string | yes | BookNLP's speaker or character name. |
@@ -4826,9 +4830,9 @@ Created with `status: queued`; the job worker adds `started_at`, then
 | `error` | string \| null | yes | Human-readable failure text, or null. Display only. |
 | `created_at` | string | yes | ISO 8601 UTC. |
 | `updated_at` | string | yes | ISO 8601 UTC. |
-| `started_at` | string \| null |  | ISO 8601 UTC time the worker began. Absent while queued. (default `null`) |
-| `completed_at` | string \| null |  | ISO 8601 UTC finish time. Absent until the worker finishes. (default `null`) |
-| `outcomes` | map of string → [PipelineRunOutcome](#schema-pipelinerunoutcome) \| null |  | Per-step outcome keyed by step ID. Absent until the worker finishes. (default `null`) |
+| `started_at` | string \| null |  | ISO 8601 UTC time the worker began. Absent while queued. |
+| `completed_at` | string \| null |  | ISO 8601 UTC finish time. Absent until the worker finishes. |
+| `outcomes` | map of string → [PipelineRunOutcome](#schema-pipelinerunoutcome) \| null |  | Per-step outcome keyed by step ID. Absent until the worker finishes. |
 
 <a id="schema-pipelinerunlimits"></a>
 ### PipelineRunLimits
@@ -4850,11 +4854,11 @@ How one requested step ended within a run.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `status` | `"completed"` \| `"failed"` \| `"budget_limited"` \| `"cancelled"` \| `"skipped"` | yes | `skipped`: not started, because a required input did not complete, is waiting for review, has no accepted result, or the run stopped. |
-| `reason` | string \| null |  | Present when `skipped`: human-readable reason. (default `null`) |
-| `step_run_id` | string \| null |  | The step version created, or null if it failed before one was created. Absent when skipped. (default `null`) |
-| `scopes` | integer \| null |  | Number of scope versions recorded. Absent when skipped. (default `null`) |
-| `accepted` | boolean \| null |  | True when the `auto` gate accepted the result. Absent when skipped. (default `null`) |
-| `error` | string \| null |  | Present on some failures: human-readable error text. (default `null`) |
+| `reason` | string \| null |  | Present when `skipped`: human-readable reason. |
+| `step_run_id` | string \| null |  | The step version created, or null if it failed before one was created. Absent when skipped. |
+| `scopes` | integer \| null |  | Number of scope versions recorded. Absent when skipped. |
+| `accepted` | boolean \| null |  | True when the `auto` gate accepted the result. Absent when skipped. |
+| `error` | string \| null |  | Present on some failures: human-readable error text. |
 
 <a id="schema-pipelinerunstarted"></a>
 ### PipelineRunStarted
@@ -4947,7 +4951,7 @@ Returned raw: every field below is always present unless marked optional.
 | `created_at` | string | yes | ISO 8601 UTC creation time. |
 | `updated_at` | string | yes | ISO 8601 UTC time of the last change. |
 | `completed_at` | string \| null | yes | ISO 8601 UTC time the run finished, or null (always null for captures). |
-| `incomplete_scopes` | list of string \| null |  | Scopes with at least one unit that did not validate (so no version was recorded for them). Absent until the run finishes, on captures, on runs interrupted by a restart, and on runs that failed before their units were assembled. (default `null`) |
+| `incomplete_scopes` | list of string \| null |  | Scopes with at least one unit that did not validate (so no version was recorded for them). Absent until the run finishes, on captures, on runs interrupted by a restart, and on runs that failed before their units were assembled. |
 
 <a id="schema-pipelinestepsettingsview"></a>
 ### PipelineStepSettingsView
@@ -4996,9 +5000,9 @@ A step version summarized for history lists, with its review state.
 | --- | --- | --- | --- |
 | `id` | string | yes | Stable row ID used to match rows across versions (a chapter, character, passage or candidate identity, depending on the step). |
 | `scope` | string | yes | The version scope the row belongs to (`book`, a chapter ID or a character ID). |
-| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. (default `null`) |
-| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. (default `null`) |
-| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. (default `null`) |
+| `_diff` | `"added"` \| `"changed"` \| `"same"` \| null |  | `added` (no row with this ID in the compared version), `changed` or `same`. |
+| `_changed` | list of string \| null |  | Column keys whose value differs from the compared row. Absent for `added` rows. |
+| `_previous` | object \| null |  | The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows. |
 | `title` | string | yes | Chapter title recorded in this version, or empty. |
 | `kind` | string | yes | Section kind, for example `chapter` or `front_matter`. |
 | `source` | string | yes | Where the title came from (the chapter's `title_source`), or empty. |
@@ -5051,7 +5055,7 @@ Row-level comparison counts over the whole table (before `scope`/`changed_only` 
 | `changed` | integer | yes | Rows present in both versions with at least one differing column value. 0 when nothing was compared. |
 | `added` | integer | yes | Rows of this version with no row of the same ID in the compared version. 0 when nothing was compared. |
 | `removed` | integer | yes | Rows of the compared version with no matching row ID here (not returned as rows). |
-| `agreement` | number \| null |  | `same / (same + changed)` rounded to 4 decimals, or null when no rows matched. Absent when nothing was compared. (default `null`) |
+| `agreement` | number \| null |  | `same / (same + changed)` rounded to 4 decimals, or null when no rows matched. Absent when nothing was compared. |
 
 <a id="schema-pipelineversionhistory"></a>
 ### PipelineVersionHistory
@@ -5164,37 +5168,37 @@ ledger. Absent or null measurements are unknown, not zero.
 | --- | --- | --- | --- |
 | `id` | string | yes | Row ID (32 hex characters): the analysis attempt ID for `analysis_request`, the cache-hit event ID for `cache_reuse`, otherwise the resource-ledger operation ID. Unique within the response. |
 | `book_id` | string | yes | Book ID the work was recorded for. |
-| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports, searches, exports). (default `null`) |
-| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID. (default `null`) |
-| `unit_key` | string \| null |  | Opaque unit key (cache key, passage ID, preview ID or census fingerprint). (default `null`) |
-| `chapter_id` | string \| null |  | Chapter the work belongs to, when recorded. (default `null`) |
-| `provider` | string \| null |  | Provider ID (`local` for local work). (default `null`) |
-| `model` | string \| null |  | Model ID, when any. (default `null`) |
+| `run_id` | string \| null |  | Job ID, or null for work outside a job (e.g. imports, searches, exports). |
+| `stage` | string \| null |  | What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID. |
+| `unit_key` | string \| null |  | Opaque unit key (cache key, passage ID, preview ID or census fingerprint). |
+| `chapter_id` | string \| null |  | Chapter the work belongs to, when recorded. |
+| `provider` | string \| null |  | Provider ID (`local` for local work). |
+| `model` | string \| null |  | Model ID, when any. |
 | `kind` | string | yes | `analysis_request`, `cache_reuse`, or a resource-ledger kind: `local`, `assembly`, `validation`, `narration`. |
 | `cached` | boolean | yes | True when saved output was reused without a provider request. |
 | `status` | `"reserved"` \| `"received"` \| `"uncertain"` \| `"not_sent"` \| `"running"` \| `"completed"` \| `"failed"` \| `"interrupted"` \| `"unknown"` | yes | Analysis requests: attempt status (`reserved`, `received`, `uncertain`, `not_sent`), `failed` when the HTTP status was >= 400 or a failure event names it, `unknown` for legacy rows. Other rows: `running`, `completed`, `failed`, `interrupted`. Rows left `running`/`reserved` by an earlier server process or a finished job are reported `interrupted`. |
-| `process_id` | string \| null |  | Internal; do not rely on it. Server process that recorded the row. (default `null`) |
-| `created_at` | string \| null |  | ISO 8601 UTC start time. (default `null`) |
-| `completed_at` | string \| null |  | ISO 8601 UTC end time; absent while running. (default `null`) |
-| `request_count` | integer \| null |  | Provider requests made: 1 for analysis requests, 0 for local/cached work, null when unknown (e.g. a cloud narration that failed early). (default `null`) |
-| `input_tokens` | integer \| null |  | Reported input tokens. (default `null`) |
-| `output_tokens` | integer \| null |  | Reported output tokens. (default `null`) |
-| `cached_input_tokens` | integer \| null |  | Reported cached input tokens. (default `null`) |
-| `cache_write_input_tokens` | integer \| null |  | Reported cache-write input tokens. (default `null`) |
-| `output_bytes` | integer \| null |  | Bytes written (audio, exports). (default `null`) |
-| `elapsed_seconds` | number \| null |  | Measured wall time of this step in seconds. (default `null`) |
-| `cpu_seconds` | number \| null |  | Measured CPU seconds of the current Python thread (local work only). (default `null`) |
-| `audio_seconds` | number \| null |  | Audio duration produced or reused, in seconds. (default `null`) |
-| `estimated_cost_usd` | number \| null |  | Estimated USD cost; 0 for local/cached/self-hosted work; null when unknown. (default `null`) |
-| `cost_basis` | string \| null |  | How the estimate was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent`, `no_provider_request`, `self_hosted`, `standard_paid_tier_usage_estimate`, `legacy_estimate`, `unknown`. (default `null`) |
-| `price_as_of` | string \| null |  | Date of the price table used. (default `null`) |
-| `price_source` | string \| null |  | URL of the price source used. (default `null`) |
-| `usage_source` | string \| null |  | Where token usage came from (narration), e.g. `gemini_interactions` or `not_reported`. (default `null`) |
-| `cpu_scope` | string \| null |  | `current_python_thread` when CPU was measured. (default `null`) |
-| `artifact_id` | string \| null |  | Related retained artifact, when recorded. (default `null`) |
-| `asset_id` | string \| null |  | Related stored audio asset, when recorded. (default `null`) |
-| `http_status` | integer \| null |  | Provider HTTP status, when any. (default `null`) |
-| `validation_state` | `"accepted"` \| `"rejected"` \| `"unknown"` \| null |  | Analysis requests only: output validation outcome from retained events. (default `null`) |
+| `process_id` | string \| null |  | Internal; do not rely on it. Server process that recorded the row. |
+| `created_at` | string \| null |  | ISO 8601 UTC start time. |
+| `completed_at` | string \| null |  | ISO 8601 UTC end time; absent while running. |
+| `request_count` | integer \| null |  | Provider requests made: 1 for analysis requests, 0 for local/cached work, null when unknown (e.g. a cloud narration that failed early). |
+| `input_tokens` | integer \| null |  | Reported input tokens. |
+| `output_tokens` | integer \| null |  | Reported output tokens. |
+| `cached_input_tokens` | integer \| null |  | Reported cached input tokens. |
+| `cache_write_input_tokens` | integer \| null |  | Reported cache-write input tokens. |
+| `output_bytes` | integer \| null |  | Bytes written (audio, exports). |
+| `elapsed_seconds` | number \| null |  | Measured wall time of this step in seconds. |
+| `cpu_seconds` | number \| null |  | Measured CPU seconds of the current Python thread (local work only). |
+| `audio_seconds` | number \| null |  | Audio duration produced or reused, in seconds. |
+| `estimated_cost_usd` | number \| null |  | Estimated USD cost; 0 for local/cached/self-hosted work; null when unknown. |
+| `cost_basis` | string \| null |  | How the estimate was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent`, `no_provider_request`, `self_hosted`, `standard_paid_tier_usage_estimate`, `legacy_estimate`, `unknown`. |
+| `price_as_of` | string \| null |  | Date of the price table used. |
+| `price_source` | string \| null |  | URL of the price source used. |
+| `usage_source` | string \| null |  | Where token usage came from (narration), e.g. `gemini_interactions` or `not_reported`. |
+| `cpu_scope` | string \| null |  | `current_python_thread` when CPU was measured. |
+| `artifact_id` | string \| null |  | Related retained artifact, when recorded. |
+| `asset_id` | string \| null |  | Related stored audio asset, when recorded. |
+| `http_status` | integer \| null |  | Provider HTTP status, when any. |
+| `validation_state` | `"accepted"` \| `"rejected"` \| `"unknown"` \| null |  | Analysis requests only: output validation outcome from retained events. |
 
 <a id="schema-resourcerunaggregate"></a>
 ### ResourceRunAggregate
@@ -5406,7 +5410,7 @@ its limits once, in `limits_per_book`.
 | `coverage` | [AnalysisCoverage](#schema-analysiscoverage) | yes | Same body as `GET /api/books/{book_id}/preprocessing`, with profile freshness computed against the plan's working cast. |
 | `future_work_unknown` | boolean | yes | True for `full`: discovery can add profiles and change direction prompts, so the estimate is incomplete. |
 | `note` | string | yes | Interpretation caveat. Display only. |
-| `limits` | [AnalysisPlanLimits](#schema-analysisplanlimits) \| null |  | Never present in a series plan; see `SeriesPlan.limits_per_book`. (default `null`) |
+| `limits` | [AnalysisPlanLimits](#schema-analysisplanlimits) \| null |  | Never present in a series plan; see `SeriesPlan.limits_per_book`. |
 
 <a id="schema-seriescharacter"></a>
 ### SeriesCharacter
@@ -5662,45 +5666,45 @@ A series parent job with its child book jobs.
 | `created_at` | string | yes | Creation time: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
-| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). (default `null`) |
-| `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. (default `null`) |
-| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. (default `null`) |
-| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. (default `null`) |
-| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). (default `null`) |
-| `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. (default `null`) |
-| `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. (default `null`) |
-| `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). (default `null`) |
-| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. (default `null`) |
-| `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. (default `null`) |
-| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. (default `null`) |
-| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. (default `null`) |
-| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. (default `null`) |
-| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. (default `null`) |
-| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. (default `null`) |
-| `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). (default `null`) |
-| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). (default `null`) |
-| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). (default `null`) |
-| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). (default `null`) |
-| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. (default `null`) |
-| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. (default `null`) |
-| `performance_id` | string \| null |  | `performance`: the saved performance being prepared. (default `null`) |
-| `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. (default `null`) |
-| `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. (default `null`) |
-| `preview_id` | string \| null |  | `voice_preview`: the preview ID. (default `null`) |
-| `preview` | [VoicePreview](#schema-voicepreview) \| null |  | `voice_preview`: the preview request being rendered. (default `null`) |
-| `voice` | string \| null |  | `listen_chapter`: the Gemini voice. (default `null`) |
-| `intent` | `"play"` \| `"queue"` \| null |  | `listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`. (default `null`) |
-| `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. (default `null`) |
-| `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. (default `null`) |
-| `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. (default `null`) |
-| `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. (default `null`) |
-| `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. (default `null`) |
-| `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. (default `null`) |
-| `calibration` | [ChapterListenCalibration](#schema-chapterlistencalibration) \| null |  | `listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish. (default `null`) |
-| `projection` | list of [ChapterListenChunkPlan](#schema-chapterlistenchunkplan) \| null |  | `listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports. (default `null`) |
-| `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. (default `null`) |
-| `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. (default `null`) |
-| `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. (default `null`) |
+| `provider` | `"local"` \| `"gemini"` \| `"openai"` \| `"anthropic"` \| `"system"` \| `"breeze"` \| null |  | Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini). |
+| `model` | string \| null |  | Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it. |
+| `scan_model` | string \| null |  | Preprocessing (scan) model for `analyze` and `series`; null for local analysis. |
+| `phase` | `"scan"` \| `"profiles"` \| `"direct"` \| `"full"` \| `"simple_listen"` \| `"chapter_listen"` \| `"voice_preview"` \| `"performance"` \| null |  | `analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`. |
+| `mode` | `"serial"` \| `"parallel"` \| `"simple"` \| `"cast"` \| null |  | `pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices). |
+| `chapter_id` | string \| null |  | `analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter. |
+| `segment_id` | string \| null |  | `listen`: the passage. `voice_preview`: the source passage, or null for demo text. |
+| `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
+| `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure. |
+| `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. |
+| `steps` | list of string \| null |  | `pipeline`: step IDs in the run, including required upstream steps. |
+| `series_id` | string \| null |  | `series` parent and its `analyze` children: the series. |
+| `series_run_id` | string \| null |  | `analyze` series child: the parent `series` job ID. |
+| `position` | number \| null |  | `analyze` series child: the book's reading-order position in the series. |
+| `book_ids` | list of string \| null |  | `series`: the books processed, in reading order (missing volumes excluded). |
+| `child_job_ids` | list of string \| null |  | `series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise). |
+| `concurrency` | integer \| null |  | `series`: parallel discovery workers (1–2; 1 for phases without discovery). |
+| `limits` | [SeriesJobLimits](#schema-seriesjoblimits) \| [ChapterListenLimits](#schema-chapterlistenlimits) \| null |  | `series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits). |
+| `plan_fingerprint` | string \| null |  | Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against. |
+| `finished_at` | string \| null |  | `series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `performance_id` | string \| null |  | `performance`: the saved performance being prepared. |
+| `child_job_id` | string \| null |  | `performance`: the `listen_chapter` job currently running, or null between chapters. |
+| `parent_id` | string \| null |  | `listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it. |
+| `preview_id` | string \| null |  | `voice_preview`: the preview ID. |
+| `preview` | [VoicePreview](#schema-voicepreview) \| null |  | `voice_preview`: the preview request being rendered. |
+| `voice` | string \| null |  | `listen_chapter`: the Gemini voice. |
+| `intent` | `"play"` \| `"queue"` \| null |  | `listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`. |
+| `scope_start_segment_id` | string \| null |  | `listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back. |
+| `focus_segment_id` | string \| null |  | `listen_chapter`: the passage the listener is at; generation proceeds from here first. |
+| `chunking` | [ChapterListenChunking](#schema-chapterlistenchunking) \| null |  | `listen_chapter`: the chunk settings in use. |
+| `ramp_restart` | integer \| null |  | `listen_chapter`: times a `play` join restarted the short first-request ramp. |
+| `joins` | integer \| null |  | `listen_chapter`: times another request joined this job instead of starting one. |
+| `chunks` | list of [JobChapterChunk](#schema-jobchapterchunk) \| null |  | `listen_chapter`: every request sent so far, in order, with its outcome. |
+| `calibration` | [ChapterListenCalibration](#schema-chapterlistencalibration) \| null |  | `listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish. |
+| `projection` | list of [ChapterListenChunkPlan](#schema-chapterlistenchunkplan) \| null |  | `listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports. |
+| `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
+| `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
+| `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
 | `children` | list of [Job](#schema-job) | yes | The child `analyze` jobs, one per supplied book, in reading order. They use real book IDs. |
 
 <a id="schema-seriesruns"></a>
@@ -5825,7 +5829,7 @@ Whether a narration provider can be used right now.
 | `id` | `"system"` \| `"gemini"` \| `"breeze"` | yes | Narration provider ID: `system` (macOS device voices), `gemini` (cloud) or `breeze` (self-hosted server). |
 | `label` | string | yes | Display name. |
 | `available` | boolean | yes | `system`: macOS voices and ffmpeg are installed. `gemini`: a Gemini key is loaded. `breeze`: a server URL is configured and the last check found at least one usable voice. |
-| `reason` | string \| null |  | `breeze` only: why it is unavailable, or null when available. (default `null`) |
+| `reason` | string \| null |  | `breeze` only: why it is unavailable, or null when available. |
 
 <a id="schema-stepconfig"></a>
 ### StepConfig
@@ -5901,8 +5905,8 @@ A typed graph edge.
 | `from` | string | yes | Source node ID. |
 | `to` | string | yes | Target node ID. An `attributed_speaker` target may name a character node that is absent when the passage names a speaker no longer in the cast. |
 | `type` | `"contains"` \| `"next"` \| `"attributed_speaker"` | yes | `contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence). |
-| `order` | integer \| null |  | `contains` edges: zero-based position within the parent. (default `null`) |
-| `confidence` | number \| null |  | `attributed_speaker` edges: attribution confidence 0–1, or null. (default `null`) |
+| `order` | integer \| null |  | `contains` edges: zero-based position within the parent. |
+| `confidence` | number \| null |  | `attributed_speaker` edges: attribution confidence 0–1, or null. |
 
 <a id="schema-storymaplogicalsection"></a>
 ### StoryMapLogicalSection
@@ -5927,14 +5931,14 @@ A typed graph node. IDs are `<book_id>:<type>:<local id>`, so they are unique ac
 | --- | --- | --- | --- |
 | `id` | string | yes | Graph node ID `<book_id>:<type>:<local id>`, where the local ID is the book, chapter, scene, passage or book-local character ID. Referenced by edge `from`/`to`. |
 | `type` | `"book"` \| `"chapter"` \| `"scene"` \| `"passage"` \| `"character"` | yes | Node type; decides which of the optional ID fields below are present. |
-| `book_id` | string \| null |  | `book` nodes. (default `null`) |
-| `chapter_id` | string \| null |  | `chapter` and `passage` nodes. (default `null`) |
-| `source_artifact_id` | string \| null |  | `chapter` nodes: current source artifact, or null. (default `null`) |
-| `scene_id` | string \| null |  | `scene` nodes. (default `null`) |
-| `passage_id` | string \| null |  | `passage` nodes. (default `null`) |
-| `source_anchor` | [StoryMapSourceAnchor](#schema-storymapsourceanchor) \| null |  | `passage` nodes: verified anchor, or null when the passage text does not match its offsets. (default `null`) |
-| `character_id` | string \| null |  | `character` nodes. (default `null`) |
-| `name` | string \| null |  | `character` nodes. (default `null`) |
+| `book_id` | string \| null |  | `book` nodes. |
+| `chapter_id` | string \| null |  | `chapter` and `passage` nodes. |
+| `source_artifact_id` | string \| null |  | `chapter` nodes: current source artifact, or null. |
+| `scene_id` | string \| null |  | `scene` nodes. |
+| `passage_id` | string \| null |  | `passage` nodes. |
+| `source_anchor` | [StoryMapSourceAnchor](#schema-storymapsourceanchor) \| null |  | `passage` nodes: verified anchor, or null when the passage text does not match its offsets. |
+| `character_id` | string \| null |  | `character` nodes. |
+| `name` | string \| null |  | `character` nodes. |
 
 <a id="schema-storymapreference"></a>
 ### StoryMapReference
@@ -5951,11 +5955,11 @@ A source reference to a character. Kinds are distinct evidence and must not be m
 | `end` | integer | yes | Code-point offset (exclusive). |
 | `quote` | string | yes | The exact source text of the range. |
 | `kind` | `"mention"` \| `"dialogue"` \| `"profile_evidence"` | yes | `mention`: a name/alias match (not presence). `dialogue`: an attributed dialogue passage. `profile_evidence`: a quotation a model cited as evidence. |
-| `confidence` | number \| null |  | Attribution confidence for `dialogue`; null otherwise. Current writers always include it; stored references from other sources may omit it. (default `null`) |
+| `confidence` | number \| null |  | Attribution confidence for `dialogue`; null otherwise. Current writers always include it; stored references from other sources may omit it. |
 | `provider` | string \| null | yes | `local` for mentions, `reviewed` for reviewed dialogue, else the analysis provider. |
 | `model` | string \| null | yes | Model that produced it, or null. |
-| `profile_description` | string \| null |  | `profile_evidence`: the description the model gave with this evidence. (default `null`) |
-| `profile_direction` | string \| null |  | `profile_evidence`: the direction the model gave. (default `null`) |
+| `profile_description` | string \| null |  | `profile_evidence`: the description the model gave with this evidence. |
+| `profile_direction` | string \| null |  | `profile_evidence`: the direction the model gave. |
 
 <a id="schema-storymapreferencecounts"></a>
 ### StoryMapReferenceCounts
@@ -6015,8 +6019,8 @@ One FastAPI request-validation problem.
 | `loc` | list of string \| integer | yes | Location of the invalid value, for example ["body", "limits", "max_requests"]. |
 | `msg` | string | yes | Human-readable reason. |
 | `type` | string | yes | Stable Pydantic error type, for example "missing" or "extra_forbidden". |
-| `input` | any |  | The rejected input value, echoed back. Absent for the diagnostics endpoint, which never echoes input. (default `null`) |
-| `ctx` | object \| null |  | Error-specific context, for example `{"le": 1000}` for a bound. (default `null`) |
+| `input` | any |  | The rejected input value, echoed back. Absent for the diagnostics endpoint, which never echoes input. |
+| `ctx` | object \| null |  | Error-specific context, for example `{"le": 1000}` for a bound. |
 
 <a id="schema-voicecharactercontext"></a>
 ### VoiceCharacterContext
@@ -6088,9 +6092,9 @@ Result of saving a draft candidate as a library voice or version.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `voice` | [LibraryVoice](#schema-libraryvoice) | yes | The new voice, or the base voice with its new current version. |
-| `book` | [Book](#schema-book) \| null |  | The full book document after assignment; present only when `assign` was given and the assignment succeeded. (default `null`) |
-| `assignment_error` | string \| null |  | Present when `assign` was given and failed (for example the book is busy or the character is missing). The voice is still saved; nothing is rolled back. (default `null`) |
-| `cleanup_error` | string \| null |  | Gemini only. Present when an unchosen stored candidate could not be deleted (the first failure message), or some were made with another Google key and remain in that project. (default `null`) |
+| `book` | [Book](#schema-book) \| null |  | The full book document after assignment; present only when `assign` was given and the assignment succeeded. |
+| `assignment_error` | string \| null |  | Present when `assign` was given and failed (for example the book is busy or the character is missing). The voice is still saved; nothing is rolled back. |
+| `cleanup_error` | string \| null |  | Gemini only. Present when an unchosen stored candidate could not be deleted (the first failure message), or some were made with another Google key and remain in that project. |
 
 <a id="schema-voiceedit"></a>
 ### VoiceEdit
@@ -6274,15 +6278,15 @@ A retained audition take.
 | `preview_id` | string | yes | ID of the audition request (`VoicePreview.id`) this take was retained for. |
 | `schema_version` | integer | yes | Take record format version (1). |
 | `created_at` | string | yes | ISO 8601 UTC. |
-| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result. (default `null`) |
+| `cache_hit` | boolean \| null |  | Present (true) only on a cache-hit result. |
 | `fingerprint` | string | yes | Internal; do not rely on it. Hash of the speech recipe that produced the bytes. |
 | `source_anchor` | [VoicePreviewSourceAnchor](#schema-voicepreviewsourceanchor) \| null | yes | Internal; do not rely on it. Copy of the preview source anchor. |
-| `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). (default `null`) |
-| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. (default `null`) |
-| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. (default `null`) |
-| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. (default `null`) |
-| `voice_revision` | string \| null |  | Breeze only: voice revision used. (default `null`) |
-| `voice_library` | [AudioTakeVoiceLibrary](#schema-audiotakevoicelibrary) \| null |  | When the voice was a voice-library voice: which one and which version. (default `null`) |
+| `reuse` | [VoicePreviewReuse](#schema-voicepreviewreuse) \| null |  | Present when bytes were reused from an equivalent audition (for example after a character rename). |
+| `resource_usage` | [AudioTakeUsage](#schema-audiotakeusage) \| null |  | Usage of the generating request; absent for device takes and reused bytes. |
+| `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null. |
+| `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
+| `voice_revision` | string \| null |  | Breeze only: voice revision used. |
+| `voice_library` | [AudioTakeVoiceLibrary](#schema-audiotakevoicelibrary) \| null |  | When the voice was a voice-library voice: which one and which version. |
 
 <a id="schema-voicepreviewcached"></a>
 ### VoicePreviewCached

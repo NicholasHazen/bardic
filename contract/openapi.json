@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.1.0",
-    "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ...}`. `detail` is an English sentence, or a\n  list of issues for 422 request validation. Display it; do not parse it.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
+    "version": "0.1.1",
+    "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation. Some build local caches or\n  record local measurements; `x-bardic-cost` on each operation says whether\n  it can reach a provider: `none`, `network` (contacts a provider or\n  self-hosted server without billed generation) or `may_charge`.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200.\n- Errors are JSON `{\"detail\": ...}`. `detail` is an English sentence, or a\n  list of issues for 422 request validation. Display it; do not parse it.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid fields marked `x-bardic-internal`: storage bookkeeping that a later\n  version may remove.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
     "/api/account-checks/{provider}": {
@@ -7772,7 +7772,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Input tokens."
           },
           "output_tokens": {
@@ -7784,7 +7783,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Output tokens."
           },
           "total_tokens": {
@@ -7796,7 +7794,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Total tokens (computed from input and output when not reported)."
           }
         },
@@ -7934,7 +7931,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Last date (YYYY-MM-DD) the quoted price applies; absent when open-ended. Cost estimates treat the price as unknown after it."
           },
           "price_input_token_limit": {
@@ -7946,7 +7942,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Prompt size in tokens above which the quoted price does not apply; absent when none."
           }
         },
@@ -8064,7 +8059,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Chapter title at the time the row was written."
           },
           "stage": {
@@ -8081,7 +8075,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Last stage this chapter reached. Absent until a run works on the chapter."
           },
           "status": {
@@ -8105,7 +8098,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Requests (units) finished for this chapter in its current stage."
           },
           "total_units": {
@@ -8117,7 +8109,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Requests (units) planned for this chapter in its current stage."
           },
           "error": {
@@ -8129,7 +8120,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Human-readable failure text for this chapter, or null. Display only."
           },
           "discovery_complete": {
@@ -8141,7 +8131,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when character discovery covers this chapter (for newer cloud runs: validated discovery covers the whole chapter text)."
           },
           "directing_complete": {
@@ -8153,7 +8142,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when passage direction for this chapter is complete and still matches the current cast."
           }
         },
@@ -8345,7 +8333,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present after a successful refresh: true when the listing had more pages than were read, so unlisted curated models stay `unverified`."
           }
         },
@@ -8644,7 +8631,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Hash identifying the checkpoint inputs (source, provider, model, reviewed edits). Absent when no checkpoint exists.",
             "x-bardic-internal": true
           },
@@ -8698,7 +8684,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Stage in progress or last reached. `preprocessing` is the free local census at the start of a cloud run; `complete` after success."
           },
           "phase": {
@@ -8716,7 +8701,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Requested cloud phase. Absent for local drafts and for checkpoints written before phases existed."
           },
           "scan_model": {
@@ -8728,7 +8712,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Fast model used for discovery in cloud runs. Absent for local drafts."
           },
           "completed_units": {
@@ -8740,7 +8723,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Units (requests or batches) completed in the latest run. Absent only if a run failed before its first save."
           },
           "total_units": {
@@ -8752,7 +8734,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Units known so far for the latest run. A `full` run discovers more work as it goes, so this can grow."
           },
           "current_chapter_id": {
@@ -8775,7 +8756,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The `chapter_id` the run was limited to, or null for the whole book. Absent when not started."
           },
           "error": {
@@ -8787,7 +8767,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Human-readable failure text of the latest run, or null. Display only."
           },
           "updated_at": {
@@ -8799,7 +8778,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC time the checkpoint was last saved. Absent when not started."
           },
           "chapters": {
@@ -9188,7 +9166,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The server's `x-request-id`, truncated to 80 characters; null or absent when the server sent none."
           },
           "timing_accepted": {
@@ -9207,7 +9184,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Lower-cased vocal event tags (for example `[laugh]`) found in the sent text; absent when none."
           }
         },
@@ -9298,7 +9274,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported input tokens (Gemini)."
           },
           "output_tokens": {
@@ -9310,7 +9285,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported output (audio) tokens (Gemini)."
           },
           "cached_input_tokens": {
@@ -9322,7 +9296,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported cached input tokens (Gemini)."
           },
           "usage_source": {
@@ -9334,7 +9307,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Where the counts came from: `gemini_interactions`, `not_reported` or `breeze`."
           },
           "estimated_cost_usd": {
@@ -9346,7 +9318,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Standard paid-tier list-price estimate in USD, or null when it cannot be priced. Not an account balance or bill. 0 for self-hosted Breeze."
           },
           "cost_basis": {
@@ -9358,7 +9329,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "How `estimated_cost_usd` was derived, for example `standard_paid_tier_usage_estimate`, `unknown` or `self_hosted`."
           },
           "price_as_of": {
@@ -9370,7 +9340,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Date of the price table used (Gemini)."
           },
           "price_source": {
@@ -9382,7 +9351,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Source of the price table (Gemini)."
           },
           "characters": {
@@ -9394,7 +9362,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Characters the Breeze server reported synthesizing."
           }
         },
@@ -9463,7 +9430,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Version of the structure interpretation (currently 2). Absent on books imported before structure metadata; structure repair sets it."
           },
           "chapters": {
@@ -9507,7 +9473,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Cover thumbnail metadata; absent when the original had no usable cover."
           },
           "metadata_edited": {
@@ -9519,7 +9484,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Display fields set by hand, which metadata refresh preserves.",
             "x-bardic-internal": true
           }
@@ -9556,7 +9520,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model ID used, or null/absent for local or service analysis."
           },
           "status": {
@@ -9576,7 +9539,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Human-readable explanation of the draft and what to review. Display only. The server writes it with every summary; treat an absent value as empty."
           },
           "phase": {
@@ -9588,7 +9550,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic analysis phase that published this state (`scan`, `profiles`, `direct`, `full`) or the pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`). Absent for import and local drafts."
           },
           "profiles_provisional": {
@@ -9600,7 +9561,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic progressive analysis only: true while character profiles still need whole-book discovery or refinement against current evidence."
           }
         },
@@ -9623,7 +9583,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Sampling temperature override, 0.05-2.0. Absent or null keeps the Breeze voice's own setting."
           },
           "cfg_scale": {
@@ -9635,7 +9594,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classifier-free guidance scale override, 0.5-10.0. Absent or null keeps the voice's own setting."
           },
           "top_p": {
@@ -9647,7 +9605,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Nucleus sampling probability override, 0.01-1.0. Absent or null keeps the voice's own setting."
           },
           "top_k": {
@@ -9659,7 +9616,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Top-k sampling override, an integer 1-1024. Absent or null keeps the voice's own setting."
           }
         },
@@ -9701,7 +9657,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Structural classification. `chapter` is a narrative chapter; `section` an unlabeled or multi-entry container that stays eligible for analysis; `front_matter`/`back_matter` non-story material; `recap` a \"story so far\" section."
           },
           "title_source": {
@@ -9721,7 +9676,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Where `title` came from."
           },
           "source_href": {
@@ -9733,7 +9687,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Path of the EPUB spine document inside the archive; null for TXT imports."
           },
           "logical_sections": {
@@ -9748,7 +9701,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Table-of-contents entries inside this container (EPUB only; empty for TXT)."
           },
           "narrative_order": {
@@ -9760,7 +9712,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "1-based number among `kind: chapter` containers only; absent for other kinds. Never an invented chapter number."
           },
           "trailing_text": {
@@ -9816,7 +9767,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Exact source quotations supporting the profile (at most 12). Absent on some characters saved by older versions; treat as empty."
           },
           "voices": {
@@ -9838,7 +9788,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Names replaced by a manual rename. Discovery still resolves them to this character; they are not aliases."
           },
           "profile_refined": {
@@ -9850,7 +9799,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True once a profile refinement produced the description and direction."
           },
           "profile_provider": {
@@ -9862,7 +9810,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider of the refined profile."
           },
           "profile_model": {
@@ -9874,7 +9821,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model of the refined profile."
           },
           "profile_priority": {
@@ -9891,7 +9837,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`."
           },
           "profile_state": {
@@ -9909,7 +9854,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic progressive analysis: `reviewed` (edited by hand), `current` (refined against current evidence), `stale` (refined, evidence changed since), `draft` (not refined)."
           },
           "profile_provisional": {
@@ -9921,7 +9865,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic progressive analysis: true while the profile may still change."
           },
           "profile_input_key": {
@@ -9933,7 +9876,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Cache key of the profile request that produced the profile.",
             "x-bardic-internal": true
           },
@@ -9946,7 +9888,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Legacy Gemini voice field of characters saved before 2026-09-27; already reflected in `voices.gemini`.",
             "x-bardic-internal": true
           },
@@ -9959,7 +9900,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Legacy device voice field; already reflected in `voices.system`.",
             "x-bardic-internal": true
           },
@@ -9972,7 +9912,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. True once the character was edited by hand or added manually. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           },
@@ -9988,7 +9927,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           }
@@ -10016,7 +9954,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Library voice ID (`vl_` + 16 hex) whose current version is used."
           },
           "id": {
@@ -10028,7 +9965,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Direct provider voice ID."
           },
           "revision": {
@@ -10040,7 +9976,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze pin: the voice revision from the last Breeze check."
           },
           "seed": {
@@ -10052,7 +9987,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze pin: default take seed (0–4294967295)."
           },
           "settings": {
@@ -10064,7 +9998,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze pin: sampling overrides."
           }
         },
@@ -10169,7 +10102,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when the title was set by hand."
           },
           "author": {
@@ -10181,7 +10113,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when the author was set by hand."
           }
         },
@@ -10277,7 +10208,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Exact source quotations that justify the attribution (copied from the source, never model paraphrase). Absent until analysis sets it."
           },
           "seed": {
@@ -10289,7 +10219,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Take seed for seeded providers (Breeze), 0–4294967295, set by a passage edit. A new seed means a new take. Ignored by Gemini and device narration."
           },
           "speaker_check": {
@@ -10301,7 +10230,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "BookNLP comparison; absent when not checked."
           },
           "analysis_provider": {
@@ -10313,7 +10241,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider whose annotation is current for this passage (`local`, an LLM provider, `novel_analyzer` or `booknlp`). Absent before analysis; kept from the last analysis after a manual edit."
           },
           "analysis_model": {
@@ -10325,7 +10252,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model of that annotation; null for local or service providers."
           },
           "audio": {
@@ -10352,7 +10278,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. True once the passage was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           },
@@ -10368,7 +10293,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           }
@@ -10411,7 +10335,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Display title, for example \"Chapter One · Scene 2\". Rarely absent after a pipeline acceptance that proposed none."
           },
           "summary": {
@@ -10423,7 +10346,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Scene summary (draft or reviewed). Editable; at most 4,000 characters by hand."
           },
           "tone": {
@@ -10435,7 +10357,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Emotional tone notes; `Unreviewed` at import. Used in enhanced narration recipes."
           },
           "direction": {
@@ -10447,7 +10368,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Performance direction for the whole scene. Used in enhanced narration recipes."
           },
           "segment_ids": {
@@ -10473,7 +10393,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. True once the scene was edited by hand. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           },
@@ -10489,7 +10408,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Names of fields edited by hand; `\"*\"` means all. Manual edits are recorded per field in `edited_fields`, and only for values that actually changed (editors may resend a whole form). Generated analysis never overwrites a listed field. An item edited before per-field tracking has `edited: true` and no `edited_fields` (a later edit then records `\"*\"`); it stays wholly locked. The older phase-based analysis (Classic analysis) still reads only the boolean `edited`, which every successful edit request sets to true, even one that changes nothing.",
             "x-bardic-internal": true
           }
@@ -10647,7 +10565,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Cast character ID BookNLP attributed, or null."
           },
           "speaker": {
@@ -10659,7 +10576,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "BookNLP's own name for the speaker, or null."
           },
           "tag_conflict": {
@@ -10671,7 +10587,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when BookNLP's own speech tag contradicts its speaker; then the comparison is only recorded."
           }
         },
@@ -10703,7 +10618,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Hex SHA-256 of the WAV bytes (content address), also usable with `GET /api/books/{book_id}/audio-assets/{asset_id}`. Absent on takes made before content addressing, whose file is named by `fingerprint`."
           },
           "duration": {
@@ -10723,7 +10637,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Speech model ID (`macos-say` for device narration)."
           },
           "voice": {
@@ -10735,7 +10648,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Concrete provider voice that performed the take."
           },
           "voice_library": {
@@ -10747,7 +10659,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Library voice that was followed, when the character used one."
           },
           "voice_revision": {
@@ -10759,7 +10670,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: the pinned server revision of the voice."
           },
           "provider_timing": {
@@ -10771,7 +10681,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: sentence timing, or null when the server's timing was not usable."
           },
           "breeze": {
@@ -10783,7 +10692,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: request details."
           },
           "resource_usage": {
@@ -10796,7 +10704,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Measured provider usage for the request that produced the take (token counts, estimated cost in USD, cost basis, price date). Arbitrary JSON; the resources routes are the supported view of usage.",
             "x-bardic-internal": true
           }
@@ -10826,7 +10733,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Version number of that library voice."
           }
         },
@@ -10852,7 +10758,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The full book document after assignment; present only when `book_id` and `character_id` were given and the assignment succeeded."
           },
           "assignment_error": {
@@ -10864,7 +10769,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when the assignment failed. The voice is still created; nothing is rolled back."
           }
         },
@@ -11539,7 +11443,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Attribution confidence for `dialogue` (0–1); null otherwise."
           },
           "provider": {
@@ -11551,7 +11454,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Who produced it: an analysis provider, `local` for mentions, or `reviewed` for a hand-edited dialogue attribution; null when unknown. Current analysis always writes `confidence`, `provider` and `model`; references retained from older versions may omit them."
           },
           "model": {
@@ -11563,7 +11465,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model that produced it, or null."
           },
           "profile_description": {
@@ -11575,7 +11476,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`profile_evidence` only: the description proposed with this evidence."
           },
           "profile_direction": {
@@ -11587,7 +11487,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`profile_evidence` only: the direction proposed with this evidence."
           }
         },
@@ -11836,7 +11735,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Book ID."
           },
           "segment_id": {
@@ -11848,7 +11746,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Passage ID."
           },
           "session_id": {
@@ -11860,7 +11757,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Listening session ID."
           },
           "job_id": {
@@ -11872,7 +11768,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Job ID."
           },
           "playback_rate": {
@@ -11884,7 +11779,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Playback rate (0.1–8)."
           },
           "http_status": {
@@ -11896,7 +11790,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "HTTP status the client saw (100–599)."
           },
           "media_error_code": {
@@ -11908,7 +11801,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "HTML media error code (1–4)."
           },
           "operation": {
@@ -11932,7 +11824,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "What was happening. `worker` and `submit` are server-only."
           },
           "status": {
@@ -11949,7 +11840,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Server events: the job outcome."
           },
           "provider": {
@@ -11966,7 +11856,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Server events: the narration provider."
           }
         },
@@ -12017,7 +11906,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event."
           },
           "reason": {
@@ -12034,7 +11922,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` (120 client events in the last minute), `unavailable` (storage failed, or the fields broke a rule checked after validation, such as a passage ID without a book ID)."
           }
         },
@@ -12502,7 +12389,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini)."
           },
           "model": {
@@ -12514,7 +12400,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it."
           },
           "scan_model": {
@@ -12526,7 +12411,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Preprocessing (scan) model for `analyze` and `series`; null for local analysis."
           },
           "phase": {
@@ -12548,7 +12432,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`."
           },
           "mode": {
@@ -12566,7 +12449,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices)."
           },
           "chapter_id": {
@@ -12578,7 +12460,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter."
           },
           "segment_id": {
@@ -12590,7 +12471,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen`: the passage. `voice_preview`: the source passage, or null for demo text."
           },
           "session_id": {
@@ -12602,7 +12482,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen`, `listen_chapter`: the narrator session (64 hex)."
           },
           "audio": {
@@ -12624,7 +12503,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure."
           },
           "resume_after": {
@@ -12636,7 +12514,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`."
           },
           "run_id": {
@@ -12648,7 +12525,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: the pipeline run this job executes."
           },
           "steps": {
@@ -12663,7 +12539,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: step IDs in the run, including required upstream steps."
           },
           "series_id": {
@@ -12675,7 +12550,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series` parent and its `analyze` children: the series."
           },
           "series_run_id": {
@@ -12687,7 +12561,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze` series child: the parent `series` job ID."
           },
           "position": {
@@ -12699,7 +12572,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze` series child: the book's reading-order position in the series."
           },
           "book_ids": {
@@ -12714,7 +12586,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: the books processed, in reading order (missing volumes excluded)."
           },
           "child_job_ids": {
@@ -12729,7 +12600,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise)."
           },
           "concurrency": {
@@ -12741,7 +12611,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: parallel discovery workers (1–2; 1 for phases without discovery)."
           },
           "limits": {
@@ -12756,7 +12625,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits)."
           },
           "plan_fingerprint": {
@@ -12768,7 +12636,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against.",
             "x-bardic-internal": true
           },
@@ -12781,7 +12648,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`."
           },
           "performance_id": {
@@ -12793,7 +12659,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`performance`: the saved performance being prepared."
           },
           "child_job_id": {
@@ -12805,7 +12670,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`performance`: the `listen_chapter` job currently running, or null between chapters."
           },
           "parent_id": {
@@ -12817,7 +12681,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it."
           },
           "preview_id": {
@@ -12829,7 +12692,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`voice_preview`: the preview ID."
           },
           "preview": {
@@ -12841,7 +12703,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`voice_preview`: the preview request being rendered."
           },
           "voice": {
@@ -12853,7 +12714,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the Gemini voice."
           },
           "intent": {
@@ -12869,7 +12729,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`."
           },
           "scope_start_segment_id": {
@@ -12881,7 +12740,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back."
           },
           "focus_segment_id": {
@@ -12893,7 +12751,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the passage the listener is at; generation proceeds from here first."
           },
           "chunking": {
@@ -12905,7 +12762,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the chunk settings in use."
           },
           "ramp_restart": {
@@ -12917,7 +12773,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: times a `play` join restarted the short first-request ramp."
           },
           "joins": {
@@ -12929,7 +12784,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: times another request joined this job instead of starting one."
           },
           "chunks": {
@@ -12944,7 +12798,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: every request sent so far, in order, with its outcome."
           },
           "calibration": {
@@ -12956,7 +12809,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish."
           },
           "projection": {
@@ -12971,7 +12823,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports."
           },
           "quota": {
@@ -12983,7 +12834,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: daily quota use at the last report."
           },
           "waiting_seconds": {
@@ -12995,7 +12845,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting."
           },
           "closing": {
@@ -13007,7 +12856,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends."
           }
         },
@@ -13094,7 +12942,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "When the request finished; absent while `requesting`. ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`."
           },
           "error": {
@@ -13106,7 +12953,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Human-readable reason for `rate_limited`, `truncated` or `failed` (at most 300 characters for `failed`)."
           },
           "duration": {
@@ -13118,7 +12964,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Seconds of audio received (`done`, `truncated`)."
           },
           "chunk_id": {
@@ -13130,7 +12975,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ID of the retained chunk audio (`done`)."
           },
           "latency": {
@@ -13142,7 +12986,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Measured seconds from send to response (`done`)."
           },
           "flags": {
@@ -13158,7 +13001,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Quality flags (`done`). `weak_alignment`: fewer than 60% of passage boundaries matched, so passage clip times are rough."
           },
           "matched": {
@@ -13170,7 +13012,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Passage boundaries the aligner matched in the audio (`done`)."
           },
           "boundaries": {
@@ -13182,7 +13023,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Passage boundaries the aligner tried to match (`done`)."
           }
         },
@@ -13641,7 +13481,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The voice description (Breeze design prompt, Gemini prompted-voice input, or the clone/import description)."
           },
           "sample_text": {
@@ -13653,7 +13492,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze: the text the auditioned clip speaks (design sample text or clone transcript). Absent for Gemini."
           },
           "model": {
@@ -13665,7 +13503,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini design model used, for example `gemini-3.8-flash-tts`. Gemini only."
           },
           "language_code": {
@@ -13677,7 +13514,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini language tag, for example `en-US`. Gemini only."
           },
           "gender": {
@@ -13689,7 +13525,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini gender hint (`female`, `male` or `neutral`). Gemini only; absent when none was given."
           }
         },
@@ -14064,7 +13899,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present (true) only on a cache-hit result from `POST /listen`."
           }
         },
@@ -14148,7 +13982,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`."
           },
           "fingerprint": {
@@ -14170,7 +14003,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes.",
             "x-bardic-internal": true
           },
@@ -14188,7 +14020,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when the bytes were copied from an equivalent retained take instead of being generated."
           },
           "resource_usage": {
@@ -14200,7 +14031,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Usage of the generating request; absent for device takes and for reused bytes."
           },
           "provider_timing": {
@@ -14212,7 +14042,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: validated sentence timing, or null when the server timing did not validate."
           },
           "breeze": {
@@ -14224,7 +14053,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: request details."
           },
           "voice_revision": {
@@ -14236,7 +14064,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: voice revision that performed the take."
           }
         },
@@ -14344,7 +14171,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: the pinned voice revision from the last voice check."
           },
           "seed": {
@@ -14356,7 +14182,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: the pinned generation seed."
           },
           "settings": {
@@ -14369,7 +14194,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only, when set: pinned speech settings for the voice (provider-defined keys)."
           }
         },
@@ -14546,7 +14370,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini only: accepts voice IDs beyond the prebuilt list."
           },
           "speakers_per_take": {
@@ -14558,7 +14381,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini only: speakers in one request."
           }
         },
@@ -14635,7 +14457,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini only: the prebuilt voices."
           }
         },
@@ -14845,7 +14666,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Simple only: the pinned listening session."
           },
           "created_at": {
@@ -14883,7 +14703,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Cast only: the narrator and each speaker in the chosen chapters."
           },
           "job": {
@@ -15240,7 +15059,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present (true) only on a cache-hit result from `POST /listen`."
           },
           "performance_id": {
@@ -15461,7 +15279,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present (true) only on a cache-hit result; transient, not stored. Absent in `/listen/takes`."
           },
           "fingerprint": {
@@ -15483,7 +15300,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Content lookup key used to reuse equivalent speech across passages and books. Absent on older takes.",
             "x-bardic-internal": true
           },
@@ -15501,7 +15317,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when the bytes were copied from an equivalent retained take instead of being generated."
           },
           "resource_usage": {
@@ -15513,7 +15328,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Usage of the generating request; absent for device takes and for reused bytes."
           },
           "provider_timing": {
@@ -15525,7 +15339,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: validated sentence timing, or null when the server timing did not validate."
           },
           "breeze": {
@@ -15537,7 +15350,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: request details."
           },
           "voice_revision": {
@@ -15549,7 +15361,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: voice revision that performed the take."
           },
           "performance_id": {
@@ -15973,7 +15784,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Job ID of the run that sent it."
           },
           "stage": {
@@ -15985,7 +15795,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic stage (`discovery`, `profiles`, `directing`) or pipeline step ID."
           },
           "unit_key": {
@@ -15997,7 +15806,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Opaque cache key of the unit of work."
           },
           "provider": {
@@ -16009,7 +15817,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider ID."
           },
           "model": {
@@ -16021,7 +15828,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model ID."
           },
           "status": {
@@ -16040,7 +15846,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not active, so the outcome is unknown."
           },
           "created_at": {
@@ -16052,7 +15857,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC reservation time."
           },
           "completed_at": {
@@ -16064,7 +15868,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC time the outcome was recorded; absent while reserved."
           },
           "http_status": {
@@ -16076,7 +15879,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider HTTP status code. A 200 does not mean the output passed validation."
           },
           "input_tokens": {
@@ -16088,7 +15890,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported input tokens; null when not reported."
           },
           "output_tokens": {
@@ -16100,7 +15901,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported output tokens; null when not reported."
           },
           "reserved_input_tokens": {
@@ -16112,7 +15912,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Input allowance reserved before sending (conservative)."
           },
           "reserved_output_tokens": {
@@ -16124,7 +15923,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Output allowance reserved before sending."
           },
           "charged_estimate_usd": {
@@ -16136,7 +15934,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Conservative USD estimate for this attempt; null when unknown."
           },
           "input_artifact_id": {
@@ -16148,7 +15945,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Artifact ID of the retained request recipe (`analysis_input`)."
           },
           "validation_state": {
@@ -16328,7 +16124,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -16343,7 +16138,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -16356,7 +16150,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "name": {
@@ -16596,7 +16389,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -16611,7 +16403,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -16624,7 +16415,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "scene": {
@@ -16712,7 +16502,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -16727,7 +16516,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -16740,7 +16528,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "chapter": {
@@ -16848,7 +16635,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Related artifact: request recipe (`started`), accepted output, cached output or rejection record."
           },
           "attempt_id": {
@@ -16860,7 +16646,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Related HTTP attempt, when known."
           },
           "error": {
@@ -16872,7 +16657,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Redacted failure or rejection text. Display only."
           },
           "cached_unit_key": {
@@ -16884,7 +16668,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "For `cache_rejected` in classic runs: the unit key of the rejected cache entry."
           },
           "repair": {
@@ -16896,7 +16679,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "For step-pipeline `started`: true when this is an evidence-repair request."
           }
         },
@@ -17015,7 +16797,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Classic analysis phase, present on `analyze` jobs."
           },
           "progress": {
@@ -17261,7 +17042,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when `inputs_pending` is not empty: display text explaining the caveat."
           }
         },
@@ -17310,7 +17090,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -17325,7 +17104,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -17338,7 +17116,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "name": {
@@ -17438,7 +17215,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present only for `local_llm`: curated models for the self-hosted server."
           }
         },
@@ -17541,7 +17317,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -17556,7 +17331,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -17569,7 +17343,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "kind": {
@@ -17760,7 +17533,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC time the worker began. Absent while queued."
           },
           "completed_at": {
@@ -17772,7 +17544,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC finish time. Absent until the worker finishes."
           },
           "outcomes": {
@@ -17787,7 +17558,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Per-step outcome keyed by step ID. Absent until the worker finishes."
           }
         },
@@ -17892,7 +17662,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when `skipped`: human-readable reason."
           },
           "step_run_id": {
@@ -17904,7 +17673,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The step version created, or null if it failed before one was created. Absent when skipped."
           },
           "scopes": {
@@ -17916,7 +17684,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Number of scope versions recorded. Absent when skipped."
           },
           "accepted": {
@@ -17928,7 +17695,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "True when the `auto` gate accepted the result. Absent when skipped."
           },
           "error": {
@@ -17940,7 +17706,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present on some failures: human-readable error text."
           }
         },
@@ -18390,7 +18155,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Scopes with at least one unit that did not validate (so no version was recorded for them). Absent until the run finishes, on captures, on runs interrupted by a restart, and on runs that failed before their units were assembled."
           }
         },
@@ -18663,7 +18427,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`added` (no row with this ID in the compared version), `changed` or `same`."
           },
           "_changed": {
@@ -18678,7 +18441,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Column keys whose value differs from the compared row. Absent for `added` rows."
           },
           "_previous": {
@@ -18691,7 +18453,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The compared row's value for each changed column key (cell values are strings, numbers, booleans or null). Absent for `added` rows."
           },
           "title": {
@@ -18904,7 +18665,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`same / (same + changed)` rounded to 4 decimals, or null when no rows matched. Absent when nothing was compared."
           }
         },
@@ -19313,7 +19073,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Job ID, or null for work outside a job (e.g. imports, searches, exports)."
           },
           "stage": {
@@ -19325,7 +19084,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "What was measured, e.g. `discovery`, `discovery_validation`, `publication`, `census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, `voice_preview`, `voice_design`, `import`, `structure_repair`, `metadata_refresh`, `source_search`, `analysis_export`, `audio_export`, or a pipeline step ID."
           },
           "unit_key": {
@@ -19337,7 +19095,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Opaque unit key (cache key, passage ID, preview ID or census fingerprint)."
           },
           "chapter_id": {
@@ -19349,7 +19106,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Chapter the work belongs to, when recorded."
           },
           "provider": {
@@ -19361,7 +19117,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider ID (`local` for local work)."
           },
           "model": {
@@ -19373,7 +19128,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model ID, when any."
           },
           "kind": {
@@ -19408,7 +19162,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. Server process that recorded the row.",
             "x-bardic-internal": true
           },
@@ -19421,7 +19174,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC start time."
           },
           "completed_at": {
@@ -19433,7 +19185,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "ISO 8601 UTC end time; absent while running."
           },
           "request_count": {
@@ -19445,7 +19196,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider requests made: 1 for analysis requests, 0 for local/cached work, null when unknown (e.g. a cloud narration that failed early)."
           },
           "input_tokens": {
@@ -19457,7 +19207,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported input tokens."
           },
           "output_tokens": {
@@ -19469,7 +19218,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported output tokens."
           },
           "cached_input_tokens": {
@@ -19481,7 +19229,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported cached input tokens."
           },
           "cache_write_input_tokens": {
@@ -19493,7 +19240,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Reported cache-write input tokens."
           },
           "output_bytes": {
@@ -19505,7 +19251,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Bytes written (audio, exports)."
           },
           "elapsed_seconds": {
@@ -19517,7 +19262,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Measured wall time of this step in seconds."
           },
           "cpu_seconds": {
@@ -19529,7 +19273,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Measured CPU seconds of the current Python thread (local work only)."
           },
           "audio_seconds": {
@@ -19541,7 +19284,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Audio duration produced or reused, in seconds."
           },
           "estimated_cost_usd": {
@@ -19553,7 +19295,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Estimated USD cost; 0 for local/cached/self-hosted work; null when unknown."
           },
           "cost_basis": {
@@ -19565,7 +19306,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "How the estimate was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, `not_sent`, `no_provider_request`, `self_hosted`, `standard_paid_tier_usage_estimate`, `legacy_estimate`, `unknown`."
           },
           "price_as_of": {
@@ -19577,7 +19317,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Date of the price table used."
           },
           "price_source": {
@@ -19589,7 +19328,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "URL of the price source used."
           },
           "usage_source": {
@@ -19601,7 +19339,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Where token usage came from (narration), e.g. `gemini_interactions` or `not_reported`."
           },
           "cpu_scope": {
@@ -19613,7 +19350,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`current_python_thread` when CPU was measured."
           },
           "artifact_id": {
@@ -19625,7 +19361,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Related retained artifact, when recorded."
           },
           "asset_id": {
@@ -19637,7 +19372,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Related stored audio asset, when recorded."
           },
           "http_status": {
@@ -19649,7 +19383,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Provider HTTP status, when any."
           },
           "validation_state": {
@@ -19666,7 +19399,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Analysis requests only: output validation outcome from retained events."
           }
         },
@@ -20701,7 +20433,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Never present in a series plan; see `SeriesPlan.limits_per_book`."
           }
         },
@@ -21532,7 +21263,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Analysis provider (`analyze`, `series`: local, gemini, openai, anthropic) or narration provider (`listen`, `voice_preview`, `performance`: system, gemini, breeze; `listen_chapter`: gemini)."
           },
           "model": {
@@ -21544,7 +21274,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Model snapshotted when the job was queued: the analysis model (null for local analysis) or the speech model (`macos-say` for device narration). `render` jobs do not record it."
           },
           "scan_model": {
@@ -21556,7 +21285,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Preprocessing (scan) model for `analyze` and `series`; null for local analysis."
           },
           "phase": {
@@ -21578,7 +21306,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze`/`series`: the classic analysis phase (a series child switches to `scan` during discovery). Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, `voice_preview`, `performance`."
           },
           "mode": {
@@ -21596,7 +21323,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: `serial` or `parallel` step scheduling. `performance`: `simple` (one narrator) or `cast` (character voices)."
           },
           "chapter_id": {
@@ -21608,7 +21334,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze`: the single chapter analyzed, or null for the whole book. `listen_chapter`: the chapter."
           },
           "segment_id": {
@@ -21620,7 +21345,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen`: the passage. `voice_preview`: the source passage, or null for demo text."
           },
           "session_id": {
@@ -21632,7 +21356,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen`, `listen_chapter`: the narrator session (64 hex)."
           },
           "audio": {
@@ -21654,7 +21377,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes; it may carry `cache_hit` when retained audio was found by the worker. Absent until then and after a failure."
           },
           "resume_after": {
@@ -21666,7 +21388,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`."
           },
           "run_id": {
@@ -21678,7 +21399,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: the pipeline run this job executes."
           },
           "steps": {
@@ -21693,7 +21413,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`pipeline`: step IDs in the run, including required upstream steps."
           },
           "series_id": {
@@ -21705,7 +21424,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series` parent and its `analyze` children: the series."
           },
           "series_run_id": {
@@ -21717,7 +21435,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze` series child: the parent `series` job ID."
           },
           "position": {
@@ -21729,7 +21446,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`analyze` series child: the book's reading-order position in the series."
           },
           "book_ids": {
@@ -21744,7 +21460,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: the books processed, in reading order (missing volumes excluded)."
           },
           "child_job_ids": {
@@ -21759,7 +21474,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: one `analyze` job per book, in reading order. `performance`: the `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise)."
           },
           "concurrency": {
@@ -21771,7 +21485,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: parallel discovery workers (1–2; 1 for phases without discovery)."
           },
           "limits": {
@@ -21786,7 +21499,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: the analysis allowance (SeriesJobLimits). `listen_chapter`: the Gemini speech limits snapshotted for the model (ChapterListenLimits)."
           },
           "plan_fingerprint": {
@@ -21798,7 +21510,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Internal; do not rely on it. `series`: fingerprint of the previewed plan this run was confirmed against.",
             "x-bardic-internal": true
           },
@@ -21811,7 +21522,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`series`: when the collection run ended (set on completion, cancellation after start, or a start failure), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`."
           },
           "performance_id": {
@@ -21823,7 +21533,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`performance`: the saved performance being prepared."
           },
           "child_job_id": {
@@ -21835,7 +21544,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`performance`: the `listen_chapter` job currently running, or null between chapters."
           },
           "parent_id": {
@@ -21847,7 +21555,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter` started by a performance: the parent `performance` job. Such a job cannot be joined by live chapter listening; cancelling the parent cancels it."
           },
           "preview_id": {
@@ -21859,7 +21566,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`voice_preview`: the preview ID."
           },
           "preview": {
@@ -21871,7 +21577,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`voice_preview`: the preview request being rendered."
           },
           "voice": {
@@ -21883,7 +21588,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the Gemini voice."
           },
           "intent": {
@@ -21899,7 +21603,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: `play` (someone is waiting; the first requests are short) or `queue` (prepare ahead; every request is full size). Performances use `queue`."
           },
           "scope_start_segment_id": {
@@ -21911,7 +21614,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: first passage of the prepared range (to the chapter end). Joining at an earlier passage moves it back."
           },
           "focus_segment_id": {
@@ -21923,7 +21625,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the passage the listener is at; generation proceeds from here first."
           },
           "chunking": {
@@ -21935,7 +21636,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the chunk settings in use."
           },
           "ramp_restart": {
@@ -21947,7 +21647,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: times a `play` join restarted the short first-request ramp."
           },
           "joins": {
@@ -21959,7 +21658,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: times another request joined this job instead of starting one."
           },
           "chunks": {
@@ -21974,7 +21672,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: every request sent so far, in order, with its outcome."
           },
           "calibration": {
@@ -21986,7 +21683,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: speech-rate calibration, carried over from the session's previous job and updated as chunks finish."
           },
           "projection": {
@@ -22001,7 +21697,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: the remaining requests planned from the current state; empty when stopping or done. Absent until the worker first reports."
           },
           "quota": {
@@ -22013,7 +21708,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: daily quota use at the last report."
           },
           "waiting_seconds": {
@@ -22025,7 +21719,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting."
           },
           "closing": {
@@ -22037,7 +21730,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends."
           },
           "children": {
@@ -22614,7 +22306,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`breeze` only: why it is unavailable, or null when available."
           }
         },
@@ -22877,7 +22568,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`contains` edges: zero-based position within the parent."
           },
           "confidence": {
@@ -22889,7 +22579,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`attributed_speaker` edges: attribution confidence 0–1, or null."
           }
         },
@@ -22967,7 +22656,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`book` nodes."
           },
           "chapter_id": {
@@ -22979,7 +22667,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`chapter` and `passage` nodes."
           },
           "source_artifact_id": {
@@ -22991,7 +22678,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`chapter` nodes: current source artifact, or null."
           },
           "scene_id": {
@@ -23003,7 +22689,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`scene` nodes."
           },
           "passage_id": {
@@ -23015,7 +22700,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`passage` nodes."
           },
           "source_anchor": {
@@ -23027,7 +22711,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`passage` nodes: verified anchor, or null when the passage text does not match its offsets."
           },
           "character_id": {
@@ -23039,7 +22722,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`character` nodes."
           },
           "name": {
@@ -23051,7 +22733,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`character` nodes."
           }
         },
@@ -23118,7 +22799,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Attribution confidence for `dialogue`; null otherwise. Current writers always include it; stored references from other sources may omit it."
           },
           "provider": {
@@ -23152,7 +22832,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`profile_evidence`: the description the model gave with this evidence."
           },
           "profile_direction": {
@@ -23164,7 +22843,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "`profile_evidence`: the direction the model gave."
           }
         },
@@ -23352,7 +23030,6 @@
             "type": "string"
           },
           "input": {
-            "default": null,
             "description": "The rejected input value, echoed back. Absent for the diagnostics endpoint, which never echoes input."
           },
           "ctx": {
@@ -23365,7 +23042,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Error-specific context, for example `{\"le\": 1000}` for a bound."
           }
         },
@@ -23687,7 +23363,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The full book document after assignment; present only when `assign` was given and the assignment succeeded."
           },
           "assignment_error": {
@@ -23699,7 +23374,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when `assign` was given and failed (for example the book is busy or the character is missing). The voice is still saved; nothing is rolled back."
           },
           "cleanup_error": {
@@ -23711,7 +23385,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Gemini only. Present when an unchosen stored candidate could not be deleted (the first failure message), or some were made with another Google key and remain in that project."
           }
         },
@@ -24372,7 +24045,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present (true) only on a cache-hit result."
           },
           "fingerprint": {
@@ -24401,7 +24073,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Present when bytes were reused from an equivalent audition (for example after a character rename)."
           },
           "resource_usage": {
@@ -24413,7 +24084,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Usage of the generating request; absent for device takes and reused bytes."
           },
           "provider_timing": {
@@ -24425,7 +24095,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: validated sentence timing, or null."
           },
           "breeze": {
@@ -24437,7 +24106,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: request details."
           },
           "voice_revision": {
@@ -24449,7 +24117,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Breeze only: voice revision used."
           },
           "voice_library": {
@@ -24461,7 +24128,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "When the voice was a voice-library voice: which one and which version."
           }
         },

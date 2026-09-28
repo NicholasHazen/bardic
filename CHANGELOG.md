@@ -6,7 +6,8 @@
   - The test suite now validates every API response against the contract, strictly and at any depth, and requires every operation to have a tested success response.
   - A change to the contract requires a new contract version and a changelog entry.
   - Agents follow the new [API workflow](docs/API-WORKFLOW.md). [`docs/API.md`](docs/API.md) is now a concepts guide.
-  - Defects found while writing the contract are listed in [API known issues](docs/API-KNOWN-ISSUES.md). Server behavior is unchanged.
+  - Defects found while writing the contract are listed in [API known issues](docs/API-KNOWN-ISSUES.md) and tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). Server behavior is unchanged.
+  - Added development-only npm tools, pinned in `package.json` (openapi-typescript 7.13.0 and TypeScript 5.9.3). `npm run contract:codegen` checks that clients can generate strict TypeScript types from the contract. The app still needs no npm packages. Contract 0.1.1 drops `default` from response schemas, which generators misread as "always present".
 - **Analysis** tab: your own servers as providers, set by URL in **Settings → Your analysis servers** (or `BARDIC_LOCAL_LLM_URL`, `BARDIC_BOOKNLP_URL`, `BARDIC_NOVEL_ANALYZER_URL`). They are free per request but use that machine's GPU.
   - **Local LLM**: an OpenAI-compatible server such as vLLM, offered for discovery, profiles and Speakers & delivery, with the same checks as the cloud providers.
   - **Quote attribution (BookNLP)**: a new step, about a second per chapter, that changes nothing in the book. It lists where BookNLP's speaker differs from the current one. When it is accepted, Speakers & delivery checks every provider's speakers against it: agreement raises confidence, and disagreement keeps the speaker at 0.65 and flags it. BookNLP can also supply speakers itself.

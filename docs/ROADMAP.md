@@ -220,7 +220,7 @@ The owner intends to move the server off Python eventually and to build dedicate
 - test-suite validation of every API response against the contract;
 - agent rules for keeping it current ([API workflow](API-WORKFLOW.md)).
 
-The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). Defects found while writing the contract are in [API known issues](API-KNOWN-ISSUES.md).
+The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). Defects found while writing the contract are in [API known issues](API-KNOWN-ISSUES.md), tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
 
 Acceptance criteria for the remaining work:
 - machine-readable error codes;

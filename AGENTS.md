@@ -64,6 +64,7 @@ uv sync --frozen --group dev
 uv run --frozen pytest -q
 uv run --frozen python -m bardic.apispec          # regenerate contract/ after an API change
 uv run --frozen python -m bardic.apispec --check  # exit 1 if contract/ is stale
+npm ci && npm run contract:codegen                 # dev-only: clients can generate strict TypeScript types
 node --test tests/*_test.js tests/*.test.cjs
 for script in bardic/static/*.js; do node --check "$script" || exit 1; done
 ```

@@ -61,6 +61,7 @@ The Python server produces the contract from [`bardic/apispec/`](../bardic/apisp
    If regeneration says the contract changed after the version was recorded, you skipped this step.
 7. **Update the prose.** Update `docs/API.md` only if a cross-cutting concept changed. Update the UI's use of the field in the same change, if it uses it.
 8. **Run the full suite:** `uv run --frozen pytest -q`. Also run the Node tests if the UI changed.
+9. **Check code generation:** `npm ci` once, then `npm run contract:codegen`. It generates TypeScript types with openapi-typescript and compiles them strictly. It also asserts a few guarantees, including invalid values that must not compile. Its pytest wrapper skips when the tools are not installed, so run it explicitly for an API change.
 
 ## Rules
 

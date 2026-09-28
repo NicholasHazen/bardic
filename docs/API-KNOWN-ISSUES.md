@@ -1,8 +1,8 @@
 # API known issues
 
-Recorded September 28, 2026, while the complete HTTP contract was written (contract 0.1.0). Describing every operation from the code surfaced these defects and inconsistencies. None of them was changed: the contract describes the current behavior, and each item that affects clients is also noted in its operation's description.
+Tracked in [issue #17](https://github.com/NicholasHazen/bardic/issues/17). Recorded September 28, 2026, while the complete HTTP contract was written (contract 0.1.0). Describing every operation from the code surfaced these defects and inconsistencies. None of them was changed: the contract describes the current behavior, and each item that affects clients is also noted in its operation's description.
 
-Each item needs a decision, and many would be a breaking contract change. Before a replacement server is built, decide for each whether it keeps the behavior or fixes it. Remove an item when it is fixed, and record the fix in [the contract changelog](../contract/CHANGELOG.md). Line numbers refer to commit `1089a07` and may drift.
+Each item needs a decision, and many would be a breaking contract change. Before a replacement server is built, decide for each whether it keeps the behavior or fixes it. When an item is fixed, remove it here, tick it in the issue, and record the fix in [the contract changelog](../contract/CHANGELOG.md). Line numbers refer to commit `1089a07` and may drift.
 
 ## Defects
 
