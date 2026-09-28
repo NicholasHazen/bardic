@@ -112,11 +112,11 @@ function ordinary(call) {
   throw new Error(`Unexpected ${call.method} ${call.url}`);
 }
 
-function environment(handler = ordinary, {observer = false} = {}) {
+function environment(handler = ordinary, {observer = false, globals = {}} = {}) {
   const calls = [];
   const timers = [];
   const observers = [];
-  const scope = {window:{}, URLSearchParams, console,
+  const scope = {window:{}, URLSearchParams, console, ...globals,
     setTimeout:(fn, ms) => { timers.push({fn, ms, cleared:false}); return timers.length; },
     clearTimeout:id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
     fetch:async (url, options = {}) => {
@@ -145,7 +145,12 @@ test('renders steps, status chips and an escaped, diffed result table from GET r
   const steps = container.regions.steps.innerHTML;
   assert.ok(steps.includes('Speakers &lt;&amp;&gt; delivery'));
   assert.ok(!steps.includes('Speakers <&>'));
-  for (const text of ['Local', 'Model', 'Waiting for review', 'Accepted 1/1', 'Stale (1)', 'Failed', 'Not run']) assert.ok(steps.includes(text), text);
+  for (const text of ['Local', 'Model', 'Waiting for review', 'In use (from earlier work)', 'Failed', 'Not run']) assert.ok(steps.includes(text), text);
+  // One state per step: staleness and accepted counts are not extra chips.
+  assert.ok(!steps.includes('Stale (') && !steps.includes('Accepted 1/1') && !steps.includes('Needs Character discovery'));
+  assert.equal((steps.match(/class="ap-chip /g) || []).length, 5, 'exactly one state chip per step');
+  assert.ok(!steps.includes('Run steps in this order'), 'the list does not claim a fixed order');
+  assert.ok(steps.includes('Steps do not have to run in order'));
   const detail = container.regions.detail.innerHTML;
   assert.ok(detail.includes('Character discovery'));
   assert.ok(detail.includes('Economy · quick and inexpensive') && detail.includes('Deep · most thorough'));
@@ -164,8 +169,10 @@ test('renders steps, status chips and an escaped, diffed result table from GET r
   assert.ok(table.includes('ap-cell-changed') && table.includes('Old &lt;i&gt;name&lt;/i&gt;'));
   assert.ok(table.includes('title="Previously: Old &lt;i&gt;name&lt;/i&gt;"'));
   assert.ok(table.includes('>New<') && table.includes('one, two'));
-  assert.ok(table.includes('>Accept<') && table.includes('>Reject<'));
+  assert.ok(table.includes('>Accept<') && table.includes('>Set aside<') && !table.includes('>Reject<'));
   assert.ok(table.includes('1 changed · 1 new'));
+  // The Section column already names each result, so there is no repeated Result column.
+  assert.ok(!table.includes('>Result<') && table.includes('>Section<') && !table.includes('class="ap-group"'));
 
   // Selecting the steps reveals plain-step and stale notes.
   click(container, 'ap-step', 'structure');
@@ -365,8 +372,10 @@ test('accept previews impact, confirms with the expected revision and reloads th
   assert.equal(previewCall.url, '/api/books/book%2F1/analysis-pipeline/steps/discovery/versions/v2/preview');
   assert.ok(!env.calls.some(call => call.url.endsWith('/accept')), 'the impact preview does not accept');
   const panel = container.regions.result.innerHTML;
-  assert.ok(panel.includes('your manual edits were kept'));
+  assert.ok(panel.includes('Kept your edits (1)'));
   assert.ok(panel.includes('Edited &lt;manually&gt;'));
+  // Conflicts name the character, not its ID.
+  assert.ok(panel.includes('<strong>Mira &amp; Co</strong> · your description') && !panel.includes('<code>mira</code>'));
   assert.ok(panel.includes('3 narrated takes will need re-rendering'));
   assert.ok(panel.includes('Character profiles'));
   assert.ok(panel.includes('The &lt;Gate&gt;'));
@@ -382,8 +391,8 @@ test('accept previews impact, confirms with the expected revision and reloads th
   click(container, 'ap-version', 'v1');
   await settle();
   const restore = container.regions.result.innerHTML;
-  assert.ok(restore.includes('Restore this version'));
-  assert.ok(!restore.includes('>Reject<'));
+  assert.ok(restore.includes('>Restore<'));
+  assert.ok(!restore.includes('>Set aside<'));
   assert.ok(restore.includes('Recorded from existing work; producer unknown.'));
 });
 
@@ -434,7 +443,7 @@ test('reject is offered for candidates and refreshes the history', async () => {
   click(container, 'ap-action', 'reject');
   await settle();
   assert.equal(env.writes().at(-1).url, '/api/books/book%2F1/analysis-pipeline/steps/discovery/versions/v2/reject');
-  assert.ok(container.regions.message.innerHTML.includes('Rejected.'));
+  assert.ok(container.regions.message.innerHTML.includes('Set aside. The version stays in history'));
 });
 
 test('filters and pagination request the right slice of rows', async () => {
@@ -496,7 +505,8 @@ test('a step whose required inputs have no accepted result says so and cannot ru
   const container = new Container();
   await env.render(container, book, {status});
   await settle();
-  assert.ok(container.regions.steps.innerHTML.includes('Needs Character discovery'));
+  // Profiles has accepted results from earlier work, so it is in use rather than "needs".
+  assert.ok(container.regions.steps.innerHTML.includes('data-ap-state="in-use-earlier">In use (from earlier work)'));
   click(container, 'ap-step', 'profiles');
   await settle();
   const detail = container.regions.detail.innerHTML;
@@ -718,4 +728,288 @@ test('self-hosted providers: per-step choices, no model for services, URL wordin
   await settle();
   detail = container.regions.detail.innerHTML;
   assert.ok(detail.includes('BookNLP · from Quote attribution') && detail.includes('nothing is sent') && !detail.includes('has no server URL'));
+});
+
+// --- one state per step, start/next step and formatting (pure helpers) -----------------------
+function api() {
+  const scope = {window:{}, URLSearchParams, console};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../bardic/static/analysis-pipeline.js'), 'utf8'), scope);
+  return scope.window.BardicAnalysisPipeline;
+}
+
+test('every combination of step facts maps to exactly one state', () => {
+  const {stepStatus} = api();
+  const base = {accepted_scopes:0, total_scopes:2, has_accepted:false, accepted_origins:{}, stale_scopes:[], pending_versions:0, latest:null};
+  const run = (latest, fields = {}) => ({...base, latest, ...fields});
+  const inUse = {accepted_scopes:2, has_accepted:true, accepted_origins:{run:2}};
+  const needs = [{id:'discovery', label:'Character discovery', waiting:false}];
+  const needsWaiting = [{id:'discovery', label:'Character discovery', waiting:true}];
+  const noKey = {id:'openai', label:'OpenAI', what:'API key', ready:false};
+  const key = {id:'openai', label:'OpenAI', what:'API key', ready:true};
+  const cases = [
+    ['loading', {}, 'loading', 'Loading'],
+    ['never run', {state:base}, 'not-run', 'Not run'],
+    ['never run, key present', {state:base, provider:key}, 'not-run', 'Not run'],
+    ['never run, no key', {state:base, provider:noKey}, 'needs-setup', 'Needs setup'],
+    ['needs an input', {state:base, missing:needs}, 'blocked', 'Needs Character discovery'],
+    ['needs an input and no key: the input comes first', {state:base, missing:needs, provider:noKey}, 'blocked', 'Needs Character discovery'],
+    ['accepted + unmet requirements', {state:run(null, inUse), missing:needs}, 'in-use-earlier', 'In use (from earlier work)'],
+    ['accepted, all inputs met', {state:run(null, inUse)}, 'in-use', 'In use'],
+    ['accepted, no key: still in use', {state:run(null, inUse), provider:noKey}, 'in-use', 'In use'],
+    ['partly accepted', {state:run(null, {...inUse, accepted_scopes:1})}, 'in-use-partial', 'In use · 1 of 2'],
+    ['accepted from existing work only', {state:run(null, {...inUse, accepted_origins:{baseline:2}})}, 'in-use', 'In use (from earlier work)'],
+    ['stale only', {state:run(null, {...inUse, stale_scopes:['c1', 'c2']})}, 'in-use', 'In use'],
+    ['running', {state:run({state:'running', status:'running'})}, 'running', 'Running'],
+    ['queued', {state:run({state:'running', status:'queued'})}, 'running', 'Queued'],
+    ['in the active run', {state:run(null, inUse), running:true}, 'running', 'Running'],
+    ['running beats unmet inputs', {state:run({state:'running', status:'running'}), missing:needs}, 'running', 'Running'],
+    ['failed', {state:run({state:'empty', status:'failed'})}, 'failed', 'Failed'],
+    ['interrupted', {state:run({state:'empty', status:'interrupted'})}, 'interrupted', 'Interrupted'],
+    ['cancelled', {state:run({state:'empty', status:'cancelled'})}, 'cancelled', 'Cancelled'],
+    ['stopped at allowance', {state:run({state:'empty', status:'budget_limited'})}, 'budget_limited', 'Stopped at allowance'],
+    ['failed with earlier results in use', {state:run({state:'empty', status:'failed'}, inUse)}, 'failed', 'Failed'],
+    ['needs review', {state:run({state:'candidate', status:'completed'}, {pending_versions:1})}, 'review', 'Waiting for review'],
+    ['two versions need review', {state:run({state:'candidate', status:'completed'}, {pending_versions:2})}, 'review', '2 waiting for review'],
+    ['needs review after a failed run', {state:run({state:'candidate', status:'failed'}, {pending_versions:1})}, 'review', 'Waiting for review'],
+    ['needs review with unmet inputs', {state:run({state:'candidate', status:'completed'}, {pending_versions:1}), missing:needs}, 'review', 'Waiting for review'],
+    ['ran, found nothing', {state:run({state:'empty', status:'completed'})}, 'empty', 'Nothing found'],
+    ['latest set aside', {state:run({state:'rejected', status:'completed'})}, 'set-aside', 'Set aside'],
+    ['earlier versions, none in use', {state:run({state:'superseded', status:'completed'})}, 'not-in-use', 'Not in use'],
+  ];
+  for (const [name, input, key, label] of cases) {
+    const status = stepStatus(input);
+    assert.equal(status.key, key, name);
+    assert.equal(status.label, label, name);
+    assert.equal(typeof status.tone, 'string', name);
+  }
+  // The detail for accepted + unmet requirements says how to re-run.
+  assert.equal(stepStatus({state:run(null, inUse), missing:needs}).detail, 'To re-run, first run Character discovery.');
+  assert.equal(stepStatus({state:run(null, inUse), missing:needsWaiting}).detail, 'To re-run, first accept the Character discovery version waiting for review.');
+  assert.equal(stepStatus({state:run(null, inUse), missing:needs}).action.step, 'discovery');
+  // Staleness is a low-emphasis note, never the state.
+  const stale = stepStatus({state:run(null, {...inUse, stale_scopes:['c1', 'c2']})});
+  assert.equal(stale.note, '2 results were made before an input changed.');
+  assert.equal(stale.tone, 'accepted');
+  // Cancelled, failed and interrupted stay distinct, and say whether earlier results are still used.
+  assert.match(stepStatus({state:run({state:'empty', status:'failed'}, inUse)}).detail, /Earlier accepted results are still in use/);
+  assert.match(stepStatus({state:run({state:'empty', status:'interrupted'})}).detail, /Nothing from this run is in use/);
+  assert.deepEqual({...stepStatus({state:base, provider:noKey}).action}, {kind:'setup', provider:'openai'});
+  assert.match(stepStatus({state:base, provider:noKey}).detail, /Add the OpenAI API key in Providers & settings/);
+});
+
+test('the tab opens on the first actionable step', () => {
+  const {startStep} = api();
+  const s = (key, ready = true, inUse = false) => ({key, ready, inUse});
+  // A version waiting for review holds up later steps, so it comes first.
+  assert.equal(startStep([{id:'a', status:s('in-use', true, true)}, {id:'b', status:s('not-run')}, {id:'c', status:s('review')}]), 'c');
+  // Otherwise the first step that can run and has nothing in use.
+  assert.equal(startStep([{id:'a', status:s('in-use', true, true)}, {id:'b', status:s('blocked', false)}, {id:'c', status:s('needs-setup')}, {id:'d', status:s('not-run')}]), 'c');
+  assert.equal(startStep([{id:'a', status:s('in-use', true, true)}, {id:'b', status:s('running')}, {id:'c', status:s('failed')}]), 'c');
+  // Accepted-but-blocked steps are not actionable; with nothing actionable, the first step.
+  assert.equal(startStep([{id:'a', status:s('in-use', true, true)}, {id:'b', status:s('in-use-earlier', false, true)}]), 'a');
+  assert.equal(startStep([]), null);
+});
+
+test('after a run, Next points at review, then at the step that reads it, then at the next actionable step', () => {
+  const {nextStep} = api();
+  const s = (key, ready = true, inUse = false) => ({key, ready, inUse});
+  const steps = (discovery, profiles, directing) => [
+    {id:'structure', inputs:[], status:s('in-use', true, true)},
+    {id:'census', inputs:[], status:s('not-run')},
+    {id:'discovery', inputs:[], status:discovery},
+    {id:'profiles', inputs:['discovery'], status:profiles},
+    {id:'directing', inputs:['discovery', 'profiles'], status:directing},
+  ];
+  const done = s('in-use', true, true);
+  const plain = value => value && {...value};
+  assert.deepEqual(plain(nextStep(steps(s('review'), s('blocked', false), s('blocked', false)), 'discovery')), {id:'discovery', review:true});
+  assert.deepEqual(plain(nextStep(steps(done, done, done), 'discovery')), {id:'profiles', review:false});
+  assert.deepEqual(plain(nextStep(steps(done, done, done), 'profiles')), {id:'directing', review:false});
+  // Nothing reads directing: the next actionable step, wrapping round.
+  assert.deepEqual(plain(nextStep(steps(done, done, done), 'directing')), {id:'census', review:false});
+  // A reader whose other requirements are unmet is skipped.
+  assert.deepEqual(plain(nextStep(steps(done, done, s('blocked', false)), 'profiles')), {id:'census', review:false});
+  assert.equal(nextStep([{id:'a', inputs:[], status:done}], 'a'), null);
+  assert.equal(nextStep([], 'missing'), null);
+});
+
+test('money, prices and percentages are formatted one way; unknown is never $0', () => {
+  const {formatMoney, formatRate, formatPercent} = api();
+  assert.equal(formatMoney(null), 'Unknown price');
+  assert.equal(formatMoney(undefined, 'unknown'), 'unknown');
+  assert.equal(formatMoney(Number.NaN), 'Unknown price');
+  assert.equal(formatMoney(0), '$0.00');
+  assert.equal(formatMoney(.0004), 'under $0.01');
+  assert.equal(formatMoney(.02), '$0.02');
+  assert.equal(formatMoney(1234.5), '$1,234.50');
+  for (const value of [.0001, .004, .009]) assert.ok(!/\$0\.0{3}/.test(formatMoney(value)), `${value} never reads as $0.0000`);
+  assert.equal(formatRate(.3), '$0.30');
+  assert.equal(formatRate(.075), '$0.075');
+  assert.equal(formatRate(15), '$15.00');
+  assert.equal(formatRate(null), 'unknown');
+  assert.equal(formatPercent(.88), '88%');
+  assert.equal(formatPercent(1), '100%');
+  assert.equal(formatPercent(0), '0%');
+  assert.equal(formatPercent(null), '—');
+});
+
+// --- the tab uses them ------------------------------------------------------------------------------
+function withOverview(change, fallback = ordinary) {
+  return call => {
+    if (call.method === 'GET' && call.url === '/api/books/book%2F1/analysis-pipeline') { const value = overview('book/1'); change(value); return {data:value}; }
+    return fallback(call);
+  };
+}
+const nothingToReview = value => { Object.assign(value.steps.find(step => step.id === 'discovery'), {pending_versions:0, latest:null}); value.steps.find(step => step.id === 'census').accepted_scopes = 1; };
+
+test('with nothing to review, the tab opens on the first step that can run and has nothing in use', async () => {
+  const env = environment(withOverview(value => { nothingToReview(value); value.steps.find(step => step.id === 'census').accepted_scopes = 1; }));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('data-ap-key="detail-heading">Character discovery</h3>'));
+  // A step chosen during the visit stays selected across refreshes.
+  click(container, 'ap-step', 'census');
+  await settle();
+  click(container, 'ap-action', 'refresh');
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('data-ap-key="detail-heading">Name census</h3>'));
+});
+
+test('Run this step is disabled with a reason and a Set up control when the provider has no key', async () => {
+  const noKey = () => { const value = definitions(); value.steps.find(step => step.id === 'discovery').settings = {provider:'gemini', model:'gem-flash', gate:'auto', saved:true}; return value; };
+  const definitionsWithoutKey = call => call.method === 'GET' && call.url === '/api/analysis-pipeline' ? {data:noKey()} : ordinary(call);
+  const opened = [];
+  const env = environment(withOverview(nothingToReview, definitionsWithoutKey));
+  const container = new Container();
+  await env.render(container, book, {status, onOpenSettings:provider => opened.push(provider)});
+  await settle();
+  const detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('data-ap-key="detail-heading">Character discovery</h3>'), 'a step that needs setup is actionable');
+  assert.match(detail, /data-ap-action="plan-step"[^>]*disabled[^>]*aria-describedby="ap-run-reason"/);
+  assert.ok(detail.includes('Gemini has no API key.') && detail.includes('data-ap-action="setup" data-ap-provider="gemini"'));
+  assert.ok(container.regions.steps.innerHTML.includes('data-ap-state="needs-setup">Needs setup'));
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  assert.equal(env.writes().length, 0, 'no plan is requested without a key');
+  click(container, 'ap-action', 'setup');
+  assert.deepEqual(opened, ['gemini'], 'Set up opens Providers & settings for this provider');
+
+  // Without an app hook, the sidebar's Providers & settings button opens the dialog at the provider's section.
+  const clicked = [];
+  const section = {open:false, querySelector:() => ({focus:() => clicked.push('focus-key')})};
+  const document = {activeElement:null, getElementById:id => id === 'settings-button' ? {click:() => clicked.push('settings')}
+    : id === 'provider-settings-gemini' ? section : null};
+  const fallback = environment(withOverview(nothingToReview, definitionsWithoutKey), {globals:{document}});
+  const other = new Container();
+  await fallback.render(other, book, {status});
+  await settle();
+  click(other, 'ap-action', 'setup');
+  assert.deepEqual(clicked, ['settings', 'focus-key']);
+  assert.equal(section.open, true);
+});
+
+test('a preview that finds a missing key offers Set up instead of plain text', async () => {
+  const env = environment();
+  const container = new Container();
+  const opened = [];
+  const options = {status, onOpenSettings:provider => opened.push(provider)};
+  await env.render(container, book, options);
+  await settle();
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  // The key is removed while the preview is open.
+  const keyless = {...status, analysis_providers:status.analysis_providers.map(p => p.id === 'openai' ? {...p, has_api_key:false} : p)};
+  await env.render(container, book, {...options, status:keyless});
+  await settle();
+  const preview = container.regions.plan.innerHTML;
+  assert.ok(preview.includes('Add this first: OpenAI API key.'));
+  assert.ok(preview.includes('data-ap-action="setup" data-ap-provider="openai"'));
+  assert.match(preview, /data-ap-action="confirm-run"[^>]*disabled/);
+});
+
+test('the run preview scrolls into view and takes focus on its heading, without motion when reduced', async () => {
+  for (const reduce of [false, true]) {
+    const heading = {scrolled:[], focused:[], scrollIntoView(options) { this.scrolled.push(options); }, focus(options) { this.focused.push(options); }};
+    class Watched extends Container {
+      querySelector(selector) { return selector === '[data-ap-key="plan-heading"]' ? heading : super.querySelector(selector); }
+    }
+    const env = environment(ordinary, {globals:{matchMedia:query => ({matches:reduce && query.includes('reduce')})}});
+    const container = new Watched();
+    await env.render(container, book, {status});
+    await settle();
+    click(container, 'ap-action', 'plan-step');
+    await settle();
+    // Once when it opens and again when the (taller) estimate arrives; focus never jumps the page.
+    assert.deepEqual(heading.scrolled.map(value => ({...value})), [{block:'start', behavior:reduce ? 'auto' : 'smooth'}, {block:'start', behavior:reduce ? 'auto' : 'smooth'}]);
+    assert.ok(heading.focused.length >= 1 && heading.focused.every(value => value.preventScroll === true));
+  }
+});
+
+test('after a completed run, Next opens the step that reads its results', async () => {
+  const completed = value => {
+    value.recent_runs = [{id:'run-3', status:'completed', steps:['discovery'], created_at:'2026-09-27T10:00:00Z'}];
+    Object.assign(value.steps.find(step => step.id === 'discovery'), {pending_versions:0, accepted_scopes:2, has_accepted:true, latest:{id:'v2', state:'accepted', status:'completed'}});
+    value.steps.find(step => step.id === 'census').accepted_scopes = 1;
+  };
+  const env = environment(withOverview(completed));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  const runs = container.regions.runs.innerHTML;
+  assert.ok(runs.includes('data-ap-step="profiles" data-ap-key="go-next">Next: Character profiles →'), runs);
+  click(container, 'ap-step', 'profiles');
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('data-ap-key="detail-heading">Character profiles</h3>'));
+  assert.ok(!container.regions.runs.innerHTML.includes('go-next">Next: Character profiles'), 'Next hides once you are there');
+
+  // A failed run offers no Next.
+  const failed = environment(withOverview(value => { completed(value); value.recent_runs[0].status = 'failed'; }));
+  const other = new Container();
+  await failed.render(other, book, {status});
+  await settle();
+  assert.ok(!other.regions.runs.innerHTML.includes('go-next'));
+});
+
+test('directing results group rows by scene, show confidence as a percentage and small costs without $0.0000', async () => {
+  const directingResult = {stats:{passages:3}, columns:[{key:'scene', label:'Scene'}, {key:'text', label:'Passage'}, {key:'speaker', label:'Speaker'}, {key:'confidence', label:'Confidence'}],
+    rows:[
+      {id:'s1', scope:'c1', scene:'The <Gate> · Scene 1', text:'Mara found the door.', speaker:'Narrator', confidence:1},
+      {id:'s2', scope:'c1', scene:'The <Gate> · Scene 1', text:'"Elias?"', speaker:'Mara', confidence:.88},
+      {id:'s3', scope:'c1', scene:'The <Gate> · Scene 2', text:'"Here."', speaker:'Elias', confidence:null},
+    ], diff:{}, total_rows:3, offset:0, limit:200, scopes:[{scope:'c1', accepted:true}], revision:4};
+  const env = environment(call => {
+    if (call.method === 'GET' && call.url.includes('/versions/v2?')) return {data:directingResult};
+    if (call.method === 'POST' && call.url.endsWith('/plan')) return {data:{...plan, estimated_cost_usd:.0004, steps:[{...plan.steps[1], estimated_cost_usd:.0004}]}};
+    return ordinary(call);
+  });
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  const table = container.regions.result.innerHTML;
+  assert.ok(!table.includes('>Result<') && !table.includes('>Scene<'), 'no columns that repeat the section');
+  assert.equal((table.match(/class="ap-group"/g) || []).length, 2, 'one heading per scene');
+  assert.ok(table.includes('>The &lt;Gate&gt; · Scene 1</th>') && table.includes('>The &lt;Gate&gt; · Scene 2</th>'));
+  assert.ok(table.includes('<td>100%</td>') && table.includes('<td>88%</td>') && !table.includes('<td>0.88</td>'));
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  const preview = container.regions.plan.innerHTML;
+  assert.ok(preview.includes('under $0.01') && !preview.includes('$0.0004'));
+  // Model prices read like Settings: per million tokens, two decimals.
+  assert.ok(container.regions.detail.innerHTML.includes('$0.10 input / $0.40 output per million tokens'));
+});
+
+test('kept edits on passages show the passage text, not its ID', async () => {
+  const withSegments = {...book, segments:[{id:'seg-9', text:'"Stay <here>," she said.'}]};
+  const env = environment(call => call.method === 'POST' && call.url.endsWith('/preview')
+    ? {data:{...impact, conflicts:[{scope:'c1', item_id:'seg-9', field:'speaker_id'}, {scope:'c1', item_id:'gone', field:'direction'}]}} : ordinary(call));
+  const container = new Container();
+  await env.render(container, withSegments, {status});
+  await settle();
+  click(container, 'ap-action', 'accept');
+  await settle();
+  const panel = container.regions.result.innerHTML;
+  assert.ok(panel.includes('<strong>“&quot;Stay &lt;here&gt;,&quot; she said.”</strong> · your speaker'));
+  assert.ok(panel.includes('<small>The &lt;Gate&gt;</small>'));
+  assert.ok(panel.includes('An item no longer in the book') && !panel.includes('seg-9') && !panel.includes('>gone<'));
 });
