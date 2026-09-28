@@ -8,7 +8,8 @@ import pytest
 
 from bardic import analysis, processing
 from bardic.importer import parse_book
-from bardic.processing import BudgetReached, ProcessingStore, RequestBudget
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore  # also covers the legacy unit cache
+from bardic.processing import BudgetReached, RequestBudget
 from bardic.store import Store
 
 

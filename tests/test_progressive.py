@@ -7,8 +7,8 @@ import pytest
 
 from bardic import analysis as a
 from bardic.importer import parse_book
-from bardic.preprocessing import coverage
-from bardic.processing import ProcessingStore, source_hash
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
+from bardic.processing import source_hash
 from bardic.progressive import discoveries, plan, profile_specs, run
 from bardic.series import SeriesRepository
 from bardic.store import Store

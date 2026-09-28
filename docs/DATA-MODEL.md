@@ -105,7 +105,7 @@ Breeze versions are separate server voices with generated IDs `bardic-<8 hex>` a
 
 ## SQLite table inventory
 
-Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [performances.py](../bardic/performances.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 36 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
+Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.py), [library.py](../bardic/library.py), [processing.py](../bardic/processing.py), [legacy_phase.py](../bardic/legacy_phase.py), [artifacts.py](../bardic/artifacts.py), [listening.py](../bardic/listening.py), [voice_previews.py](../bardic/voice_previews.py), [performances.py](../bardic/performances.py), [resources.py](../bardic/resources.py), [diagnostics.py](../bardic/diagnostics.py), [voice_library.py](../bardic/voice_library.py), and [search.py](../bardic/search.py). The inventory below covers 36 application tables, including the FTS5 virtual table and excluding SQLite's internal FTS shadow tables. `body`/`payload` columns below contain JSON unless otherwise stated. Most domain relationships are enforced in repository code; foreign-key enforcement being enabled does not imply every ID column has an SQL foreign-key constraint.
 
 ### Current state, jobs, and references
 
@@ -124,7 +124,7 @@ Jobs can be queued, running, completed, failed, cancelled, interrupted, or budge
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
-| `analysis_units` | PK `(book_id, unit_key)`; `stage`, `source_hash`, `body` | Accepted result cache, indexed by book/stage/source. Payload includes actual provider/model and source range or character scope. |
+| `analysis_units` | PK `(book_id, unit_key)`; `stage`, `source_hash`, `body` | Legacy phase engine only (created lazily by `LegacyProcessingStore`; to be dropped in [Classic removal](CLASSIC-REMOVAL.md) stage 4). Accepted result cache, indexed by book/stage/source. Payload includes actual provider/model and source range or character scope. |
 | `analysis_attempts` | PK `id`; `book_id`, `run_id`, `body` | One row reserved before each HTTP attempt, then updated with response/uncertainty, usage, timing, and estimated cost. |
 | `book_preprocessing` | PK `book_id`; `fingerprint`, `body` | Latest matching local census. Prior census artifacts can remain after replacement. |
 | `pipeline_events` | PK `id`; `book_id`, `run_id`, `unit_key`, `stage`, `body` | Append events such as cache reuse/rejection and validation acceptance/rejection; connects validation state to attempts. |
@@ -284,7 +284,7 @@ Important write boundaries:
 
 - `Store._save_book()` captures missing legacy state before replacement, persists cover data, updates book/current takes, then captures new projections in one transaction.
 - `Store.commit_analysis()` saves projection and checkpoint/current references together; observation retention and artifacts participate in that publication.
-- `ProcessingStore.save_unit()` saves the input/output artifacts and accepted fast-cache row together, before publication callbacks.
+- `LegacyProcessingStore.save_unit()` ([legacy_phase.py](../bardic/legacy_phase.py)) saves the input/output artifacts and accepted fast-cache row together, before publication callbacks.
 - `Store.save_take()` preserves previous/new selected take metadata without recapturing every passage for each audio write.
 - Provider requests run outside long SQLite transactions. Reservations are committed before the request.
 - Audio file publication is atomic separately from SQLite. A validated asset can survive without a selected database pointer if a later step fails; there is no filesystem/database distributed transaction or automatic orphan cleanup.

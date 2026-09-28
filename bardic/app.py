@@ -1147,7 +1147,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.post("/api/books/{book_id}/repair-structure")
     def repair_book_structure(book_id: str, request: Request):
-        from .staged_analysis import fingerprint
+        from .analysis_common import fingerprint
         from .resources import ResourceLedger
 
         runtime = rt(request)
@@ -1418,9 +1418,8 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/books/{book_id}/preprocessing")
     def preprocessing(book_id: str, request: Request):
-        from .preprocessing import coverage
+        from .legacy_phase import LegacyProcessingStore as ProcessingStore, coverage
         from .progressive import discoveries, profile_status
-        from .processing import ProcessingStore
         runtime = rt(request)
         with runtime.store.lock:
             book = runtime.store.book(book_id)

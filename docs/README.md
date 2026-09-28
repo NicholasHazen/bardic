@@ -45,6 +45,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 ## Design history and research
 
 - [PLAN.md](PLAN.md) records the original product scope and now points to the current implementation references.
+- [CLASSIC-REMOVAL.md](CLASSIC-REMOVAL.md) is the staged plan and exact inventory for removing the legacy phase analysis engine and its data (stage 1 done).
 - [SERIES-MEMORY-PLAN.md](SERIES-MEMORY-PLAN.md) proposes carrying accepted evidence between series volumes on the step pipeline (a planned follow-up).
 - [PROGRESSIVE-ANALYSIS-PLAN.md](PROGRESSIVE-ANALYSIS-PLAN.md) records the progressive analysis design, original defects, implementation sequence and milestone evidence. Its opening findings describe the pre-update system.
 - [RESEARCH-PIPELINE.md](RESEARCH-PIPELINE.md) records source parsing, analysis and alignment research.

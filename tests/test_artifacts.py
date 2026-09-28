@@ -7,7 +7,8 @@ import pytest
 
 from bardic.artifacts import ArtifactRepository, capture_book, initialize_schema, output_head, record
 from bardic.importer import parse_book
-from bardic.processing import ProcessingStore, source_hash
+from bardic.legacy_phase import LegacyProcessingStore as ProcessingStore
+from bardic.processing import source_hash
 from bardic.store import Store
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ... import analysis as a
-from ...progressive import profile_specs
+from ..prompts import profile_specs
 from ..contract import Conflict, LLMRequest, Step, Unit, locked
 
 FIELDS = ('description', 'direction', 'profile_refined', 'profile_provider', 'profile_model', 'profile_priority')

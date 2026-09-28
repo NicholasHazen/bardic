@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
-from bardic.staged_analysis import fingerprint
+from bardic.analysis_common import fingerprint
 from test_structure import epub, toc
 
 
