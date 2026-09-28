@@ -169,11 +169,12 @@ def test_development_environment_blanks_keys_and_network_settings(tmp_path):
 def test_development_keys_come_only_from_the_service_checkouts_provider_settings(tmp_path, isolated, monkeypatch):
     live = tmp_path / "live"
     (isolated["checkout"] / ".env").write_text(
-        f"GEMINI_API_KEY=test-key-not-real\nOPENAI_API_KEY=\nBREEZE_TTS_URL=http://gpu:7860\n"
+        f"GEMINI_API_KEY=test-key-not-real\nOPENAI_API_KEY=\nBREEZE_TTS_URL=http://gpu:7860\nBARDIC_BOOKNLP_URL=http://gpu:8100\n"
         f"BARDIC_DATA_DIR={live}\nBARDIC_PORT=8765\nBARDIC_LAN_NAME=bardic\nBARDIC_HOST=0.0.0.0\n")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "the-calling-agents-key")
     providers = service.provider_settings(isolated["checkout"])
-    assert providers == {"GEMINI_API_KEY": "test-key-not-real", "BREEZE_TTS_URL": "http://gpu:7860"}
+    assert providers == {"GEMINI_API_KEY": "test-key-not-real", "BREEZE_TTS_URL": "http://gpu:7860",
+                         "BARDIC_BOOKNLP_URL": "http://gpu:8100"}
 
     env = service.dev_environment({"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "the-calling-agents-key"},
                                   8771, tmp_path / "scratch", providers)

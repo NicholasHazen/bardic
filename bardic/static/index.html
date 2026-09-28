@@ -147,6 +147,13 @@
         <ul id="breeze-voices" class="breeze-voice-list" aria-label="Breeze voices"></ul>
         <p class="field-help">Checking saves the URL and key shown, then reads the server's status and voice library. It generates no audio. Only cloned voices can narrate; choose them per character in Cast &amp; voices or for One narrator listening.</p>
       </details>
+      <details id="provider-settings-local-analysis" class="provider-settings" aria-labelledby="local-analysis-settings-title">
+        <summary class="provider-heading"><div><h3 id="local-analysis-settings-title">Your analysis servers</h3><span>Story analysis on your local network · free</span></div><span id="local-analysis-status" class="key-status">Not set up</span></summary>
+        <label class="field-label" for="local-service-local_llm">Local LLM (OpenAI-compatible, e.g. vLLM)</label><input id="local-service-local_llm" data-local-service="local_llm" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8000" maxlength="500">
+        <label class="field-label" for="local-service-booknlp">BookNLP quote attribution</label><input id="local-service-booknlp" data-local-service="booknlp" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8100" maxlength="500">
+        <label class="field-label" for="local-service-novel_analyzer">Novel Analyzer</label><input id="local-service-novel_analyzer" data-local-service="novel_analyzer" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://host.local:8200" maxlength="500">
+        <p class="field-help"><code>.env</code> or environment: <code>BARDIC_LOCAL_LLM_URL</code>, <code>BARDIC_BOOKNLP_URL</code>, <code>BARDIC_NOVEL_ANALYZER_URL</code>. Choose these servers per step in the Analysis tab. Requests are free but share that machine's GPU. Saving a URL does not check that the server answers; clearing one here overrides the environment.</p>
+      </details>
       <details id="provider-settings-openai" class="provider-settings" aria-labelledby="openai-settings-title">
         <summary class="provider-heading"><div><h3 id="openai-settings-title">OpenAI</h3><span>Story analysis</span></div><span id="key-status-openai" class="key-status">No key</span></summary>
         <label class="field-label" for="api-key-openai">OpenAI API key</label><div class="key-entry"><input id="api-key-openai" type="password" autocomplete="new-password" placeholder="Enter or replace OpenAI key" maxlength="500"><button data-clear-key="openai" type="button" class="button text-button" aria-label="Clear OpenAI key">Clear key</button></div>

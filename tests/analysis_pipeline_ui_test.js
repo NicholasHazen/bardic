@@ -644,3 +644,78 @@ test('responses arriving after the tab was left leave no message or preview behi
   assert.equal(container.regions.plan.innerHTML, '', 'the late estimate is discarded');
   assert.equal(container.regions.message.innerHTML, '');
 });
+
+test('self-hosted providers: per-step choices, no model for services, URL wording and free service calls', async () => {
+  const selfHosted = () => {
+    const value = definitions();
+    value.providers.push({id:'local_llm', label:'Local LLM', kind:'model', self_hosted:true, needs:'url', has_api_key:true,
+                          models:[{id:'qwen-local', label:'Qwen <local>', tier:'balanced', roles:['analysis', 'preprocess'],
+                                   input_usd_per_million:0, output_usd_per_million:0}]},
+                         {id:'booknlp', label:'BookNLP', kind:'service', self_hosted:true, needs:'url', has_api_key:true},
+                         {id:'novel_analyzer', label:'Novel Analyzer', kind:'service', self_hosted:true, needs:'url', has_api_key:false});
+    for (const step of value.steps) if (step.method === 'llm') step.providers = ['gemini', 'openai', 'anthropic', 'local_llm'];
+    const directing = value.steps.find(step => step.id === 'directing');
+    directing.providers = [...directing.providers, 'novel_analyzer', 'booknlp'];
+    directing.offline_providers = ['booknlp'];
+    value.steps.splice(3, 0, {id:'quotes', label:'Quote attribution (BookNLP)', summary:'s', method:'service', scope:'chapter', inputs:['discovery'], requires:[],
+      owns:[], version:1, parallel:1, default_gate:'auto', default_model_role:'analysis', chapter_scoped:true, providers:['booknlp'],
+      settings:{provider:'booknlp', model:null, gate:'auto', saved:false}});
+    return value;
+  };
+  const servicePlan = {steps:[{step_id:'quotes', label:'Quote attribution (BookNLP)', method:'service', provider:'booknlp', model:null,
+    units:2, cached_units:0, requests:0, service_calls:2, estimated_input_tokens:0, output_token_allowance:0, estimated_cost_usd:0,
+    inputs_pending:[], scopes:2}], requests:0, service_calls:2, cached_units:0, estimated_input_tokens:0, output_token_allowance:0,
+    estimated_cost_usd:0, fingerprint:'fp-s', note:''};
+  const env = environment(call => {
+    if (call.method === 'GET' && call.url === '/api/analysis-pipeline') return {data:selfHosted()};
+    if (call.method === 'POST' && call.url.endsWith('/plan')) return {data:servicePlan};
+    return ordinary(call);
+  });
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  click(container, 'ap-step', 'discovery');
+  await settle();
+  let detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('value="local_llm"') && !detail.includes('value="booknlp"'), 'model steps do not offer chapter services');
+  click(container, 'ap-step', 'quotes');
+  await settle();
+  detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('value="booknlp"') && !detail.includes('value="openai"') && !detail.includes('name="ap_model"'));
+  assert.ok(detail.includes('your own server'));
+  click(container, 'ap-step', 'directing');
+  await settle();
+  assert.ok(container.regions.detail.innerHTML.includes('Novel Analyzer · your server · no server URL'));
+  change(container, 'ap_provider', 'novel_analyzer');
+  await settle();
+  assert.deepEqual(env.writes().at(-1).body, {provider:'novel_analyzer', model:null, gate:'auto'}, 'a service is saved without a model');
+  assert.ok(!container.regions.detail.innerHTML.includes('name="ap_model"'));
+  assert.ok(container.regions.detail.innerHTML.includes('has no server URL'));
+  change(container, 'ap_provider', 'local_llm');
+  await settle();
+  assert.deepEqual(env.writes().at(-1).body, {provider:'local_llm', model:'qwen-local', gate:'auto'});
+  click(container, 'ap-step', 'quotes');
+  await settle();
+  click(container, 'ap-action', 'plan-step');
+  await settle();
+  const planned = env.calls.find(call => call.url.endsWith('/plan'));
+  assert.deepEqual(planned.body.configs, {quotes:{provider:'booknlp', model:null}});
+  const shown = container.regions.plan.innerHTML;
+  assert.ok(shown.includes('BookNLP · your server · free') && shown.includes('2 service calls') && shown.includes('Calls to your servers'));
+  assert.ok(shown.includes('Confirm and run · 2 calls to your servers') && !shown.includes('$0.00'));
+  assert.ok(shown.includes('use that machine’s GPU') && shown.includes('Service calls are not counted as model requests'));
+
+  // Readiness follows the refreshed status: a URL saved in Settings counts without reloading definitions.
+  click(container, 'ap-action', 'cancel-plan');
+  await env.render(container, book, {status:{...status, local_service_urls:{booknlp:'http://nlp:8100', novel_analyzer:'http://nlp:8200', local_llm:''}}});
+  await settle();
+  click(container, 'ap-step', 'directing');
+  await settle();
+  detail = container.regions.detail.innerHTML;
+  assert.ok(!detail.includes('Novel Analyzer · your server · no server URL') && detail.includes('Local LLM · your server · no server URL'));
+  // BookNLP on Speakers & delivery reads accepted results: it needs no URL and sends nothing.
+  change(container, 'ap_provider', 'booknlp');
+  await settle();
+  detail = container.regions.detail.innerHTML;
+  assert.ok(detail.includes('BookNLP · from Quote attribution') && detail.includes('nothing is sent') && !detail.includes('has no server URL'));
+});

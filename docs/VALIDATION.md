@@ -6,6 +6,28 @@ This is a dated development record. Counts and account outcomes below belong to 
 
 Historical `.spintails/` backup paths and `spintails` commands below retain their original spelling. The current application is Bardic; see [rename compatibility](OPERATIONS.md#upgrading-from-spin-tails) for current launch commands and library selection.
 
+## Self-hosted analysis servers
+
+Verified on September 28, 2026, with Python 3.11.5 (worktree venv) and Node 22, against the owner's DGX Spark: BookNLP (ModernBookNLP) on :8100, the Novel Analyzer on :8200 and vLLM serving `qwen3.6-35b-a3b` on :8000. All live input was original synthetic prose (a two-chapter, 21-quotation first-person story with a non-BMP character before the dialogue). The only server used was a keyless development server with a scratch library.
+
+- Offsets: both services' 18/18 quotation spans equalled Bardic's dialogue passages exactly, with `text == chapter[start:end]` in Python code points. BookNLP's tag text is tokenized and can skip words (for example "she was laughing then"), so evidence is re-anchored to an exact excerpt or omitted.
+- End to end, five runs: the Local LLM ran discovery, profiles and directing in 29–36 s, BookNLP quote attribution took about 1 s, and the analyzer 11 s per run. On the first run BookNLP's check caught both of the Local LLM's misattributions ("differs", capped at 0.65). On that text the analyzer attributed 21/21 lines correctly when the cast included the narrator.
+- Model variance observed: the Local LLM's discovery named the first-person narrator "Narrator (I)", then "Miss Vance (Narrator)", then omitted it. With no narrator in the cast, the analyzer, limited to the cast sheet, left the narrator's four lines unassigned. In one of five runs the existing validator rejected a Local LLM profile that changed a character's identity; three fresh re-runs passed.
+- `uv run --frozen pytest -q`: 1048 passed, 1 skipped. All Node suites pass (144 tests). New coverage: `tests/test_local_analysis_services.py` (26 tests: mapping, transport retries/size/cancellation, settings, all three providers, cache reuse and model-change invalidation), plus a pipeline UI test for per-step providers, model-less services, URL readiness from status and free service calls. Services are faked there, and they derive offsets from the text they receive.
+- Two adversarial reviews found, and this change fixed:
+  - analyzer or BookNLP results that missed dialogue silently unassigning it (now rejected below 90% coverage);
+  - BookNLP-as-provider failing on narration-only chapters, and requiring a URL it never calls;
+  - an ambiguous two-speaker passage resolved as last-one-wins;
+  - analyzer versions carrying another provider's scene notes;
+  - a stale `speaker_check` after a manual edit;
+  - environment URLs persisted into the library;
+  - locks that were per run rather than per server;
+  - a 502 retried as if no work was done;
+  - no size check before upload;
+  - the backend address retained from `/health`;
+  - a version bump that would have re-billed cached cloud directing (now `request_version`).
+- Not verified: the Settings and Analysis tab in a real browser (the automation browser was unavailable), long real chapters near the analyzer's timeout, concurrent Breeze narration while analyzing, a service upgrade in practice, and accuracy on real books. Confidence constants are rankings, not measured probabilities; see [R4](ROADMAP.md).
+
 ## Continuous listening and reader view
 
 Verified on September 28, 2026, with Python 3.12 (project venv) and Node 22.

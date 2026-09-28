@@ -21,7 +21,8 @@
     rejected:'Rejected', superseded:'Superseded', same_as_accepted:'Same as accepted', empty:'No results'};
   const RUN_STATUS = {queued:'Queued', running:'Running', completed:'Completed', failed:'Failed', cancelled:'Cancelled',
     interrupted:'Interrupted', budget_limited:'Allowance reached', skipped:'Skipped'};
-  const PROVIDERS = {local:'Local', gemini:'Gemini', openai:'OpenAI', anthropic:'Anthropic'};
+  const PROVIDERS = {local:'Local', gemini:'Gemini', openai:'OpenAI', anthropic:'Anthropic', local_llm:'Local LLM',
+    booknlp:'BookNLP', novel_analyzer:'Novel Analyzer'};
   const PROBLEM_STATUS = new Set(['failed', 'cancelled', 'interrupted', 'budget_limited']);
   const number = value => typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en-US') : '—';
   const money = value => typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(value > 0 && value < .01 ? 4 : 2)}` : 'Unknown price';
@@ -121,8 +122,19 @@
   const stepState = (panel, id) => panel.overview?.steps?.find(step => step.id === id) || null;
   const versionItem = (panel, id) => panel.versions?.items?.find(item => item.id === id) || null;
   const chapters = panel => panel.overview?.chapters || panel.book?.chapters || [];
-  const providerHasKey = (panel, id) => panel.status?.analysis_providers?.find(p => p.id === id)?.has_api_key
-    ?? panel.defs?.providers?.find(p => p.id === id)?.has_api_key ?? false;
+  const providerDef = (panel, id) => panel.defs?.providers?.find(p => p.id === id) || null;
+  // Self-hosted providers are "ready" when a server URL is set; cloud ones when a key is.
+  // Status is refreshed after Settings saves, so a newly entered URL counts without reloading the tab.
+  const providerHasKey = (panel, id) => providerDef(panel, id)?.self_hosted
+    ? Boolean(panel.status?.local_service_urls ? panel.status.local_service_urls[id] : providerDef(panel, id)?.configured ?? providerDef(panel, id)?.has_api_key)
+    : panel.status?.analysis_providers?.find(p => p.id === id)?.has_api_key ?? providerDef(panel, id)?.has_api_key ?? false;
+  // A provider the step reads results from instead of calling (BookNLP on Speakers & delivery).
+  const offline = (def, id) => Array.isArray(def?.offline_providers) && def.offline_providers.includes(id);
+  // Chapter services (BookNLP, Novel Analyzer) run on the owner's server and take no model.
+  const isService = (panel, id) => providerDef(panel, id)?.kind === 'service';
+  const needsModel = (panel, def, provider) => def.method !== 'plain' && !isService(panel, provider);
+  const missingWhat = (panel, id) => providerDef(panel, id)?.needs === 'url' ? 'no server URL' : 'no API key';
+  const stepProviders = (panel, def) => (panel.defs?.providers || []).filter(p => !Array.isArray(def.providers) || def.providers.includes(p.id));
 
   function scopeLabel(panel, scope) {
     if (scope === 'book') return 'Whole book';
@@ -177,13 +189,16 @@
   }
 
   function missingKeys(panel, configs) {
-    const providers = [...new Set(Object.values(configs).map(config => config.provider).filter(id => id && id !== 'local'))];
-    return providers.filter(id => !providerHasKey(panel, id)).map(providerName);
+    const providers = [...new Set(Object.entries(configs).filter(([stepId, config]) => !offline(stepDef(panel, stepId), config.provider))
+      .map(([, config]) => config.provider).filter(id => id && id !== 'local'))];
+    return providers.filter(id => !providerHasKey(panel, id))
+      .map(id => `${providerName(id)} ${providerDef(panel, id)?.needs === 'url' ? 'server URL' : 'API key'}`);
   }
 
   // --- model choices -------------------------------------------------------------------
   function catalog(panel, provider) {
-    const models = panel.status?.model_catalogs?.[provider]?.models || panel.status?.analysis_providers?.find(p => p.id === provider)?.models || [];
+    const models = panel.status?.model_catalogs?.[provider]?.models || panel.status?.analysis_providers?.find(p => p.id === provider)?.models
+      || providerDef(panel, provider)?.models || [];
     return models.map(item => typeof item === 'string' ? {id:item, label:item} : item)
       .filter(item => item?.id && (!Array.isArray(item.roles) || item.roles.some(role => role === 'analysis' || role === 'preprocess')));
   }
@@ -269,11 +284,16 @@
       // The server's answer wins over the overview, which may be older than the plan.
       const unmet = Object.entries(value.missing_inputs || {}).find(([, inputs]) => inputs?.length);
       const problem = blocked(panel) || (unmet ? unmetText(panel, stepDef(panel, unmet[0]) || {label:unmet[0]}, unmet[1]) : null)
-        || (value.missing_inputs ? null : unmetFor(panel, plan.body.steps[0])) || (missing.length ? `Add an API key in Providers & settings first: ${missing.join(', ')}.` : null)
+        || (value.missing_inputs ? null : unmetFor(panel, plan.body.steps[0])) || (missing.length ? `Add in Providers & settings first: ${missing.join(', ')}.` : null)
         || (!units ? 'Nothing to run: these steps have no work for the current inputs.' : null);
-      const cost = step => step.method === 'plain' ? 'Free' : money(step.estimated_cost_usd);
-      const model = steps.some(step => step.method !== 'plain');
-      body = `<div class="ap-table-wrap"><table><caption class="sr-only">Estimated work per step</caption><thead><tr><th scope="col">Step</th><th scope="col">Units</th><th scope="col">Reused</th><th scope="col">Requests</th><th scope="col">Input tokens (est.)</th><th scope="col">Output allowance</th><th scope="col">Estimated cost</th></tr></thead><tbody>${steps.map(step => `<tr><th scope="row">${escapeHtml(step.label || step.step_id)}<small>${step.method === 'plain' ? 'Runs locally · free' : `${escapeHtml(providerName(step.provider))} · ${escapeHtml(step.model || 'no model')}`}</small>${step.note ? `<small class="ap-plan-step-note">${escapeHtml(step.note)}</small>` : ''}</th><td>${number(step.units)}</td><td>${number(step.cached_units)}</td><td>${number(step.requests)}</td><td>${number(step.estimated_input_tokens)}</td><td>${number(step.output_token_allowance)}</td><td>${escapeHtml(cost(step))}</td></tr>`).join('')}</tbody></table></div><dl class="ap-plan-totals"><div><dt>Model requests</dt><dd>${number(value.requests)}</dd></div><div><dt>Reused results</dt><dd>${number(value.cached_units)}</dd></div><div><dt>Input tokens (est.)</dt><dd>${number(value.estimated_input_tokens)}</dd></div><div><dt>Estimated cost</dt><dd>${escapeHtml(value.requests ? money(value.estimated_cost_usd) : 'Free')}</dd></div></dl>${value.estimated_cost_usd == null && value.requests ? '<p class="ap-note">A model in this plan has no known price, so the cost cannot be estimated.</p>' : ''}${value.note ? `<p class="ap-help">${escapeHtml(value.note)}</p>` : ''}${model ? `<p class="ap-help">${escapeHtml(plural(Number(panel.run.concurrency), 'request'))} at once${panel.run.fresh ? ', with fresh samples' : ''}. There is no request or dollar cap. Each unit can take up to four requests (one retry after a transient error, and one evidence repair), so a run can send more requests than estimated. Cancel from the job banner at any time; validated work is kept.</p>` : ''}${problem ? `<p class="ap-error" role="alert">${escapeHtml(problem)}</p>` : ''}<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="confirm-run" data-ap-key="confirm-run" ${problem || plan.starting ? 'disabled' : ''}>${plan.starting ? 'Starting…' : value.requests ? `Confirm and run · about ${escapeHtml(plural(value.requests, 'request'))}${value.estimated_cost_usd != null ? `, ${escapeHtml(money(value.estimated_cost_usd))}` : ''}` : 'Confirm and run locally'}</button></div>`;
+      const cost = step => step.method === 'plain' || step.estimated_cost_usd === 0 ? 'Free' : money(step.estimated_cost_usd);
+      const where = step => step.method === 'plain' ? 'Runs locally · free'
+        : isService(panel, step.provider) ? `${escapeHtml(providerName(step.provider))} · your server · free`
+        : `${escapeHtml(providerName(step.provider))} · ${escapeHtml(step.model || 'no model')}`;
+      // Steps that call your own servers or the Local LLM: free, but they load that machine's GPU.
+      const selfHosted = steps.some(step => providerDef(panel, step.provider)?.self_hosted && !offline(stepDef(panel, step.step_id), step.provider));
+      const model = steps.some(step => step.method !== 'plain' && !isService(panel, step.provider));
+      body = `<div class="ap-table-wrap"><table><caption class="sr-only">Estimated work per step</caption><thead><tr><th scope="col">Step</th><th scope="col">Units</th><th scope="col">Reused</th><th scope="col">Requests</th><th scope="col">Input tokens (est.)</th><th scope="col">Output allowance</th><th scope="col">Estimated cost</th></tr></thead><tbody>${steps.map(step => `<tr><th scope="row">${escapeHtml(step.label || step.step_id)}<small>${where(step)}</small>${step.note ? `<small class="ap-plan-step-note">${escapeHtml(step.note)}</small>` : ''}</th><td>${number(step.units)}</td><td>${number(step.cached_units)}</td><td>${step.service_calls ? escapeHtml(plural(step.service_calls, 'service call')) : number(step.requests)}</td><td>${number(step.estimated_input_tokens)}</td><td>${number(step.output_token_allowance)}</td><td>${escapeHtml(cost(step))}</td></tr>`).join('')}</tbody></table></div><dl class="ap-plan-totals"><div><dt>Model requests</dt><dd>${number(value.requests)}</dd></div>${value.service_calls ? `<div><dt>Calls to your servers</dt><dd>${number(value.service_calls)}</dd></div>` : ''}<div><dt>Reused results</dt><dd>${number(value.cached_units)}</dd></div><div><dt>Input tokens (est.)</dt><dd>${number(value.estimated_input_tokens)}</dd></div><div><dt>Estimated cost</dt><dd>${escapeHtml(value.requests && value.estimated_cost_usd !== 0 ? money(value.estimated_cost_usd) : 'Free')}</dd></div></dl>${value.estimated_cost_usd == null && value.requests ? '<p class="ap-note">A model in this plan has no known price, so the cost cannot be estimated.</p>' : ''}${value.note ? `<p class="ap-help">${escapeHtml(value.note)}</p>` : ''}${selfHosted ? '<p class="ap-note">Your own servers cost nothing per request, but they use that machine’s GPU. If Breeze narration runs there, listening may stall while this runs. Service calls are not counted as model requests.</p>' : ''}${model ? `<p class="ap-help">${escapeHtml(plural(Number(panel.run.concurrency), 'request'))} at once${panel.run.fresh ? ', with fresh samples' : ''}. There is no request or dollar cap. Each unit can take up to four requests (one retry after a transient error, and one evidence repair), so a run can send more requests than estimated. Cancel from the job banner at any time; validated work is kept.</p>` : ''}${problem ? `<p class="ap-error" role="alert">${escapeHtml(problem)}</p>` : ''}<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="confirm-run" data-ap-key="confirm-run" ${problem || plan.starting ? 'disabled' : ''}>${plan.starting ? 'Starting…' : value.requests ? `Confirm and run · about ${escapeHtml(plural(value.requests, 'request'))}${value.estimated_cost_usd != null ? `, ${escapeHtml(money(value.estimated_cost_usd))}` : ''}` : value.service_calls ? `Confirm and run · ${escapeHtml(plural(value.service_calls, 'call'))} to your servers` : 'Confirm and run locally'}</button></div>`;
     }
     const error = plan.error ? `<p class="ap-error" role="alert">${escapeHtml(plan.error)}</p>${plan.stale ? '<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="replan">Preview again</button></div>' : ''}` : '';
     put(panel, 'plan', `<section class="ap-plan" aria-label="Run preview">${head}${body}${error}${!plan.value && !plan.loading && !plan.stale ? '<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Close</button></div>' : ''}</section>`);
@@ -300,7 +320,7 @@
     put(panel, 'steps', `<ol class="ap-step-list">${panel.defs.steps.map((def, index) => {
       const selected = def.id === panel.selected;
       const id = escapeHtml(def.id);
-      return `<li class="ap-step${selected ? ' selected' : ''}"><button type="button" data-ap-step="${id}" data-ap-key="step-${id}" aria-current="${selected ? 'true' : 'false'}"><span class="ap-step-name"><span class="ap-step-index" aria-hidden="true">${index + 1}</span>${escapeHtml(def.label)}</span><span class="ap-step-meta"><span class="ap-method ${def.method === 'plain' ? 'plain' : 'llm'}">${def.method === 'plain' ? 'Local' : 'Model'}</span>${stepChips(panel, def)}</span></button></li>`;
+      return `<li class="ap-step${selected ? ' selected' : ''}"><button type="button" data-ap-step="${id}" data-ap-key="step-${id}" aria-current="${selected ? 'true' : 'false'}"><span class="ap-step-name"><span class="ap-step-index" aria-hidden="true">${index + 1}</span>${escapeHtml(def.label)}</span><span class="ap-step-meta"><span class="ap-method ${def.method === 'plain' ? 'plain' : 'llm'}">${def.method === 'plain' ? 'Local' : isService(panel, def.settings?.provider) ? 'Service' : providerDef(panel, def.settings?.provider)?.self_hosted ? 'Your model' : 'Model'}</span>${stepChips(panel, def)}</span></button></li>`;
     }).join('')}</ol><p class="ap-help">Run steps in this order: each one reads the results you accepted from the steps before it.</p>`);
   }
 
@@ -336,7 +356,11 @@
     const needs = missing.length ? `<div class="ap-note ap-needs" role="note"><p><strong>Not ready to run.</strong> ${escapeHtml(unmetText(panel, def, missing))}</p><div class="ap-actions">${missing.map(input => `<button type="button" class="button subtle" data-ap-step="${escapeHtml(input)}" data-ap-key="go-${escapeHtml(input)}">Go to ${escapeHtml(stepLabel(panel, input))}</button>`).join('')}</div></div>` : '';
     const method = def.method === 'plain'
       ? '<p class="ap-local">Runs locally, free. No model or API key is used.</p>'
-      : `<div class="ap-field-row"><div class="ap-field"><label for="ap-provider-${id}">Provider</label><select id="ap-provider-${id}" name="ap_provider" data-ap-key="provider">${(panel.defs.providers || []).map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === pendingProvider ? 'selected' : ''}>${escapeHtml(provider.label || providerName(provider.id))}${providerHasKey(panel, provider.id) ? '' : ' · no API key'}</option>`).join('')}</select>${providerHasKey(panel, pendingProvider) ? '' : '<p class="ap-note">This provider has no API key. Add one in Providers &amp; settings before running this step.</p>'}</div>${modelField(panel, def)}</div><p class="ap-help">Book text is sent to the provider you choose.</p>`;
+      : `<div class="ap-field-row"><div class="ap-field"><label for="ap-provider-${id}">Provider</label><select id="ap-provider-${id}" name="ap_provider" data-ap-key="provider">${stepProviders(panel, def).map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === pendingProvider ? 'selected' : ''}>${escapeHtml(provider.label || providerName(provider.id))}${offline(def, provider.id) ? ' · from Quote attribution' : provider.self_hosted ? ' · your server' : ''}${offline(def, provider.id) || providerHasKey(panel, provider.id) ? '' : ` · ${missingWhat(panel, provider.id)}`}</option>`).join('')}</select>${offline(def, pendingProvider) || providerHasKey(panel, pendingProvider) ? '' : `<p class="ap-note">This provider has ${escapeHtml(missingWhat(panel, pendingProvider))}. Add ${providerDef(panel, pendingProvider)?.needs === 'url' ? 'its server URL' : 'one'} in Providers &amp; settings before running this step.</p>`}</div>${needsModel(panel, def, pendingProvider) ? modelField(panel, def) : ''}</div><p class="ap-help">${offline(def, pendingProvider)
+        ? 'Uses the accepted Quote attribution (BookNLP) results for speakers; nothing is sent. Chapters without them fail.'
+        : providerDef(panel, pendingProvider)?.self_hosted
+        ? 'Book text is sent to your own server. It is free per request, but shares that machine’s GPU (and Breeze narration’s, if it runs there).'
+        : 'Book text is sent to the provider you choose.'}</p>`;
     const chapterField = def.chapter_scoped ? `<div class="ap-field"><label for="ap-chapter-${id}">Sections to process</label><select id="ap-chapter-${id}" name="ap_chapter" data-ap-key="chapter"><option value="">All story sections</option>${chapters(panel).map(chapter => `<option value="${escapeHtml(chapter.id)}" ${chapter.id === panel.chapterId ? 'selected' : ''}>${escapeHtml(chapter.title || chapter.id)}${chapter.kind && chapter.kind !== 'chapter' ? ` (${escapeHtml(String(chapter.kind).replaceAll('_', ' '))})` : ''}</option>`).join('')}</select></div>` : '';
     const gate = `<fieldset class="ap-gate"><legend>After a run</legend><label class="ap-check"><input type="radio" name="ap_gate" value="auto" data-ap-key="gate-auto" ${settings.gate !== 'review' ? 'checked' : ''}> Accept automatically</label><label class="ap-check"><input type="radio" name="ap_gate" value="review" data-ap-key="gate-review" ${settings.gate === 'review' ? 'checked' : ''}> Hold for my review</label></fieldset>`;
     const notes = [
@@ -580,7 +604,8 @@
     if (!def) return;
     const previous = def.settings || {};
     const plain = def.method === 'plain';
-    const next = {provider:plain ? 'local' : changes.provider ?? previous.provider, model:plain ? null : changes.model ?? previous.model,
+    const provider = plain ? 'local' : changes.provider ?? previous.provider;
+    const next = {provider, model:needsModel(panel, def, provider) ? changes.model ?? previous.model : null,
       gate:changes.gate ?? previous.gate ?? def.default_gate};
     def.settings = {...previous, ...next};
     const closed = discardPlan(panel);
@@ -605,6 +630,11 @@
   function changeProvider(panel, provider) {
     const def = stepDef(panel, panel.selected);
     if (!def || def.method === 'plain') return;
+    if (isService(panel, provider)) {
+      panel.custom[def.id] = null;
+      void saveSettings(panel, def.id, {provider, model:null});
+      return;
+    }
     const model = defaultModel(panel, def, provider);
     if (!model) {
       panel.custom[def.id] = {open:true, provider, text:'', error:null};
@@ -658,12 +688,13 @@
     if (!defs.length) { say(panel, 'Tick at least one step to run.', true); return; }
     const unmet = unmetFor(panel, defs[0].id);
     if (unmet) { say(panel, unmet, true); return; }
-    const noModel = defs.find(def => def.method === 'llm' && !(typeof def.settings?.model === 'string' && MODEL_ID.test(def.settings.model)));
+    const noModel = defs.find(def => needsModel(panel, def, def.settings?.provider) && !(typeof def.settings?.model === 'string' && MODEL_ID.test(def.settings.model)));
     if (noModel) { say(panel, `Choose a model for ${noModel.label} first.`, true); return; }
     const body = {steps:defs.map(def => def.id), configs:{}, fresh:Boolean(panel.run.fresh)};
     const gates = {};
     for (const def of defs) {
-      body.configs[def.id] = def.method === 'plain' ? {provider:'local', model:null} : {provider:def.settings.provider, model:def.settings.model};
+      body.configs[def.id] = def.method === 'plain' ? {provider:'local', model:null}
+        : {provider:def.settings.provider, model:needsModel(panel, def, def.settings.provider) ? def.settings.model : null};
       gates[def.id] = def.settings?.gate === 'review' ? 'review' : 'auto';
     }
     if (panel.chapterId && defs.some(def => def.chapter_scoped)) body.chapter_ids = [panel.chapterId];
@@ -689,7 +720,7 @@
     if (!plan?.value || plan.loading || plan.starting) return;
     const problem = blocked(panel);
     const missing = missingKeys(panel, plan.body.configs);
-    if (problem || missing.length) { plan.error = problem || `Add an API key in Providers & settings first: ${missing.join(', ')}.`; paint(panel); return; }
+    if (problem || missing.length) { plan.error = problem || `Add in Providers & settings first: ${missing.join(', ')}.`; paint(panel); return; }
     const body = {...plan.body, gates:plan.gates, mode:'serial',
       concurrency:Number(panel.run.concurrency) || 1, expected_fingerprint:plan.value.fingerprint};
     const bookId = panel.bookId;

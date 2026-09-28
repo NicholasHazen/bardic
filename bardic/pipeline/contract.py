@@ -6,7 +6,7 @@ registry list in ``bardic.pipeline.steps``.
 
 Lifecycle of one step run::
 
-    units(ctx)            plan the work (LLM requests or local computations)
+    units(ctx)            plan the work (LLM requests, service calls or local computations)
     execute/validate      produce one validated result per unit (runner caches)
     assemble(ctx, done)   group unit results into one payload per scope
     -> immutable candidate versions (one artifact per scope)
@@ -33,7 +33,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 SCOPES = ('book', 'chapter', 'character')
-METHODS = ('plain', 'llm')
+# plain: computed locally. llm: prompt + schema to a chosen model. service: a self-hosted analysis service.
+METHODS = ('plain', 'llm', 'service')
+# Prompt-and-schema providers (each takes a model ID). The self-hosted LLM needs a server URL, not a key.
+LLM_PROVIDERS = ('gemini', 'openai', 'anthropic', 'local_llm')
+# Chapter services (no model choice): see bardic.local_services.
+SERVICE_PROVIDERS = ('booknlp', 'novel_analyzer')
 GATES = ('auto', 'review')
 RESERVED_CHARACTERS = frozenset({'narrator', 'unassigned'})
 ALL_FIELDS = '*'
@@ -59,6 +64,12 @@ class LLMRequest:
     output_cap: int
 
 
+@dataclass(frozen=True)
+class ServiceRequest:
+    """One call to a self-hosted chapter service. ``body`` is the exact JSON sent; it forms the cache identity."""
+    body: dict
+
+
 @dataclass
 class Unit:
     """One independently cacheable piece of step work.
@@ -71,6 +82,8 @@ class Unit:
     scope: str
     label: str
     request: LLMRequest | None = None
+    # A service call instead of a model request (steps whose provider is a SERVICE_PROVIDER).
+    service: ServiceRequest | None = None
     data: dict = field(default_factory=dict)
     # Source chapter this unit reads; its retained source artifact becomes a dependency.
     chapter_id: str | None = None
@@ -119,6 +132,13 @@ class Step:
     summary: str = ''
     method: str = 'plain'
     scope: str = 'book'
+    # Providers the owner may choose. Empty means the method's default: ('local',)
+    # for plain steps, LLM_PROVIDERS for llm steps. A step may add service providers;
+    # its units() then reads ctx.provider to plan service or plain units instead.
+    providers: tuple[str, ...] = ()
+    # Providers this step uses without contacting them (it reads their accepted results instead),
+    # so running it needs no key or URL for them.
+    offline_providers: tuple[str, ...] = ()
     # Upstream step IDs whose ACCEPTED payloads this step reads.
     inputs: tuple[str, ...] = ()
     # Inputs that must have an accepted result before this step can run (None: all inputs).
@@ -128,6 +148,9 @@ class Step:
     owns: tuple[str, ...] = ()
     # Bump when prompts, schemas or logic change: new cache keys, old versions stay readable.
     version: int = 1
+    # Set (to the old version) when only assembly or projection changed: validated unit results
+    # stay reusable under this key, so unchanged model requests are not paid for again.
+    request_version: int | None = None
     # Maximum concurrent units within one run (the run's concurrency also caps it).
     parallel: int = 1
     default_gate: str = 'auto'
@@ -145,12 +168,18 @@ class Step:
         raise NotImplementedError
 
     def execute(self, ctx: StepContext, unit: Unit) -> dict:
-        """Compute a plain unit. LLM steps leave this to the runner."""
+        """Compute a unit that has neither a model request nor a service call."""
         raise NotImplementedError
 
     def validate(self, ctx: StepContext, unit: Unit, result: dict) -> dict:
-        """Validate an LLM result (raise EvidenceValidationError to allow one repair)."""
+        """Validate an LLM or service result. For an LLM, EvidenceValidationError allows one
+        repair; a service result is rejected outright on any ValueError."""
         return result
+
+    def allowed_providers(self) -> tuple[str, ...]:
+        if self.providers:
+            return self.providers
+        return ('local',) if self.method == 'plain' else LLM_PROVIDERS
 
     def assemble(self, ctx: StepContext, done: list[tuple[Unit, dict]]) -> dict[str, dict]:
         """Group validated unit results into one payload per scope."""
@@ -189,5 +218,6 @@ class Step:
         return {'id': self.id, 'label': self.label, 'summary': self.summary, 'method': self.method,
                 'scope': self.scope, 'inputs': list(self.inputs), 'requires': list(self.required_inputs), 'owns': list(self.owns),
                 'version': self.version, 'parallel': self.parallel, 'default_gate': self.default_gate,
+                'providers': list(self.allowed_providers()), 'offline_providers': list(self.offline_providers),
                 'default_model_role': self.default_model_role, 'chapter_scoped': self.chapter_scoped,
                 'capturable': self.capturable, 'accumulative': self.accumulative}
