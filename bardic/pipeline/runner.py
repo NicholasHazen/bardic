@@ -60,6 +60,8 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
     result, fingerprint_parts = [], []
     with store.lock:
         book = store.book(book_id)
+        with store.connect() as conn:
+            missing = registry.missing_inputs(lambda step_id: repository.heads(conn, book_id, step_id), step_ids)
         for step in steps:
             config = configs[step.id]
             with store.connect() as conn:
@@ -70,6 +72,7 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
                     'model': config.get('model'), 'units': len(units), 'cached_units': 0, 'requests': 0,
                     'estimated_input_tokens': 0, 'output_token_allowance': 0, 'estimated_cost_usd': 0.0,
                     'inputs_pending': sorted(requested.intersection(step.inputs)),
+                    'missing_inputs': missing.get(step.id, []),
                     'scopes': len({u.scope for u in units})}
             keys = []
             for unit in units:
@@ -103,9 +106,9 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
             'estimated_input_tokens': sum(s['estimated_input_tokens'] for s in result),
             'output_token_allowance': sum(s['output_token_allowance'] for s in result),
             'estimated_cost_usd': None if any(c is None for c in costs) else round(sum(costs), 6),
-            'fresh': fresh,
+            'fresh': fresh, 'missing_inputs': missing,
             'fingerprint': digest([book.get('revision', 0), sorted(chapter_ids) if chapter_ids else None, fresh, fingerprint_parts]),
-            'note': 'Estimates cover currently known work before retries or evidence repairs. The request guard reserves more conservatively; provider invoices are authoritative.'}
+            'note': 'Estimates cover currently known work before retries or evidence repairs; provider invoices are authoritative.'}
 
 
 class RunExecutor:
@@ -180,14 +183,19 @@ class RunExecutor:
         return failure
 
     def _blocked(self, step):
-        for input_id in step.inputs:
+        # Only required inputs gate a step; others are recorded (and still run first).
+        for input_id in step.required_inputs:
             if input_id not in self.run['steps']:
                 continue
+            label = self.registry.get(input_id).label
             outcome = self.outcomes.get(input_id) or {}
             if outcome.get('status') != 'completed':
-                return f'{self.registry.get(input_id).label} did not complete in this run.'
+                return f'{label} did not complete in this run.'
             if not outcome.get('accepted') and outcome.get('scopes'):
-                return f'{self.registry.get(input_id).label} is waiting for your review.'
+                return f'{label} is waiting for your review.'
+            with self.store.lock, self.store.connect() as conn:
+                if not self.repository.heads(conn, self.book_id, input_id):
+                    return f'{label} has no accepted result to read.'
         return None
 
     def _attempt(self, step):

@@ -147,7 +147,7 @@ Accepted units are saved before chapter publication or progress callbacks. If pu
 
 ## Cost controls and measurements
 
-Each progressive HTTP attempt reserves a request count, input allowance, output allowance, and conservative estimated cost **before** it is sent. Per-run request/token limits differ from the dollar allowance, which applies cumulatively to tracked analysis attempts for the book, including earlier runs. Defaults are defined by `AnalysisLimits` in [app.py](../bardic/app.py).
+Each progressive HTTP attempt reserves a request count, input allowance, output allowance, and conservative estimated cost **before** it is sent. Per-run request/token limits differ from the dollar allowance, which applies cumulatively to tracked analysis attempts for the book, including earlier runs. Defaults are defined by `AnalysisLimits` in [app.py](../bardic/app.py). Analysis tab pipeline runs are the exception: they reserve and record every attempt but have no cap unless an API caller sets one; the confirmed plan preview authorizes the run ([details](ANALYSIS-PIPELINE.md#cost-caching-and-provenance)).
 
 In the metered path, a transient HTTP error permits at most two total HTTP attempts per provider-adapter invocation, subject to the remaining allowance. Authentication/billing failures are not retried. A failed connection (`ConnectError`/`ConnectTimeout`) sent nothing, so it is recorded as `not_sent` at zero cost and uses the same bounded retry. An uncertain network outcome is recorded and not automatically repeated. A single evidence-repair generation may invoke the adapter a second time, so one logical analysis unit can have up to four HTTP attempts when both invocations need their permitted transport retry. Every attempt consumes the same guards.
 

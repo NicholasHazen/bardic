@@ -4,7 +4,7 @@ This page describes the step-based analysis pipeline behind the **Analysis** tab
 
 ## What it does
 
-Text analysis is a list of named **steps**. For each step the owner chooses a provider and model, then runs it alone or runs several steps together. Each run produces a **candidate version** that can be inspected, compared with another version, **accepted**, or **rejected**. Accepting an older version is a rollback. The reader, cast and studio only show accepted results.
+Text analysis is a list of named **steps**. For each step the owner chooses a provider and model, then runs it. The Analysis tab runs one step at a time (2026-09-28); the API can still run several steps together. Each run produces a **candidate version** that can be inspected, compared with another version, **accepted**, or **rejected**. Accepting an older version is a rollback. The reader, cast and studio only show accepted results.
 
 Thoroughness is the model choice. There is no separate effort parameter: an economy model gives a fast, cheap pass; a deeper model gives a slower, more accurate one. Comparing versions of one step produced by different models is how a model is chosen for that step.
 
@@ -37,12 +37,19 @@ Import (canonical text, passage split and passage IDs) is not a step. Those iden
 
 ## Execution
 
-1. **Plan** (`POST …/analysis-pipeline/plan`) builds each requested step's units from the currently accepted inputs, marks cached units, estimates requests/tokens/cost and returns a fingerprint. A step whose inputs are also in the request is marked `inputs_pending`: its real work depends on what the earlier step produces.
-2. **Run** (`POST …/analysis-pipeline/runs`) creates one job of kind `pipeline`. It snapshots provider keys, per-step provider/model and gates. When `expected_fingerprint` is sent and the plan changed, the run is refused.
+1. **Plan** (`POST …/analysis-pipeline/plan`) builds each requested step's units from the currently accepted inputs, marks cached units, estimates requests/tokens/cost and returns a fingerprint. A step whose inputs are also in the request is marked `inputs_pending`: its real work depends on what the earlier step produces. A step whose **required** inputs have no accepted result and are not in the request is listed in `missing_inputs`.
+2. **Run** (`POST …/analysis-pipeline/runs`) creates one job of kind `pipeline`. It snapshots provider keys, per-step provider/model and gates. When `expected_fingerprint` is sent and the plan changed, the run is refused. A run with `missing_inputs` is refused (400) before anything is queued, and so is a run with neither `expected_fingerprint` nor explicit `limits`.
 3. Each step starts by syncing outside changes, then reads its inputs' accepted versions and records them on the step version. Units run with bounded parallelism: `min(step.parallel, run concurrency)` workers, with at most `concurrency` model requests in flight across the whole run.
 4. A scope becomes a candidate version only when every unit in it validated. A failure, budget limit or cancellation keeps the completed scopes as candidates.
-5. With the step's gate set to **auto**, a completed step is accepted immediately (decision mode `auto`). With **review**, the step waits for the owner. Steps in the same run that read it are then skipped rather than built on an unreviewed result.
+5. With the step's gate set to **auto**, a completed step is accepted immediately (decision mode `auto`). With **review**, the step waits for the owner. Steps in the same run that **require** it are then skipped rather than built on an unreviewed result, as are those whose required input failed or ended without an accepted result. Inputs a step only records (directing's discovery) still run first but do not stop it.
 6. `mode: serial` runs requested steps in pipeline order. `mode: parallel` starts every step whose in-run inputs have finished. Independent steps, such as structure and census, then overlap.
+
+### The Analysis tab
+
+- Steps run one at a time. Each step's panel ends with its run options (**Requests at once** and **Fresh samples**, for model steps only) and **Run this step**; the preview opens below it. There is no multi-step selection or run order in the UI. A status line at the top shows the active run, or the latest finished one.
+- A step that cannot run yet shows **Needs …** in the list, a **Not ready to run** notice naming the missing step (or saying its version is waiting for review), and a link to it. **Run this step** stays disabled until the input has an accepted result.
+- The preview is the only confirmation. It shows estimated requests and cost and has no limit fields.
+- Selections and panels belong to one visit. Leaving the tab or the book workspace clears run options, the section choice, the open preview, the accept/restore impact panel, messages, custom-model drafts and result filters; the next visit reopens the step waiting for review (or the first step). Selecting another step closes the preview and clears messages; changing settings, sections or fresh samples closes the preview. A finished run's summary has **Dismiss** and is not shown again after the visit in which it was seen.
 
 The book JSON is never written by a run. Only acceptance changes it, so concurrent units cannot race on the reader's projection.
 
@@ -50,8 +57,8 @@ The book JSON is never written by a run. Only acceptance changes it, so concurre
 
 Model requests use the same metered adapters as the rest of analysis:
 
-- The run's `RequestBudget` reserves each HTTP attempt before it is sent.
-- The book dollar guard is cumulative across all runs.
+- The run's `RequestBudget` reserves and records each HTTP attempt before it is sent.
+- Runs have no request, token or dollar cap by default (changed 2026-09-28). Confirming the plan preview is the authorization; the preview states that retries and repairs can add requests and that dependent steps' work is only known once their inputs finish. A unit has at most four HTTP attempts (two transport attempts for each of at most two generations), so a run stays bounded by its work. API callers can still pass `limits`; the dollar guard, when set, is cumulative across all runs.
 - Evidence gets at most one repair generation.
 - Rejected outputs are retained as `analysis_rejection` artifacts.
 - Every request recipe is an `analysis_input` artifact with its verified source dependency.
@@ -95,6 +102,7 @@ A step subclasses `bardic.pipeline.Step` ([contract](../bardic/pipeline/contract
 | `method` | `plain` (local) or `llm`. |
 | `scope` | `book`, `chapter` or `character`. |
 | `inputs` | Upstream step IDs whose **accepted** payloads it reads. Must be declared earlier in the registry. |
+| `requires` | The inputs that must have an accepted result before the step can run (default: all `inputs`). Directing requires only profiles: it attributes passages to the cast in the book, and records discovery for staleness. An input requested in the same run counts. |
 | `owns` | Projection fields it writes (`collection.field`). The registry rejects two steps claiming one field. |
 | `version` | Bump when prompts, schemas or logic change. New cache keys; old versions stay readable. |
 | `parallel`, `default_gate`, `default_model_role`, `chapter_scoped` | Execution defaults. |
@@ -146,4 +154,5 @@ These recommendations came from reviewing the codebase and red-teaming the desig
 - Rollback does not reattach previously valid audio takes.
 - A cancellation received while a response is in flight discards that response after it is paid for, as elsewhere in analysis.
 - The same provider adapters are used for every step, with the shared director system instruction; a per-step system instruction would need an adapter change and a recipe version bump.
-- Pipeline and phase controls share the book dollar guard, but pipeline runs are not yet visible in the Studio production summary.
+- Pipeline runs are uncapped by default while the Studio phase controls keep their request/token/dollar limits. A phase run's cumulative dollar guard counts pipeline spending too. Pipeline runs are not yet visible in the Studio production summary.
+- The prerequisite check asks only whether an input has any accepted result. A chapter-scoped step can still run for sections whose input was never accepted; it then works from what the book already has.
