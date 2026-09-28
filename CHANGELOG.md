@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gemini simple listening now prepares chapters in large chunks through a server job paced to the project's request limits (defaults 10 requests/minute, 10,000 input tokens/minute, 100 requests/day, editable per model in Settings). A median chapter needs about 3 requests instead of about 177. Quick-start steps begin playback within seconds; the panel shows progress, ETA, listening time ready versus remaining, daily requests and whether the current speed stays ahead of generation. Passages inside a chunk play gaplessly with estimated timing, and the reader marks ready, generating and queued text. Truncated output is rejected and retried smaller; uncertain requests are never resent. See [chunked chapter listening](docs/LIBRARY-LISTENING-RESOURCES.md#chunked-gemini-chapter-listening).
+- Corrected the Gemini TTS audio token rate to the measured 32 tokens per second (about 512 seconds per request).
 - Renamed the application, Python package, browser interfaces and current documentation to **Bardic**. The preferred launcher is `python -m bardic`, with `BARDIC_PORT` and `BARDIC_DATA_DIR` configuration.
 - Kept the old module launcher and environment aliases, reused existing `.spintails/` libraries in place, and retained access to saved browser preferences. New libraries default to `.bardic/`; existing `.env` files need no changes.
 - Preserved the version-1 `spintails-analysis` portable export identifier and existing library/media formats. See [upgrade details](docs/OPERATIONS.md#upgrading-from-spin-tails).

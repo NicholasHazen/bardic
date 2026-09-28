@@ -201,7 +201,7 @@ def write_analysis_export(store, book_id, path):
                  'analysis-attempts.json': processing.attempts(book_id)}
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table, name in [('resource_operations', 'resource-operations.json'), ('listening_sessions', 'listening-sessions.json'),
-                            ('listening_takes', 'listening-takes.json')]:
+                            ('listening_takes', 'listening-takes.json'), ('listening_chunks', 'listening-chunks.json')]:
             if table in tables:
                 files[name] = [json.loads(row[0]) for row in conn.execute(f'SELECT body FROM {table} WHERE book_id=? ORDER BY rowid', (book_id,))]
         event_rows = conn.execute('SELECT body FROM pipeline_events WHERE book_id=? ORDER BY rowid', (book_id,)).fetchall()

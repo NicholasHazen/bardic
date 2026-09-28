@@ -2699,3 +2699,17 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .reader-paper { padding-top:24px; }
 }
 .passage.source-chapter-title { margin-top:16px; margin-bottom:-24px; }
+
+/* Settings: narration request limits for chunked Gemini listening. */
+.narration-limits .limit-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px 14px;
+  margin:10px 0 6px;
+}
+.narration-limits .limit-grid input,.narration-limits .limit-grid select {
+  width:100%;
+}
+@media (max-width:640px) {
+  .narration-limits .limit-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}

@@ -16,7 +16,8 @@ Source: [Google speech generation guide](https://ai.google.dev/gemini-api/docs/s
 
 - Primary: `gemini-3.8-flash-tts`; economical alternative: `gemini-3.8-flash-lite-tts`.
 - Compatibility option: `gemini-3.1-flash-tts-preview`, now a legacy preview.
-- 3.8 Flash's documented Gemini serving limits are 8,192 input tokens and 16,384 output tokens. Smaller source passages make failure recovery and audio review practical.
+- 3.8 Flash's documented Gemini serving limits are 8,192 input tokens and 16,384 output tokens. Correction (September 28, 2026): responses in this project's ledger report 32 output tokens per audio second, not the 25 quoted for pricing, so one request holds about 512 seconds of audio, not 655. A user forum report observes the same 32/s. Simple listening sizes chunks below that cap; see [chunked chapter listening](LIBRARY-LISTENING-RESOURCES.md#chunked-gemini-chapter-listening).
+- Rate limits apply per Google project and model; TPM counts input tokens only, and RPD resets at midnight Pacific time. Sources: [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), [token-rate forum report](https://discuss.ai.google.dev/t/how-many-tokens-are-actually-used-per-second-for-flash-3-8-tts/184714).
 - Google positions Flash for expressive acting and long-form consistency. These are provider claims, not quality guarantees from this project.
 
 Source: [Gemini 3.8 Flash TTS model](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts), [legacy 3.1 model](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-tts-preview).

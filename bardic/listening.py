@@ -15,13 +15,32 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
+from .alignment import align_file
 from .audio import AudioError, DEFAULT_TTS_MODEL, SYSTEM_MODEL, render_fingerprint, validate_audio
+from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SECONDS
 from .store import now
 from .take_archive import produce_take
 
 
 VERSION = 1
 SYNTHESIS_CACHE_VERSION = 1
+# Version 1 multi-passage takes: one WAV for an exact chapter slice, with
+# estimated passage clips from pause alignment. See docs/DATA-MODEL.md.
+CHUNK_VERSION = 1
+# Faster than this many code points per audio second suggests skipped text.
+_SUSPICIOUS_CHARS_PER_SECOND = 26.0
+# Integrity results per asset file state: (root, book, asset, size, mtime_ns) -> ok.
+_asset_checks: dict[tuple, bool] = {}
+
+
+class TruncatedChunk(AudioError):
+    """The provider returned incomplete audio for the chunk text; nothing was retained."""
+
+    def __init__(self, chars: int, duration: float, message: str | None = None):
+        super().__init__(message or 'Gemini stopped at its audio length limit before finishing this chunk. '
+                         'Smaller chunks will be requested.')
+        self.chars = chars
+        self.duration = duration
 
 
 def _hash(value):
@@ -49,10 +68,24 @@ class ListeningRepository:
                 content_key TEXT NOT NULL, take_id TEXT NOT NULL,
                 PRIMARY KEY(content_key,take_id),
                 FOREIGN KEY(take_id) REFERENCES listening_takes(id))''')
-            for operation in ('UPDATE', 'DELETE'):
-                conn.execute(f'''CREATE TRIGGER IF NOT EXISTS listening_takes_no_{operation.lower()}
-                    BEFORE {operation} ON listening_takes BEGIN
-                    SELECT RAISE(ABORT, 'Listening takes are immutable'); END''')
+            # One immutable row per multi-passage request. Passage audio is a
+            # projection of valid chunks, never a rewritten single-passage take.
+            conn.execute('''CREATE TABLE IF NOT EXISTS listening_chunks (
+                id TEXT PRIMARY KEY, book_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                chapter_id TEXT NOT NULL, asset_id TEXT NOT NULL, body TEXT NOT NULL)''')
+            conn.execute('''CREATE INDEX IF NOT EXISTS listening_chunks_session
+                ON listening_chunks(book_id,session_id,chapter_id)''')
+            # REPLACE bypasses delete triggers; a duplicate insert is skipped
+            # so INSERT OR IGNORE still reports the first retained record.
+            conn.execute('''CREATE TRIGGER IF NOT EXISTS listening_chunks_no_replace
+                BEFORE INSERT ON listening_chunks WHEN EXISTS(SELECT 1 FROM listening_chunks WHERE id=NEW.id)
+                BEGIN SELECT RAISE(IGNORE); END''')
+            for table in ('listening_takes', 'listening_chunks'):
+                for operation in ('UPDATE', 'DELETE'):
+                    name = f'{table}_no_{operation.lower()}'
+                    conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {name}
+                        BEFORE {operation} ON {table} BEGIN
+                        SELECT RAISE(ABORT, 'Listening takes are immutable'); END''')
 
     def session(self, book_id, provider, voice=None, model=None):
         self.store.book(book_id)
@@ -183,8 +216,10 @@ class ListeningRepository:
         self.store.book(book_id)
         target = self._path(book_id, asset_id)
         with self.store.lock, self.store.connect() as conn:
-            found = conn.execute('SELECT 1 FROM listening_takes WHERE book_id=? AND asset_id=? LIMIT 1',
-                                 (book_id, asset_id)).fetchone()
+            found = (conn.execute('SELECT 1 FROM listening_takes WHERE book_id=? AND asset_id=? LIMIT 1',
+                                  (book_id, asset_id)).fetchone() or
+                     conn.execute('SELECT 1 FROM listening_chunks WHERE book_id=? AND asset_id=? LIMIT 1',
+                                  (book_id, asset_id)).fetchone())
         if not found or not target.is_file():
             raise KeyError('Listening audio not found')
         return target
@@ -195,6 +230,9 @@ class ListeningRepository:
 
     def cached(self, book_id, session_id, segment_id):
         session, passage, _, identity, recipe = self._inputs(book_id, session_id, segment_id)
+        clip = self.chunk_clips(book_id, session_id, verify=True).get(segment_id)
+        if clip:
+            return {**clip, 'cache_hit': True}
         content_key = self._synthesis_key(passage, session)
         with self.store.lock, self.store.connect() as conn:
             rows = conn.execute('''SELECT id,body FROM listening_takes WHERE book_id=? AND session_id=?
@@ -243,8 +281,13 @@ class ListeningRepository:
         for segment_id, recipe, body in rows:
             saved.setdefault((segment_id, recipe), []).append(json.loads(body))
         chapters = {chapter['id']: chapter for chapter in book['chapters']}
+        # Chunk clips come first: consecutive clips in one WAV play gaplessly.
+        clips = self._chunk_clips(book, session)
         takes = []
         for segment in book['segments']:
+            if segment['id'] in clips:
+                takes.append({'segment_id': segment['id'], 'audio': clips[segment['id']]})
+                continue
             try:
                 recipe = self._source_inputs(book_id, session, segment, chapters.get(segment['chapter_id']))[-1]
             except ValueError:
@@ -257,6 +300,166 @@ class ListeningRepository:
                     takes.append({'segment_id': segment['id'], 'audio': self._present(book_id, metadata)})
                     break
         return {'session': session, 'takes': takes}
+
+    # Multi-passage chunks -------------------------------------------------
+
+    def _asset_state(self, book_id, asset_id, *, verify):
+        """True/False once a file state was checked; None when unverified.
+
+        Listing uses only prior results (no rereading of large WAVs); cache
+        reuse verifies. A changed file (size or mtime) is checked again, and a
+        chunk known to be damaged is excluded from every projection.
+        """
+        path = self._path(book_id, asset_id)
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        key = (str(self.store.root), book_id, asset_id, stat.st_size, stat.st_mtime_ns)
+        if key not in _asset_checks and verify:
+            try:
+                self._validated_asset(book_id, asset_id)
+                _asset_checks[key] = True
+            except (OSError, EOFError, ValueError, KeyError):
+                _asset_checks[key] = False
+        return _asset_checks.get(key)
+
+    @staticmethod
+    def _chunk_recipe(chapter_id, start, end, text, session):
+        source_id = 'chunk-' + _hash([chapter_id, start, end])[:24]
+        return ListeningRepository._audio_recipe({'id': source_id, 'text': text}, session)
+
+    @classmethod
+    def _chunk_valid(cls, chunk, chapters, segments, session):
+        """A chunk applies only while its source slice, anchors and recipe are unchanged."""
+        chapter = chapters.get(chunk.get('chapter_id'))
+        if chunk.get('schema_version') != CHUNK_VERSION or chunk.get('session_id') != session['id'] or not chapter:
+            return False
+        start, end = chunk.get('start'), chunk.get('end')
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(chapter['text']):
+            return False
+        text = chapter['text'][start:end]
+        if hashlib.sha256(text.encode()).hexdigest() != chunk.get('text_sha256'):
+            return False
+        for segment_id, segment_start, segment_end in chunk.get('segments', []):
+            segment = segments.get(segment_id)
+            if (not segment or segment['chapter_id'] != chapter['id'] or segment['start'] != segment_start or
+                    segment['end'] != segment_end or chapter['text'][segment_start:segment_end] != segment['text']):
+                return False
+        try:
+            # A recipe version or narrator change invalidates chunks exactly as it does single takes.
+            if cls._chunk_recipe(chapter['id'], start, end, text, session)[-1] != chunk.get('fingerprint'):
+                return False
+        except AudioError:
+            return False
+        return bool(chunk.get('segments'))
+
+    def _present_clip(self, chunk, clip):
+        return {'mode': 'simple', 'available': True, 'segment_id': clip['segment_id'],
+                'url': f'/api/books/{quote(chunk["book_id"], safe="")}/listen/audio/{chunk["asset_id"]}',
+                'asset_id': chunk['asset_id'], 'chunk_id': chunk['id'],
+                'clip_start': clip['start'], 'clip_end': clip['end'],
+                'duration': round(clip['end'] - clip['start'], 3), 'chunk_duration': chunk['duration'],
+                'timing': 'estimated', 'provider': chunk['provider'], 'model': chunk['model'],
+                'voice': chunk['voice'], 'session_id': chunk['session_id'], 'created_at': chunk['created_at'],
+                'flags': chunk.get('flags', [])}
+
+    def _chunk_clips(self, book, session, *, verify=False):
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('''SELECT body FROM listening_chunks WHERE book_id=? AND session_id=?
+                ORDER BY rowid DESC''', (book['id'], session['id'])).fetchall()
+        chapters = {chapter['id']: chapter for chapter in book['chapters']}
+        segments = {segment['id']: segment for segment in book['segments']}
+        clips = {}
+        for (body,) in rows:
+            chunk = json.loads(body)
+            if not self._chunk_valid(chunk, chapters, segments, session):
+                continue
+            if self._asset_state(book['id'], chunk['asset_id'], verify=verify) is False:
+                continue
+            for clip in chunk['timing']['clips']:
+                clips.setdefault(clip['segment_id'], self._present_clip(chunk, clip))
+        return clips
+
+    def chunk_clips(self, book_id, session_id, *, verify=False):
+        return self._chunk_clips(self.store.book(book_id), self.get_session(book_id, session_id), verify=verify)
+
+    def chapter_segments(self, book, chapter_id):
+        chapter = next((c for c in book['chapters'] if c['id'] == chapter_id), None)
+        if chapter is None:
+            raise KeyError('Chapter not found in this book')
+        return chapter, [segment for segment in book['segments'] if segment['chapter_id'] == chapter_id]
+
+    def render_chunk(self, book_id, session_id, chapter_id, segment_ids, api_key=None, *,
+                     synthesizer=None, check_cancel=lambda: None, request=None):
+        """Synthesize one exact chapter slice and retain it with estimated passage clips."""
+        check_cancel()
+        session = self.get_session(book_id, session_id)
+        book = self.store.book(book_id)
+        chapter, ordered = self.chapter_segments(book, chapter_id)
+        positions = {segment['id']: index for index, segment in enumerate(ordered)}
+        indexes = [positions.get(segment_id) for segment_id in segment_ids]
+        if not segment_ids or None in indexes or indexes != list(range(indexes[0], indexes[0] + len(indexes))):
+            raise ValueError('A chunk must be consecutive passages from one chapter.')
+        selected = [ordered[index] for index in indexes]
+        for segment in selected:
+            self._source_inputs(book_id, session, segment, chapter)
+        start, end = selected[0]['start'], selected[-1]['end']
+        text = chapter['text'][start:end]
+        passage, narrator, fingerprint = self._chunk_recipe(chapter_id, start, end, text, session)
+        identity = {'schema_version': CHUNK_VERSION, 'chunking_version': CHUNKING_VERSION,
+                    'book_id': book_id, 'session_id': session['id'], 'chapter_id': chapter_id,
+                    'start': start, 'end': end, 'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                    'segments': [[s['id'], s['start'], s['end']] for s in selected], 'fingerprint': fingerprint}
+        alignment_input = [{'id': segment['id'], 'text': segment['text'],
+                            'gap_after': chapter['text'][segment['end']:selected[i + 1]['start']] if i + 1 < len(selected) else ''}
+                           for i, segment in enumerate(selected)]
+
+        def accept(path, metadata):
+            duration = metadata['duration']
+            output_tokens = (metadata.get('resource_usage') or {}).get('output_tokens')
+            if session['provider'] == 'gemini' and (
+                    duration >= PROVIDER_AUDIO_CAP_SECONDS - 4 or
+                    (type(output_tokens) is int and output_tokens >= OUTPUT_TOKEN_CAP - 32)):
+                raise TruncatedChunk(len(text), duration)
+            if len(text) / duration > _SUSPICIOUS_CHARS_PER_SECOND:
+                # Far too little audio for the text: the provider stopped early
+                # or skipped prose. Never make it permanent passage audio.
+                raise TruncatedChunk(len(text), duration, 'Gemini returned much less audio than this chunk needs, '
+                                     'so it was not saved. Smaller chunks will be requested.')
+            # Recheck the source before the asset is published, not after.
+            latest = self.store.book(book_id)
+            latest_chapter, latest_ordered = self.chapter_segments(latest, chapter_id)
+            if not self._chunk_valid({**identity, 'session_id': session['id']}, {latest_chapter['id']: latest_chapter},
+                                     {segment['id']: segment for segment in latest_ordered}, session):
+                raise ValueError('The source passages changed during narration. Prepare the chapter again.')
+            timing = align_file(path, alignment_input)
+            edges = [clip['start'] for clip in timing['clips']] + [timing['clips'][-1]['end']]
+            if (edges[0] != 0 or any(b < a for a, b in zip(edges, edges[1:])) or edges[-1] > duration + 0.01 or
+                    [clip['segment_id'] for clip in timing['clips']] != [s['id'] for s in selected]):
+                raise AudioError('Passage timing for this chunk could not be estimated consistently.')
+            return {'timing': timing}
+
+        check_cancel()
+        metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
+                                self.store.root / 'listen-audio' / book_id, synthesizer=synthesizer, accept=accept)
+        timing = metadata.pop('timing')
+        flags = []
+        quality = timing['quality']
+        if quality['boundaries'] and quality['matched'] / quality['boundaries'] < 0.6:
+            flags.append('weak_alignment')
+        body = {**identity, 'asset_id': metadata['asset_id'], 'duration': metadata['duration'],
+                'provider': metadata['provider'], 'model': metadata['model'], 'voice': metadata['voice'],
+                'chars': len(text), 'timing': timing, 'flags': flags, 'request': request or {},
+                'created_at': now(),
+                **({'resource_usage': metadata['resource_usage']} if 'resource_usage' in metadata else {})}
+        body['id'] = _hash([book_id, identity, metadata['asset_id']])
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO listening_chunks VALUES (?,?,?,?,?,?)',
+                         (body['id'], book_id, session['id'], chapter_id, body['asset_id'], json.dumps(body)))
+            body = json.loads(conn.execute('SELECT body FROM listening_chunks WHERE id=?', (body['id'],)).fetchone()[0])
+        self._asset_state(book_id, body['asset_id'], verify=True)
+        return body
 
     def render_passage(self, book_id, session_id, segment_id, api_key=None, *, synthesizer=None, check_cancel=lambda: None):
         check_cancel()
