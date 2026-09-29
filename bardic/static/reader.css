@@ -155,7 +155,6 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 @media (max-width:620px) { .reader-toolbar-actions { width:100%; margin-left:0; } .reader-toolbar-actions .button { flex:1; justify-content:center; } }
 
 /* Listen sheet. */
-.listen-sheet { width:560px; }
 .listen-sheet-where { margin:14px 0 6px; font-size:14px; color:var(--muted); }
 .listen-sheet-where strong { color:var(--ink); font-weight:600; }
 .listen-sheet-field { margin-top:16px; }
@@ -166,7 +165,7 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 .listen-sheet-voice select { flex:1; min-width:0; min-height:44px; font-size:15px; }
 .listen-sheet-voice .button { min-height:44px; white-space:nowrap; }
 .listen-sheet-toggle { display:flex; align-items:center; gap:10px; margin-top:16px; min-height:44px; font-size:14px; }
-.listen-sheet-toggle input { width:20px; height:20px; accent-color:var(--green); }
+.listen-sheet-toggle input { margin:0; flex:none; width:20px; height:20px; accent-color:var(--green); }
 .listen-sheet .field-help { margin-top:8px; }
 .listen-sheet-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
 .listen-sheet-actions .button { min-height:48px; padding:0 20px; font-size:15px; }
@@ -186,7 +185,7 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
   .listen-sheet[open] { width:100%; max-width:100%; margin:auto 0 0; max-height:88dvh; border-radius:var(--radius-2xl) var(--radius-2xl) 0 0; border-bottom:0; padding:16px 16px 0; }
   .listen-sheet .modal-header h2 { font-size:var(--text-2xl); }
   .listen-sheet .choice[data-kind=cards] { grid-template-columns:1fr; gap:var(--space-1-5); }
-  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:baseline; gap:var(--space-2); }
+  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:center; gap:var(--space-2); }
   .listen-sheet-field { margin-top:12px; }
   .listen-sheet-voice { flex-wrap:wrap; }
   .listen-sheet-voice .button { flex:1; }
