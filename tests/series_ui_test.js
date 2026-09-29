@@ -78,7 +78,7 @@ function reads(call, membership = {series_id:saga.id, series_name:saga.name, pos
   // Explicit selected identity creates one link request; empty value unlinks.
   const writes = [];
   const linked = environment(call => {
-    if (call.method === 'PUT') { writes.push(call); return {data:{}}; }
+    if (call.method === 'PUT') { writes.push(call); return {data:{kind:call.body.series_character_id ? 'linked' : 'unlinked'}}; }
     return reads(call);
   });
   const linkedContainer = new Container();

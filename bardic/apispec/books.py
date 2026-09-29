@@ -11,7 +11,8 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .base import Op, View, internal, op
-from .media import AudioRef, AudioTakeBreezeInfo, AudioTakeSentenceTiming, AudioTakeVoiceLibrary
+from .enums import AnalysisProvider, NarrationProvider
+from .media import AudioRef, AudioTakeBreezeInfo, AudioTakeSentenceTiming, AudioTakeVoiceLibrary, BookBreezeSettings
 
 # ------------------------------------------------------------------ shared text
 
@@ -76,29 +77,26 @@ class BookAnalysisSummary(View):
     Only a short label of who produced the current projection. Detailed,
     resumable progress is in the analysis pipeline routes.
     """
-    provider: str = Field(
+    provider: AnalysisProvider = Field(
         description='Who produced the current annotations: `local` (free heuristic draft, also at import), '
                     '`gemini`, `openai`, `anthropic`, `local_llm`, or a self-hosted service (`novel_analyzer`, '
                     '`booknlp`) accepted through the analysis pipeline. Open set.')
-    model: str | None = Field(default=None, description='Model ID used, or null/absent for local or service analysis.')
+    model: str | None = Field(description='Model ID used, or null for local or service analysis.')
     status: Literal['draft', 'partial'] = Field(
         description='`draft`: a complete draft awaiting review (import, the local draft, or a completed run of the removed '
                     'Classic engine). '
                     '`partial`: staged work in progress or a pipeline step accepted; other parts may be missing '
                     'or older.')
-    notes: str | None = Field(
-        default=None,
+    notes: str = Field(
         description='Human-readable explanation of the draft and what to review. Display only. The server writes it '
-                    'with every summary; treat an absent value as empty.')
+                    'with every summary; it may be an empty string.')
     phase: str | None = Field(
-        default=None,
         description='The pipeline step ID that was accepted (for example `discovery`, `profiles`, `directing`), or, '
                     'on books last analyzed by the removed Classic engine, its phase (`scan`, `profiles`, `direct`, '
-                    '`full`). Absent for import and local drafts.')
+                    '`full`). Null for import and local drafts.')
     profiles_provisional: bool | None = Field(
-        default=None,
         description='Written only by the removed Classic engine: true while character profiles still needed whole-book '
-                    'discovery or refinement against current evidence.')
+                    'discovery or refinement against current evidence. Null on every other book.')
 
 
 class BookLogicalSection(View):
@@ -120,9 +118,9 @@ class BookChapter(View):
     """One source container in reading order: an EPUB spine document or a TXT heading section.
 
     It is not necessarily a narrative chapter; see `kind`. `text` is the
-    immutable canonical reading text. Structure fields are absent on books
-    imported before structure metadata existed (no `structure_version`);
-    `POST /api/books/{book_id}/repair-structure` adds them.
+    immutable canonical reading text. Structure fields are null on books
+    imported before structure metadata existed (`structure_version` is null);
+    `POST /api/books/{book_id}/repair-structure` fills them.
     """
     id: str = Field(description='Opaque chapter ID, stable for the life of the book.')
     index: int = Field(description='Zero-based position in import order. Sort by array order, not by this value; it can have gaps.')
@@ -133,19 +131,20 @@ class BookChapter(View):
                     '`start`/`end` offsets in the book are zero-based Unicode code-point offsets into this string, '
                     'end-exclusive (not UTF-8 bytes, not UTF-16 indices).')
     kind: Literal['chapter', 'section', 'front_matter', 'back_matter', 'recap'] | None = Field(
-        default=None,
-        description='Structural classification. `chapter` is a narrative chapter; `section` an unlabeled or '
+        description='Structural classification. Null on a book imported before structure metadata. `chapter` is a narrative chapter; `section` an unlabeled or '
                     'multi-entry container that stays eligible for analysis; `front_matter`/`back_matter` '
                     'non-story material; `recap` a "story so far" section.')
     title_source: Literal['epub_nav', 'epub_ncx', 'heading', 'landmark', 'semantics', 'fallback'] | None = Field(
-        default=None, description='Where `title` came from.')
+        description='Where `title` came from; null on a book imported before structure metadata.')
     source_href: str | None = Field(
-        default=None, description='Path of the EPUB spine document inside the archive; null for TXT imports.')
+        description='Path of the EPUB spine document inside the archive; null for TXT imports and for a book imported '
+                    'before structure metadata.')
     logical_sections: list[BookLogicalSection] | None = Field(
-        default=None, description='Table-of-contents entries inside this container (EPUB only; empty for TXT).')
+        description='Table-of-contents entries inside this container (EPUB only; empty for TXT); null on a book '
+                    'imported before structure metadata.')
     narrative_order: int | None = Field(
-        default=None, description='1-based number among `kind: chapter` containers only; absent for other kinds. '
-                                  'Never an invented chapter number.')
+        description='1-based number among `kind: chapter` containers only; null for other kinds and for a book imported '
+                    'before structure metadata. Never an invented chapter number.')
     trailing_text: str = Field(
         description='Presented only: the chapter text after its last passage (usually whitespace). Together with '
                     'each passage\'s `leading_text` and `text` it rebuilds `text` exactly.')
@@ -160,11 +159,11 @@ class BookScene(View):
     """
     id: str = Field(description='Opaque scene ID.')
     chapter_id: str = Field(description='The chapter containing every passage of this scene.')
-    title: str | None = Field(default=None, description='Display title, for example "Chapter One · Scene 2". Rarely absent after a pipeline acceptance that proposed none.')
-    summary: str | None = Field(default=None, description='Scene summary (draft or reviewed). Editable; at most 4,000 characters by hand.')
-    tone: str | None = Field(default=None, description='Emotional tone notes; `Unreviewed` at import. Used in enhanced narration recipes.')
-    direction: str | None = Field(default=None, description='Performance direction for the whole scene. Used in enhanced narration recipes.')
-    segment_ids: list[str] = Field(description='IDs of the scene\'s passages, in reading order.')
+    title: str | None = Field(description='Display title, for example "Chapter One · Scene 2". Rarely null: after a pipeline acceptance that proposed none.')
+    summary: str | None = Field(description='Scene summary (draft or reviewed), or null. Editable; at most 4,000 characters by hand.')
+    tone: str | None = Field(description='Emotional tone notes; `Unreviewed` at import; null when none. Used in enhanced narration recipes.')
+    direction: str | None = Field(description='Performance direction for the whole scene, or null. Used in enhanced narration recipes.')
+    passage_ids: list[str] = Field(description='IDs of the scene\'s passages, in reading order.')
     character_ids: list[str] = Field(description='IDs of characters attributed to its passages (including `narrator`/`unassigned`).')
 
 
@@ -181,9 +180,9 @@ class BookSpeakerCheck(View):
                     'unassigned and BookNLP names someone. `not_in_cast`: BookNLP\'s speaker matches no cast member. '
                     '`narrator`: BookNLP heard a first-person narrator not in the cast. `no_quote`: BookNLP found no '
                     'quotation for this passage.')
-    speaker_id: str | None = Field(default=None, description='Cast character ID BookNLP attributed, or null.')
-    speaker: str | None = Field(default=None, description='BookNLP\'s own name for the speaker, or null.')
-    tag_conflict: bool | None = Field(default=None, description='True when BookNLP\'s own speech tag contradicts its speaker; then the comparison is only recorded.')
+    speaker_id: str | None = Field(description='Cast character ID BookNLP attributed, or null (also for `no_quote`).')
+    speaker: str | None = Field(description='BookNLP\'s own name for the speaker, or null (also for `no_quote`).')
+    tag_conflict: bool | None = Field(description='True when BookNLP\'s own speech tag contradicts its speaker; then the comparison is only recorded. Null for `no_quote`.')
 
 
 class BookTake(AudioRef):
@@ -195,7 +194,7 @@ class BookTake(AudioRef):
     Like every audio object, it has the common audio core, always present: `url`, `asset_id`, `duration`, `provider`, `model`, `voice` and `created_at`.
     """
     url: str = Field(
-        description='Root-relative playback URL (`/api/audio/{book_id}/{segment_id}?v=…`; `audio/wav`). The '
+        description='Root-relative playback URL (`/api/audio/{book_id}/{passage_id}?v=…`; `audio/wav`). The '
                     '`v` query changes when the selected audio changes, so the URL is safe to cache and compare.')
     asset_id: str | None = Field(
         description='Hex SHA-256 of the WAV bytes (content address), also usable with '
@@ -203,7 +202,7 @@ class BookTake(AudioRef):
                     'addressing.')
     duration: float | None = Field(description='Audio duration in seconds, measured from the WAV; null only for a take '
                                                'stored without it.')
-    provider: str = Field(description='Narration provider: `system` (device), `gemini` or `breeze`.')
+    provider: NarrationProvider = Field(description='Narration provider that produced the take.')
     model: str | None = Field(description='Speech model ID (`macos-say` for device narration).')
     voice: str | None = Field(description='Concrete provider voice that performed the take, or null when not recorded.')
     created_at: str | None = Field(description='Always null for Studio takes: their retention time is not recorded on the take.')
@@ -214,7 +213,7 @@ class BookTake(AudioRef):
 
 
 class BookPassage(View):
-    """A passage ("segment"): the reader and narration unit, anchored to exact source offsets.
+    """A passage: the reader and narration unit, anchored to exact source offsets.
 
     `chapter.text[start:end] == text`, counting Unicode code points.
     """
@@ -243,7 +242,7 @@ class BookPassage(View):
                     'not set, in which case the speaker\'s Breeze voice seed applies. A new seed means a new take. '
                     'Ignored by Gemini and device narration.')
     speaker_check: BookSpeakerCheck | None = Field(default=None, description='BookNLP comparison; absent when not checked.')
-    analysis_provider: str | None = Field(
+    analysis_provider: AnalysisProvider | None = Field(
         default=None,
         description='Provider whose annotation is current for this passage (`local`, an LLM provider, '
                     '`novel_analyzer` or `booknlp`). Absent before analysis; kept from the last analysis after a '
@@ -260,24 +259,16 @@ class BookPassage(View):
                     'server\'s lock bookkeeping itself is not published.')
 
 
-class BookBreezeSettings(View):
-    """Optional Breeze sampling overrides of a pinned choice. No current API or UI sets them."""
-    temperature: float | None = Field(None, description='Sampling temperature override, 0.05-2.0. Absent or null keeps the Breeze voice\'s own setting.')
-    cfg_scale: float | None = Field(None, description='Classifier-free guidance scale override, 0.5-10.0. Absent or null keeps the voice\'s own setting.')
-    top_p: float | None = Field(None, description='Nucleus sampling probability override, 0.01-1.0. Absent or null keeps the voice\'s own setting.')
-    top_k: int | None = Field(None, description='Top-k sampling override, an integer 1-1024. Absent or null keeps the voice\'s own setting.')
-
-
 class BookCharacterVoice(View):
     """A character's saved voice choice for one narration provider.
 
     One of these forms: `{library}` follows a library voice's current version;
     `{id}` is a direct provider voice (Gemini built-in or project voice, or a
-    device voice); `{id, revision, seed, settings?}` is a concrete Breeze pin.
+    device voice); `{id, voice_revision, seed, settings?}` is a concrete Breeze pin.
     """
     library: str | None = Field(default=None, description='Library voice ID (`vl_` + 16 hex) whose current version is used.')
     id: str | None = Field(default=None, description='Direct provider voice ID.')
-    revision: str | None = Field(default=None, description='Breeze pin: the voice revision from the last Breeze check.')
+    voice_revision: str | None = Field(default=None, description='Breeze pin: the voice revision from the last Breeze check.')
     seed: int | None = Field(default=None, description='Breeze pin: default take seed (0–4294967295).')
     settings: BookBreezeSettings | None = Field(default=None, description='Breeze pin: sampling overrides.')
 
@@ -294,29 +285,26 @@ class BookCharacter(View):
     aliases: list[str] = Field(description='Other names that identify this character in the text.')
     description: str = Field(description='Voice and personality profile (draft or reviewed).')
     direction: str = Field(description='Standing performance direction for this character\'s voice.')
-    evidence: list[str] | None = Field(
-        default=None,
-        description='Exact source quotations supporting the profile (at most 12). Absent on some characters saved '
-                    'by older versions; treat as empty.')
+    evidence: list[str] = Field(
+        description='Exact source quotations supporting the profile (at most 12); empty when there are none, and for '
+                    'characters saved by older versions.')
     voices: dict[str, BookCharacterVoice] = Field(
         description='Saved voice choice per narration provider, keyed by `system`, `gemini` or `breeze`. A '
                     'missing provider means Default (Breeze: the library default voice; Gemini: Kore; device: '
                     'the system voice). Library references are shown as references, not resolved. Choices saved '
                     'by older versions in single-provider fields are included here.')
-    former_names: list[str] | None = Field(
-        default=None,
-        description='Names replaced by a manual rename. Discovery still resolves them to this character; they are '
-                    'not aliases.')
-    profile_refined: bool | None = Field(default=None, description='True once a profile refinement produced the description and direction.')
-    profile_provider: str | None = Field(default=None, description='Provider of the refined profile.')
-    profile_model: str | None = Field(default=None, description='Model of the refined profile.')
+    former_names: list[str] = Field(
+        description='Names replaced by a manual rename; empty when there are none. Discovery still resolves them to '
+                    'this character; they are not aliases.')
+    profile_refined: bool | None = Field(description='True once a profile refinement produced the description and direction; null when none did.')
+    profile_provider: AnalysisProvider | None = Field(description='Provider of the refined profile, or null.')
+    profile_model: str | None = Field(description='Model of the refined profile, or null.')
     profile_priority: Literal['deep', 'standard', 'basic'] | None = Field(
-        default=None, description='Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`.')
+        description='Effort tier of the refinement, from the free census: `deep`, `standard` or `basic`; null when unrefined.')
     profile_state: Literal['reviewed', 'current', 'stale', 'draft'] | None = Field(
-        default=None,
         description='Written only by the removed Classic engine: `reviewed` (edited by hand), `current` (refined against current '
-                    'evidence), `stale` (refined, evidence changed since), `draft` (not refined).')
-    profile_provisional: bool | None = Field(default=None, description='Written only by the removed Classic engine: true while the profile could still change.')
+                    'evidence), `stale` (refined, evidence changed since), `draft` (not refined). Null on every other character.')
+    profile_provisional: bool | None = Field(description='Written only by the removed Classic engine: true while the profile could still change. Null on every other character.')
 
 
 # ------------------------------------------------------------------ pronunciations
@@ -341,13 +329,13 @@ class BookPronunciation(View):
     match_case: bool = Field(description='True: match the term\'s exact case. False: match any case. Two case-sensitive '
                                          'entries may differ only in case; otherwise a term appears once per book.')
     providers: dict[str, str] | None = Field(
-        None, description='Per-narrator overrides of `respelling`, keyed by `system`, `gemini` or `breeze`; absent when '
-                          'there are none. An override equal to the term leaves that narrator reading the word unchanged.')
+        description='Per-narrator overrides of `respelling`, keyed by `system`, `gemini` or `breeze`; null when '
+                    'there are none. An override equal to the term leaves that narrator reading the word unchanged.')
     character_id: str | None = Field(
-        None, description='Book-local character the word belongs to (informational); absent when none. It had to be in '
-                          'the cast when the entry was added or changed; a link left by a character that analysis later '
-                          'removed stays until the entry is edited.')
-    note: str | None = Field(None, description='Free-text note, at most 500 characters; absent when empty.')
+        description='Book-local character the word belongs to (informational); null when none. It had to be in '
+                    'the cast when the entry was added or changed; a link left by a character that analysis later '
+                    'removed stays until the entry is edited.')
+    note: str | None = Field(description='Free-text note, at most 500 characters; null when empty.')
 
 
 class Book(View):
@@ -369,27 +357,29 @@ class Book(View):
     """
     id: str = Field(description='Book UUID.')
     title: str = Field(description='Display title.')
-    author: str = Field(description='Display author(s), comma-separated; may be empty.')
+    author: str = Field(description='Display author(s), comma-separated; empty when unknown.')
     language: str | None = Field(
         description='BCP 47 language tag from the EPUB\'s first usable `dc:language` (at most 35 characters, `_` read '
                     'as `-`), or null for TXT files, EPUBs without one, the demo book and books imported before the '
                     'field existed. Metadata only; it never changes text or spans.')
-    source_name: str = Field(description='File name of the imported original (without directories), for example `story.epub`.')
-    created_at: str = Field(description='ISO 8601 UTC import time.')
-    revision: int = Field(description='Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change.')
+    source_name: str = Field(description='File name of the imported original (without directories), for example `story.epub`; '
+                                         'empty for a stored book without the field.')
+    created_at: str | None = Field(description='ISO 8601 UTC import time. Null for a stored book without the field (an old import).')
+    revision: int = Field(description='Projection revision; starts at 1 on import (the demo starts at 2) and increases by 1 per change. '
+                                      '0 for a stored book without the field.')
     structure_version: int | None = Field(
-        default=None,
-        description='Version of the structure interpretation (currently 2). Absent on books imported before '
+        description='Version of the structure interpretation (currently 2). Null on books imported before '
                     'structure metadata; structure repair sets it.')
     chapters: list[BookChapter] = Field(description='Source containers in reading order.')
     scenes: list[BookScene] = Field(description='Scenes in reading order.')
-    segments: list[BookPassage] = Field(description='All passages ("segments") in reading order.')
+    passages: list[BookPassage] = Field(description='All passages in reading order.')
     characters: list[BookCharacter] = Field(description='The book-local cast, including `narrator` and `unassigned`.')
-    analysis: BookAnalysisSummary = Field(description='Who produced the current annotations.')
-    cover: BookCover | None = Field(default=None, description='Cover thumbnail metadata; absent when the original had no usable cover.')
-    pronunciations: list[BookPronunciation] | None = Field(
-        None, description='The book\'s pronunciations, in saved order; absent when there are none. Managed with the '
-                          'Pronunciations operations, which also report where each term occurs.')
+    analysis: BookAnalysisSummary | None = Field(
+        description='Who produced the current annotations; null for a stored book without the field (an old import).')
+    cover: BookCover | None = Field(description='Cover thumbnail metadata; null when the original had no usable cover.')
+    pronunciations: list[BookPronunciation] = Field(
+        description='The book\'s pronunciations, in saved order; empty when there are none. Managed with the '
+                    'Pronunciations operations, which also report where each term occurs.')
 
 
 class PronunciationExample(View):
@@ -442,7 +432,7 @@ class CharacterReference(View):
     id: str = Field(description='Stable hex ID derived from character, chapter, offsets and kind.')
     character_id: str = Field(description='The referenced character.')
     chapter_id: str = Field(description='Chapter whose text the offsets index.')
-    segment_id: str | None = Field(description='The first passage overlapping the span, or null when none does.')
+    passage_id: str | None = Field(description='The first passage overlapping the span, or null when none does.')
     start: int = Field(description='Zero-based Unicode code-point offset into the chapter text.')
     end: int = Field(description='Exclusive end offset in code points.')
     quote: str = Field(description='The exact source text of the span.')
@@ -450,32 +440,32 @@ class CharacterReference(View):
         description='`dialogue`: a dialogue passage currently attributed to the character. `mention`: the '
                     'character\'s name or an alias, unique within the cast, occurs in the text. `profile_evidence`: '
                     'a quotation a discovery request cited as evidence.')
-    confidence: float | None = Field(default=None, description='Attribution confidence for `dialogue` (0–1); null otherwise.')
+    confidence: float | None = Field(description='Attribution confidence for `dialogue` (0–1); null otherwise, and for '
+                                                 'references written by the removed Classic engine.')
     provider: str | None = Field(
-        default=None,
         description='Who produced it: the analysis provider of the passage\'s attribution or of the evidence, '
                     '`local` for mentions, or `reviewed` for a dialogue attribution a person set or confirmed; null '
-                    'when unknown. Evidence retained from older versions may omit `confidence`, `provider` and '
-                    '`model`.')
-    model: str | None = Field(default=None, description='Model that produced it, or null.')
-    profile_description: str | None = Field(default=None, description='`profile_evidence` only: the description proposed with this evidence.')
-    profile_direction: str | None = Field(default=None, description='`profile_evidence` only: the direction proposed with this evidence.')
+                    'when unknown (evidence retained from older versions).')
+    model: str | None = Field(description='Model that produced it, or null.')
+    profile_description: str | None = Field(default=None, description='`profile_evidence` only: the description proposed with this evidence. Absent for other kinds.')
+    profile_direction: str | None = Field(default=None, description='`profile_evidence` only: the direction proposed with this evidence. Absent for other kinds.')
     step: Literal['discovery', 'profiles', 'directing'] | None = Field(
-        default=None, description='Analysis step whose accepted version supplied this row; absent or null for '
-                                  'mentions and for rows written by the removed Classic engine.')
+        description='Analysis step whose accepted version supplied this row; null for mentions and for rows '
+                    'written by the removed Classic engine.')
     version_id: str | None = Field(
-        default=None, description='Accepted step-output artifact the row was projected from; absent or null when '
-                                  'there is none (mentions, manual attributions, older rows).')
+        description='Accepted step-output artifact the row was projected from; null when there is none (mentions, '
+                    'manual attributions, older rows).')
     origin: str | None = Field(
-        default=None, description='How the source result came to be: `run`, `baseline` or `external` (from the '
-                                  'step version), `manual` (a hand-edited attribution), `book` (dialogue with no '
-                                  'accepted directing version), `cast_names` (mentions); null when unknown.')
+        description='How the source result came to be: `run`, `baseline` or `external` (from the '
+                    'step version), `manual` (a hand-edited attribution), `book` (dialogue with no '
+                    'accepted directing version), `cast_names` (mentions); null when unknown.')
     projection: int | None = Field(
-        default=None, description='Version of the evidence projection that wrote the row (1). Absent on rows '
-                                  'written by the removed Classic engine.')
+        description='Version of the evidence projection that wrote the row (1); null on rows written by the '
+                    'removed Classic engine.')
     anchors: int | None = Field(
-        default=None, description='Profiles evidence only: how many exact locations the quotation matched within '
-                                  'the discovery evidence it came from. Every location is listed; none is chosen.')
+        default=None, description='`profile_evidence` rows of the profiles step only: how many exact locations the '
+                                  'quotation matched within the discovery evidence it came from. Every location is '
+                                  'listed; none is chosen. Absent otherwise.')
 
 
 # ------------------------------------------------------------------ operations
@@ -554,13 +544,13 @@ OPS: list[Op] = [
        errors={400: {'character_name_required': '`name` is missing.', **_VOICE_ERRORS},
                404: _BOOK_NOT_FOUND, 409: _BUSY}),
 
-    op('PATCH', '/api/books/{book_id}/segments/{segment_id}', 'editPassage', 'Books', 'Edit a passage',
-       'Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `SegmentEdit`). Sending '
+    op('PATCH', '/api/books/{book_id}/passages/{passage_id}', 'editPassage', 'Books', 'Edit a passage',
+       'Updates any of `speaker_id`, `direction`, `cues` and `seed` of one passage (body `PassageEdit`). Sending '
        '`speaker_id` sets `confidence` to 1.0; changing it also drops the passage\'s `speaker_check`. The text '
        'and offsets never change. A new `seed` makes seeded providers (Breeze) produce a new take, and `null` '
        'clears it so the speaker\'s voice seed applies; like other performance edits this deselects the current '
        'take while retaining its history.\n\n' + _EDIT_LOCKS + _EDIT_COMMON,
-       response=Book, params={'book_id': 'Book ID.', 'segment_id': 'Passage (segment) ID.'},
+       response=Book, params={'book_id': 'Book ID.', 'passage_id': 'Passage ID.'},
        errors={400: {'character_not_in_cast': '`speaker_id` is not a character in this book\'s cast.'},
                404: {**_BOOK_NOT_FOUND, 'passage_not_found': 'No passage in this book has this ID.'},
                409: _BUSY}),
@@ -668,7 +658,7 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                 'own seed, else 42. With `library`, a blank `id` or another provider it is 400 '
                 '`seed_not_applicable` (it is never silently ignored).',
     },
-    'SegmentEdit': {
+    'PassageEdit': {
         '__doc__': 'Passage fields to change. Omitted or null fields are ignored, except `seed`; send "" or [] to clear.',
         'speaker_id': 'Character ID from this book\'s cast (including `narrator` or `unassigned`); anything else is '
                       '400 `character_not_in_cast`. Sets `confidence` to 1.0.',

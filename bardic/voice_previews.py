@@ -16,6 +16,7 @@ from .audio import (AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYST
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from . import wire
 from .audio_refs import audio_ref
 from .errors import Invalid, NotFound
 
@@ -58,11 +59,14 @@ def present_take(book_id, metadata):
     usage, the copied source anchor and any transient marker stay in storage. Idempotent, so it also cleans an audio
     object presented by an earlier version (for example inside a stored job).
     """
+    extras = {key: metadata[key] for key in _TAKE_EXTRAS if key in metadata}
+    if 'provider_timing' in extras:
+        extras['provider_timing'] = wire.provider_timing(extras['provider_timing'])
     return audio_ref(f'/api/books/{quote(book_id, safe="")}/voice-preview/audio/{metadata["asset_id"]}',
                      asset_id=metadata['asset_id'], duration=metadata.get('duration'),
                      provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
-                     created_at=metadata.get('created_at'), preview_id=metadata.get('preview_id'),
-                     **{key: metadata[key] for key in _TAKE_EXTRAS if key in metadata})
+                     created_at=metadata.get('created_at'), preview_id=metadata.get('preview_id'), kind='preview',
+                     **extras)
 
 
 def _speech_inputs(recipe):
@@ -118,7 +122,7 @@ class VoicePreviewRepository:
         if direction is not None and not character_id:
             raise Invalid('direction_requires_character', 'A performance direction needs a selected character.')
         if segment_direction is not None and not (segment_id and character_id):
-            raise Invalid('segment_direction_requires_passage',
+            raise Invalid('passage_direction_incomplete',
                           'A passage direction needs both a selected passage and a selected character.')
         if voice is not None and (not isinstance(voice, str) or len(voice) > 256):
             raise Invalid('narrator_voice_invalid', 'The narrator voice is not a valid voice value.')

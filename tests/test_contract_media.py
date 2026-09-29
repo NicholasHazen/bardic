@@ -19,3 +19,5 @@ def test_listening_audio_serves_byte_ranges(client, renderer):  # noqa: F811
 
     refused = client.get(url, headers={'Range': f'bytes={len(whole.content) + 10}-'})
     assert refused.status_code == 416
+    assert refused.headers['content-range'] == f'bytes */{len(whole.content)}'
+    assert refused.json()['code'] == 'range_not_satisfiable'  # the JSON `Error` body the contract declares

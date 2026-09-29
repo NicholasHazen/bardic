@@ -117,6 +117,7 @@ For a fresh installation, copy [`.env.example`](../.env.example) only if `.env` 
 | `BARDIC_LAN_NAME` | Opt-in name for other devices, such as `bardic` for `bardic.local`. See [local-network access](#local-network-access). |
 | `BARDIC_HOST` | Bind address. Defaults to `127.0.0.1`, or `0.0.0.0` when `BARDIC_LAN_NAME` is set. |
 | `BARDIC_ALLOWED_HOSTS` | Extra comma-separated Host names or addresses to trust, such as this computer's IP. No ports or wildcards. |
+| `BARDIC_CORS_ORIGINS` | Off by default. Lets a web page from another origin, such as a client under development, use the API from a browser: `*` for every origin, or a comma-separated list of exact origins such as `https://app.example,http://localhost:5173`. There is no authentication, so an allowed page can read and change the library and start paid work; `*` allows any web page in a browser that can reach the server, and the server prints a warning at startup. The trusted-host check still applies. Details in [API.md](API.md#transport-and-security). |
 
 Environment values already present in the launching shell win over the same `.env` entry, including intentionally empty values. File values are loaded literally without variable interpolation. For Gemini, the separate `GOOGLE_API_KEY` fallback can still supply a key if `GEMINI_API_KEY` is empty.
 
@@ -323,7 +324,7 @@ The **audiobook ZIP** contains current enhanced takes, production metadata, text
 
 ## Troubleshooting
 
-Open **Settings → Troubleshooting → Download troubleshooting log** after a playback or buffering problem. The JSON contains the newest 5,000 local events across books, newest first; use `GET /api/diagnostics?book_id=<book-id>&limit=5000` for one book. The normal download uses `/api/diagnostics?limit=5000`. Match `job_id`, `segment_id`, `session_id` and timestamps to saved job details. Event codes distinguish request/poll/preparation/cache issues from media errors and waiting/resumption. Numeric HTTP/media codes and playback rate are included when known; server events identify failed or stopped listening jobs.
+Open **Settings → Troubleshooting → Download troubleshooting log** after a playback or buffering problem. The JSON contains the newest 5,000 local events across books, newest first; use `GET /api/diagnostics?book_id=<book-id>&limit=5000` for one book. The normal download uses `/api/diagnostics?limit=5000`. Match `job_id`, `passage_id`, `session_id` and timestamps to saved job details. Event codes distinguish request/poll/preparation/cache issues from media errors and waiting/resumption. Numeric HTTP/media codes and playback rate are included when known; server events identify failed or stopped listening jobs.
 
 Logs exclude book text, API keys, URLs, stack traces and free-form browser messages. They remain local in SQLite, with duplicate suppression, at most 120 accepted client events per minute, and retention of the newest 5,000 events. The table is created lazily and additively. Browser/server reporting is best effort: a disabled network or logging error must not stop narration, so a missing event does not prove nothing happened. This is a troubleshooting window, not a complete audit trail, and it cannot recover an earlier toast that was never recorded. Export promptly when preserving a particular incident matters; it is separate from the analysis export and resource ledger.
 

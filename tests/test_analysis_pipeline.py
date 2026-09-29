@@ -128,7 +128,7 @@ def latest(client, book_id, step_id):
 def speakers(client, book_id):
     book = client.get(f'/api/books/{book_id}').json()
     names = {c['id']: c['name'] for c in book['characters']}
-    return [names[s['speaker_id']] for s in book['segments'] if s['kind'] == 'dialogue']
+    return [names[s['speaker_id']] for s in book['passages'] if s['kind'] == 'dialogue']
 
 
 # --- registry and contract -----------------------------------------------------------------------
@@ -226,7 +226,7 @@ def test_full_run_auto_accepts_in_order_and_reuses_validated_units(client):
     job, _ = run(client, book['id'], ['discovery'])
     assert job['status'] == 'completed' and len(client.provider.calls) == calls
     repeat = latest(client, book['id'], 'discovery')
-    assert repeat['units']['cached'] == 2 and sorted(repeat['unchanged_scopes']) == sorted(c['id'] for c in book['chapters'])
+    assert repeat['units']['cached_units'] == 2 and sorted(repeat['unchanged_scopes']) == sorted(c['id'] for c in book['chapters'])
 
 
 def test_review_gate_candidate_diff_accept_and_rollback(client):
@@ -244,7 +244,7 @@ def test_review_gate_candidate_diff_accept_and_rollback(client):
     assert speakers(client, book['id']) == ['Mara', 'Mara', 'Mara']  # the reader is unchanged
     detail = client.get(f"{base}/steps/directing/versions/{candidate['id']}", params={'changed_only': True}).json()
     assert detail['diff']['changed'] == 3 and detail['diff']['agreement'] < 1
-    assert {row['_previous']['speaker'] for row in detail['rows']} == {'Mara'}
+    assert {row['previous']['speaker'] for row in detail['rows']} == {'Mara'}
     impact = client.post(f"{base}/steps/directing/versions/{candidate['id']}/preview", json={}).json()
     assert len(impact['changed_scopes']) == 2 and impact['conflicts'] == []
     stale = client.post(f"{base}/steps/directing/versions/{candidate['id']}/accept", json={'expected_revision': -1})
@@ -267,8 +267,8 @@ def test_manual_edits_survive_acceptance_and_only_lock_their_fields(client):
     run(client, book['id'], ['discovery', 'profiles', 'directing'])
     current = client.get(f"/api/books/{book['id']}").json()
     elio = next(c for c in current['characters'] if c['name'] == 'Elio')
-    first_dialogue = next(s for s in current['segments'] if s['kind'] == 'dialogue')
-    edited = client.patch(f"/api/books/{book['id']}/segments/{first_dialogue['id']}", json={'speaker_id': elio['id']})
+    first_dialogue = next(s for s in current['passages'] if s['kind'] == 'dialogue')
+    edited = client.patch(f"/api/books/{book['id']}/passages/{first_dialogue['id']}", json={'speaker_id': elio['id']})
     assert edited.status_code == 200
     voice = client.patch(f"/api/books/{book['id']}/characters/{elio['id']}", json={'voices': {'gemini': {'id': 'Puck'}}})
     assert voice.status_code == 200
@@ -299,26 +299,26 @@ def test_outside_changes_are_recorded_as_external_versions(client):
     with runtime.store.lock:
         draft = analyze_book(runtime.store.book(book['id']), 'local')
         runtime.store.save_book(draft)
-    assert [s['speaker_id'] for s in draft['segments']] != [s['speaker_id'] for s in before['segments']]
+    assert [s['speaker_id'] for s in draft['segments']] != [s['speaker_id'] for s in before['passages']]
     state = step_state(client, book['id'], 'directing')
     assert state['accepted_origins'].get('external', 0) >= 1
     baseline = next(v for v in client.get(f"{base}/steps/directing/versions").json()['items'] if v['origin'] == 'baseline')
     assert client.post(f"{base}/steps/directing/versions/{baseline['id']}/accept", json={}).status_code == 200
     restored = client.get(f"/api/books/{book['id']}").json()
-    assert [s['speaker_id'] for s in restored['segments']] == [s['speaker_id'] for s in before['segments']]
+    assert [s['speaker_id'] for s in restored['passages']] == [s['speaker_id'] for s in before['passages']]
 
 
 def test_a_manual_passage_edit_is_a_lock_not_an_outside_change(client):
     book = import_book(client)
     step_state(client, book['id'], 'directing')
-    dialogue = next(s for s in book['segments'] if s['kind'] == 'dialogue')
+    dialogue = next(s for s in book['passages'] if s['kind'] == 'dialogue')
     speaker = next(c['id'] for c in book['characters'] if c['id'] != dialogue['speaker_id'])
-    response = client.patch(f"/api/books/{book['id']}/segments/{dialogue['id']}", json={'speaker_id': speaker})
+    response = client.patch(f"/api/books/{book['id']}/passages/{dialogue['id']}", json={'speaker_id': speaker})
     assert response.status_code == 200, response.text
     state = step_state(client, book['id'], 'directing')
     # Accepted versions explain a locked field, so no external version is recorded.
     assert state['accepted_origins'].get('external', 0) == 0
-    edited = next(s for s in client.get(f"/api/books/{book['id']}").json()['segments'] if s['id'] == dialogue['id'])
+    edited = next(s for s in client.get(f"/api/books/{book['id']}").json()['passages'] if s['id'] == dialogue['id'])
     assert edited['speaker_id'] == speaker and edited['manual_fields'] == ['speaker_id'] and 'edited_fields' not in edited
 
 
@@ -374,7 +374,8 @@ def test_only_required_inputs_held_for_review_skip_a_step_in_the_same_run(client
     # A held required input does.
     run(client, book['id'], ['profiles', 'directing'], gates={'profiles': 'review'}, fresh=True)
     outcomes = client.get(f"/api/books/{book['id']}/analysis-pipeline").json()['recent_runs'][0]['outcomes']
-    assert outcomes['directing'] == {'status': 'skipped', 'reason': 'Character profiles is waiting for your review.'}
+    assert outcomes['directing'] == {'status': 'skipped', 'reason': 'Character profiles is waiting for your review.',
+                                     'step_run_id': None, 'scope_count': None, 'accepted': None, 'error': None}
 
 
 def test_failed_step_skips_dependents_and_redacts_key(client):
@@ -584,7 +585,7 @@ def test_cancelling_a_queued_run_settles_it(client):
 def test_accept_keeps_takes_it_did_not_invalidate(client):
     book = import_book(client)
     store = client.app.state.runtime.store
-    segment = book['segments'][1]
+    segment = book['passages'][1]
     # A take already hidden by an earlier voice change (its recipe no longer matches).
     store.save_take(book['id'], segment['id'], {'provider': 'system', 'model': 'say', 'fingerprint': 'stale', 'asset_id': 'kept'})
     job, _ = run(client, book['id'], ['census', 'structure'])
@@ -627,7 +628,7 @@ def test_saving_a_whole_cast_form_locks_only_changed_fields(client):
     assert elio['edited_fields'] == ['voices']
     client.patch(f"/api/books/{book['id']}/characters/{elio['id']}", json={'description': 'A tired ferryman.'})
     table = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/profiles/versions/accepted").json()
-    assert next(r for r in table['rows'] if r['id'] == elio['id'])['edited'] == 'description'
+    assert next(r for r in table['rows'] if r['id'] == elio['id'])['edited'] == ['description']
 
 
 def test_version_states_reflect_decisions_not_coincidence(client):

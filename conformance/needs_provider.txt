@@ -1,0 +1,44 @@
+# Operations whose 2xx response cannot be produced without a provider, and so wait for fake providers
+# (see docs/RUST-SERVER-PLAN.md, Phase 2). One operationId per line; anything after # is the reason.
+# The coverage report lists these apart from "not yet covered". The suite never calls a real provider:
+# it exercises these operations' refusals (missing key or URL, unknown IDs) but not their success.
+#
+# An operation that starts receiving a 2xx from a test is reported as "allowlisted but covered":
+# remove it from this file then.
+
+# Narration: jobs that call a speech provider (or the device speech engine, which the suite never runs).
+listenToPassage             # queues a `listen` job that generates one passage take
+startChapterListening       # queues a `listen_chapter` job (Gemini speech)
+startEnhancedRender         # queues a `render` job (cast narration)
+startVoicePreview           # queues a `voice_preview` job
+createPerformance           # creates a saved performance and queues narration
+preparePerformance          # queues narration for a saved performance
+previewPerformanceResume    # plans the rest of a saved performance, which needs createPerformance
+addPerformanceChapters      # adds chapters to a saved performance and queues narration
+updatePerformance           # needs a saved performance, which needs createPerformance
+getPerformance              # needs a saved performance
+getPerformanceAudio         # needs performance audio
+
+# Audio files: exist only after narration ran.
+getPassageAudio             # a passage's enhanced take
+getRetainedAudioAsset       # a retained take
+getListeningAudio           # a simple-listening clip
+getVoicePreviewAudio        # a voice audition clip
+exportAudiobook             # bundles existing takes
+
+# Voice library: every voice comes from a Breeze or Gemini provider.
+refreshBreeze               # asks the Breeze server for its voices
+refreshGeminiVoices         # asks the Gemini project for its voices
+cloneBreezeVoice            # sends a reference recording to the Breeze server
+generateVoiceDraftCandidates # billed Gemini voice design, or a Breeze preview
+discardVoiceDraftCandidate  # needs a generated candidate
+saveVoiceDraft              # needs a generated candidate
+getVoiceDraftCandidateAudio # needs a generated candidate
+setDefaultLibraryVoice      # needs a live Breeze library voice
+updateLibraryVoice          # needs a library voice
+deleteLibraryVoice          # needs a library voice
+setLibraryVoiceCurrentVersion # needs a library voice with versions
+getLibraryVoiceAudition     # needs a library voice version and its provider
+
+# Analysis: a run that pauses for review only happens with a model step that reads earlier books.
+resumeSeriesProcessing      # needs a series run paused on an LLM evidence step

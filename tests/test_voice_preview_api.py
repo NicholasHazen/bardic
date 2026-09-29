@@ -29,12 +29,12 @@ def test_bounded_preview_preserves_other_audio_and_cached_replay_needs_no_provid
     monkeypatch.setattr('bardic.app.shutil.which', lambda name: '/fake/' + name)
     book = import_text(client)
     before = production_snapshot(runtime.store)
-    segment = book['segments'][0]
-    args = {'provider': provider, 'voice': 'Samantha' if provider == 'system' else 'Kore', 'segment_id': segment['id']}
+    segment = book['passages'][0]
+    args = {'provider': provider, 'voice': 'Samantha' if provider == 'system' else 'Kore', 'passage_id': segment['id']}
     response = begin(client, book, **args)
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result['cached'] is False and result['preview']['text'] == segment['text']
+    assert result['kind'] == 'queued' and result['preview']['text'] == segment['text']
     assert result['job']['kind'] == 'voice_preview' and result['job']['total'] == 1
     job = wait_job(client, result['job']['id'])
     assert job['status'] == 'completed' and job['progress'] == 1
@@ -44,7 +44,7 @@ def test_bounded_preview_preserves_other_audio_and_cached_replay_needs_no_provid
     runtime.api_key = ''
     monkeypatch.setattr('bardic.app.shutil.which', lambda _: None)
     cached = begin(client, book, **args).json()
-    assert cached['cached'] is True and cached['audio']['asset_id'] == job['audio']['asset_id']
+    assert cached['kind'] == 'cached' and cached['audio']['asset_id'] == job['audio']['asset_id']
     assert len(calls) == 1
     operations = client.get(f"/api/books/{book['id']}/resources").json()['operations']
     operations = [operation for operation in operations if operation['stage'] == 'voice_preview']
@@ -72,7 +72,7 @@ def test_renamed_character_reuses_audio_without_key_and_preserves_original_prove
     renamed = begin(client, book, character_id=character['id'])
     assert renamed.status_code == 200, renamed.text
     result = renamed.json()
-    assert result['cached'] is True and result['preview']['character_name'] == 'Renamed voice'
+    assert result['kind'] == 'cached' and result['preview']['character_name'] == 'Renamed voice'
     assert result['preview']['id'] != first['preview']['id']
     assert result['audio']['asset_id'] == job['audio']['asset_id']
     assert result['audio']['preview_id'] == result['preview']['id']
@@ -136,7 +136,7 @@ def test_cancel_in_flight_retains_finished_audio_for_explicit_replay(client, ren
     event = client.get('/api/diagnostics').json()['events'][0]
     assert event['event'] == 'voice_preview_stopped' and event['job_id'] == job['id']
     assert event['status'] == 'cancelled' and 'session_id' not in event
-    assert begin(client, book).json()['cached'] is True and len(calls) == 1
+    assert begin(client, book).json()['kind'] == 'cached' and len(calls) == 1
 
 
 def test_queued_cancel_never_calls_provider_and_configuration_is_snapshotted(client, renderer, monkeypatch):
@@ -178,20 +178,20 @@ def test_failure_is_redacted_retains_usage_and_requires_explicit_retry(client, r
         publish_metrics(request_count=1, input_tokens=11, estimated_cost_usd=.002)
         raise ValueError('provider failed with private-test-key')
     monkeypatch.setattr('bardic.app.synthesize', fail)
-    first = begin(client, book, segment_id=book['segments'][0]['id']).json()
+    first = begin(client, book, passage_id=book['passages'][0]['id']).json()
     job = wait_job(client, first['job']['id'])
     assert job['status'] == 'failed' and 'private-test-key' not in job['error']
     assert len(attempts) == 1
     runtime.pool.submit(lambda: None).result(timeout=3)
     events = client.get('/api/diagnostics').json()['events']
     assert len(events) == 1 and events[0]['event'] == 'voice_preview_failed'
-    assert events[0]['job_id'] == job['id'] and events[0]['segment_id'] == book['segments'][0]['id']
+    assert events[0]['job_id'] == job['id'] and events[0]['passage_id'] == book['passages'][0]['id']
     assert events[0]['status'] == 'failed' and 'session_id' not in events[0]
     assert 'private-test-key' not in json.dumps(events) and 'provider failed' not in json.dumps(events)
     usage = client.get(f"/api/books/{book['id']}/resources", params={'run_id': job['id']}).json()['operations']
     assert usage[0]['status'] == 'failed' and usage[0]['input_tokens'] == 11
     monkeypatch.setattr('bardic.app.synthesize', render)
-    second = begin(client, book, segment_id=book['segments'][0]['id']).json()
+    second = begin(client, book, passage_id=book['passages'][0]['id']).json()
     assert second['preview']['id'] == first['preview']['id']
     assert wait_job(client, second['job']['id'])['status'] == 'completed'
 
@@ -204,10 +204,11 @@ def test_preview_input_constraints_and_availability_errors(client, renderer, mon
     assert begin(client, book, text='User-supplied prose').status_code == 422
     assert begin(client, book, voice='x' * 257).status_code == 422
     assert begin(client, book, direction='No character').status_code == 400
-    assert begin(client, book, segment_direction='No character').status_code == 400
+    no_passage = begin(client, book, passage_direction='No character')
+    assert no_passage.status_code == 400 and no_passage.json()['code'] == 'passage_direction_incomplete'
     assert begin(client, book, character_id='missing').json()['code'] == 'unknown_character'
     other = import_text(client, 'A wholly different source.')
-    unknown = begin(client, book, segment_id=other['segments'][0]['id'])
+    unknown = begin(client, book, passage_id=other['passages'][0]['id'])
     assert unknown.status_code == 400 and unknown.json()['code'] == 'unknown_passage'
     runtime.api_key = 'offline-key'
     runtime.stopping.set()

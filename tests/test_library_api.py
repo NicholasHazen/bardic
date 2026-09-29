@@ -93,7 +93,7 @@ def test_book_archive_restore_keeps_files_takes_history_and_direct_access(client
     book = imported(client)
     store = client.app.state.runtime.store
     book_id = book['id']
-    store.save_take(book_id, book['segments'][0]['id'], {'fingerprint': 'retained', 'duration': 1})
+    store.save_take(book_id, book['passages'][0]['id'], {'fingerprint': 'retained', 'duration': 1})
     before = store.book(book_id)
     source = store.root / 'originals' / book_id / 'source.txt'
     original_bytes = source.read_bytes()

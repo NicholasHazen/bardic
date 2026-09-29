@@ -41,11 +41,11 @@ def renderer(monkeypatch):
     return calls, synthesize
 
 
-def begin(client, book, provider='gemini', segment=None):
-    segment = segment or book['segments'][0]
+def begin(client, book, provider='gemini', passage=None):
+    passage = passage or book['passages'][0]
     response = client.post(f"/api/books/{book['id']}/listen", json={
         'provider':provider,'voice':'Kore' if provider=='gemini' else 'Samantha',
-        'model':DEFAULT_TTS_MODEL if provider=='gemini' else 'macos-say','segment_id':segment['id']})
+        'model':DEFAULT_TTS_MODEL if provider=='gemini' else 'macos-say','passage_id':passage['id']})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -58,30 +58,30 @@ def test_lazy_single_passage_preserves_enhanced_work_and_cached_audio_needs_no_p
     monkeypatch.setattr('bardic.app.shutil.which', lambda name:'/fake/'+name if name in {'say','ffmpeg'} else None)
     book = import_text(client)
     # An existing enhanced take is separate from simple listening.
-    enhanced = client.post(f"/api/books/{book['id']}/render", json={'provider':'gemini','segment_id':book['segments'][0]['id']}).json()
+    enhanced = client.post(f"/api/books/{book['id']}/render", json={'provider':'gemini','passage_id':book['passages'][0]['id']}).json()
     assert wait_job(client,enhanced['id'])['status'] == 'completed'
     before = deepcopy(runtime.store.book(book['id']))
     projection = production_snapshot(runtime.store)
     original = (runtime.store.root/'originals'/book['id']/'source.txt').read_bytes()
     result = begin(client,book,provider)
-    assert result['cached'] is False and result['job']['kind'] == 'listen' and result['job']['total'] == 1
+    assert result['kind'] == 'queued' and result['job']['kind'] == 'listen' and result['job']['total'] == 1
     finished = wait_job(client,result['job']['id'])
     assert finished['status'] == 'completed' and finished['progress'] == 1
     assert finished['audio']['session_id'] == result['session']['id'] and 'chunk_id' not in finished['audio']
     assert len(calls) == 2, 'Only one requested simple passage should synthesize'
-    assert calls[-1]['segment'] == {'id':book['segments'][0]['id'],'text':book['segments'][0]['text']}
+    assert calls[-1]['segment'] == {'id':book['passages'][0]['id'],'text':book['passages'][0]['text']}
     assert calls[-1]['scene'] == {}
     url = finished['audio']['url']
     wav = client.get(url)
     assert wav.status_code == 200 and wav.headers['content-type'].startswith('audio/wav')
     session_id = result['session']['id']
     indexed = client.get(f"/api/books/{book['id']}/listen/takes",params={'session_id':session_id}).json()
-    assert len(indexed['takes']) == 1 and indexed['takes'][0]['segment_id'] == book['segments'][0]['id']
+    assert len(indexed['takes']) == 1 and indexed['takes'][0]['passage_id'] == book['passages'][0]['id']
     # Cache retrieval comes before checking keys or installed speech tools.
     runtime.api_key = ''
     monkeypatch.setattr('bardic.app.shutil.which',lambda _name:None)
     cached = begin(client,book,provider)
-    assert cached['cached'] is True and 'job' not in cached
+    assert cached['kind'] == 'cached' and 'job' not in cached
     assert cached['audio']['asset_id'] == finished['audio']['asset_id']
     assert len(calls) == 2 and len(runtime.store.jobs(book['id'])) == 2
     assert runtime.store.book(book['id']) == before
@@ -92,7 +92,7 @@ def test_lazy_single_passage_preserves_enhanced_work_and_cached_audio_needs_no_p
     assert len(operations) == 2 and all(row['status']=='completed' for row in operations)
     generated = next(row for row in operations if not row['cached'])
     reused = next(row for row in operations if row['cached'])
-    assert generated['run_id'] == result['job']['id'] and generated['chapter_id'] == book['segments'][0]['chapter_id']
+    assert generated['run_id'] == result['job']['id'] and generated['chapter_id'] == book['passages'][0]['chapter_id']
     assert generated['audio_seconds'] > 0 and generated['output_bytes'] > 44
     assert generated['elapsed_seconds'] >= 0
     assert generated['request_count'] == (1 if provider=='gemini' else 0)
@@ -126,7 +126,7 @@ def test_cancelling_current_request_retains_completed_simple_take_without_publis
     assert len(takes) == 1
     assert client.get(takes[0]['audio']['url']).status_code == 200
     assert production_snapshot(runtime.store) == before
-    assert begin(client,book)['cached'] is True
+    assert begin(client,book)['kind'] == 'cached'
     assert len(calls) == 1
 
 
@@ -164,16 +164,16 @@ def test_book_and_session_scopes_invalid_inputs_archive_and_busy_guards(client, 
     assert client.get(other_base+'/takes',params={'session_id':result['session']['id']}).status_code == 404
     assert client.get(other_base+'/audio/'+audio['asset_id']).status_code == 404
     assert client.get(base+'/audio/'+'g'*64).status_code == 404
-    assert client.post(base,json={'provider':'openai','segment_id':book['segments'][0]['id']}).status_code in {400,422}
-    assert client.post(base,json={'provider':'gemini','model':'unlisted','segment_id':book['segments'][0]['id']}).status_code == 400
-    assert client.post(base,json={'provider':'gemini','segment_id':'missing'}).status_code == 400
+    assert client.post(base,json={'provider':'openai','passage_id':book['passages'][0]['id']}).status_code in {400,422}
+    assert client.post(base,json={'provider':'gemini','model':'unlisted','passage_id':book['passages'][0]['id']}).status_code == 400
+    assert client.post(base,json={'provider':'gemini','passage_id':'missing'}).status_code == 400
     busy = runtime.store.create_job(book['id'],'analyze')
-    assert begin(client,book)['cached'] is True, 'Read-only cache reuse remains available during other work'
-    blocked = client.post(base,json={'provider':'gemini','segment_id':book['segments'][1]['id']})
+    assert begin(client,book)['kind'] == 'cached', 'Read-only cache reuse remains available during other work'
+    blocked = client.post(base,json={'provider':'gemini','passage_id':book['passages'][1]['id']})
     assert blocked.status_code == 409
     runtime.store.update_job(busy['id'],status='cancelled')
     assert client.post(f"/api/books/{book['id']}/archive").status_code == 200
-    archived = client.post(base,json={'provider':'gemini','segment_id':book['segments'][0]['id']})
+    archived = client.post(base,json={'provider':'gemini','passage_id':book['passages'][0]['id']})
     assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
     assert client.get(audio['url']).status_code == 200, 'Archiving retains readable saved assets'
 
@@ -185,10 +185,10 @@ def test_cross_book_cached_speech_works_without_key_and_has_zero_new_usage(clien
     book = import_text(client)
     started = begin(client, book)
     audio = wait_job(client, started['job']['id'])['audio']
-    other = import_text(client, book['segments'][0]['text'])
+    other = import_text(client, book['passages'][0]['text'])
     runtime.api_key = ''
     reused = begin(client, other)
-    assert reused['cached'] is True and 'job' not in reused
+    assert reused['kind'] == 'cached' and 'job' not in reused
     assert reused['audio']['asset_id'] == audio['asset_id']
     assert reused['audio']['reuse']['book_id'] == book['id']
     assert client.get(reused['audio']['url']).content == client.get(audio['url']).content
@@ -204,7 +204,7 @@ def test_queued_equivalent_books_recheck_cache_before_spending(client, renderer)
     runtime = client.app.state.runtime
     runtime.api_key = 'offline-key'
     book = import_text(client)
-    other = import_text(client, book['segments'][0]['text'])
+    other = import_text(client, book['passages'][0]['text'])
     entered, release = threading.Event(), threading.Event()
     def occupy_worker():
         entered.set()
@@ -213,7 +213,7 @@ def test_queued_equivalent_books_recheck_cache_before_spending(client, renderer)
     try:
         assert entered.wait(2)
         first, second = begin(client, book), begin(client, other)
-        assert first['cached'] is False and second['cached'] is False
+        assert first['kind'] == 'queued' and second['kind'] == 'queued'
     finally:
         release.set()
     one = wait_job(client, first['job']['id'])
@@ -254,7 +254,7 @@ def test_duplicate_active_listen_requests_join_one_job(client, renderer, monkeyp
         assert duplicate['job']['status'] == state
         assert len(runtime.store.jobs(book['id'])) == 1
         changed = client.post(f"/api/books/{book['id']}/listen", json={
-            'provider': 'gemini', 'voice': 'Puck', 'segment_id': book['segments'][0]['id']})
+            'provider': 'gemini', 'voice': 'Puck', 'passage_id': book['passages'][0]['id']})
         assert changed.status_code == 409
     finally:
         release.set()
@@ -302,7 +302,7 @@ def test_cancel_requested_running_job_cannot_be_joined(client, renderer, monkeyp
         assert entered.wait(2)
         assert client.post(f"/api/jobs/{first['job']['id']}/cancel").json()['cancel_requested']
         response = client.post(f"/api/books/{book['id']}/listen", json={
-            'provider': 'gemini', 'voice': 'Kore', 'segment_id': book['segments'][0]['id']})
+            'provider': 'gemini', 'voice': 'Kore', 'passage_id': book['passages'][0]['id']})
         assert response.status_code == 409
     finally:
         release.set()
@@ -319,7 +319,7 @@ def test_executor_rejection_settles_failed_job_without_spend_and_allows_retry(cl
     with monkeypatch.context() as scoped:
         scoped.setattr(runtime.pool, 'submit', rejected)
         response = client.post(f"/api/books/{book['id']}/listen", json={
-            'provider': 'gemini', 'voice': 'Kore', 'segment_id': book['segments'][0]['id']})
+            'provider': 'gemini', 'voice': 'Kore', 'passage_id': book['passages'][0]['id']})
     assert response.status_code == 503
     jobs = runtime.store.jobs(book['id'])
     assert len(jobs) == 1 and jobs[0]['status'] == 'failed'

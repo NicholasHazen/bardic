@@ -27,8 +27,8 @@ function environment(respond) {
     return nodes.get(selector);
   };
   const books = [
-    {id:'one', title:'The <Lantern>', author:'A & B', chapters:[{id:'c1', title:'First'}], segments:[], characters:[]},
-    {id:'two', title:'Winter road', author:'Hannah Snow', chapters:[{id:'c2', title:'Second'}], segments:[], characters:[]},
+    {id:'one', title:'The <Lantern>', author:'A & B', chapters:[{id:'c1', title:'First'}], passages:[], characters:[]},
+    {id:'two', title:'Winter road', author:'Hannah Snow', chapters:[{id:'c2', title:'Second'}], passages:[], characters:[]},
   ];
   const state = {book:books[0], books, chapterId:'c1', segmentId:'s1', tab:'read', libraryView:false, selectionVersion:0, loading:false, referenceCache:new Map(), referenceVersion:0};
   const tabs = ['read','analysis','cast','studio','details'].map(name => { const tab = node(`#${name}-tab`); tab.dataset.tab = name; tab.setAttribute('aria-current', 'false'); return tab; });
@@ -282,7 +282,7 @@ test('provider setup reveals the requested provider before focusing its key', ()
 
 test('playing an unnarrated passage opens the narrator sheet without generating audio', async () => {
   const {workspace, state, node, calls, media, sheet} = environment();
-  state.book.segments = [{id:'s1', chapter_id:'c1', text:'An original short line.'}];
+  state.book.passages = [{id:'s1', chapter_id:'c1', text:'An original short line.'}];
   await workspace.startSegment('s1');
   assert.equal(sheet.opened, 1);
   assert.match(node('#toast').textContent, /Choose a narrator to start listening/);
@@ -295,7 +295,7 @@ test('passive unnarrated selection keeps setup closed', async () => {
   // The server presents an out-of-date take as null audio, so no staleness flag is read here.
   const {workspace, state, media, sheet} = environment();
   const segment = {id:'s1', chapter_id:'c1', text:'An original short line.'};
-  state.book.segments = [segment];
+  state.book.passages = [segment];
   await workspace.startSegment('s1', {autoplay:false});
   assert.equal(sheet.opened, 0);
   assert.equal(media.generations, 0);
@@ -310,4 +310,33 @@ test('book byline uses singular chapter and section counts', () => {
   state.book.chapters.push({id:'c2', title:'Afterword', kind:'afterword'});
   workspace.renderBook();
   assert.equal(node('#book-byline').textContent, 'A & B  ·  1 chapter · 1 other section');
+});
+
+test('the export link counts the recorded passages of the book document', () => {
+  const listeners = {}, toasts = [];
+  const state = {book:{passages:[{id:'p1', audio:{url:'/a.wav'}}, {id:'p2'}]}};
+  const context = {state, $:() => ({addEventListener:(name, handler) => { listeners[name] = handler; }}), toast:message => toasts.push(message)};
+  vm.runInNewContext([source.split('\n').find(line => line.startsWith('const playable =')),
+    between("$('#export-link').addEventListener('click'", "$('#analyze-from-cast')")].join('\n'), context);
+  let prevented = 0;
+  listeners.click({preventDefault() { prevented++; }});
+  assert.equal(prevented, 0, 'one recorded passage is enough to export');
+  assert.match(toasts.at(-1), /Exporting available takes/, 'the rest are listed as missing in the manifest');
+  state.book.passages[0].audio = null;
+  listeners.click({preventDefault() { prevented++; }});
+  assert.equal(prevented, 1, 'nothing recorded blocks the export');
+  assert.match(toasts.at(-1), /Narrate at least one passage/);
+});
+
+test('a character reference anchors to its passage by passage_id, and the link opens that passage', () => {
+  const state = {book:{id:'b1', chapters:[{id:'c1', title:'The <Gate>'}], passages:[
+    {id:'p1', chapter_id:'c1', start:0, end:10, text:'First line.'}, {id:'p2', chapter_id:'c1', start:11, end:30, text:'Second line, Mira said.'}]},
+    referenceCache:new Map([['mira', {references:[{passage_id:'p2', chapter_id:'c1', quote:'Mira <said>', kind:'name_mention'}], shown:100}]])};
+  const context = {state};
+  vm.runInNewContext([source.split('\n').find(line => line.startsWith('const escapeHTML =')), between('function referenceContent(', 'function renderCharacterReferences('),
+    'globalThis.referenceContent = referenceContent;'].join('\n'), context);
+  const html = context.referenceContent({id:'mira'});
+  assert.match(html, /data-reference-segment="p2"/, 'the anchor comes from passage_id');
+  assert.match(html, /The &lt;Gate&gt; · Passage 2 ↗/, 'the passage number counts within its chapter');
+  assert.ok(html.includes('Mira &lt;said&gt;'));
 });

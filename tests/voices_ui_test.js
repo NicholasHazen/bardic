@@ -125,7 +125,7 @@ test('Breeze previews use the chosen count and save as a new version assigned to
 });
 
 test('deleting asks in the page, lists usage, and keeps imported server voices unless chosen', async () => {
-  const env = environment({'DELETE /api/voices/vl_imp':{deleted:'vl_imp'}, 'DELETE /api/voices/vl_mara':{deleted:'vl_mara'}});
+  const env = environment({'DELETE /api/voices/vl_imp':{voice_id:'vl_imp'}, 'DELETE /api/voices/vl_mara':{voice_id:'vl_mara'}});
   env.api.render(env.container, env.options());
   const html = () => env.container.innerHTML;
   assert.match(html(), /Mara &lt;alto&gt;/);

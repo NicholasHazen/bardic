@@ -78,6 +78,29 @@ def _properties(schema: dict) -> list[str]:
     return lines
 
 
+def _union(component: dict, components: dict) -> list[str]:
+    """A tagged union: the tag, each member with its tag value, and the fields of a member written inline."""
+    tag = component['discriminator']['propertyName']
+    lines = [f'Tagged union: select the member by its `{tag}`. The union is closed (no other value, no catch-all).', '',
+             '| `' + tag + '` | Member |', '| --- | --- |']
+    inline = []
+    for member in component['oneOf']:
+        target = components[_name(member['$ref'])] if '$ref' in member else member
+        value = target['properties'][tag]['enum'][0]
+        if '$ref' in member:
+            lines.append(f'| `{value}` | {type_of(member)} |')
+        else:
+            lines.append(f'| `{value}` | fields below |')
+            inline.append((value, target))
+    lines.append('')
+    for value, target in inline:
+        lines += [f'**`{tag}` = `{value}`**', '']
+        if target.get('description'):
+            lines += [target['description'].strip(), '']
+        lines += _properties(target) + ['']
+    return lines
+
+
 def render(schema: dict) -> str:
     out = [HEADER, f'# {schema["info"]["title"]} {schema["info"]["version"]}', '', schema['info']['description'].strip(), '']
     operations: dict[str, list[tuple[str, str, dict]]] = {tag['name']: [] for tag in schema.get('tags', [])}
@@ -132,7 +155,9 @@ def render(schema: dict) -> str:
         out += [f'<a id="{_anchor(name)}"></a>', f'### {name}', '']
         if component.get('description'):
             out += [component['description'].strip(), '']
-        if 'enum' in component or 'anyOf' in component:
+        if 'oneOf' in component:
+            out += _union(component, schema['components']['schemas'])
+        elif 'enum' in component or 'anyOf' in component:
             out += [f'Type: {type_of({k: v for k, v in component.items() if k != "title"})}', '']
         out += _properties(component)
         out.append('')

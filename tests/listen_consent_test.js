@@ -42,7 +42,7 @@ function fakeNodes() {
 const story = id => ({id, title:'Harbor lights', revision:1,
   chapters:[{id:'c1', title:'One', kind:'chapter', narrative_order:1, text:'First line. Second line. Third line.'}],
   characters:[{id:'narrator', name:'Narrator'}], scenes:[],
-  segments:[{id:'s1', chapter_id:'c1', speaker_id:'narrator', text:'First line.', start:0, end:11},
+  passages:[{id:'s1', chapter_id:'c1', speaker_id:'narrator', text:'First line.', start:0, end:11},
     {id:'s2', chapter_id:'c1', speaker_id:'narrator', text:'Second line.', start:12, end:24},
     {id:'s3', chapter_id:'c1', speaker_id:'narrator', text:'Third line.', start:25, end:36}]});
 
@@ -73,7 +73,7 @@ function listening({bookId = 'book-t', session = new Map(), provider = 'gemini',
       if (url.startsWith('/api/jobs?')) data = [];
       else if (url.includes('/listen/takes')) data = {takes:takes(url)};
       // One-passage narration (Mac voices): each POST makes one passage of audio.
-      else if (/\/listen$/.test(url)) { const voice = call.body.voice || 'mac'; data = {session:{id:`sess-${voice}`}, audio:{url:`/${voice}-${call.body.segment_id}.wav`, duration:2, available:true}}; }
+      else if (/\/listen$/.test(url)) { const voice = call.body.voice || 'mac'; data = {kind:'cached', session:{id:`sess-${voice}`}, audio:{url:`/${voice}-${call.body.passage_id}.wav`, duration:2, available:true}}; }
       else if (url.endsWith('/listen/chapter/preview')) data = {session:{id:'sess'}, requests_needed:1, quota:{requests_today:1, rpd:100}};
       else if (url.endsWith('/listen/chapter')) data = {session:{id:'sess'}, job, joined:false};
       return {ok:true, status:200, json:async () => data};
@@ -146,7 +146,7 @@ test('a tap while narration is playing jumps there; Space starts Play from the f
   await settle();
   assert.equal(env.state.segmentId, 's3');
   assert.equal(env.paid().length, 2, 'while playing, a tap jumps and plays from the new place');
-  assert.equal(env.paid()[1].body.segment_id, 's3');
+  assert.equal(env.paid()[1].body.passage_id, 's3');
   // Space on a passage is Play, so it goes through the same consent.
   const spaced = listening({bookId:'book-space'});
   await settle();
@@ -157,7 +157,7 @@ test('a tap while narration is playing jumps there; Space starts Play from the f
   spaced.app.confirmPaidConsent();
   await settle();
   assert.equal(spaced.paid().length, 1);
-  assert.equal(spaced.paid()[0].body.segment_id, 's2');
+  assert.equal(spaced.paid()[0].body.passage_id, 's2');
 });
 
 test('the first paid Play per book per browser session asks first; the second Play does not', async () => {
@@ -280,7 +280,7 @@ test('a new book starts with one narrator; saved Full cast and Studio takes are 
   await kept.render(node('#b'), book, options);
   assert.equal(kept.getSelection(book).mode, 'enhanced', 'a saved Full cast choice is not changed');
   const recorded = make(null), studio = story('b2');
-  studio.segments[0].audio = {url:'/take.wav', duration:1};
+  studio.passages[0].audio = {url:'/take.wav', duration:1};
   await recorded.render(node('#c'), studio, options);
   assert.equal(recorded.getSelection(studio).mode, 'enhanced', 'a book with Studio takes plays them');
   assert.equal(recorded.choices(studio).hasFullCast, true, 'the sheet offers Full cast');
@@ -290,11 +290,11 @@ test('a new book starts with one narrator; saved Full cast and Studio takes are 
 // Studio Narrate book / Narrate scene: estimate, then confirm.
 function studio({provider = 'gemini', quota = {requests_today:95, rpd:100, resets_at:'2026-09-29T07:00:00+00:00'}, segments} = {}) {
   const {nodes, node} = fakeNodes();
-  const posts = [], toasts = [];
+  const posts = [], toasts = [], patches = [];
   const book = story('book-s');
   book.scenes = [{id:'scene-1', chapter_id:'c1', title:'The quay'}];
-  book.segments.forEach(segment => { segment.scene_id = 'scene-1'; });
-  if (segments) segments(book.segments);
+  book.passages.forEach(segment => { segment.scene_id = 'scene-1'; });
+  if (segments) segments(book.passages);
   node('#render-provider').value = provider;
   const sceneHost = node('[scene host]');
   sceneHost.dataset.renderConfirmHost = 'scene-1';
@@ -310,18 +310,21 @@ function studio({provider = 'gemini', quota = {requests_today:95, rpd:100, reset
     playable:segment => Boolean(segment?.audio?.url && !segment.audio.stale),
     narrationModel:value => value === 'gemini' ? 'gemini-3.8-flash-tts' : value === 'system' ? 'macos-say' : null,
     NARRATION_LABELS:{system:'Mac voices', gemini:'Gemini', breeze:'Breeze'}, scrollMotion:() => 'auto',
-    renderStudio() {}, updateProviderHint() {}, refreshBreeze() {}, auditionPassage() {}, retakeSegment() {}, startSegment() {},
+    renderStudio() {}, updateProviderHint() {}, refreshBreeze() {}, auditionPassage() {}, startSegment() {},
+    segmentById:id => state.book.passages.find(item => item.id === id), applyBook() {},
+    patch:async (url, body) => { patches.push({url, body}); return state.book; },
   };
   vm.runInNewContext([
     line('const escapeHTML ='),
     between('async function startJob(', '// A seeded provider (Breeze)'),
+    between('const randomSeed =', 'function openSettings('),
     between("$('#render-button').addEventListener('click'", "$('#job-banner').addEventListener('click'"),
     line("$('#scene-list').addEventListener('click'"),
-    'globalThis.studio = {startJob, renderEstimate};',
+    'globalThis.studio = {startJob, renderEstimate, renderNeedsConfirm, retakeSegment};',
   ].join('\n'), context);
   const act = action => node('#studio-view').listeners.click({target:{closest:selector => selector === '[data-render-confirm-action]' ? {dataset:{renderConfirmAction:action}} : null}});
   const narrateScene = () => node('#scene-list').listeners.click({target:{closest:selector => selector === '[data-render-scene]' ? {dataset:{renderScene:'scene-1'}} : null}});
-  return {state, posts, toasts, node, nodes, sceneHost, act, narrateScene, statusReads:() => statusReads, api:context.studio};
+  return {state, posts, toasts, patches, node, nodes, sceneHost, act, narrateScene, statusReads:() => statusReads, api:context.studio};
 }
 
 test('Narrate book with Gemini shows an estimate and posts nothing until Confirm', async () => {
@@ -397,8 +400,26 @@ test('device narration and single passages start without an estimate', async () 
   await settle();
   assert.deepEqual(plain(env.posts), [{url:'/api/books/book-s/render', body:{provider:'system'}}], 'free device narration needs no confirm');
   const passage = studio();
-  await passage.api.startJob('render', {segment_id:'s1', force:true});
+  await passage.api.startJob('render', {passage_id:'s1', force:true});
   assert.equal(passage.posts.length, 1, 'one passage is one request and starts directly');
+});
+
+test('a passage retake on a seeded provider saves a new seed on the passage, then renders that one passage', async () => {
+  const env = studio({provider:'breeze', segments:list => { list[0].audio = {url:'/take.wav', provider:'breeze'}; }});
+  env.state.status.narration_providers = {breeze:{capabilities:{seeded_takes:true}}};
+  await env.api.retakeSegment('s1');
+  assert.equal(env.patches.length, 1);
+  assert.equal(env.patches[0].url, '/api/books/book-s/passages/s1', 'the passage edit lives under /passages/');
+  assert.deepEqual(Object.keys(env.patches[0].body), ['seed']);
+  assert.deepEqual(plain(env.posts), [{url:'/api/books/book-s/render', body:{provider:'breeze', passage_id:'s1', force:true}}]);
+});
+
+test('only whole-book and scene narration needs the estimate; one passage names passage_id', () => {
+  const {api} = studio();
+  assert.equal(api.renderNeedsConfirm('gemini', {passage_id:'s1'}), false);
+  assert.equal(api.renderNeedsConfirm('gemini', {scene_id:'scene-1'}), true);
+  assert.equal(api.renderNeedsConfirm('breeze', {}), true);
+  assert.equal(api.renderNeedsConfirm('system', {}), false, 'device narration is free');
 });
 
 // Book header, Cast badge and job banner.
@@ -498,14 +519,14 @@ test('script-driven scrolling respects reduced motion', () => {
 
 // ---- Phase 4: one narrator surface, player basics ------------------------------------
 const macTakes = session => url => url.includes(`session_id=${session}`)
-  ? ['s1', 's2', 's3'].map(id => ({segment_id:id, audio:{url:`/${session}-${id}.wav`, duration:2, available:true}})) : [];
+  ? ['s1', 's2', 's3'].map(id => ({passage_id:id, audio:{url:`/${session}-${id}.wav`, duration:2, available:true}})) : [];
 const macSession = {sessionId:'sess-mac', sessionKey:JSON.stringify(['system', '', 'macos-say'])};
 const narrationPosts = env => env.calls.filter(call => call.method === 'POST' && /\/listen(\/chapter)?$/.test(call.url));
 
 test('changing narrator in the sheet sends nothing and keeps playing until Use; switching back reuses saved audio', async () => {
   const env = listening({provider:'system', prior:macSession, takes:macTakes('sess-mac')});
   await settle();
-  assert.equal(env.listen.resolve(env.state.book, env.state.book.segments[0])?.url, '/sess-mac-s1.wav', 'the saved narrator audio is loaded');
+  assert.equal(env.listen.resolve(env.state.book, env.state.book.passages[0])?.url, '/sess-mac-s1.wav', 'the saved narrator audio is loaded');
   await env.app.startSegment('s1');
   await settle();
   assert.equal(env.audio.paused, false);
@@ -596,7 +617,7 @@ test('Pause and the sleep timer stop playback through the same path, cancelling 
 test('sleep at the end of the chapter pauses there and leaves your place at the next chapter', async () => {
   const book = story('book-t');
   book.chapters.push({id:'c2', title:'Two', kind:'chapter', narrative_order:2, text:'Fourth line.'});
-  book.segments.push({id:'s4', chapter_id:'c2', speaker_id:'narrator', text:'Fourth line.', start:0, end:12});
+  book.passages.push({id:'s4', chapter_id:'c2', speaker_id:'narrator', text:'Fourth line.', start:0, end:12});
   const env = listening({provider:'system', prior:{...macSession, continuous:true}, takes:macTakes('sess-mac'), book});
   await settle();
   const stops = [];

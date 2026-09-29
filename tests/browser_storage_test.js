@@ -14,7 +14,7 @@ function environment(prior = {}, unavailable = false) {
   const storage = new Map(Object.entries(prior));
   const books = ['first', 'legacy', 'current'].map(id => ({id,
     chapters:[{id:'c1'}, {id:'c2'}],
-    segments:[{id:'s1', chapter_id:'c1'}, {id:'s2', chapter_id:'c2'}],
+    passages:[{id:'s1', chapter_id:'c1'}, {id:'s2', chapter_id:'c2'}],
   }));
   const nodes = new Map();
   const scope = {

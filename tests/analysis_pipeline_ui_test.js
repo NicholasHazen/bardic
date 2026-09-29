@@ -75,23 +75,26 @@ function overview(bookId, extra = {}) {
     ], ...extra};
 }
 const versions = {items:[
-  {id:'v2', origin:'run', provider:'openai', model:'gpt-a', status:'completed', state:'candidate', units:{total:2, done:2, cached:1, failed:0},
+  {id:'v2', origin:'run', provider:'openai', model:'gpt-a', status:'completed', state:'candidate', units:{total:2, done:2, cached_units:1, failed:0},
     scope_count:1, accepted_scopes:0, unchanged_scopes:[], incomplete_scopes:[], error:null, created_at:'2026-09-27T10:00:00Z', chapter_ids:null},
-  {id:'v1', origin:'baseline', provider:null, model:null, status:'completed', state:'superseded', units:{total:0, done:0, cached:0, failed:0},
+  {id:'v1', origin:'baseline', provider:null, model:null, status:'completed', state:'superseded', units:{total:0, done:0, cached_units:0, failed:0},
     scope_count:1, accepted_scopes:0, unchanged_scopes:[], incomplete_scopes:[], error:null, created_at:'2026-09-26T10:00:00Z', chapter_ids:null},
 ], decisions:[]};
-const result = {stats:{mentions:2, distinct_names:2}, columns:[{key:'chapter', label:'Section'}, {key:'name', label:'Name'}, {key:'evidence', label:'Evidence'}],
+// A Character discovery version, as the server sends it: aliases are a list, evidence is a count, and each row says
+// whether it changed (diff_state), which columns (changed_keys) and what they held before (previous).
+const result = {stats:{mentions:2, distinct_names:2}, columns:[{key:'chapter', label:'Section'}, {key:'name', label:'Name'}, {key:'aliases', label:'Aliases'}, {key:'evidence_count', label:'Quotes'}],
   rows:[
-    {id:'r1', scope:'c1', chapter:'The <Gate>', name:'Mira <script>alert(1)</script>', evidence:'"Stay" said <b>Mira</b>',
-      _diff:'changed', _changed:['name'], _previous:{name:'Old <i>name</i>'}},
-    {id:'r2', scope:'c1', chapter:'The <Gate>', name:'Elio', evidence:['one', 'two'], _diff:'added'},
+    {id:'r1', step:'discovery', scope:'c1', chapter:'The <Gate>', name:'Mira <script>alert(1)</script>', aliases:['Mira <b>the Bold</b>'], evidence_count:2,
+      diff_state:'changed', changed_keys:['name'], previous:{name:'Old <i>name</i>'}},
+    {id:'r2', step:'discovery', scope:'c1', chapter:'The <Gate>', name:'Elio', aliases:['one', 'two'], evidence_count:1,
+      diff_state:'added', changed_keys:null, previous:null},
   ], diff:{compared_with:'accepted', same:0, changed:1, added:1, removed:0, agreement:0}, total_rows:2, offset:0, limit:200,
   scopes:[{scope:'c1', artifact_id:'a1', accepted:false}], revision:4};
 const plan = {steps:[
-  {step_id:'structure', label:'Chapters & titles', method:'plain', provider:'local', model:null, units:1, cached_units:0, requests:0,
-    estimated_input_tokens:0, output_token_allowance:0, estimated_cost_usd:0, inputs_pending:[], scopes:1},
-  {step_id:'discovery', label:'Character discovery', method:'llm', provider:'openai', model:'gpt-a', units:2, cached_units:1, requests:1,
-    estimated_input_tokens:5000, output_token_allowance:2000, estimated_cost_usd:null, inputs_pending:[], scopes:1},
+  {step_id:'structure', label:'Chapters & titles', method:'plain', provider:'local', model:null, unit_count:1, cached_units:0, requests:0,
+    estimated_input_tokens:0, output_token_allowance:0, estimated_cost_usd:0, inputs_pending:[], scope_count:1},
+  {step_id:'discovery', label:'Character discovery', method:'llm', provider:'openai', model:'gpt-a', unit_count:2, cached_units:1, requests:1,
+    estimated_input_tokens:5000, output_token_allowance:2000, estimated_cost_usd:null, inputs_pending:[], scope_count:1},
 ], requests:1, cached_units:1, estimated_input_tokens:5000, output_token_allowance:2000, estimated_cost_usd:null, fingerprint:'fp-123', note:'Estimates <note>'};
 const impact = {changed_scopes:['c1'], unchanged_scopes:[], conflicts:[{scope:'c1', item_id:'mira', field:'description', reason:'Edited <manually>'}],
   audio_takes_invalidated:3, downstream_steps_affected:['profiles'], revision:4};
@@ -167,11 +170,12 @@ test('renders steps, status chips and an escaped, diffed result table from GET r
   assert.ok(history.includes('2/2 units done · 1 reused · 0 failed'));
   const table = container.regions.result.innerHTML;
   assert.ok(table.includes('Mira &lt;script&gt;alert(1)&lt;/script&gt;'));
-  assert.ok(table.includes('&quot;Stay&quot; said &lt;b&gt;Mira&lt;/b&gt;'));
+  assert.ok(table.includes('Mira &lt;b&gt;the Bold&lt;/b&gt;'), 'a list cell reads as its items');
   assert.ok(!/<script|<b>|<i>/.test(table), 'model output is never interpreted as HTML');
   assert.ok(table.includes('ap-cell-changed') && table.includes('Old &lt;i&gt;name&lt;/i&gt;'));
   assert.ok(table.includes('title="Previously: Old &lt;i&gt;name&lt;/i&gt;"'));
-  assert.ok(table.includes('>New<') && table.includes('one, two'));
+  assert.ok(table.includes('>New<') && table.includes('one, two'), 'a list of strings is joined with commas');
+  assert.ok(table.includes('<td>2</td>') && table.includes('>Quotes<'), 'an evidence count is a plain number column');
   assert.ok(table.includes('>Accept<') && table.includes('>Set aside<') && !table.includes('>Reject<'));
   assert.ok(table.includes('1 changed · 1 new'));
   // The Section column already names each result, so there is no repeated Result column.
@@ -275,6 +279,8 @@ test('Run this step previews a plan and runs only after Confirm, with the plan f
   assert.ok(preview.includes('Unknown price') && preview.includes('Estimates &lt;note&gt;'));
   assert.ok(preview.includes('Sections: The &lt;Gate&gt;'));
   assert.ok(preview.includes('Confirm and run · about 1 request'));
+  assert.ok(preview.includes('<td>2</td><td>1</td><td>1</td>'), 'units, reused and requests come from unit_count and cached_units');
+  assert.ok(!preview.includes('Nothing to run') && !/data-ap-action="confirm-run"[^>]*disabled/.test(preview), 'a plan with units can be confirmed');
   assert.ok(preview.includes('3 requests at once') && preview.includes('There is no request or dollar cap'));
   assert.ok(!env.calls.some(call => call.url.endsWith('/runs')), 'previewing never starts work');
 
@@ -676,8 +682,8 @@ test('self-hosted providers: per-step choices, no model for services, URL wordin
     return value;
   };
   const servicePlan = {steps:[{step_id:'quotes', label:'Quote attribution (BookNLP)', method:'service', provider:'booknlp', model:null,
-    units:2, cached_units:0, requests:0, service_calls:2, estimated_input_tokens:0, output_token_allowance:0, estimated_cost_usd:0,
-    inputs_pending:[], scopes:2}], requests:0, service_calls:2, cached_units:0, estimated_input_tokens:0, output_token_allowance:0,
+    unit_count:2, cached_units:0, requests:0, service_calls:2, estimated_input_tokens:0, output_token_allowance:0, estimated_cost_usd:0,
+    inputs_pending:[], scope_count:2}], requests:0, service_calls:2, cached_units:0, estimated_input_tokens:0, output_token_allowance:0,
     estimated_cost_usd:0, fingerprint:'fp-s', note:''};
   const env = environment(call => {
     if (call.method === 'GET' && call.url === '/api/analysis-pipeline') return {data:selfHosted()};
@@ -1003,11 +1009,11 @@ test('directing results group rows by scene, show confidence as a percentage and
 });
 
 test('kept edits on passages show the passage text, not its ID', async () => {
-  const withSegments = {...book, segments:[{id:'seg-9', text:'"Stay <here>," she said.'}]};
+  const withPassages = {...book, passages:[{id:'seg-9', text:'"Stay <here>," she said.'}]};
   const env = environment(call => call.method === 'POST' && call.url.endsWith('/preview')
     ? {data:{...impact, conflicts:[{scope:'c1', item_id:'seg-9', field:'speaker_id'}, {scope:'c1', item_id:'gone', field:'direction'}]}} : ordinary(call));
   const container = new Container();
-  await env.render(container, withSegments, {status});
+  await env.render(container, withPassages, {status});
   await settle();
   click(container, 'ap-action', 'accept');
   await settle();
@@ -1103,13 +1109,15 @@ test('Try again refuses sections that are gone and needs the provider\'s key', a
   assert.ok(other.regions.message.innerHTML.includes('Gemini has no API key'));
 });
 
-// Speakers & delivery rows (bardic/pipeline/steps/directing.py summarize), with passages in the book.
+// Speakers & delivery rows (bardic/pipeline/steps/directing.py summarize), with passages in the book. `check` is an
+// identifier (or null), `check_speaker` is BookNLP's speaker for a difference or suggestion, and cues and edited are lists.
 const directingColumns = [{key:'scene', label:'Scene'}, {key:'text', label:'Passage'}, {key:'speaker', label:'Speaker'}, {key:'confidence', label:'Confidence'},
-  {key:'direction', label:'Delivery'}, {key:'check', label:'BookNLP check'}, {key:'edited', label:'Your edit (kept)'}];
+  {key:'direction', label:'Delivery'}, {key:'cues', label:'Cues'}, {key:'check', label:'BookNLP check'}, {key:'edited', label:'Your edit (kept)'}];
 function directingRows(count) {
-  return Array.from({length:count}, (_, i) => ({id:`s${i}`, scope:'c1', scene:'', kind:'dialogue', text:`Line ${i} <by> the quay.`,
+  return Array.from({length:count}, (_, i) => ({id:`s${i}`, step:'directing', scope:'c1', scene:'', kind:'dialogue', text:`Line ${i} <by> the quay.`,
     speaker:i % 10 === 0 ? 'Unassigned dialogue' : i % 10 === 1 ? '' : 'Mira & Co', confidence:[0, .2, .65, .66, .9, null][i % 6],
-    direction:'', check:i % 7 === 0 ? 'Differs · BookNLP: Elio' : i % 7 === 1 ? 'Suggests a speaker · BookNLP: Elio' : 'Agrees', edited:i % 9 === 0 ? 'speaker' : ''}));
+    direction:'', cues:i % 4 === 0 ? ['sighs', 'a pause'] : [], check:i % 7 === 0 ? 'differs' : i % 7 === 1 ? 'suggests' : i % 7 === 2 ? null : 'agrees',
+    check_speaker:i % 7 <= 1 ? 'Elio' : '', edited:i % 9 === 0 ? ['speaker'] : [], diff_state:null, changed_keys:null, previous:null}));
 }
 function directingHandler(rows, extra = {}) {
   return call => {
@@ -1122,7 +1130,7 @@ function directingHandler(rows, extra = {}) {
   };
 }
 const passageBook = rows => ({...book, characters:[...book.characters, {id:'unassigned', name:'Unassigned dialogue'}, {id:'elio', name:'Elio'}],
-  segments:rows.map(row => ({id:row.id, chapter_id:'c1', text:row.text, speaker_id:'mira', evidence:[]}))});
+  passages:rows.map(row => ({id:row.id, chapter_id:'c1', text:row.text, speaker_id:'mira', evidence:[]}))});
 const rowCount = html => (html.match(/data-ap-action="show-passage"/g) || []).length;
 
 test('result filters read every row and find no speaker, low confidence, BookNLP disagreements and your edits', async () => {
@@ -1138,8 +1146,8 @@ test('result filters read every row and find no speaker, low confidence, BookNLP
   const expected = {
     'no-speaker':count(row => row.speaker === '' || row.speaker === 'Unassigned dialogue'),
     'low-confidence':count(row => typeof row.confidence === 'number' && row.confidence <= .65),
-    'booknlp-differs':count(row => row.check.startsWith('Differs')),
-    edited:count(row => row.edited !== ''),
+    'booknlp-differs':count(row => row.check === 'differs'),
+    edited:count(row => row.edited.length > 0),
   };
   const before = env.calls.length;
   click(container, 'ap-filter', 'no-speaker');
@@ -1182,6 +1190,98 @@ test('the filter list is fixed and its low-confidence line is the 65% assignment
   assert.equal(env.api.LOW_CONFIDENCE, .65);
 });
 
+test('the BookNLP check reads as words, with BookNLP\'s speaker after a difference or suggestion', async () => {
+  const rows = directingRows(8);
+  const env = environment(directingHandler(rows));
+  const container = new Container();
+  await env.render(container, passageBook(rows), {status});
+  await settle();
+  const table = container.regions.result.innerHTML;
+  assert.ok(table.includes('<td>Differs · BookNLP: Elio</td>') && table.includes('<td>Suggests a speaker · BookNLP: Elio</td>'));
+  assert.ok(table.includes('<td>Agrees</td>'));
+  assert.ok(!/>(differs|suggests|agrees)</.test(table), 'an identifier is never shown as it is stored');
+  const unchecked = table.slice(table.indexOf('Line 2 &lt;by&gt;'), table.indexOf('</tr>', table.indexOf('Line 2 &lt;by&gt;')));
+  assert.ok(unchecked.includes('<td>—</td><td>—</td><td>—</td><td>—</td>') && !/null|Agrees|Differs|Suggests/.test(unchecked),
+    'a passage BookNLP did not check has an empty check');
+  assert.ok(table.includes('<td>sighs, a pause</td>'), 'cues arrive as a list of strings');
+  assert.ok(table.includes('<td>speaker</td>'), 'edited arrives as a list of field names');
+});
+
+test('Quote attribution rows show their kind and check as words, whatever identifier the server sends', async () => {
+  const columns = [{key:'kind', label:'Kind'}, {key:'text', label:'Passage'}, {key:'booknlp', label:'BookNLP'},
+    {key:'current_speaker', label:'Current speaker'}, {key:'check', label:'Check'}];
+  const quote = (id, kind, check, extra = {}) => ({id, step:'quotes', scope:'c1', kind, text:`Row ${id}`, booknlp:'Elio', current_speaker:'Mira & Co', check,
+    diff_state:null, changed_keys:null, previous:null, ...extra});
+  const rows = [
+    quote('a1', 'quotation', 'agrees'), quote('a2', 'quotation', 'differs'), quote('a3', 'quotation', 'suggests'),
+    quote('a4', 'quotation', 'not_in_cast'), quote('a5', 'quotation', 'narrator'), quote('a6', 'quotation', 'no_quote'),
+    quote('c1', 'character', 'in_cast'), quote('c2', 'character', 'not_in_cast'),
+    quote('a7', 'quotation', 'differs', {diff_state:'changed', changed_keys:['check'], previous:{check:'agrees'}}),
+    quote('a8', 'quotation', 'brand_new_state'), quote('a9', 'quotation', 'constructor'),
+  ];
+  const env = environment(directingHandler(rows, {columns}));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  const table = container.regions.result.innerHTML;
+  const line = (kind, id, check) => `<td>${kind}</td><td>Row ${id}</td><td>Elio</td><td>Mira &amp; Co</td><td>${check}</td>`;
+  for (const [id, check] of [['a1', 'Agrees'], ['a2', 'Differs'], ['a3', 'Suggests a speaker'], ['a4', 'Speaker not in cast'],
+    ['a5', 'First-person narrator'], ['a6', 'No quotation found']]) assert.ok(table.includes(line('Quotation', id, check)), `${id}: ${check}`);
+  assert.ok(table.includes(line('Character', 'c1', 'In cast')), 'a character BookNLP found in the cast');
+  assert.ok(table.includes(line('Character', 'c2', 'Not in cast')), 'a character row reads shorter than a quotation whose speaker is missing');
+  assert.ok(table.includes(line('Quotation', 'a8', 'Brand new state')) && table.includes(line('Quotation', 'a9', 'Constructor')), 'an identifier the UI has no label for reads as plain words');
+  assert.ok(!/>(quotation|character|not_in_cast|in_cast|no_quote)</.test(table), 'an identifier is never shown as it is stored');
+  assert.ok(/<td class="ap-cell-changed" title="Previously: Agrees">[^]*?Differs<del class="ap-previous"><span class="sr-only">Previously: <\/span>Agrees<\/del>/.test(table),
+    'the earlier check reads as a label too');
+});
+
+test('the Sections table keeps its own words in its kind column', async () => {
+  const columns = [{key:'title', label:'Title'}, {key:'kind', label:'Kind'}, {key:'source', label:'Named from'}];
+  const rows = [{id:'front', step:'structure', scope:'book', title:'Contents', kind:'front_matter', source:'heading', diff_state:null, changed_keys:null, previous:null}];
+  const env = environment(directingHandler(rows, {columns}));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  assert.ok(container.regions.result.innerHTML.includes('<td>Contents</td><td>front_matter</td><td>heading</td>'));
+});
+
+test('list and count columns of the other steps read as plain values, and Your edits tests the list', async () => {
+  const columns = [{key:'name', label:'Character'}, {key:'evidence_count', label:'Quotes'}, {key:'chapter_count', label:'Chapters'}, {key:'edited', label:'Your edit (kept)'}];
+  const rows = [
+    {id:'mira', step:'profiles', scope:'mira', name:'Mira & Co', evidence_count:3, chapter_count:4, edited:['description', 'direction'], diff_state:null, changed_keys:null, previous:null},
+    {id:'elio', step:'profiles', scope:'elio', name:'Elio', evidence_count:0, chapter_count:1, edited:[], diff_state:null, changed_keys:null, previous:null},
+  ];
+  const env = environment(directingHandler(rows, {columns}));
+  const container = new Container();
+  await env.render(container, book, {status});
+  await settle();
+  let table = container.regions.result.innerHTML;
+  assert.ok(table.includes('<td>Mira &amp; Co</td><td>3</td><td>4</td><td>description, direction</td>'));
+  assert.ok(table.includes('<td>Elio</td><td>0</td><td>1</td><td>—</td>'), 'no edits is an empty list');
+  assert.ok(table.includes('>Your edits'));
+  click(container, 'ap-filter', 'edited');
+  await settle();
+  table = container.regions.result.innerHTML;
+  assert.ok(table.includes('1 matching row (of 2)') && table.includes('Mira &amp; Co') && !table.includes('<td>Elio</td>'));
+});
+
+test('an unchanged scene folds into the group heading; a scene named in changed_keys stays a column with its previous value', async () => {
+  const columns = [{key:'scene', label:'Scene'}, {key:'text', label:'Passage'}];
+  const row = (id, extra = {}) => ({id, step:'directing', scope:'c1', scene:'Arrival', kind:'dialogue', text:`Line ${id}`, diff_state:null, changed_keys:null, previous:null, ...extra});
+  const render = async rows => {
+    const env = environment(directingHandler(rows, {columns}));
+    const container = new Container();
+    await env.render(container, book, {status});
+    await settle();
+    return container.regions.result.innerHTML;
+  };
+  const folded = await render([row('s0'), row('s1')]);
+  assert.ok(!folded.includes('<th scope="col">Scene</th>') && folded.includes('The &lt;Gate&gt; · Arrival'), 'no repeated Scene column');
+  const changed = await render([row('s0'), row('s1', {scene:'Harbor', diff_state:'changed', changed_keys:['scene'], previous:{scene:'Dock'}})]);
+  assert.ok(changed.includes('<th scope="col">Scene</th>'), 'a changed scene is a column again');
+  assert.ok(changed.includes('title="Previously: Dock"') && changed.includes('Harbor'));
+});
+
 test('filters appear only for steps whose table has those columns', async () => {
   const env = environment();
   const container = new Container();
@@ -1191,19 +1291,19 @@ test('filters appear only for steps whose table has those columns', async () => 
 });
 
 test('evidence shows exact quotes where they are recorded and says so where they are not', async () => {
-  const row = (id, fields) => ({id, scope:'c1', text:`"${id}"`, speaker:'Mira & Co', confidence:.9, check:'', edited:'', ...fields});
+  const row = (id, fields) => ({id, step:'directing', scope:'c1', text:`"${id}"`, speaker:'Mira & Co', confidence:.9, check:null, check_speaker:'', edited:[], ...fields});
   const rows = [
     row('q1', {evidence_quotes:['"Stay," said <b>Mira</b>']}),
     row('q2', {}),
     row('q3', {speaker:'Elio'}),
-    row('q4', {edited:'speaker'}),
+    row('q4', {edited:['speaker']}),
     row('q5', {evidence_quotes:[]}),
     row('q6', {}),
     row('q7', {}),
     row('q8', {kind:'narration', speaker:'Narrator'}),
     row('not-a-passage', {}),
   ];
-  const segments = [
+  const passages = [
     {id:'q1', chapter_id:'c1', speaker_id:'mira', evidence:['book quote']},
     {id:'q2', chapter_id:'c1', speaker_id:'mira', evidence:['Mira <i>spoke</i> first', 42]},
     {id:'q3', chapter_id:'c1', speaker_id:'mira', evidence:['belongs to Mira']},
@@ -1215,7 +1315,7 @@ test('evidence shows exact quotes where they are recorded and says so where they
   ];
   const env = environment(directingHandler(rows));
   const container = new Container();
-  await env.render(container, {...book, characters:[...book.characters, {id:'elio', name:'Elio'}, {id:'narrator', name:'Narrator'}], segments}, {status});
+  await env.render(container, {...book, characters:[...book.characters, {id:'elio', name:'Elio'}, {id:'narrator', name:'Narrator'}], passages}, {status});
   await settle();
   const table = container.regions.result.innerHTML;
   const cellOf = id => { const start = table.indexOf(`data-ap-segment="${id}"`); return start < 0 ? '' : table.slice(start, table.indexOf('</td>', start)); };

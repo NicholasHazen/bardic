@@ -90,7 +90,7 @@ def test_chapter_start_over_the_library_daily_count_is_429_with_retry_after(clie
             metrics.update(request_count=1)
         book = import_text(client)
         response = client.post(f"/api/books/{book['id']}/listen/chapter", json={
-            'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'segment_id': book['segments'][0]['id']})
+            'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'passage_id': book['passages'][0]['id']})
         assert response.status_code == 429, response.text
         assert response.json()['code'] == 'daily_quota_reached'
         assert 0 < int(response.headers['retry-after']) <= 25 * 3600
@@ -107,7 +107,7 @@ def test_worker_cache_hit_is_not_persisted_in_the_job(client, renderer):
     runtime = client.app.state.runtime
     runtime.api_key = 'offline-key'
     book = import_text(client)
-    other = import_text(client, book['segments'][0]['text'])
+    other = import_text(client, book['passages'][0]['text'])
     entered, release = threading.Event(), threading.Event()
 
     def occupy_worker():
@@ -135,9 +135,9 @@ def test_every_audio_object_is_an_audio_ref_without_internal_fields(client, rend
     monkeypatch.setattr('bardic.performances.shutil.which', lambda name: '/fake/' + name)
     monkeypatch.setattr('bardic.performances.synthesize', renderer[1])
     book = import_text(client)
-    segment = book['segments'][0]
+    passage = book['passages'][0]
     # Enhanced (Studio) take on the book document.
-    render = client.post(f"/api/books/{book['id']}/render", json={'provider': 'gemini', 'segment_id': segment['id']}).json()
+    render = client.post(f"/api/books/{book['id']}/render", json={'provider': 'gemini', 'passage_id': passage['id']}).json()
     assert wait_job(client, render['id'])['status'] == 'completed'
     document = client.get(f"/api/books/{book['id']}").json()
     [take] = assert_audio_refs(document)
@@ -146,7 +146,7 @@ def test_every_audio_object_is_an_audio_ref_without_internal_fields(client, rend
     job = wait_job(client, begin(client, book)['job']['id'])
     assert_audio_refs(job['audio'])
     cached = begin(client, book)
-    assert cached['cached'] is True
+    assert cached['kind'] == 'cached'
     assert_audio_refs(cached['audio'])
     takes = client.get(f"/api/books/{book['id']}/listen/takes", params={'session_id': cached['session']['id']}).json()
     assert_audio_refs(takes)
@@ -163,11 +163,11 @@ def test_every_audio_object_is_an_audio_ref_without_internal_fields(client, rend
         assert_audio_refs(ready['audio'], least=len(ready['audio']))
     # Voice previews: the job's audio and the cached POST.
     preview = client.post(f"/api/books/{book['id']}/voice-preview", json={'provider': 'gemini', 'voice': 'Kore',
-                                                                            'segment_id': segment['id']}).json()
+                                                                            'passage_id': passage['id']}).json()
     assert_audio_refs(wait_job(client, preview['job']['id'])['audio'])
     again = client.post(f"/api/books/{book['id']}/voice-preview", json={'provider': 'gemini', 'voice': 'Kore',
-                                                                          'segment_id': segment['id']}).json()
-    assert again['cached'] is True
+                                                                          'passage_id': passage['id']}).json()
+    assert again['kind'] == 'cached'
     assert_audio_refs(again['audio'])
 
 
@@ -177,33 +177,33 @@ def test_listening_errors_carry_codes_and_neutral_details(client, renderer):
     runtime = client.app.state.runtime
     book = import_text(client)
     base = f"/api/books/{book['id']}"
-    segment_id = book['segments'][0]['id']
-    missing_key = client.post(base + '/listen', json={'provider': 'gemini', 'segment_id': segment_id})
+    passage_id = book['passages'][0]['id']
+    missing_key = client.post(base + '/listen', json={'provider': 'gemini', 'passage_id': passage_id})
     assert missing_key.status_code == 400 and missing_key.json()['code'] == 'gemini_key_missing'
     assert 'Settings' not in missing_key.json()['detail']
-    unknown = client.post(base + '/listen', json={'provider': 'gemini', 'segment_id': 'missing'})
+    unknown = client.post(base + '/listen', json={'provider': 'gemini', 'passage_id': 'missing'})
     assert unknown.status_code == 400 and unknown.json()['code'] == 'unknown_passage'
-    model = client.post(base + '/listen', json={'provider': 'gemini', 'model': 'unlisted', 'segment_id': segment_id})
+    model = client.post(base + '/listen', json={'provider': 'gemini', 'model': 'unlisted', 'passage_id': passage_id})
     assert model.status_code == 400 and model.json()['code'] == 'model_unsupported'
     runtime.api_key = 'offline-key'
     busy = runtime.store.create_job(book['id'], 'analyze')
-    blocked = client.post(base + '/listen', json={'provider': 'gemini', 'segment_id': segment_id})
+    blocked = client.post(base + '/listen', json={'provider': 'gemini', 'passage_id': passage_id})
     assert blocked.status_code == 409 and blocked.json()['code'] == 'job_active'
     runtime.store.update_job(busy['id'], status='cancelled')
     runtime.stopping.set()
     try:
-        stopping = client.post(base + '/listen', json={'provider': 'gemini', 'segment_id': segment_id})
+        stopping = client.post(base + '/listen', json={'provider': 'gemini', 'passage_id': passage_id})
     finally:
         runtime.stopping.clear()
     assert stopping.status_code == 503 and stopping.json()['code'] == 'shutting_down'
     preview = client.post(base + '/voice-preview', json={'provider': 'gemini', 'character_id': 'nobody'})
     assert preview.status_code == 400 and preview.json()['code'] == 'unknown_character'
-    chapter = client.post(base + '/listen/chapter/preview', json={'segment_id': 'missing'})
+    chapter = client.post(base + '/listen/chapter/preview', json={'passage_id': 'missing'})
     assert chapter.status_code == 400 and chapter.json()['code'] == 'unknown_passage'
     performance = client.get(f"/api/books/missing-book/performances/pf_missing")
     assert performance.status_code == 404 and performance.json()['code'] == 'book_not_found'
     assert client.post(base + '/archive').status_code == 200
-    archived = client.post(base + '/listen', json={'provider': 'gemini', 'segment_id': segment_id})
+    archived = client.post(base + '/listen', json={'provider': 'gemini', 'passage_id': passage_id})
     assert archived.status_code == 409 and archived.json()['code'] == 'book_archived'
 
 
@@ -280,15 +280,15 @@ def test_listen_skips_a_damaged_reuse_copy_instead_of_failing_the_request(client
     runtime.api_key = 'offline-key'
     book = import_text(client)
     first = wait_job(client, begin(client, book)['job']['id'])['audio']
-    other = import_text(client, book['segments'][0]['text'])
+    other = import_text(client, book['passages'][0]['text'])
     damaged = runtime.store.root / 'listen-audio' / other['id'] / f"{first['asset_id']}.wav"
     damaged.parent.mkdir(parents=True, exist_ok=True)
     damaged.write_bytes(b'not the retained take')
     response = client.post(f"/api/books/{other['id']}/listen", json={
-        'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'segment_id': other['segments'][0]['id']})
+        'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'passage_id': other['passages'][0]['id']})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body['cached'] is False and 'job' in body
+    assert body['kind'] == 'queued' and 'job' in body
     finished = wait_job(client, body['job']['id'])
     assert finished['status'] == 'completed' and len(calls) == 2
     assert finished['audio']['asset_id'] != first['asset_id'] and 'reuse' not in finished['audio']
@@ -300,7 +300,7 @@ def test_chapter_listening_on_a_passage_with_a_dangling_chapter_is_a_server_defe
     book = store.book(import_text(client)['id'])
     book['segments'][0]['chapter_id'] = 'chapter_missing'
     store.save_book(book)
-    body = {'segment_id': book['segments'][0]['id']}
+    body = {'passage_id': book['segments'][0]['id']}
     import conftest  # its contract wrapper rejects every 500; these expect one, so they are sent unchecked
     for path in ('/listen/chapter/preview', '/listen/chapter'):
         response = conftest._send(client, client.build_request('POST', f"/api/books/{book['id']}{path}", json=body))

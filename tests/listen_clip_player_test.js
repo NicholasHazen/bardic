@@ -18,7 +18,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const chunk=(url,start,end)=>({url,clip_start:start,clip_end:end,duration:end-start,chunk_id:url,timing:'estimated'});
 
 function environment(){
-  const book={id:'book',title:'Harbor',chapters:[{id:'c1',title:'One',kind:'chapter',text:'A. B. C. D.'}],characters:[{id:'narrator',name:'Narrator'}],segments:[
+  const book={id:'book',title:'Harbor',chapters:[{id:'c1',title:'One',kind:'chapter',text:'A. B. C. D.'}],characters:[{id:'narrator',name:'Narrator'}],passages:[
     {id:'s1',chapter_id:'c1',speaker_id:'narrator',text:'A.',start:0,end:2},{id:'s2',chapter_id:'c1',speaker_id:'narrator',text:'B.',start:3,end:5},
     {id:'s3',chapter_id:'c1',speaker_id:'narrator',text:'C.',start:6,end:8},{id:'s4',chapter_id:'c1',speaker_id:'narrator',text:'D.',start:9,end:11}]};
   const takes=new Map([['s1',chunk('/a.wav',0,2)],['s2',chunk('/a.wav',2,5)],['s3',chunk('/b.wav',0,3)],['s4',chunk('/b.wav',3,4)]]);

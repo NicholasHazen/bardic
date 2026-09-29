@@ -95,7 +95,7 @@ class DiagnosticRepository:
             if source == 'client':
                 count = conn.execute("SELECT count(*) FROM diagnostic_events WHERE source='client' AND created_at>=?", (since,)).fetchone()[0]
                 if count >= CLIENT_RATE_LIMIT:
-                    return {'recorded': False, 'reason': 'rate_limited'}
+                    return {'recorded': False, 'reason': 'rate_limited', 'id': None}
             identifier = uuid4().hex
             conn.execute('INSERT INTO diagnostic_events VALUES (?,?,?,?,?,?)',
                          (identifier, created_at, source, event, book_id, body))
@@ -103,7 +103,7 @@ class DiagnosticRepository:
             # rotating operational log, unlike immutable story/take artifacts.
             conn.execute('''DELETE FROM diagnostic_events WHERE rowid IN
                 (SELECT rowid FROM diagnostic_events ORDER BY rowid DESC LIMIT -1 OFFSET ?)''', (RETENTION_LIMIT,))
-        return {'recorded': True, 'id': identifier}
+        return {'recorded': True, 'id': identifier, 'reason': None}
 
     def events(self, *, book_id=None, limit=100):
         """Newest first. ``limit`` is clamped to 1..RETENTION_LIMIT, like other paging."""
@@ -123,4 +123,4 @@ def record_safely(store, event, *, source='server', **fields):
     try:
         return DiagnosticRepository(store).record(event, source=source, **fields)
     except Exception:
-        return {'recorded': False, 'reason': 'unavailable'}
+        return {'recorded': False, 'reason': 'unavailable', 'id': None}

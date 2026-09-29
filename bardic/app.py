@@ -29,7 +29,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analysis import analyze_book
-from .apispec import install as install_contract
+from .apispec import VERSION as CONTRACT_VERSION, install as install_contract
+from .apispec.enums import NarrationProvider
+from .apispec.spec import identity as contract_identity
 from .processing import BudgetReached
 from .account_checks import check_account
 from . import breeze, local_services, pronunciation
@@ -41,6 +43,7 @@ from .config import data_directory
 from .errors import STATUS_CODES, ApiError, Conflict, Invalid, NotFound
 from .diagnostics import DiagnosticRepository, IDENTIFIERS, record_safely
 from .importer import make_demo_book, parse_book
+from . import cors
 from .lan import allowed_hosts
 from .model_catalog import ANALYSIS_CATALOG, PREPROCESS_DEFAULTS, ModelCatalog
 from .pipeline import default_registry
@@ -56,6 +59,7 @@ from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
 from .tts_limits import CANCEL_CHECK, DEFAULT_LIMITS as DEFAULT_TTS_LIMITS, LIMITER, normalize_limits, quota_day, requests_today
 from .tts_limits import seconds_until_reset
+from . import wire
 from .audio_refs import audio_ref
 from .errors import Conflict, Invalid, RateLimited as QuotaRefused, Unavailable
 from .listening import require_active_book
@@ -85,7 +89,8 @@ class StrictModel(BaseModel):
 class RenderRequest(StrictModel):
     provider: str = "system"
     scene_id: str | None = None
-    segment_id: str | None = None
+    # The wire says `passage_id`; the code says segment (see bardic/wire.py).
+    segment_id: str | None = Field(default=None, alias="passage_id")
     force: bool = False
 
 
@@ -101,10 +106,10 @@ class SeriesVolumeRequest(StrictModel):
 
 
 class ListenRequest(StrictModel):
-    provider: Literal['system', 'gemini', 'breeze'] = 'system'
+    provider: NarrationProvider = 'system'
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
-    segment_id: str
+    segment_id: str = Field(alias="passage_id")
 
 
 class ChunkingOptions(StrictModel):
@@ -117,7 +122,7 @@ class ChapterListenRequest(StrictModel):
     provider: Literal['gemini'] = 'gemini'
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
-    segment_id: str = Field(max_length=200)
+    segment_id: str = Field(alias="passage_id", max_length=200)
     intent: Literal['play', 'queue'] = 'queue'
     chunking: ChunkingOptions | None = None
 
@@ -126,7 +131,7 @@ class PerformanceRequest(StrictModel):
     name: str | None = Field(default=None, max_length=200)
     mode: Literal['simple', 'cast']
     chapter_ids: list[Annotated[str, Field(max_length=200)]] = Field(min_length=1, max_length=5000)
-    provider: Literal['system', 'gemini', 'breeze']
+    provider: NarrationProvider
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
 
@@ -162,13 +167,13 @@ class PronunciationPatch(StrictModel):
 
 
 class VoicePreviewRequest(StrictModel):
-    provider: Literal['system', 'gemini', 'breeze'] = 'system'
+    provider: NarrationProvider = 'system'
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
-    segment_id: str | None = Field(default=None, max_length=200)
+    segment_id: str | None = Field(default=None, alias="passage_id", max_length=200)
     character_id: str | None = Field(default=None, max_length=200)
     direction: str | None = Field(default=None, max_length=3000)
-    segment_direction: str | None = Field(default=None, max_length=3000)
+    segment_direction: str | None = Field(default=None, alias="passage_direction", max_length=3000)
     # An unsaved pronunciation to audition in place of the entry it edits.
     pronunciation: PronunciationEntry | None = None
 
@@ -176,12 +181,12 @@ class VoicePreviewRequest(StrictModel):
 class DiagnosticRequest(StrictModel):
     # Passage, session and job IDs are scoped to a book; the dependency is part of the schema.
     model_config = ConfigDict(extra="forbid", json_schema_extra={'dependentRequired': {
-        name: ['book_id'] for name in ('segment_id', 'session_id', 'job_id')}})
+        name: ['book_id'] for name in ('passage_id', 'session_id', 'job_id')}})
     event: Literal['listen_request_failed', 'listen_poll_failed', 'listen_job_failed',
                    'buffer_failed', 'cache_read_failed', 'playback_media_error',
                    'playback_play_rejected', 'playback_waiting', 'playback_resumed', 'preview_failed']
     book_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['book_id'] + '$', max_length=36)
-    segment_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['segment_id'] + '$', max_length=40)
+    segment_id: str | None = Field(default=None, alias="passage_id", pattern='^' + IDENTIFIERS['segment_id'] + '$', max_length=40)
     session_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['session_id'] + '$', max_length=64)
     job_id: str | None = Field(default=None, pattern='^' + IDENTIFIERS['job_id'] + '$', max_length=32)
     playback_rate: float | None = Field(default=None, strict=True, ge=.1, le=8, allow_inf_nan=False)
@@ -192,7 +197,7 @@ class DiagnosticRequest(StrictModel):
     @model_validator(mode="after")
     def identifiers_need_a_book(self):
         if self.book_id is None and any(value is not None for value in (self.segment_id, self.session_id, self.job_id)):
-            raise ValueError("segment_id, session_id and job_id require book_id")
+            raise ValueError("passage_id, session_id and job_id require book_id")
         return self
 
 
@@ -306,7 +311,7 @@ def manual_fields(segment: dict) -> list[str]:
     return sorted(chosen)
 
 
-class SegmentEdit(StrictModel):
+class PassageEdit(StrictModel):
     speaker_id: str | None = None
     direction: str | None = Field(default=None, max_length=3000)
     cues: list[str] | None = None
@@ -347,10 +352,12 @@ def studio_audio(book_id, segment_id, metadata):
     """
     content = metadata.get("asset_id")
     version = (content or metadata["fingerprint"])[:16]
+    extras = {key: metadata[key] for key in _STUDIO_EXTRAS if key in metadata}
+    if "provider_timing" in extras:
+        extras["provider_timing"] = wire.provider_timing(extras["provider_timing"])
     return audio_ref(f"/api/audio/{book_id}/{segment_id}?v={version}", asset_id=content,
                      duration=metadata.get("duration"), provider=metadata.get("provider"), model=metadata.get("model"),
-                     voice=metadata.get("voice"), created_at=metadata.get("created_at"),
-                     **{key: metadata[key] for key in _STUDIO_EXTRAS if key in metadata})
+                     voice=metadata.get("voice"), created_at=metadata.get("created_at"), **extras)
 
 
 class Runtime:
@@ -658,13 +665,15 @@ class Runtime:
         base = {"provider": provider, "model": model, "state": "unchecked" if key else "missing_key",
                 "message": "Run a small request to check this analysis model." if key else "Add an API key to check this account.",
                 "checked_at": None, "usage": None, "http_status": None,
-                "balance": None, "balance_note": "Exact balance is not available through this check. Open the billing dashboard.",
+                "balance_note": "Exact balance is not available through this check. Open the billing dashboard.",
                 "cached": False, **ACCOUNT_LINKS[provider]}
         stored = self.account_checks.get(provider)
         if stored and stored["configuration"] == configuration:
             base.update(copy.deepcopy(stored["result"]))
         if self.account_checks_running.get(provider) == configuration:
             base.update(state="checking", message="Checking this analysis model…")
+        if isinstance(base["usage"], dict):
+            base["usage"] = wire.complete(dict(base["usage"]), wire.USAGE_FIELDS)
         return base
 
     def check_account(self, provider):
@@ -689,6 +698,9 @@ class Runtime:
                 # Do not expose unexpected transport exceptions or credentials.
                 outcome = {"state": "provider_error", "message": "The account check could not finish. Try again shortly.", "usage": None, "http_status": None}
             result.update(outcome, checked_at=datetime.now(timezone.utc).isoformat(), cached=False)
+            if isinstance(result["usage"], dict):
+                # A provider may report only some counts (a reply cut short has input tokens alone).
+                result["usage"] = wire.complete(dict(result["usage"]), wire.USAGE_FIELDS)
             with self.store.lock:
                 if configuration != (self.api_keys[provider], self.preferences["analysis_models_by_provider"][provider]):
                     # A slow response for a replaced credential must not look current.
@@ -814,6 +826,18 @@ class Runtime:
         result = copy.deepcopy(book)
         # Books imported before the language field present it as unknown (null).
         result.setdefault("language", None)
+        wire.complete(result, ("structure_version", "cover", "created_at", "analysis"))
+        # A book stored without these (an old import) presents them as empty or unknown, as the library list does.
+        wire.complete(result, ("author", "source_name"), "")
+        result.setdefault("revision", 0)
+        result.setdefault("pronunciations", [])
+        wire.analysis_summary(result["analysis"])
+        for chapter in result["chapters"]:
+            wire.complete(chapter, wire.CHAPTER_FIELDS)
+        for scene in result["scenes"]:
+            wire.complete(scene, wire.SCENE_FIELDS)
+        for entry in result["pronunciations"]:
+            wire.complete(entry, wire.PRONUNCIATION_FIELDS)
         chapter_map = {c["id"]: c for c in result["chapters"]}
         previous = {}
         cast = self.resolved_cast(book)
@@ -829,9 +853,13 @@ class Runtime:
             c["trailing_text"] = c["text"][previous.get(c["id"], 0):]
         for character in result["characters"]:
             character["voices"] = assignments(character)
+            wire.complete(character, wire.CHARACTER_LISTS, [])
+            wire.complete(character, wire.CHARACTER_NULLS)
         # Which passage fields a person set by hand, as one public list (the UI's "Your edits").
         for s in result["segments"]:
             s["manual_fields"] = manual_fields(s)
+            if isinstance(s.get("speaker_check"), dict):
+                wire.complete(s["speaker_check"], wire.SPEAKER_CHECK_FIELDS)
         # Storage bookkeeping stays stored but off the wire: edit locks, legacy voice
         # fields (already folded into `voices`), profile cache keys, metadata locks.
         result.pop("metadata_edited", None)
@@ -840,6 +868,10 @@ class Runtime:
                 for name in names:
                     entry.pop(name, None)
         return result
+
+    def present_api(self, book):
+        """``present``, then the wire form of the book document (``passages``; see bardic/wire.py)."""
+        return wire.book(self.present(book))
 
     def merge_voices(self, item, fields):
         """Apply per-provider voice choices to a character; call under the store lock.
@@ -1049,6 +1081,13 @@ class Runtime:
             return job
 
 
+class WireResponse(JSONResponse):
+    """The default response of every route: JSON with the wire names (bardic/wire.py), not the internal ones."""
+
+    def render(self, content):
+        return super().render(wire.to_wire(content))
+
+
 class UploadLimit:
     """Refuse an oversized book upload without reading the rest of it (413 `upload_too_large`).
 
@@ -1112,26 +1151,43 @@ def create_app(data_dir: Path | None = None):
         yield
         app.state.runtime.close()
 
-    app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Bardic", lifespan=lifespan, docs_url=None, redoc_url=None, default_response_class=WireResponse)
     # One step registry for book pipeline routes and series runs.
     pipeline_registry = default_registry()
     from .importer import MAX_UPLOAD
     # Multipart framing adds a few hundred bytes around the file; allow 64 KiB.
     app.add_middleware(UploadLimit, limit=MAX_UPLOAD + 64 * 1024)
+    # Opt-in CORS (BARDIC_CORS_ORIGINS). Added before the host check so that it sits inside it: an untrusted
+    # Host is refused before a preflight is answered. Unset, no middleware is added at all.
+    cors_policy = cors.configured()
+    if cors_policy is not None:
+        app.add_middleware(cors.CorsMiddleware, policy=cors_policy)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver", *allowed_hosts()])
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
         origin = request.headers.get("origin")
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            if request.headers.get("sec-fetch-site") == "cross-site" or (origin and urlparse(origin).netloc != request.headers.get("host")):
-                return JSONResponse({"detail": "Cross-origin writes are not allowed", "code": "cross_origin_write"}, status_code=403)
-        response = await call_next(request)
+        cross_origin = request.method not in {"GET", "HEAD", "OPTIONS"} and (
+            request.headers.get("sec-fetch-site") == "cross-site" or (origin and urlparse(origin).netloc != request.headers.get("host")))
+        # A listed origin (any origin, for `*`) may write to /api/ from a browser. Only this guard is relaxed:
+        # the trusted-host check still runs inside it, and paths outside /api/ keep the guard.
+        cors_allowed = cors_policy is not None and request.url.path.startswith(cors.API_PREFIX) and cors_policy.allows(origin)
+        if cross_origin and not cors_allowed:
+            response = JSONResponse({"detail": "Cross-origin writes are not allowed", "code": "cross_origin_write"}, status_code=403)
+        else:
+            response = await call_next(request)
+            if response.status_code == 416 and request.url.path.startswith("/api/"):
+                # Starlette answers an unsatisfiable Range with an empty body; the contract gives it the JSON error.
+                response = JSONResponse({"detail": "The requested range cannot be satisfied.", "code": "range_not_satisfiable"},
+                                        status_code=416, headers={"Content-Range": response.headers.get("content-range", "bytes */0")})
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
-            # A route that chooses its own caching (the content-addressed cover) keeps it.
-            response.headers["Cache-Control"] = "no-store"
+        if request.url.path.startswith("/api/"):
+            if "cache-control" not in response.headers:
+                # A route that chooses its own caching (the content-addressed cover) keeps it.
+                response.headers["Cache-Control"] = "no-store"
+            # Which contract this server implements, on every response, so a client can notice a mismatch.
+            response.headers["Bardic-Contract-Version"] = CONTRACT_VERSION
         return response
 
     # Every JSON error is {"detail": sentence, "code": stable code}; see bardic/errors.py.
@@ -1167,7 +1223,14 @@ def create_app(data_dir: Path | None = None):
 
     @app.exception_handler(Exception)
     async def unexpected(request, exc):
-        return JSONResponse({"detail": "The server hit an unexpected error.", "code": "internal_error"}, status_code=500)
+        # Starlette answers an escaped exception outside the middleware above, so its headers are set here.
+        headers = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
+        if request.url.path.startswith("/api/"):
+            headers.update({"Cache-Control": "no-store", "Bardic-Contract-Version": CONTRACT_VERSION})
+            if cors_policy is not None:
+                # Outside every middleware too, so a browser client can still read the error.
+                cors_policy.apply(headers, request.headers.get("origin"))
+        return JSONResponse({"detail": "The server hit an unexpected error.", "code": "internal_error"}, status_code=500, headers=headers)
 
     def rt(request):
         return request.app.state.runtime
@@ -1184,6 +1247,7 @@ def create_app(data_dir: Path | None = None):
 
     def status(runtime):
         voices = list_system_voices()
+        contract = contract_identity(app)  # Built once per process, before taking the store lock.
         with runtime.store.lock:
             # Today's Gemini speech requests for the selected model, so a whole-book
             # or scene estimate can compare its request count with what is left.
@@ -1203,11 +1267,11 @@ def create_app(data_dir: Path | None = None):
             breeze_view = runtime.breeze_view()
             breeze_ready = breeze_view["configured"] and any(voice["usable"] for voice in breeze_view["voices"])
             return {**preferences,
-                    "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg"))},
-                                  {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key)},
+                    "providers": [{"id": "system", "label": "Mac voices · local", "available": bool(voices) and bool(shutil.which("ffmpeg")), "reason": None},
+                                  {"id": "gemini", "label": "Gemini · expressive", "available": bool(runtime.api_key), "reason": None},
                                   {"id": "breeze", "label": NARRATION_PROVIDERS["breeze"]["label"], "available": breeze_ready,
                                    "reason": None if breeze_ready else breeze_view["message"]}],
-                    "narration_providers": providers_status(), "breeze": breeze_view,
+                    "narration_providers": providers_status(), "breeze": wire.breeze_status(breeze_view),
                     # Resolved (Settings, else environment), like local_service_urls.
                     "breeze_url": breeze_view["base_url"],
                     # Resolved (Settings, else environment); the saved-only values are not shown.
@@ -1223,7 +1287,7 @@ def create_app(data_dir: Path | None = None):
                     "system_voices": voices, "tts_models": TTS_MODELS,
                     "tts_rate": {model: LIMITER.view(model) for model in TTS_MODELS},
                     "tts_quota": tts_quota,
-                    "timing_kind": "segment"}
+                    "contract": contract}
 
     @app.get("/api/status")
     def get_status(request: Request):
@@ -1244,7 +1308,7 @@ def create_app(data_dir: Path | None = None):
                 runtime.voice_import_lock.release()
             with runtime.store.lock:
                 view = runtime.breeze_view()
-        return view
+        return wire.breeze_status(view)
 
     @app.post("/api/models/{provider}/refresh")
     def refresh_provider_models(provider: str, request: Request):
@@ -1396,7 +1460,7 @@ def create_app(data_dir: Path | None = None):
             suffix = Path(filename or "book.txt").suffix.lower()
             (path / f"source{suffix}").write_bytes(data)
         runtime.store.save_book(book)
-        return runtime.present(book)
+        return runtime.present_api(book)
 
     @app.post("/api/books")
     async def import_book(request: Request, file: UploadFile = File(...)):
@@ -1429,7 +1493,7 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/books/{book_id}")
     def get_book(book_id: str, request: Request):
-        return rt(request).present(rt(request).store.book(book_id))
+        return rt(request).present_api(rt(request).store.book(book_id))
 
     @app.post("/api/books/{book_id}/repair-structure")
     def repair_book_structure(book_id: str, request: Request):
@@ -1459,7 +1523,7 @@ def create_app(data_dir: Path | None = None):
                 updated["revision"] = book.get("revision", 0) + 1
                 record_before_outside_write(runtime.store, book_id)
                 runtime.store.save_book(updated)
-                return runtime.present(updated)
+                return runtime.present_api(updated)
 
     @app.get("/api/series")
     def list_series(request: Request):
@@ -1545,7 +1609,7 @@ def create_app(data_dir: Path | None = None):
                 raise NotFound("character_not_found", "No character has this ID in the book.")
             # The projection of accepted evidence, rebuilt from the current book on every read (and rolled
             # back), so manual edits and pipeline acceptance show at once without the GET recording anything.
-            return current_references(runtime.store, pipeline_registry, book, character_id)
+            return [wire.reference(row) for row in current_references(runtime.store, pipeline_registry, book, character_id)]
 
     def require_editable(runtime, book_id):
         """Changes need a known (404), non-archived (409 book_archived) and idle (409) book."""
@@ -1582,7 +1646,7 @@ def create_app(data_dir: Path | None = None):
             if not changed:
                 item.clear()
                 item.update(before)  # merge_voices may have normalized legacy fields in place
-                return runtime.present(book)
+                return runtime.present_api(book)
             prior = item.get("edited_fields") if isinstance(item.get("edited_fields"), list) else (["*"] if item.get("edited") else [])
             item["edited_fields"] = sorted(set(prior) | changed)
             if collection == "characters" and "name" in changed:
@@ -1608,7 +1672,7 @@ def create_app(data_dir: Path | None = None):
             book["revision"] = book.get("revision", 0) + 1
             record_before_outside_write(runtime.store, book_id)  # Reads the stored (unedited) book.
             runtime.store.save_book(book)
-            return runtime.present(book)
+            return runtime.present_api(book)
 
     voice_api = register_voice_routes(app, rt, edit)
 
@@ -1648,7 +1712,7 @@ def create_app(data_dir: Path | None = None):
             book["revision"] = book.get("revision", 0) + 1
             record_before_outside_write(runtime.store, book_id)  # Reads the stored book, without the new character.
             runtime.store.save_book(book)
-            return runtime.present(book)
+            return runtime.present_api(book)
 
     def segment_fields(body):
         fields = body.model_dump(exclude_none=True)
@@ -1656,9 +1720,9 @@ def create_app(data_dir: Path | None = None):
             fields["seed"] = None  # An explicit null clears the passage seed.
         return fields
 
-    @app.patch("/api/books/{book_id}/segments/{segment_id}")
-    def edit_segment(book_id: str, segment_id: str, body: SegmentEdit, request: Request):
-        return edit(rt(request), book_id, "segments", segment_id, segment_fields(body))
+    @app.patch("/api/books/{book_id}/passages/{passage_id}")
+    def edit_passage(book_id: str, passage_id: str, body: PassageEdit, request: Request):
+        return edit(rt(request), book_id, "segments", passage_id, segment_fields(body))
 
     @app.patch("/api/books/{book_id}/scenes/{scene_id}")
     def edit_scene(book_id: str, scene_id: str, body: SceneEdit, request: Request):
@@ -1673,7 +1737,7 @@ def create_app(data_dir: Path | None = None):
         # Current Studio takes: an edit to an entry retires those containing its word (archived audio stays reusable).
         rendered = {s["id"] for s in book["segments"] if s.get("audio") and runtime.valid_audio(book, s, cast)}
         stats = pronunciation.usage(book["chapters"], book["segments"], lexicon, rendered=rendered)
-        return [{**entry, "usage": stats[entry["id"]]} for entry in lexicon]
+        return [wire.complete({**entry, "usage": stats[entry["id"]]}, wire.PRONUNCIATION_FIELDS) for entry in lexicon]
 
     def save_lexicon(runtime, book_id, change):
         with runtime.store.lock:
@@ -1700,7 +1764,7 @@ def create_app(data_dir: Path | None = None):
                         retired += 1
                 book["revision"] = book.get("revision", 0) + 1
                 runtime.store.save_book(book)
-            presented = runtime.present(book)
+            presented = runtime.present_api(book)
         return {"book": presented, "pronunciations": lexicon_usage(runtime, book), "retired_takes": retired}
 
     def lexicon_entry(body, entry_id=None):
@@ -1750,6 +1814,11 @@ def create_app(data_dir: Path | None = None):
         # Every queued/running job, however many newer ones exist: `./bardicctl` checks this before stopping.
         return [public_job(job) for job in rt(request).store.jobs(book_id, limit=None if active else 100, active=active)]
 
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str, request: Request):
+        # Read-only: a missing ID is NotFound (404 job_not_found) from the store.
+        return public_job(rt(request).store.job(job_id))
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str, request: Request):
         runtime = rt(request)
@@ -1764,7 +1833,7 @@ def create_app(data_dir: Path | None = None):
                     except KeyError:
                         continue  # A dangling child ID does not stop the parent from being cancelled.
                     if child['status'] == 'queued':
-                        runtime.store.update_job(identifier, status='cancelled', cancel_requested=True,
+                        runtime.store.update_job(identifier, status='cancelled', cancel_requested=True, not_started=True,
                                                  message='Series cancelled before this book started.')
                     elif child['status'] == 'running':
                         runtime.store.update_job(identifier, cancel_requested=True, message='Stopping after current request.')
@@ -1785,14 +1854,16 @@ def create_app(data_dir: Path | None = None):
                         runtime.store.update_job(child['id'], cancel_requested=True,
                                                  message='Stopping after the requests already sent. Their audio will be saved.')
             if job["status"] == "queued":
-                return public_job(runtime.store.update_job(job_id, cancel_requested=True, status="cancelled", message="Cancelled before generation started."))
+                extra = {"not_started": True} if job["kind"] == "pipeline" and job.get("series_run_id") else {}
+                return public_job(runtime.store.update_job(job_id, cancel_requested=True, status="cancelled",
+                                                           message="Cancelled before generation started.", **extra))
             return public_job(runtime.store.update_job(job_id, cancel_requested=True, message="Stopping after the current request. Finished takes will be kept."))
 
-    @app.get("/api/audio/{book_id}/{segment_id}")
-    def audio(book_id: str, segment_id: str, request: Request):
+    @app.get("/api/audio/{book_id}/{passage_id}")
+    def audio(book_id: str, passage_id: str, request: Request):
         runtime = rt(request)
         book = runtime.store.book(book_id)
-        segment = next((s for s in book["segments"] if s["id"] == segment_id), None)
+        segment = next((s for s in book["segments"] if s["id"] == passage_id), None)
         if not segment:
             raise NotFound("passage_not_found", "No passage with this ID is in the book.")
         if not runtime.valid_audio(book, segment):
@@ -1828,7 +1899,7 @@ def create_app(data_dir: Path | None = None):
             # A GET records nothing: the export is a derived download, not a domain record.
             with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 # The same presentation as GET /api/books/{book_id}, not the stored book.
-                archive.writestr("production.json", json.dumps(runtime.present(book), ensure_ascii=False, indent=2))
+                archive.writestr("production.json", json.dumps(wire.to_wire(runtime.present_api(book)), ensure_ascii=False, indent=2))
                 archive.writestr("README.txt", "Bardic audiobook export\nTimings identify exact audio passage boundaries, not words.\nOnly complete chapters are assembled. Individual completed takes are included even when a chapter is incomplete.\nSee timeline.json for missing passage IDs.\n")
                 for s in available:
                     archive.write(runtime.take_path(book_id, s["audio"]), f"takes/{s['id']}.wav")
@@ -2034,7 +2105,7 @@ def create_app(data_dir: Path | None = None):
                 with ResourceLedger(store).operation(book_id, 'simple_listen', unit_key=body.segment_id,
                                                     provider=body.provider, model=session['model'], cached=True, kind='narration') as metrics:
                     metrics['audio_seconds'] = cached['duration']
-                return {'session': session, 'audio': cached, 'cached': True}
+                return {'session': session, 'audio': cached, 'kind': 'cached'}
             # A lost HTTP response or overlapping playback/prefetch request
             # must join the existing work, not start another paid attempt.
             pending = next((job for job in store.jobs(book_id, limit=None)
@@ -2043,7 +2114,7 @@ def create_app(data_dir: Path | None = None):
                             and job.get('session_id') == session['id']
                             and job.get('segment_id') == body.segment_id), None)
             if pending:
-                return {'session': session, 'job': pending, 'cached': False}
+                return {'session': session, 'job': pending, 'kind': 'queued'}
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
                 raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
@@ -2058,7 +2129,7 @@ def create_app(data_dir: Path | None = None):
             segment = next(s for s in book['segments'] if s['id'] == body.segment_id)
             job = store.create_job(book_id, 'listen', 1)
             job = store.update_job(job['id'], session_id=session['id'], segment_id=body.segment_id,
-                                   provider=body.provider, model=session['model'], phase='simple_listen')
+                                   provider=body.provider, model=session['model'])
             def work():
                 with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job['id'], unit_key=body.segment_id,
                     chapter_id=segment['chapter_id'], provider=body.provider, model=session['model'], kind='narration') as metrics:
@@ -2090,7 +2161,7 @@ def create_app(data_dir: Path | None = None):
                                   session_id=session['id'], job_id=job['id'], provider=body.provider,
                                   operation='worker', status=state)
             future.add_done_callback(settle_cancelled)
-            return {'session': session, 'job': job, 'cached': False}
+            return {'session': session, 'job': job, 'kind': 'queued'}
 
     @app.get('/api/books/{book_id}/listen/takes')
     def listen_takes(book_id: str, session_id: str, request: Request):
@@ -2215,7 +2286,7 @@ def create_app(data_dir: Path | None = None):
             job = store.update_job(job['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                                    model=session['model'], voice=session['voice'], intent=body.intent,
                                    scope_start_segment_id=segment['id'], focus_segment_id=segment['id'],
-                                   chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                                   chunking=options, speech_limits=limits, ramp_restart=0, joins=0, chunks=[],
                                    calibration=calibration.view(), fallback=fallback)
             coordinator = ChapterCoordinator(store, job['id'], key, runtime.narration_pool,
                                              cancelled=lambda: runtime.cancelled(job['id']),
@@ -2338,12 +2409,12 @@ def create_app(data_dir: Path | None = None):
                         chapter_id=preview['chapter_id'], provider=body.provider, model=preview['model'],
                         cached=True, kind='narration') as metrics:
                     metrics['audio_seconds'] = cached['duration']
-                return {'preview': preview, 'audio': cached, 'cached': True}
+                return {'preview': preview, 'audio': cached, 'kind': 'cached'}
             pending = next((job for job in store.jobs(book_id, limit=None)
                             if job['kind'] == 'voice_preview' and job['status'] in ACTIVE
                             and not job.get('cancel_requested') and job.get('preview_id') == preview['id']), None)
             if pending:
-                return {'preview': preview, 'job': pending, 'cached': False}
+                return {'preview': preview, 'job': pending, 'kind': 'queued'}
             runtime.require_idle(book_id)
             if runtime.stopping.is_set():
                 raise Unavailable('shutting_down', 'The server is shutting down and accepts no new narration.')
@@ -2357,7 +2428,7 @@ def create_app(data_dir: Path | None = None):
             job = store.create_job(book_id, 'voice_preview', 1)
             job = store.update_job(job['id'], preview_id=preview['id'], preview=preview,
                                    segment_id=preview['segment_id'], provider=body.provider,
-                                   model=preview['model'], phase='voice_preview')
+                                   model=preview['model'])
             def work():
                 with ResourceLedger(store).operation(book_id, 'voice_preview', run_id=job['id'], unit_key=preview['id'],
                         chapter_id=preview['chapter_id'], provider=body.provider, model=preview['model'], kind='narration') as metrics:
@@ -2388,7 +2459,7 @@ def create_app(data_dir: Path | None = None):
                                   segment_id=preview['segment_id'], job_id=job['id'],
                                   provider=body.provider, operation='worker', status=state)
             future.add_done_callback(settle_cancelled)
-            return {'preview': preview, 'job': job, 'cached': False}
+            return {'preview': preview, 'job': job, 'kind': 'queued'}
 
     @app.get('/api/books/{book_id}/voice-preview/audio/{asset_id}')
     def voice_preview_audio(book_id: str, asset_id: str, request: Request):

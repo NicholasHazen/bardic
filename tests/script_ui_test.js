@@ -27,7 +27,7 @@ function story() {
     chapters:[{id:'c1', title:'The Quay'}, {id:'c2', title:'The Lamp'}, {id:'c3', title:'The Sea'}],
     characters:[{id:'narrator', name:'Narrator'}, {id:'unassigned', name:'Unassigned dialogue'}, {id:'ada', name:'Ada'}, {id:'ben', name:'Ben'}],
     scenes:[{id:'sc1', chapter_id:'c1', title:'Arrival', direction:'Slow'}, {id:'sc2', chapter_id:'c2', title:'Night'}, {id:'sc3', chapter_id:'c3', title:'Dawn'}],
-    segments:[
+    passages:[
       {id:'s1', chapter_id:'c1', scene_id:'sc1', kind:'narration', text:'The boat came in.', speaker_id:'narrator', confidence:1, direction:'', cues:[]},
       {id:'s2', chapter_id:'c1', scene_id:'sc1', kind:'dialogue', text:'“Who is there?”', speaker_id:'unassigned', confidence:0, direction:'', cues:[]},
       {id:'s3', chapter_id:'c1', scene_id:'sc1', kind:'dialogue', text:'“Only me.”', speaker_id:'ada', confidence:.65, direction:'', cues:[],
@@ -66,12 +66,12 @@ function environment({book = story(), patch} = {}) {
       const result = patch ? await patch(url, body, state.book) : null;
       if (result) return result;
       // The server's answer: the whole book with the one field applied.
-      const [, kind, id] = url.match(/\/(segments|scenes)\/([^/]+)$/);
+      const [, kind, id] = url.match(/\/(passages|scenes)\/([^/]+)$/);
       const next = JSON.parse(JSON.stringify(state.book));
       const item = next[kind].find(entry => entry.id === id);
       Object.assign(item, body);
       // Passages present the fields a person set as `manual_fields` (scenes carry no lock state).
-      if (kind === 'segments') item.manual_fields = [...new Set([...(item.manual_fields || []), ...Object.keys(body)])].sort();
+      if (kind === 'passages') item.manual_fields = [...new Set([...(item.manual_fields || []), ...Object.keys(body)])].sort();
       if ('speaker_id' in body) item.confidence = 1;
       next.revision++;
       return next;
@@ -88,9 +88,9 @@ function environment({book = story(), patch} = {}) {
   const html = () => node('#scene-list').innerHTML;
   const shownRows = () => [...html().matchAll(/data-segment-form="([^"]+)"/g)].map(match => match[1]);
   // Events delegated to #scene-list and #script-review.
-  const form = (kind, id) => ({dataset:kind === 'segments' ? {segmentForm:id} : {sceneForm:id}});
+  const form = (kind, id) => ({dataset:kind === 'passages' ? {segmentForm:id} : {sceneForm:id}});
   const field = (kind, id, name, value) => ({value, dataset:{scriptField:name}, closest:selector =>
-    selector === '[data-segment-form]' && kind === 'segments' ? form(kind, id) : selector === '[data-scene-form]' && kind === 'scenes' ? form(kind, id) : null});
+    selector === '[data-segment-form]' && kind === 'passages' ? form(kind, id) : selector === '[data-scene-form]' && kind === 'scenes' ? form(kind, id) : null});
   const change = target => node('#scene-list').listeners.change({target});
   const input = target => node('#scene-list').listeners.input({target});
   const reviewClick = attrs => node('#script-review').listeners.click({target:{closest:selector => {
@@ -106,7 +106,7 @@ test('the pure checks: unassigned, low confidence (≤ 65%, dialogue), BookNLP d
   const env = environment();
   const {flags, counts} = env.script;
   const book = env.state.book;
-  const seg = id => book.segments.find(segment => segment.id === id);
+  const seg = id => book.passages.find(segment => segment.id === id);
   const playable = segment => Boolean(segment?.audio?.url);
   assert.deepEqual(plain(flags(seg('s1'), book, playable)), ['not-recorded']);
   assert.deepEqual(plain(flags(seg('s2'), book, playable)), ['unassigned', 'low-confidence', 'not-recorded']);
@@ -117,8 +117,20 @@ test('the pure checks: unassigned, low confidence (≤ 65%, dialogue), BookNLP d
   assert.deepEqual(plain(counts(book, 'c1', playable)), {
     unassigned:{chapter:1, book:2}, 'low-confidence':{chapter:2, book:3}, booknlp:{chapter:1, book:1},
     edited:{chapter:1, book:1}, 'not-recorded':{chapter:3, book:6}});
-  const unchecked = {...book, segments:book.segments.map(({speaker_check, ...rest}) => rest)};
+  const unchecked = {...book, passages:book.passages.map(({speaker_check, ...rest}) => rest)};
   assert.ok(!('booknlp' in counts(unchecked, 'c1', playable)), 'no BookNLP chip without BookNLP checks');
+});
+
+test('a scene lists the passages its passage_ids name, even when a passage carries no scene_id', () => {
+  const book = story();
+  book.passages.push({id:'s8', chapter_id:'c1', kind:'narration', text:'The rope.', speaker_id:'narrator', confidence:1, direction:'', cues:[]});
+  book.scenes[0].passage_ids = ['s1', 's2', 's3', 's4', 's8'];
+  const env = environment({book});
+  env.script.render();
+  const html = env.html();
+  const sceneAt = html.indexOf('data-scene-form="sc1"');
+  assert.ok(sceneAt >= 0 && html.indexOf('data-segment-form="s8"') > sceneAt, 'the passage listed by the scene appears under it');
+  assert.deepEqual(env.shownRows(), ['s1', 's2', 's3', 's4', 's8']);
 });
 
 test('one chapter at a time, with the chapter menu and previous/next', () => {
@@ -178,38 +190,38 @@ test('a speaker saves on change: one field, no Save button, the row stays in vie
   assert.doesNotMatch(env.html(), />Save</, 'no per-row or per-scene Save');
   env.reviewClick({scriptFilter:'unassigned'});
   // Arrowing through the menu fires change per option; only the final choice is sent.
-  env.change(env.field('segments', 's2', 'speaker_id', 'ben'));
-  env.change(env.field('segments', 's2', 'speaker_id', 'ada'));
+  env.change(env.field('passages', 's2', 'speaker_id', 'ben'));
+  env.change(env.field('passages', 's2', 'speaker_id', 'ada'));
   await settle();
   assert.equal(env.calls.patch.length, 0);
   env.runTimers();
   await settle();
-  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/segments/s2', body:{speaker_id:'ada'}}], 'only the speaker is sent, once');
+  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/passages/s2', body:{speaker_id:'ada'}}], 'only the speaker is sent, once');
   assert.equal(env.calls.applied, 1);
-  assert.equal(env.state.book.segments.find(segment => segment.id === 's2').speaker_id, 'ada');
+  assert.equal(env.state.book.passages.find(segment => segment.id === 's2').speaker_id, 'ada');
   assert.deepEqual(env.shownRows(), ['s2'], 'a fixed row stays until the chips change');
-  assert.equal(env.node('#script-status-segments-s2').textContent, 'Saved');
-  assert.equal(env.node('#script-status-segments-s2').getAttribute('data-tone'), 'good');
+  assert.equal(env.node('#script-status-passages-s2').textContent, 'Saved');
+  assert.equal(env.node('#script-status-passages-s2').getAttribute('data-tone'), 'good');
   assert.match(env.node('#script-review').innerHTML, /Unassigned speaker · 0/);
   assert.equal(env.script.hasUnsaved(), false);
   // The same value again sends nothing (an unchanged field never becomes locked).
-  env.change(env.field('segments', 's2', 'speaker_id', 'ada'));
+  env.change(env.field('passages', 's2', 'speaker_id', 'ada'));
   env.runTimers();
   await settle();
   assert.equal(env.calls.patch.length, 1);
   // Leaving the menu saves at once, without waiting.
-  const menu = env.field('segments', 's3', 'speaker_id', 'ben');
+  const menu = env.field('passages', 's3', 'speaker_id', 'ben');
   env.change(menu);
   env.node('#scene-list').listeners.focusout({target:menu});
   await settle();
-  assert.deepEqual(env.calls.patch[1], {url:'/api/books/book-1/segments/s3', body:{speaker_id:'ben'}});
+  assert.deepEqual(env.calls.patch[1], {url:'/api/books/book-1/passages/s3', body:{speaker_id:'ben'}});
 });
 
 test('a performance note saves after a pause, sends only the note, and keeps other fields and their locks', async () => {
   const env = environment();
   env.script.render();
-  env.input(env.field('segments', 's3', 'direction', 'Quietly'));
-  env.input(env.field('segments', 's3', 'direction', 'Quietly, afraid'));
+  env.input(env.field('passages', 's3', 'direction', 'Quietly'));
+  env.input(env.field('passages', 's3', 'direction', 'Quietly, afraid'));
   await settle();
   assert.equal(env.calls.patch.length, 0, 'typing does not send each keystroke');
   assert.match(env.node('#script-save-status').textContent, /save when you pause/);
@@ -217,8 +229,8 @@ test('a performance note saves after a pause, sends only the note, and keeps oth
   assert.match(env.html(), /id="segment-direction-s3"[^>]*value="Quietly, afraid"/, 'unsaved text survives a re-render');
   env.runTimers();
   await settle();
-  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/segments/s3', body:{direction:'Quietly, afraid'}}]);
-  const saved = env.state.book.segments.find(segment => segment.id === 's3');
+  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/passages/s3', body:{direction:'Quietly, afraid'}}]);
+  const saved = env.state.book.passages.find(segment => segment.id === 's3');
   assert.equal(saved.speaker_id, 'ada', 'the speaker was not sent, so it is not re-locked');
   assert.equal(saved.confidence, .65, 'nor is its confidence reset');
   // Scene direction: the same model.
@@ -227,7 +239,7 @@ test('a performance note saves after a pause, sends only the note, and keeps oth
   assert.deepEqual(env.calls.patch[1], {url:'/api/books/book-1/scenes/sc1', body:{direction:'Slow, then urgent'}});
   assert.equal(env.node('#script-status-scenes-sc1').textContent, 'Saved');
   // Leaving a field unchanged sends nothing.
-  env.change(env.field('segments', 's4', 'direction', 'Warm'));
+  env.change(env.field('passages', 's4', 'direction', 'Warm'));
   await settle();
   assert.equal(env.calls.patch.length, 2);
 });
@@ -236,24 +248,24 @@ test('a failed save stays on its row with the chosen value and Try again; nothin
   let fail = true;
   const env = environment({patch:async () => { if (fail) throw new Error('A job is already working on this book.'); return null; }});
   env.script.render();
-  env.change(env.field('segments', 's2', 'speaker_id', 'ben'));
+  env.change(env.field('passages', 's2', 'speaker_id', 'ben'));
   env.runTimers();
   await settle();
-  const status = env.node('#script-status-segments-s2');
+  const status = env.node('#script-status-passages-s2');
   assert.equal(status.textContent, 'Not saved: A job is already working on this book.');
   assert.equal(status.getAttribute('data-tone'), 'bad');
   assert.equal(status.getAttribute('role'), 'alert');
   assert.equal(env.script.hasUnsaved(), true);
   assert.match(env.node('#script-save-status').textContent, /1 change not saved/);
   assert.match(env.html(), /<option value="ben" selected>Ben<\/option>/, 'the row keeps your choice');
-  assert.match(env.html(), /data-script-retry="segments:s2"/);
+  assert.match(env.html(), /data-script-retry="passages:s2"/);
   fail = false;
-  env.node('#scene-list').listeners.click({target:{closest:selector => selector === '[data-script-retry]' ? {dataset:{scriptRetry:'segments:s2'}} : null}});
+  env.node('#scene-list').listeners.click({target:{closest:selector => selector === '[data-script-retry]' ? {dataset:{scriptRetry:'passages:s2'}} : null}});
   await settle();
   assert.equal(env.calls.patch.length, 2);
   assert.deepEqual(env.calls.patch[1].body, {speaker_id:'ben'});
   assert.equal(env.script.hasUnsaved(), false);
-  assert.equal(env.state.book.segments.find(segment => segment.id === 's2').speaker_id, 'ben');
+  assert.equal(env.state.book.passages.find(segment => segment.id === 's2').speaker_id, 'ben');
   assert.doesNotMatch(env.html(), /data-script-retry/);
 });
 
@@ -263,9 +275,9 @@ test('saves run one at a time, in order', async () => {
   const gate = new Promise(resolve => { release = resolve; });
   const env = environment({patch:async (url, body) => { order.push(`start ${Object.keys(body)[0]}`); if ('speaker_id' in body) await gate; order.push(`end ${Object.keys(body)[0]}`); return null; }});
   env.script.render();
-  env.change(env.field('segments', 's2', 'speaker_id', 'ada'));
+  env.change(env.field('passages', 's2', 'speaker_id', 'ada'));
   env.runTimers();
-  env.change(env.field('segments', 's1', 'direction', 'Low'));
+  env.change(env.field('passages', 's1', 'direction', 'Low'));
   await settle();
   assert.deepEqual(order, ['start speaker_id']);
   release();
@@ -288,14 +300,14 @@ test('bulk assign: selected passages, one edit each in order, unchanged ones ski
   assert.deepEqual(env.calls.patch.map(call => [call.url.split('/').pop(), call.body.speaker_id]), [['s1', 'ben'], ['s2', 'ben'], ['s3', 'ben']],
     's4 already has Ben, so it is not sent');
   assert.equal(env.calls.applied, 1, 'the book is applied once, at the end');
-  assert.equal(env.state.book.segments.find(segment => segment.id === 's2').speaker_id, 'ben');
+  assert.equal(env.state.book.passages.find(segment => segment.id === 's2').speaker_id, 'ben');
   const message = env.node('#script-bulk-status');
   assert.match(message.textContent, /^3 of 4 passages assigned to Ben\. 1 passage did not save \(Choose a character/);
   assert.equal(message.getAttribute('data-tone'), 'bad');
   assert.match(review.innerHTML, /1 selected/, 'the failed passage stays selected so Assign retries it');
   assert.match(env.html(), /id="script-pick-s3"[^>]*checked/);
-  assert.match(env.node('#script-status-segments-s3').textContent, /^Not saved/);
-  assert.match(env.node('#script-status-segments-s1').textContent, /Saved · Ben/);
+  assert.match(env.node('#script-status-passages-s3').textContent, /^Not saved/);
+  assert.match(env.node('#script-status-passages-s1').textContent, /Saved · Ben/);
 });
 
 test('bulk text for a clean run and while running', () => {
@@ -333,13 +345,13 @@ test('Show in text opens Script & record at the passage: preventDefault, chapter
 test('navigation never loses an edit: a chapter change saves waiting text now, and leaving asks first', async () => {
   const env = environment();
   env.script.render();
-  env.input(env.field('segments', 's1', 'direction', 'Softly'));
+  env.input(env.field('passages', 's1', 'direction', 'Softly'));
   env.node('#script-next-chapter').listeners.click();
   await settle();
-  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/segments/s1', body:{direction:'Softly'}}], 'saved at once, not after the pause');
+  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/passages/s1', body:{direction:'Softly'}}], 'saved at once, not after the pause');
   assert.equal(env.state.chapterId, 'c2');
   // The chapter menu (app.js's setChapter) also saves first.
-  env.input(env.field('segments', 's5', 'direction', 'Hushed'));
+  env.input(env.field('passages', 's5', 'direction', 'Hushed'));
   env.node('#studio-chapter').listeners.change();
   await settle();
   assert.deepEqual(env.calls.patch[1].body, {direction:'Hushed'});
@@ -347,7 +359,7 @@ test('navigation never loses an edit: a chapter change saves waiting text now, a
   const leave = {returnValue:undefined, prevented:0, preventDefault() { this.prevented++; }};
   env.windowListeners.beforeunload(leave);
   assert.equal(leave.prevented, 0, 'nothing unsaved: no prompt');
-  env.input(env.field('segments', 's6', 'direction', 'Quick'));
+  env.input(env.field('passages', 's6', 'direction', 'Quick'));
   env.windowListeners.beforeunload(leave);
   assert.equal(leave.prevented, 1);
   assert.equal(leave.returnValue, '');
@@ -361,7 +373,7 @@ test('Enter in a note saves that row now (the row form submit)', async () => {
   const inputField = {value:'Loud', dataset:{scriptField:'direction'}};
   const speaker = {value:'ada', dataset:{scriptField:'speaker_id'}};
   await env.script.submit({dataset:{segmentForm:'s3'}, elements:[speaker, inputField]});
-  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/segments/s3', body:{direction:'Loud'}}]);
+  assert.deepEqual(env.calls.patch, [{url:'/api/books/book-1/passages/s3', body:{direction:'Loud'}}]);
 });
 
 test('rows are compact: no Save buttons, Hear example visible, Record and play in the More menu', () => {
@@ -388,5 +400,5 @@ test('app.js and index.html wire the script: one script tag, attach, render and 
   assert.match(app, /window\.BardicScript\?\.attach\(\{\$, state, patch, applyBook, playable, setChapter, setTab/);
   assert.match(app, /function renderStudio\(\) \{\n[^\n]*\n  window\.BardicScript\?\.render\(\);/);
   assert.match(app, /\$\('#scene-list'\)\.addEventListener\('submit', event => \{ event\.preventDefault\(\); void window\.BardicScript\?\.submit\(event\.target\); \}\);/);
-  assert.doesNotMatch(app, /saveEditor\(form,\s*'segments'|saveEditor\(form,\s*'scenes'/);
+  assert.doesNotMatch(app, /saveEditor\(form,\s*'(?:segments|passages)'|saveEditor\(form,\s*'scenes'/);
 });

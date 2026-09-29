@@ -104,11 +104,11 @@ class DiscoveryStep(Step):
                 names.add(key)
                 rows.append({'id': f"{scope}:{candidate['range_start']}:{key}", 'scope': scope,
                              'chapter': titles.get(scope, scope), 'name': candidate['name'],
-                             'aliases': ', '.join(candidate.get('aliases', [])), 'evidence': len(candidate['evidence']),
+                             'aliases': list(candidate.get('aliases', [])), 'evidence_count': len(candidate['evidence']),
                              'description': candidate.get('description', '')})
         return {'stats': {'sections': len(payloads), 'mentions': len(rows), 'distinct_names': len(names),
                           'ranges': sum(len(p['ranges']) for p in payloads.values())},
                 'columns': [{'key': 'chapter', 'label': 'Section'}, {'key': 'name', 'label': 'Name'},
-                            {'key': 'aliases', 'label': 'Aliases'}, {'key': 'evidence', 'label': 'Quotes'},
+                            {'key': 'aliases', 'label': 'Aliases'}, {'key': 'evidence_count', 'label': 'Quotes'},
                             {'key': 'description', 'label': 'Draft notes'}],
                 'rows': rows}

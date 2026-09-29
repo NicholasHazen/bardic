@@ -51,6 +51,7 @@ Bardic is a local-first ebook analysis, audiobook production and read-along app,
 - [RESEARCH-PIPELINE.md](RESEARCH-PIPELINE.md) records source parsing, analysis and alignment research.
 - [RESEARCH-VOICE.md](RESEARCH-VOICE.md) records dated narration API, voice design and pricing research. Recheck official sources before relying on a rate or adding a provider capability.
 - [CLIENT-SERVER-CONTRACT.md](CLIENT-SERVER-CONTRACT.md) reviews UI/API coupling and proposes a generated interface contract and a gated path to separate client and server repositories. Not implemented.
+- [RUST-SERVER-PLAN.md](RUST-SERVER-PLAN.md) plans the separation of the browser client into its own directory and repository, and the replacement of the Python server with a Rust server: the contract and invariants (not Python's byte-level behavior) as the specification, a clean-slate Rust-native storage format with no importer, a black-box conformance suite, a domain-by-domain port and one reversible switchover (2026-09-28). Not implemented.
 - [WORD-HIGHLIGHTING.md](WORD-HIGHLIGHTING.md) proposes reusable word timing through local forced alignment, with source-mapping rules, quality limits and a staged implementation plan.
 
 ## Maintaining the documentation

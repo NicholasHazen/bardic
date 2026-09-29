@@ -49,7 +49,7 @@ const defs = {providers:[{id:'openai', label:'OpenAI', kind:'model', self_hosted
 const bookPlan = (requests, cost) => ({requests, estimated_cost_usd:cost, cached_units:0, service_calls:0, missing_inputs:{}});
 const plan = {series_id:series.id, fingerprint:'reviewed-fingerprint', steps:['discovery'], configs:{discovery:{provider:'openai', model:'fast-model'}},
   requests:3, cached_units:0, service_calls:0, estimated_cost_usd:.02, known_cost_usd:.02, unknown_cost_books:[], missing_inputs:{}, missing_credentials:[],
-  skipped_volumes:[{position:2, title:'Lost book', status:'missing'}], notes:['Books run one at a time & in order.'],
+  skipped_volumes:[{kind:'placeholder', series_id:'series-9', position:2, title:'Lost book', status:'missing'}], notes:['Books run one at a time & in order.'],
   books:[{book_id:'book-1', position:1, title:'The first lamp', plan:bookPlan(1, .01)}, {book_id:'book-9', position:9, title:'The <ninth> lamp', plan:bookPlan(2, .01)}]};
 const running = {id:'run/1', kind:'series', status:'running', steps:['discovery'], message:'Book 1 of 2', children:[
   {id:'c1', book_id:'book-1', status:'running', run_id:'r1', message:'Character discovery · range 1'},
@@ -118,8 +118,8 @@ async function mounted(env, options = {}) {
     assert.equal(env.api.childState({status:'cancelled', run_id:null}), 'not_started');
     assert.equal(env.api.childState({status:'interrupted', not_started:true, run_id:null}), 'not_started');
     assert.equal(env.api.childState({status:'cancelled', run_id:'r'}), 'cancelled');
-    assert.equal(env.api.childState({status:'completed', run_id:'r', run:{outcomes:{discovery:{status:'completed', scopes:2, accepted:false}}}}), 'needs_review');
-    assert.equal(env.api.childState({status:'completed', run_id:'r', run:{outcomes:{discovery:{status:'completed', scopes:2, accepted:true}}}}), 'completed');
+    assert.equal(env.api.childState({status:'completed', run_id:'r', run:{outcomes:{discovery:{status:'completed', scope_count:2, accepted:false}}}}), 'needs_review');
+    assert.equal(env.api.childState({status:'completed', run_id:'r', run:{outcomes:{discovery:{status:'completed', scope_count:2, accepted:true}}}}), 'completed');
   }
 
   // Rendering reads definitions and runs only; the step list mirrors the Analysis tab.
@@ -284,7 +284,7 @@ async function mounted(env, options = {}) {
     const paused = {...running, message:'Waiting for your review of The first lamp.', waiting_for_review:{book_id:'book-1', child_job_id:'c1',
       title:'The first lamp', position:1, steps:['profiles'], since:'2026-09-28T00:00:00+00:00'}, children:[
       {...running.children[0], status:'completed', message:'Waiting for your review: Character profiles',
-        run:{status:'completed', outcomes:{profiles:{status:'completed', scopes:1, accepted:false}}}},
+        run:{status:'completed', outcomes:{profiles:{status:'completed', scope_count:1, accepted:false}}}},
       {...running.children[1], message:'Waiting for your review of The first lamp.'}]};
     let resumed = false;
     const env = environment(call => {

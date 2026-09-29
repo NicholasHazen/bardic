@@ -107,11 +107,11 @@ def plan(store, registry, book_id, step_ids, configs, *, chapter_ids=None, fresh
                                   provider=config['provider'], model=config.get('model'))
             units = step.units(ctx)
             item = {'step_id': step.id, 'label': step.label, 'method': step.method, 'provider': config['provider'],
-                    'model': config.get('model'), 'units': len(units), 'cached_units': 0, 'requests': 0,
+                    'model': config.get('model'), 'unit_count': len(units), 'cached_units': 0, 'requests': 0,
                     'service_calls': 0, 'estimated_input_tokens': 0, 'output_token_allowance': 0, 'estimated_cost_usd': 0.0,
                     'inputs_pending': sorted(requested.intersection(step.inputs)),
                     'missing_inputs': missing.get(step.id, []),
-                    'scopes': len({u.scope for u in units})}
+                    'scope_count': len({u.scope for u in units}), 'note': None}
             keys = []
             for unit in units:
                 if unit.service is not None:

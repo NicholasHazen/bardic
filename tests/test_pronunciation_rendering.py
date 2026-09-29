@@ -73,8 +73,8 @@ def render_all(client, book):
     return client.get(f"/api/books/{book['id']}").json()
 
 
-def with_term(book, term):
-    return [s for s in book['segments'] if term in s['text']]
+def with_term(passages, term):
+    return [s for s in passages if term in s['text']]
 
 
 # Recipe ---------------------------------------------------------------------
@@ -105,8 +105,8 @@ def test_lexicon_edits_retire_only_affected_studio_takes_and_reuse_archived_audi
     url = f"/api/books/{book['id']}"
     rendered = render_all(client, book)
     first_pass = len(calls)
-    assert all(s['audio'] for s in rendered['segments'])
-    named = {s['id'] for s in with_term(rendered, 'Cthaelor')}
+    assert all(s['audio'] for s in rendered['passages'])
+    named = {s['id'] for s in with_term(rendered['passages'], 'Cthaelor')}
     assert len(named) == 2
 
     response = client.post(f'{url}/pronunciations', json={'term': 'Cthaelor', 'respelling': 'Kaylor'})
@@ -118,8 +118,8 @@ def test_lexicon_edits_retire_only_affected_studio_takes_and_reuse_archived_audi
     assert entry['usage']['rendered_passages'] == 0
     assert 'Cthaelor' in entry['usage']['examples'][0]['context']
     after = result['book']
-    for segment in after['segments']:
-        assert bool(segment['audio']) is (segment['id'] not in named)
+    for passage in after['passages']:
+        assert bool(passage['audio']) is (passage['id'] not in named)
     assert [c['text'] for c in after['chapters']] == [c['text'] for c in book['chapters']], 'book text never changes'
     assert all('pronunciations' not in s for s in client.app.state.runtime.store.book(book['id'])['segments'])
 
@@ -177,7 +177,7 @@ def test_cast_performance_keeps_the_pronunciations_it_started_with(client, monke
     client.patch(f"{url}/pronunciations/{entry['id']}", json={'term': 'Cthaelor', 'respelling': 'Kay-lor'})
     store = client.app.state.runtime.store
     book_now = store.book(book['id'])
-    named = with_term(book_now, 'Cthaelor')[0]
+    named = with_term(book_now['segments'], 'Cthaelor')[0]
     chapter = next(c for c in book_now['chapters'] if c['id'] == named['chapter_id'])
     changed = named['text'].replace('square', 'plaza')
     chapter['text'] = chapter['text'][:named['start']] + changed + chapter['text'][named['end']:]
@@ -212,22 +212,22 @@ def test_simple_listening_respells_and_keeps_unaffected_cached_takes(client):
         path.write_bytes(wav_bytes(frames=2400 + len(sent)))
         return {'fingerprint': render_fingerprint(segment, character, scene, provider, model), 'duration': .1,
                 'provider': provider, 'model': model, 'voice': 'Samantha'}
-    for segment in book['segments']:
+    for segment in book['passages']:
         repo.render_passage(book['id'], session['id'], segment['id'], synthesizer=render)
-    assert len(sent) == len(book['segments'])
-    assert len(repo.takes(book['id'], session['id'])['takes']) == len(book['segments'])
+    assert len(sent) == len(book['passages'])
+    assert len(repo.takes(book['id'], session['id'])['takes']) == len(book['passages'])
 
     saved = store.book(book['id'])
     saved['pronunciations'] = [pronunciation.normalize_entry({'term': 'Cthaelor', 'respelling': 'Kaylor'})]
     store.save_book(saved)
     kept = {take['segment_id'] for take in repo.takes(book['id'], session['id'])['takes']}
-    named = {s['id'] for s in with_term(book, 'Cthaelor')}
-    assert kept == {s['id'] for s in book['segments']} - named
+    named = {s['id'] for s in with_term(book['passages'], 'Cthaelor')}
+    assert kept == {s['id'] for s in book['passages']} - named
     for segment_id in named:
         assert repo.cached(book['id'], session['id'], segment_id) is None
         repo.render_passage(book['id'], session['id'], segment_id, synthesizer=render)
     assert all('Kaylor' in text for text in sent[-len(named):])
-    assert len(repo.takes(book['id'], session['id'])['takes']) == len(book['segments'])
+    assert len(repo.takes(book['id'], session['id'])['takes']) == len(book['passages'])
 
 
 # Voice previews -----------------------------------------------------------------
@@ -243,7 +243,7 @@ def test_preview_auditions_an_unsaved_respelling_in_its_sentence(client):
     assert preview['text'] == '“Wait,” Eilidh said.'
     assert preview['spoken_text'] == '“Wait,” Aylee said.'
     assert preview['pronunciation'] == {'term': 'Eilidh', 'spoken': 'Aylee'}
-    segment = next(s for s in book['segments'] if s['id'] == preview['segment_id'])
+    segment = next(s for s in book['passages'] if s['id'] == preview['segment_id'])
     chapter = next(c for c in book['chapters'] if c['id'] == segment['chapter_id'])
     anchor = preview['source_anchor']
     assert chapter['text'][anchor['start']:anchor['end']] == preview['text'], 'exact source coordinates'
@@ -295,7 +295,7 @@ def test_patch_keeps_omitted_fields_and_stale_character_links_do_not_block_other
     assert saved['note'] == 'Scottish' and saved['character_id'] == eilidh['id'] and saved['providers'] == {'breeze': 'Eilidh'}
     cleared = client.patch(f"{url}/pronunciations/{entry['id']}",
                            json={'term': 'Eilidh', 'respelling': 'Ay-lee', 'providers': {}, 'note': None}).json()
-    assert 'providers' not in cleared['pronunciations'][0] and 'note' not in cleared['pronunciations'][0]
+    assert cleared['pronunciations'][0]['providers'] is None and cleared['pronunciations'][0]['note'] is None
     # A character removed later (e.g. by re-analysis) keeps its link, which must not block other entries.
     store = client.app.state.runtime.store
     stored = store.book(book['id'])

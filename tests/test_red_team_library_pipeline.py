@@ -71,10 +71,10 @@ def test_library_snapshot_audio_count_matches_the_book_list(client, monkeypatch)
     book = import_text(client, 'Chapter One\n\nThe lamps were lit.\n\n“Come in,” Mara said.\n')
     url = f"/api/books/{book['id']}"
     assert wait_job(client, client.post(f'{url}/render', json={'provider': 'gemini'}).json()['id'])['status'] == 'completed'
-    store_of(client).save_take(book['id'], book['segments'][0]['id'],
+    store_of(client).save_take(book['id'], book['passages'][0]['id'],
                                {'fingerprint': 'stale-take', 'duration': 1, 'provider': 'gemini', 'model': 'x'})
-    playable = sum(bool(s['audio']) for s in client.get(url).json()['segments'])
-    assert playable == len(book['segments']) - 1
+    playable = sum(bool(s['audio']) for s in client.get(url).json()['passages'])
+    assert playable == len(book['passages']) - 1
     listed = next(b for b in client.get('/api/books').json() if b['id'] == book['id'])
     snapshot = next(b for b in client.get('/api/library').json()['books'] if b['id'] == book['id'])
     assert listed['audio_count'] == snapshot['audio_count'] == playable
@@ -240,7 +240,7 @@ def test_archived_details_are_one_sentence_per_code(client):
                  client.post(f"/api/books/{book['id']}/analysis-pipeline/runs",
                              json={'steps': ['census'], 'limits': {'max_requests': 5}}),
                  client.post(f"/api/books/{book['id']}/listen/chapter/preview",
-                             json={'segment_id': book['segments'][0]['id']})]
+                             json={'passage_id': book['passages'][0]['id']})]
     for response in responses:
         assert response.status_code == 409, response.text
         assert response.json() == archived, response.request.url
@@ -302,7 +302,7 @@ def test_main_era_confirmed_speaker_is_reviewed_in_character_references(client):
     line.update(edited=True, edited_fields=['direction'], confidence=1.0)
     store.save_book(stored)
     rows = client.get(f"/api/books/{book['id']}/characters/{line['speaker_id']}/references").json()
-    row = next(r for r in rows if r['kind'] == 'dialogue' and r['segment_id'] == line['id'])
+    row = next(r for r in rows if r['kind'] == 'dialogue' and r['passage_id'] == line['id'])
     assert row['provider'] == 'reviewed' and row['origin'] == 'manual'
 
 

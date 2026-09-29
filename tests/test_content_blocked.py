@@ -60,7 +60,7 @@ def device_narration(monkeypatch):
 
 def poison_marker(book, index=4):
     marker = f'step {index} along'
-    segment = next(s for s in book['segments'] if marker in s['text'])
+    segment = next(s for s in book['passages'] if marker in s['text'])
     return marker, segment
 
 
@@ -69,7 +69,7 @@ def takes(client, book, session):
 
 
 def ids_between(book, first, last):
-    ids = [s['id'] for s in book['segments']]
+    ids = [s['id'] for s in book['passages']]
     return ids[ids.index(first):ids.index(last) + 1]
 
 
@@ -154,17 +154,17 @@ def test_a_blocked_chunk_is_split_once_and_both_halves_are_kept(client, monkeypa
     first, one, two, *rest = job['chunks']
     assert first['status'] == 'blocked' and first['split_into'] == 2 and 'split' not in first
     assert one['status'] == two['status'] == 'done' and one['split'] and two['split']
-    assert one['first_segment_id'] == first['first_segment_id'] and two['last_segment_id'] == first['last_segment_id']
-    assert ids_between(book, one['first_segment_id'], one['last_segment_id'])[-1] != first['last_segment_id']
-    assert first['segment_count'] == one['segment_count'] + two['segment_count']
+    assert one['first_passage_id'] == first['first_passage_id'] and two['last_passage_id'] == first['last_passage_id']
+    assert ids_between(book, one['first_passage_id'], one['last_passage_id'])[-1] != first['last_passage_id']
+    assert first['passage_count'] == one['passage_count'] + two['passage_count']
     # Exactly the original plus its two halves for that chunk, and the daily count includes all of them.
     assert len(gemini.texts) == len(job['chunks']) == 3 + len(rest)
     assert gemini.texts[1] + '\n\n' in gemini.texts[0] or gemini.texts[1] in gemini.texts[0]
     assert requests_today(client.app.state.runtime.store, DEFAULT_TTS_MODEL) == len(gemini.texts)
-    assert gemini.fallback == [] and 'content_blocked' not in job
-    assert job['progress'] == job['total'] == len(book['segments'])
+    assert gemini.fallback == [] and job['content_blocked'] is None
+    assert job['progress'] == job['total'] == len(book['passages'])
     audio_items = takes(client, book, result['session'])
-    assert len(audio_items) == len(book['segments']) and all('substitute' not in t['audio'] for t in audio_items)
+    assert len(audio_items) == len(book['passages']) and all('substitute' not in t['audio'] for t in audio_items)
     assert all(t['audio']['provider'] == 'gemini' for t in audio_items)
 
 
@@ -182,24 +182,24 @@ def test_one_blocked_half_goes_to_the_fallback_narrator_and_is_never_split_again
     assert sum(marker in text for text in gemini.texts) == 2
     assert len(gemini.texts) == len(job['chunks']) == 3 + len(job['chunks'][3:])
     half = next(entry for entry in job['chunks'][1:3] if entry['status'] == 'blocked')
-    expected = ids_between(book, half['first_segment_id'], half['last_segment_id'])
+    expected = ids_between(book, half['first_passage_id'], half['last_passage_id'])
     assert poison['id'] in expected and half['split'] is True and 'split_into' not in half
     # Only that half is read by the fallback, one passage at a time, with no Gemini request.
     # Passages with identical text share one retained take (the usual equivalent-speech reuse), so the narrator
     # is asked once per distinct text.
-    texts = {s['id']: s['text'] for s in book['segments']}
+    texts = {s['id']: s['text'] for s in book['passages']}
     assert [call['id'] for call in gemini.fallback] == [i for n, i in enumerate(expected) if texts[i] not in [texts[j] for j in expected[:n]]]
     assert {call['provider'] for call in gemini.fallback} == {'system'}
     view = job['content_blocked']
     assert view['fallback_passage_ids'] == expected and view['blocked_passage_ids'] == []
     assert view['fallback']['provider'] == 'system' and job['fallback'] == view['fallback']
     assert 'read by a device voice because Gemini blocked them' in job['message']
-    assert job['progress'] == job['total'] == len(book['segments'])
+    assert job['progress'] == job['total'] == len(book['passages'])
     # Playback: every passage in order; the blocked half is the fallback's, marked, immutable and not Gemini audio.
     listed = takes(client, book, result['session'])
-    assert [t['segment_id'] for t in listed] == [s['id'] for s in book['segments']]
+    assert [t['passage_id'] for t in listed] == [s['id'] for s in book['passages']]
     substitutes = [t['audio'] for t in listed if 'substitute' in t['audio']]
-    assert [a['segment_id'] for a in substitutes] == expected
+    assert [a['passage_id'] for a in substitutes] == expected
     assert all(a['provider'] == 'system' and a['substitute'] == {'reason': 'content_blocked', 'for_provider': 'gemini',
                                                                   'for_model': DEFAULT_TTS_MODEL} for a in substitutes)
     assert all(client.get(a['url']).status_code == 200 for a in substitutes)
@@ -209,8 +209,8 @@ def test_one_blocked_half_goes_to_the_fallback_narrator_and_is_never_split_again
     # The passage endpoint answers from the retained fallback take with no provider request.
     before = len(gemini.texts)
     single = client.post(f"/api/books/{book['id']}/listen", json={'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL,
-                                                                 'segment_id': poison['id']}).json()
-    assert single['cached'] is True and single['audio']['substitute']['reason'] == 'content_blocked'
+                                                                 'passage_id': poison['id']}).json()
+    assert single['kind'] == 'cached' and single['audio']['substitute']['reason'] == 'content_blocked'
     assert len(gemini.texts) == before
 
 
@@ -225,13 +225,13 @@ def test_no_fallback_narrator_leaves_a_distinct_blocked_outcome_and_the_rest_com
     assert job['fallback'] is None
     view = job['content_blocked']
     half = next(entry for entry in job['chunks'] if entry['status'] == 'blocked' and entry.get('split'))
-    expected = ids_between(book, half['first_segment_id'], half['last_segment_id'])
+    expected = ids_between(book, half['first_passage_id'], half['last_passage_id'])
     assert view['blocked_passage_ids'] == expected and view['fallback_passage_ids'] == [] and view['fallback'] is None
     assert gemini.fallback == []
-    assert job['progress'] == len(book['segments']) - len(expected) and job['total'] == len(book['segments'])
+    assert job['progress'] == len(book['passages']) - len(expected) and job['total'] == len(book['passages'])
     assert 'blocked by Gemini’s content policy and left unrecorded' in job['message']
-    listed = {t['segment_id'] for t in takes(client, book, result['session'])}
-    assert listed == {s['id'] for s in book['segments']} - set(expected), 'everything else is prepared'
+    listed = {t['passage_id'] for t in takes(client, book, result['session'])}
+    assert listed == {s['id'] for s in book['passages']} - set(expected), 'everything else is prepared'
     # A re-run never resends known-blocked text (or a chunk containing it).
     sent = len(gemini.texts)
     again = wait_job(client, start(client, book, chunking=CHUNKING)['job']['id'])
@@ -242,13 +242,13 @@ def test_no_fallback_narrator_leaves_a_distinct_blocked_outcome_and_the_rest_com
 def test_a_one_passage_request_that_is_blocked_goes_straight_to_the_fallback(client, monkeypatch):
     text = 'The lantern keeper counted the quiet boats along the harbor wall, and the night went on and on. ' * 6
     book = client.post('/api/books', files={'file': ('one.txt', ('Chapter One\n\n' + text.strip() + '\n').encode(), 'text/plain')}).json()
-    body = [s for s in book['segments'] if len(s['text']) > 300]
+    body = [s for s in book['passages'] if len(s['text']) > 300]
     assert len(body) == 1
     gemini = Gemini(monkeypatch, lambda t, n: t.strip() == body[0]['text'])
-    result = start(client, book, segment=body[0], chunking=CHUNKING)
+    result = start(client, book, passage=body[0], chunking=CHUNKING)
     job = wait_job(client, result['job']['id'])
     assert job['status'] == 'completed', job
-    assert [(e['status'], e['segment_count']) for e in job['chunks']] == [('blocked', 1)] and 'split_into' not in job['chunks'][0]
+    assert [(e['status'], e['passage_count']) for e in job['chunks']] == [('blocked', 1)] and 'split_into' not in job['chunks'][0]
     assert len(gemini.texts) == 1 and [c['id'] for c in gemini.fallback] == [body[0]['id']]
     assert job['content_blocked']['fallback_passage_ids'] == [body[0]['id']]
 
@@ -260,7 +260,7 @@ def test_resume_after_the_original_was_blocked_requests_the_halves_not_the_whole
     repository = ListeningRepository(store)
     session = repository.session(book['id'], 'gemini', 'Kore', DEFAULT_TTS_MODEL)
     chapter = book['chapters'][0]
-    ids = [s['id'] for s in book['segments'] if s['chapter_id'] == chapter['id']][:12]
+    ids = [s['id'] for s in book['passages'] if s['chapter_id'] == chapter['id']][:12]
     # A job that stopped right after the original chunk was blocked, before its halves were requested.
     repository.record_block(book['id'], session['id'], chapter['id'], ids, 'chunk')
     whole = client.app.state.runtime.store.book(book['id'])['chapters'][0]['text']
@@ -268,10 +268,10 @@ def test_resume_after_the_original_was_blocked_requests_the_halves_not_the_whole
     assert job['status'] == 'completed', job
     first_two = job['chunks'][:2]
     assert all(entry.get('split') for entry in first_two)
-    assert sum(entry['segment_count'] for entry in first_two) == 12
+    assert sum(entry['passage_count'] for entry in first_two) == 12
     start_of = min(gemini.texts[0], gemini.texts[1], key=lambda t: whole.index(t))
     assert start_of == gemini.texts[0], 'halves are requested in reading order'
-    original = whole[book['segments'][0]['start']:book['segments'][11]['end']]
+    original = whole[book['passages'][0]['start']:book['passages'][11]['end']]
     assert original not in gemini.texts and not any(original in text for text in gemini.texts)
 
 
@@ -345,14 +345,14 @@ def test_other_400s_still_fail_the_job_with_the_generic_hint(client, monkeypatch
     book = import_story(client)
     job = wait_job(client, start(client, book, chunking=CHUNKING)['job']['id'])
     assert job['status'] == 'failed' and 'Check the model, voice, and passage length.' in job['error']
-    assert 'error_code' not in job and ECHO not in job['error'] and 'content_blocked' not in job
+    assert 'error_code' not in job and ECHO not in job['error'] and job['content_blocked'] is None
     with client.app.state.runtime.store.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM listening_blocked').fetchone()[0] == 0
 
 
 def test_a_blocked_single_passage_listen_job_reports_a_code_and_is_not_resent(client, monkeypatch):
     book = import_story(client, 4)
-    target = book['segments'][1]
+    target = book['passages'][1]
     posts = []
 
     def post(url, **kwargs):
@@ -361,7 +361,7 @@ def test_a_blocked_single_passage_listen_job_reports_a_code_and_is_not_resent(cl
 
     monkeypatch.setattr(audio.httpx, 'post', post)
     monkeypatch.setattr('bardic.app.synthesize', audio.synthesize)
-    body = {'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'segment_id': target['id']}
+    body = {'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'passage_id': target['id']}
     job = wait_job(client, client.post(f"/api/books/{book['id']}/listen", json=body).json()['job']['id'])
     assert job['status'] == 'failed' and job['error_code'] == 'content_blocked'
     assert job['error'] == audio.GEMINI_CONTENT_BLOCKED_MESSAGE and len(posts) == 1
@@ -395,7 +395,7 @@ def test_a_performance_reports_passages_read_by_the_fallback_and_resumes_without
     record = wait_performance(client, book, created.json()['performance']['id'])
     progress = record['progress']
     assert record['job']['status'] == 'completed'
-    assert progress['passages_ready'] == progress['passages_total'] == len(book['segments'])
+    assert progress['passages_ready'] == progress['passages_total'] == len(book['passages'])
     assert progress['passages_fallback'] > 0 and progress['passages_blocked'] == 0 and progress['fallback_provider'] == 'system'
     chapter = progress['chapters'][0]
     assert chapter['passages_fallback'] == progress['passages_fallback'] and chapter['blocked_passage_ids'] == []

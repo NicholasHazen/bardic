@@ -1,7 +1,9 @@
 """python -m bardic"""
+import sys
+
 import uvicorn
 
-from . import lan
+from . import cors, lan
 from .config import environment_value, load_project_env
 
 
@@ -11,12 +13,15 @@ def main():
     try:
         host, name = lan.bind_host(), lan.lan_name()
         lan.allowed_hosts()  # Report a bad setting now rather than as an import error inside uvicorn.
+        cors_warning = cors.warning(cors.configured())
         advertiser = lan.Advertiser(name, port, lan.advertised_address(host)) if name else None
     except ValueError as exc:
         raise SystemExit(f"Bardic: {exc}") from None
     if lan.port_in_use(port):
         raise SystemExit(f"Bardic: port {port} is already in use on this computer. "
                          "Stop that server or choose another BARDIC_PORT.")
+    if cors_warning:
+        print(f"Bardic: {cors_warning}", file=sys.stderr, flush=True)
     if advertiser:
         advertiser.start()
     try:

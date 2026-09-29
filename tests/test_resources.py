@@ -159,6 +159,20 @@ def usage_payload():
                       'output_tokens_by_modality': [{'modality': 'audio', 'tokens': 250}]}}
 
 
+def test_count_totals_are_integers_and_a_non_integer_count_is_unknown():
+    # The contract types token and byte totals as integers; measurements (seconds, USD) stay numbers.
+    rows = [{'request_count': 1, 'input_tokens': 10, 'output_tokens': 3, 'output_bytes': 2048, 'elapsed_seconds': .25,
+             'estimated_cost_usd': .000125},
+            {'request_count': 1, 'input_tokens': 5, 'output_tokens': 1., 'output_bytes': 2048, 'elapsed_seconds': .5,
+             'estimated_cost_usd': .000125}]
+    totals = resources._aggregate(rows)
+    assert totals['input_tokens'] == 15 and type(totals['input_tokens']) is int
+    assert totals['output_bytes'] == 4096 and type(totals['output_bytes']) is int
+    assert totals['output_tokens'] == 3 and type(totals['output_tokens']) is int and totals['unknown_output_tokens_operations'] == 1
+    assert totals['elapsed_seconds'] == .75 and totals['estimated_cost_usd'] == .00025
+    assert resources._aggregate([])['input_tokens'] == 0 and type(resources._aggregate([])['input_tokens']) is int
+
+
 def test_tts_usage_prices_only_reported_complete_modality_counts():
     value = tts_usage(usage_payload(), audio.DEFAULT_TTS_MODEL, today=date(2026, 9, 27))
     assert value['estimated_cost_usd'] == pytest.approx((80 * .5 + 20 * .125 + 250 * 9) / 1e6)
@@ -201,6 +215,27 @@ def test_provider_usage_is_saved_before_later_audio_processing_and_network_failu
             audio._generate_gemini({'model': audio.DEFAULT_TTS_MODEL, 'text': 'text', 'style': '', 'voice': 'Kore'}, 'private-key')
     row = resource_summary(store, 'book')['operations'][0]
     assert row['status'] == 'failed' and row['estimated_cost_usd'] is None and row['input_tokens'] is None
+
+
+def test_every_kind_of_resource_row_carries_the_always_sent_fields(tmp_path):
+    # The contract requires these keys (null when unknown) on all three row shapes: an analysis attempt (here a
+    # sparse older record), a resource-ledger operation and a cache reuse.
+    from fastapi.testclient import TestClient
+    from bardic.app import create_app
+    with TestClient(create_app(tmp_path)) as client:
+        store = client.app.state.runtime.store
+        book = parse_book('test.txt', b'Chapter 1\n\nMara said, "Wait."')
+        store.save_book(book)
+        repository = ProcessingStore(store)
+        repository.save_attempt({'id': 'older', 'book_id': book['id'], 'run_id': 'run', 'stage': 'profile'})
+        repository.event(book['id'], 'next-run', 'discovery', 'u', 'cache_hit')
+        with ResourceLedger(store).operation(book['id'], 'local_test'):
+            pass
+        rows = client.get(f"/api/books/{book['id']}/resources").json()['operations']
+        assert {row['kind'] for row in rows} == {'analysis_request', 'cache_reuse', 'local'}
+        for row in rows:
+            for key in ('run_id', 'stage', 'unit_key', 'created_at', 'request_count', 'estimated_cost_usd', 'cost_basis'):
+                assert key in row, (row['kind'], key)
 
 
 def test_resource_api_is_read_only_and_paginated(tmp_path):

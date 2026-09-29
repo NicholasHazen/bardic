@@ -22,6 +22,7 @@ from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SEC
 from .store import now
 from . import pronunciation
 from .take_archive import produce_take
+from . import wire
 from .audio_refs import audio_ref
 from .errors import Conflict, Invalid, NotFound
 
@@ -83,13 +84,15 @@ def present_take(book_id, metadata):
     """
     reuse = metadata.get('reuse')
     extras = {key: metadata[key] for key in _PASSAGE_EXTRAS if key in metadata}
+    if 'provider_timing' in extras:
+        extras['provider_timing'] = wire.provider_timing(extras['provider_timing'])
     if isinstance(reuse, dict):
         extras['reuse'] = {key: reuse.get(key) for key in _REUSE_FIELDS}
     return audio_ref(f'/api/books/{quote(book_id, safe="")}/listen/audio/{metadata["asset_id"]}',
                      asset_id=metadata['asset_id'], duration=metadata.get('duration'),
                      provider=metadata.get('provider'), model=metadata.get('model'), voice=metadata.get('voice'),
                      created_at=metadata.get('created_at'), session_id=metadata.get('session_id'),
-                     segment_id=metadata.get('segment_id'), **extras)
+                     segment_id=metadata.get('segment_id'), kind='passage', **extras)
 
 
 def present_clip(book_id, clip):
@@ -100,7 +103,7 @@ def present_clip(book_id, clip):
                      segment_id=clip.get('segment_id'), chunk_id=clip['chunk_id'], clip_start=clip.get('clip_start'),
                      clip_end=clip.get('clip_end'), chunk_duration=clip.get('chunk_duration'),
                      timing=clip.get('timing', 'estimated'), session_id=clip.get('session_id'),
-                     flags=list(clip.get('flags') or []))
+                     flags=list(clip.get('flags') or []), kind='clip')
 
 
 def require_active_book(store, book_id):
