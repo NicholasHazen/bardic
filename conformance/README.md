@@ -33,15 +33,15 @@ work as usual.
 
 | Option | Meaning |
 | --- | --- |
-| `--base-url URL` | Use a running server. Refused unless the host is loopback (`--allow-remote`) and the port is not 8765 (`--allow-owner-port`). |
+| `--base-url URL` | Use a running server. Refused unless the host is loopback (`--allow-remote`) the port is not 8765 or 8766 or in `BARDIC_OWNER_PORTS` (`--allow-owner-port`), and the server's library is empty (`--allow-used-library`). |
 | `--server-cmd CMD` | Spawn `CMD` as the server. Default when neither option is given: the Python server (`python -m bardic`, from the repository root). |
 | `--contract PATH` | The `openapi.json` to judge by. Default: the repository's `contract/openapi.json`. Read fresh at the start of every session. |
 | `--server-timeout S` | How long a spawned server may take to answer `GET /api/status` (default 60). |
 | `--server-cwd DIR` | Working directory of a spawned server (default: the repository root). |
 | `--server-env NAME=VALUE` | Extra environment for a spawned server. Repeatable. |
-| `--allow-remote`, `--allow-owner-port` | Override the two guards above. Only for a server you own and can discard. |
+| `--allow-remote`, `--allow-owner-port`, `--allow-used-library` | Override the three guards above. Only for a server you own and can discard. |
 
-The owner's service normally listens on 8765 with the owner's library. The guards exist so that a stray command
+The owner's service listens on a port set in its own settings (8765 by default, 8766 here) with the owner's library, which the suite never reads, so the port list is only the first guard: the second refuses any server that already has books. The guards exist so that a stray command
 cannot write to it. A `--base-url` server must be disposable: the suite imports books, edits them and changes
 saved settings (it restores the ones it changes, but not everything). Never point it at a server that has real
 provider keys. Tests that could reach a provider skip themselves when the server has a key or a Breeze URL.

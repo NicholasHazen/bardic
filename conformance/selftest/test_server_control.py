@@ -185,3 +185,42 @@ def test_needs_provider_file_format(tmp_path):
     path.write_text('# comment\n\nlistThings   # because\ngetThing\n  # indented comment\n')
     assert load_needs_provider(path) == {'listThings': 'because', 'getThing': ''}
     assert load_needs_provider(tmp_path / 'missing.txt') == {}
+
+
+@pytest.mark.parametrize('port', [8765, 8766])
+def test_every_well_known_owner_port_is_refused(port):
+    with pytest.raises(control.RefusedTarget, match=str(port)):
+        control.check_target(f'http://127.0.0.1:{port}', allow_remote=False, allow_owner_port=False)
+
+
+def test_owner_ports_can_be_extended_from_the_environment(monkeypatch):
+    monkeypatch.setenv('BARDIC_OWNER_PORTS', ' 8901, junk,8902 ')
+    assert {8765, 8766, 8901, 8902} <= control.owner_ports()
+    with pytest.raises(control.RefusedTarget, match='8902'):
+        control.check_target('http://127.0.0.1:8902', allow_remote=False, allow_owner_port=False)
+    assert all(control.free_port() not in control.owner_ports() for _ in range(20))
+
+
+def _books(payload, status=200):
+    import httpx
+    return httpx.MockTransport(lambda request: httpx.Response(status, json=payload) if status == 200
+                               else httpx.Response(status, text='no'))
+
+
+def test_a_server_with_books_is_refused_whatever_its_port():
+    with pytest.raises(control.RefusedTarget, match='already has 2 book'):
+        control.refuse_used_library('http://127.0.0.1:9999', allow=False, transport=_books([{'id': 'a'}, {'id': 'b'}]))
+    control.refuse_used_library('http://127.0.0.1:9999', allow=True, transport=_books([{'id': 'a'}]))
+
+
+@pytest.mark.parametrize('payload,status', [([], 200), ({}, 200), ('not a list', 200), ([{'id': 'a'}], 404), ([{'id': 'a'}], 500)])
+def test_an_empty_or_unreadable_library_is_not_refused(payload, status):
+    control.refuse_used_library('http://127.0.0.1:9999', allow=False, transport=_books(payload, status))
+
+
+def test_an_unreachable_server_is_left_to_the_first_request():
+    import httpx
+
+    def refuse(request):
+        raise httpx.ConnectError('down')
+    control.refuse_used_library('http://127.0.0.1:9999', allow=False, transport=httpx.MockTransport(refuse))

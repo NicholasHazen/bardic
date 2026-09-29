@@ -23,6 +23,11 @@ from urllib.parse import urlsplit
 import httpx
 
 OWNER_PORT = 8765
+# Ports where an owner's real service may listen: the default, and the one the service moved to when 8765 was
+# taken. The owner's port comes from its own settings, which the harness never reads, so a list of well-known
+# ports is only the first guard. The second is that a --base-url server must have an empty library
+# (``refuse_used_library``); ``BARDIC_OWNER_PORTS=8770,8771`` adds ports to the first.
+OWNER_PORTS = (8765, 8766)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Blank so that nothing in the caller's environment, or a project ``.env``, reaches a provider.
@@ -37,6 +42,16 @@ BLANKED_ENVIRONMENT = (
 
 class RefusedTarget(Exception):
     """The requested base URL is not one the harness may drive."""
+
+
+def owner_ports() -> frozenset[int]:
+    """Ports the harness treats as the owner's service: the well-known ones plus ``BARDIC_OWNER_PORTS``."""
+    ports = set(OWNER_PORTS)
+    for entry in os.environ.get('BARDIC_OWNER_PORTS', '').split(','):
+        entry = entry.strip()
+        if entry.isdigit():
+            ports.add(int(entry))
+    return frozenset(ports)
 
 
 def check_target(base_url: str, *, allow_remote: bool, allow_owner_port: bool) -> str:
@@ -55,10 +70,36 @@ def check_target(base_url: str, *, allow_remote: bool, allow_owner_port: bool) -
         raise RefusedTarget(f'{host} is not a loopback address. The suite imports books and changes settings; '
                             'pass --allow-remote only for a server you own and can discard.')
     port = parts.port or (443 if parts.scheme == 'https' else 80)
-    if port == OWNER_PORT and not allow_owner_port:
-        raise RefusedTarget(f'port {OWNER_PORT} is where the owner\'s Bardic service normally listens. The suite would '
+    if port in owner_ports() and not allow_owner_port:
+        raise RefusedTarget(f'port {port} is where the owner\'s Bardic service normally listens. The suite would '
                             'write to that library. Use a scratch server, or pass --allow-owner-port if you are sure.')
     return base_url.rstrip('/')
+
+
+def refuse_used_library(base_url: str, *, allow: bool, transport=None) -> None:
+    """Refuse a running server whose library already holds books.
+
+    A scratch server starts empty; the owner's does not, whatever port it listens on. The suite imports books,
+    edits them and changes settings, so it must not run against a library someone uses. An unreachable server is
+    not refused here: the first request reports it. ``GET /api/books`` is read-only.
+    """
+    if allow:
+        return
+    try:
+        with httpx.Client(base_url=base_url, timeout=5.0, transport=transport) as client:
+            response = client.get('/api/books')
+    except httpx.HTTPError:
+        return
+    if response.status_code != 200:
+        return
+    try:
+        books = response.json()
+    except ValueError:
+        return
+    if isinstance(books, list) and books:
+        raise RefusedTarget(f'the server at {base_url} already has {len(books)} book(s) in its library. The suite '
+                            'imports books, edits them and changes settings, so it needs a disposable server with '
+                            'an empty library. Start a scratch server, or pass --allow-used-library if you are sure.')
 
 
 def free_port() -> int:
@@ -67,7 +108,7 @@ def free_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
-        if port != OWNER_PORT:
+        if port not in owner_ports():
             return port
 
 

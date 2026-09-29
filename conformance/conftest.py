@@ -33,7 +33,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption('--allow-remote', action='store_true', default=False,
                     help='Permit a --base-url that is not a loopback address.')
     group.addoption('--allow-owner-port', action='store_true', default=False,
-                    help='Permit port 8765, where the owner\'s Bardic service normally listens.')
+                    help='Permit ports 8765 and 8766 (and BARDIC_OWNER_PORTS), where the owner\'s Bardic service listens.')
+    group.addoption('--allow-used-library', action='store_true', default=False,
+                    help='Permit a --base-url server whose library already has books. The suite writes to it.')
     group.addoption('--require-coverage', action='store_true', default=False,
                     help='Fail the session if any operation neither received a 2xx nor is listed in needs_provider.txt.')
     group.addoption('--server-timeout', type=float, default=60.0, metavar='SECONDS',
@@ -54,6 +56,7 @@ def pytest_configure(config: pytest.Config) -> None:
         try:
             option.base_url = server_control.check_target(
                 option.base_url, allow_remote=option.allow_remote, allow_owner_port=option.allow_owner_port)
+            server_control.refuse_used_library(option.base_url, allow=option.allow_used_library)
         except server_control.RefusedTarget as refusal:
             raise pytest.UsageError(str(refusal)) from None
     if not Path(option.contract).is_file():
