@@ -636,7 +636,7 @@ const unlockEvent = () => unlockingAudio && !audio.getAttribute('src');
 // Reader view: the chapter text, the player and nothing else. Appearance is a
 // per-browser preference; the reading position is the book's usual bookmark.
 const READER_THEMES = [['paper','Paper','#ffffff'],['sepia','Sepia','#f6efe2'],['dusk','Dusk','#2b2b2e'],['night','Night','#000000']];
-const READER_CHOICES = {font:[['serif','Serif'],['sans','Sans']], spacing:[['compact','Tight'],['normal','Normal'],['relaxed','Loose']], width:[['narrow','Narrow'],['normal','Medium'],['wide','Wide']]};
+const READER_CHOICES = {font:[['serif','Serif'],['sans','Sans']], spacing:[['compact','Tight'],['normal','Normal'],['relaxed','Loose']], width:[['narrow','Narrow'],['normal','Medium'],['wide','Wide'],['wider','Wider'],['full','Full']]};
 const READER_SIZES = [16, 32];
 function readerPrefs() {
   if (!state.readerPrefs) {
