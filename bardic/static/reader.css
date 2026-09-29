@@ -27,6 +27,9 @@ body.reader-mode[data-reader-spacing=compact] { --reader-leading:1.5; }
 body.reader-mode[data-reader-spacing=relaxed] { --reader-leading:2.05; }
 body.reader-mode[data-reader-width=narrow] { --reader-measure:30em; }
 body.reader-mode[data-reader-width=wide] { --reader-measure:48em; }
+/* Wider and Full push the margins out for big screens (12.9-inch iPad Pro); Full uses the whole width inside main's safe-area padding. */
+body.reader-mode[data-reader-width=wider] { --reader-measure:64em; }
+body.reader-mode[data-reader-width=full] { --reader-measure:none; }
 
 /* Hide the workspace around the text. */
 body.reader-mode .sidebar, body.reader-mode .topbar, body.reader-mode .book-header, body.reader-mode .workspace-nav,
