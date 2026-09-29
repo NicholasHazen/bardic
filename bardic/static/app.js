@@ -661,7 +661,7 @@ function setReaderPref(key, value) {
   prefs[key] = key === 'size' ? Math.min(READER_SIZES[1], Math.max(READER_SIZES[0], Number(value) || prefs.size)) : value;
   safeWrite('bardic:reader', prefs);
   applyReaderPrefs(); renderReaderAppearance();
-  if (state.readerMode) updateHighlight({scroll:true, force:key !== 'follow' || value});
+  if (state.readerMode) updateHighlight({scroll:true, force:key !== 'follow' || value, jump:key !== 'follow'});
 }
 function renderReaderAppearance() {
   const panel = $('#reader-appearance');
@@ -699,7 +699,7 @@ function enterReader() {
   $('#reader-bar').hidden = false;
   applyReaderPrefs(); renderReaderBar(); updatePlayer();
   if (!document.querySelector('dialog[open]')) $('#exit-reader').focus({preventScroll:true});
-  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true, jump:true}));
 }
 function exitReader() {
   if (!state.readerMode) return;
@@ -710,7 +710,7 @@ function exitReader() {
   toggleReaderAppearance(false);
   applyReaderPrefs(); keepAwake(false); updatePlayer();
   if (!state.libraryView) $('#open-reader').focus({preventScroll:true});
-  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true, jump:true}));
 }
 // After the reader scrolls away by hand, stop following for a while and offer
 // a way back instead of pulling the page out from under them.
@@ -727,10 +727,28 @@ function passageInView(element) {
   const box = element.getBoundingClientRect(), band = readingBand();
   return (box.top >= band.top && box.top < band.bottom - 40) || (box.top < band.top && box.bottom > band.bottom - 40);
 }
-function scrollToPassage(element) {
-  const box = element.getBoundingClientRect(), band = readingBand();
-  element.scrollIntoView({behavior:scrollMotion(), block:box.height > (band.bottom - band.top) * .6 ? 'start' : 'center'});
+// The reader glides to keep the active passage on a reading line (follow-scroll.js).
+let followForced = false; // a forced move (entering the reader, Back to narration) ignores the follow toggle until it settles
+function followHeld() {
+  return state.readerMode && !followForced && (!readerPrefs().follow || Date.now() - (state.manualScrollAt || 0) < MANUAL_SCROLL_MS);
 }
+function followSample() {
+  const element = activePassage();
+  if (!element || state.tab !== 'read') return null;
+  const box = element.getBoundingClientRect(), band = readingBand(), scroller = document.scrollingElement || document.documentElement;
+  const segment = segmentById(state.segmentId), sounding = state.audioSegmentId === state.segmentId;
+  const duration = sounding ? passageDuration(segment) : 0;
+  return {
+    boxTop:box.top, boxHeight:box.height, bandTop:band.top, bandBottom:band.bottom,
+    scrollTop:window.scrollY, maxScroll:scroller.scrollHeight - window.innerHeight,
+    progress:duration > 0 ? Math.min(1, passageTime() / duration) : 0, playing:sounding && !audio.paused
+  };
+}
+const follower = window.BardicFollow?.create({
+  sample:followSample, held:followHeld, onStop:() => { followForced = false; },
+  scrollTo:y => window.scrollTo({top:y, behavior:'instant'}),
+  reduced:() => scrollMotion() === 'auto'
+});
 function updateFollowButton() {
   const active = state.readerMode && !audio.paused && activePassage();
   $('#reader-follow').hidden = !active || passageInView(active);
@@ -1467,7 +1485,7 @@ function setChapter(id, {scroll = true} = {}) {
   if (scroll) window.scrollTo({top:0, behavior:scrollMotion()});
   if (keepListening && state.segmentId) void startSegment(state.segmentId, {autoplay:true});
 }
-function updateHighlight({scroll = false, force = false} = {}) {
+function updateHighlight({scroll = false, force = false, jump = false} = {}) {
   const passages = $$('.passage'), placed = passages.some(el => el.dataset.segment === state.segmentId);
   passages.forEach((el, index) => {
     const active = el.dataset.segment === state.segmentId;
@@ -1479,8 +1497,8 @@ function updateHighlight({scroll = false, force = false} = {}) {
   if (scroll && state.tab === 'read') {
     const active = activePassage();
     const held = state.readerMode && !force && (!readerPrefs().follow || Date.now() - (state.manualScrollAt || 0) < MANUAL_SCROLL_MS);
-    if (active && !held && !passageInView(active)) scrollToPassage(active);
     if (force) state.manualScrollAt = 0;
+    if (active && !held) { followForced = force; follower?.retarget({jump}); }
   }
   if (state.readerMode) updateFollowButton();
   renderPassageDetail();
@@ -2324,6 +2342,23 @@ document.addEventListener('click', event => {
 for (const name of ['touchmove','wheel']) window.addEventListener(name, event => {
   if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) state.manualScrollAt = Date.now();
 }, {passive:true});
+// A finger on the text pauses following so the glide never fights a drag or iOS momentum; lifting
+// it without scrolling resumes. Scrolling by hand holds following (MANUAL_SCROLL_MS) as before.
+window.addEventListener('touchstart', event => {
+  if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) follower?.suspend();
+}, {passive:true});
+for (const name of ['touchend','touchcancel']) window.addEventListener(name, () => follower?.resume(), {passive:true});
+window.addEventListener('keydown', event => {
+  // Keys that scroll the page, or move focus through the text (the browser then scrolls to it), are manual scrolling.
+  const scrolls = ['PageUp','PageDown','End','Home'].includes(event.key) || event.target.closest?.('#reader-text') && event.key.startsWith('Arrow');
+  if (state.readerMode && scrolls && !event.target.closest?.('input,textarea,select,dialog')) state.manualScrollAt = Date.now();
+});
+// New width, orientation or browser chrome moves the text: settle the passage on its line again.
+let followResize = 0;
+window.addEventListener('resize', () => {
+  if (!state.readerMode || followResize) return;
+  followResize = requestAnimationFrame(() => { followResize = 0; if (!followHeld()) follower?.retarget({jump:true}); });
+});
 window.addEventListener('scroll', () => {
   if (!state.readerMode) return;
   // The reader bar is sticky and always shown, so scrolling only affects the follow button.
