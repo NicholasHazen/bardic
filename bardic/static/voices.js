@@ -144,7 +144,7 @@
     const id = value?.startsWith?.(LIB) ? value.slice(LIB.length) : !value && provider === 'breeze' ? library?.defaults?.breeze : null;
     const voice = id ? findVoice(library, id) : null;
     const version = currentVersion(voice);
-    return voice ? [voice.id, voice.current_version, version?.provider_voice_id ?? null, version?.revision ?? null] : null;
+    return voice ? [voice.id, voice.current_version, version?.provider_voice_id ?? null, version?.voice_revision ?? null] : null;
   }
   const cast = {LIB, DIRECT, CREATE, encodeSelection, decodeChoice, requestVoice, castOptions, castWarnings, choiceLabel,
     defaultLabel, defaultVoice, findVoice, libraryVoices, currentVersion, identity};

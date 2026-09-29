@@ -45,7 +45,7 @@ def test_series_membership_identity_link_and_unlink(client):
     assert view["characters"][0]["id"] == identity["id"]
     context = client.get(f"/api/books/{book['id']}/series/context").json()
     assert context["series"]["id"] == series["id"] and context["included_observations"] == 0
-    assert client.put(url,json={"series_character_id":None}).json()["linked"] is False
+    assert client.put(url,json={"series_character_id":None}).json() == {"character_id":person["id"],"kind":"unlinked"}
     removed = client.put(f"/api/books/{book['id']}/series",json={"series_id":None}).json()
     assert removed == {"membership":None,"series":None,"characters":[],"links":[]}
 

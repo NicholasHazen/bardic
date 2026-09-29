@@ -54,7 +54,7 @@
       test:segment => segment.kind === 'dialogue' && finite(segment.confidence) && segment.confidence <= LOW_CONFIDENCE},
     // Shown only when some passage in the book carries a BookNLP check.
     {id:'booknlp', label:'BookNLP disagrees', short:'BookNLP disagrees', test:segment => segment.speaker_check?.result === 'differs',
-      available:book => (book.segments || []).some(segment => segment.speaker_check)},
+      available:book => (book.passages || []).some(segment => segment.speaker_check)},
     {id:'edited', label:'Your edits', short:'your edits', test:segment => editedFields(segment).length > 0},
     {id:'not-recorded', label:'Not recorded', short:'not recorded', test:(segment, book, playable) => !playable(segment)},
   ];
@@ -68,7 +68,7 @@
   function counts(book, chapterId, playable = playableOf()) {
     const out = {};
     for (const filter of filtersFor(book)) out[filter.id] = {chapter:0, book:0};
-    for (const segment of book.segments || []) {
+    for (const segment of book.passages || []) {
       for (const filter of filtersFor(book)) {
         if (!filter.test(segment, book, playable)) continue;
         out[filter.id].book++;
@@ -82,7 +82,7 @@
     if (!active.size || pinned.has(segment.id)) return true;
     return FILTERS.some(filter => active.has(filter.id) && filter.test(segment, book, playable));
   }
-  const chapterSegments = (book, chapterId) => (book.segments || []).filter(segment => segment.chapter_id === chapterId);
+  const chapterSegments = (book, chapterId) => (book.passages || []).filter(segment => segment.chapter_id === chapterId);
   function visibleSegments(book, chapterId, active = view.filters, pinned = view.pinned, playable = playableOf()) {
     return chapterSegments(book, chapterId).filter(segment => matches(segment, book, active, playable, pinned));
   }
@@ -90,7 +90,7 @@
   function chapterMatches(book, active = view.filters, playable = playableOf()) {
     const out = new Map();
     if (!active.size) return out;
-    for (const segment of book.segments || []) {
+    for (const segment of book.passages || []) {
       if (matches(segment, book, active, playable)) out.set(segment.chapter_id, (out.get(segment.chapter_id) || 0) + 1);
     }
     return out;
@@ -124,7 +124,7 @@
     entry.state = 'dirty';
     entry.error = null;
     edits.set(key, entry);
-    if (kind === 'segments' && view.filters.size) view.pinned.add(id);
+    if (kind === 'passages' && view.filters.size) view.pinned.add(id);
     clearTimeout(entry.timer);
     entry.timer = null;
     if (now) return save(entry);
@@ -197,26 +197,26 @@
     const speaker = (book.characters || []).find(character => character.id === speakerId);
     if (!speaker) return null;
     const bookId = book.id;
-    const todo = ids.filter(id => itemOf(book, 'segments', id));
+    const todo = ids.filter(id => itemOf(book, 'passages', id));
     const result = {running:true, total:todo.length, done:0, saved:0, unchanged:0, failed:[], speaker:speaker.name};
     view.bulk = result;
     paintBulk();
     let latest = null;
     for (const id of todo) {
-      const segment = itemOf(latest || api.state.book, 'segments', id);
+      const segment = itemOf(latest || api.state.book, 'passages', id);
       // A waiting speaker edit for this passage is replaced by this assignment.
-      const pendingDraft = draft(bookId, 'segments', id, 'speaker_id');
+      const pendingDraft = draft(bookId, 'passages', id, 'speaker_id');
       if (pendingDraft) { clearTimeout(pendingDraft.timer); edits.delete(pendingDraft.key); }
       if (segment && segment.speaker_id === speakerId) { result.unchanged++; result.done++; paintBulk(); continue; }
-      setRow('segments', id, {tone:'info', text:'Saving…'});
+      setRow('passages', id, {tone:'info', text:'Saving…'});
       try {
-        latest = await enqueue(() => api.patch(`/api/books/${encodeURIComponent(bookId)}/segments/${encodeURIComponent(id)}`, {speaker_id:speakerId}));
+        latest = await enqueue(() => api.patch(`/api/books/${encodeURIComponent(bookId)}/passages/${encodeURIComponent(id)}`, {speaker_id:speakerId}));
         result.saved++;
         view.pinned.add(id);
-        rows.set(rowKey('segments', id), {tone:'good', text:`Saved · ${speaker.name}`, at:Date.now()});
+        rows.set(rowKey('passages', id), {tone:'good', text:`Saved · ${speaker.name}`, at:Date.now()});
       } catch (error) {
         result.failed.push({id, error:error?.message || 'Could not save.'});
-        rows.set(rowKey('segments', id), {tone:'bad', text:`Not saved: ${error?.message || 'Could not save.'}`});
+        rows.set(rowKey('passages', id), {tone:'bad', text:`Not saved: ${error?.message || 'Could not save.'}`});
       }
       result.done++;
       paintBulk();
@@ -264,8 +264,8 @@
 
   function rowHtml(segment, number, book, {playable, paid, busy}) {
     const id = segment.id;
-    const speaker = draft(book.id, 'segments', id, 'speaker_id')?.value ?? segment.speaker_id;
-    const direction = draft(book.id, 'segments', id, 'direction')?.value ?? segment.direction ?? '';
+    const speaker = draft(book.id, 'passages', id, 'speaker_id')?.value ?? segment.speaker_id;
+    const direction = draft(book.id, 'passages', id, 'direction')?.value ?? segment.direction ?? '';
     const recorded = playable(segment);
     const record = ui().button({label:recorded ? 'Record again' : 'Record', size:'small', disabled:busy,
       attrs:{class:'button subtle small render-action', 'data-render-segment':id, 'data-key':`record-${id}`,
@@ -273,7 +273,7 @@
     const play = recorded ? ui().button({label:'Play the recording', size:'small', attrs:{'data-play-segment':id, 'data-key':`play-${id}`}}) : '';
     const hear = ui().button({label:paid ? 'Hear example · paid' : 'Hear example', size:'small',
       attrs:{'data-preview-speaker':id, 'data-key':`hear-${id}`, 'aria-label':`Hear the chosen speaker on passage ${number}${paid ? ' (paid request)' : ''}`}});
-    const status = rows.get(rowKey('segments', id));
+    const status = rows.get(rowKey('passages', id));
     const classes = ['segment-row', 'script-row', view.target === id ? 'is-target' : '', view.selected.has(id) ? 'is-selected' : ''].filter(Boolean).join(' ');
     return `<form class="${classes}" id="script-row-${esc(id)}" data-segment-form="${esc(id)}">`
       + `<input type="checkbox" class="script-pick" id="script-pick-${esc(id)}" data-script-pick="${esc(id)}" data-key="pick-${esc(id)}" aria-label="Select passage ${number}"${view.selected.has(id) ? ' checked' : ''}>`
@@ -284,7 +284,7 @@
       + `<label class="sr-only" for="segment-direction-${esc(id)}">Performance note for passage ${number}</label>`
       + `<input id="segment-direction-${esc(id)}" name="direction" maxlength="3000" data-script-field="direction" data-key="direction-${esc(id)}" value="${esc(direction)}" placeholder="Performance note…" autocomplete="off">`
       + `<details class="script-row-more" data-script-more="${esc(id)}"${view.open.has(id) ? ' open' : ''}><summary data-key="more-${esc(id)}" aria-label="More for passage ${number}">More</summary><div class="script-row-menu">${record}${play}</div></details></div>`
-      + `<div class="script-row-status">${ui().message({id:`script-status-segments-${id}`})}${status?.retry ? ui().button({label:'Try again', variant:'text', size:'small', attrs:{'data-script-retry':`segments:${id}`, 'data-key':`retry-${id}`}}) : ''}</div>`
+      + `<div class="script-row-status">${ui().message({id:`script-status-passages-${id}`})}${status?.retry ? ui().button({label:'Try again', variant:'text', size:'small', attrs:{'data-script-retry':`passages:${id}`, 'data-key':`retry-${id}`}}) : ''}</div>`
       + '</div></form>';
   }
 
@@ -402,7 +402,7 @@
     const list = node('#scene-list');
     if (list) keepFocus(list, () => {
       const cards = scenes.map((scene, sceneIndex) => {
-        const items = all.filter(segment => (segment.scene_id === scene.id || scene.segment_ids?.includes(segment.id)) && shownSet.has(segment.id));
+        const items = all.filter(segment => (segment.scene_id === scene.id || scene.passage_ids?.includes(segment.id)) && shownSet.has(segment.id));
         return items.length || !view.filters.size ? sceneHtml(scene, sceneIndex, items, numbers, book, options) : '';
       }).join('');
       list.innerHTML = cards || (scenes.length ? `<div class="empty-state">Nothing in this chapter matches. Turn a chip off, or pick another chapter.</div>`
@@ -443,7 +443,7 @@
   }
 
   // ---- Events ------------------------------------------------------------------------------------
-  const kindOf = element => element?.closest?.('[data-segment-form]') ? ['segments', element.closest('[data-segment-form]').dataset.segmentForm]
+  const kindOf = element => element?.closest?.('[data-segment-form]') ? ['passages', element.closest('[data-segment-form]').dataset.segmentForm]
     : element?.closest?.('[data-scene-form]') ? ['scenes', element.closest('[data-scene-form]').dataset.sceneForm] : [null, null];
 
   function onChange(event) {
@@ -541,7 +541,7 @@
   /** The row form for Enter in a text field: save that row now. */
   function submit(form) {
     const id = form?.dataset?.segmentForm || form?.dataset?.sceneForm;
-    const kind = form?.dataset?.segmentForm ? 'segments' : form?.dataset?.sceneForm ? 'scenes' : null;
+    const kind = form?.dataset?.segmentForm ? 'passages' : form?.dataset?.sceneForm ? 'scenes' : null;
     if (!kind) return Promise.resolve(false);
     for (const element of Array.from(form.elements || [])) {
       const field = element?.dataset?.scriptField;
@@ -558,7 +558,7 @@
     const {bookId, segmentId} = event?.detail || {};
     const book = api?.state?.book;
     if (!book || book.id !== bookId) return false;
-    const segment = itemOf(book, 'segments', segmentId);
+    const segment = itemOf(book, 'passages', segmentId);
     if (!segment) return false;
     event.preventDefault?.();
     void flush(book.id);

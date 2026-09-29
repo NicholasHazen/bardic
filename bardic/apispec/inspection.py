@@ -5,11 +5,14 @@ passage search, resource usage and the portable analysis export.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import Field
+from typing_extensions import TypeAliasType
 
 from .base import Op, View, op
+from .enums import AnalysisProvider
+from .books import BookLogicalSection
 from .common import Job
 
 BOOK_ID = 'Book ID, from the library or the import response.'
@@ -22,7 +25,7 @@ READ_ONLY = ('This GET creates and changes no domain records: no artifacts, deci
 
 class AnalysisUsage(View):
     """Tracked analysis request usage for a book, across all runs, including runs of the removed Classic engine."""
-    attempts: int = Field(description='Recorded analysis HTTP attempts, including failed and repair attempts.')
+    attempt_count: int = Field(description='Recorded analysis HTTP attempts, including failed and repair attempts.')
     input_tokens: int = Field(description='Sum of reported input tokens. Attempts without reported usage add 0 here; see '
                                           '`unknown_usage_attempts`.')
     output_tokens: int = Field(description='Sum of reported output tokens (same caveat).')
@@ -74,54 +77,63 @@ class PipelineStage(View):
 class PipelineAttempt(View):
     """One recorded analysis HTTP attempt, newest 100 for the book (step pipeline, or the removed Classic engine).
 
+    This is the attempt ledger's own row: reservations, price rates and the recipe artifact. `ResourceOperation`
+    is the separate, wider usage row (analysis requests, local work, narration, cache reuse) with measurements
+    an attempt does not have (`cpu_seconds`, `audio_seconds`, `output_bytes`); the two overlap on analysis requests
+    but differ in fields (`charged_estimate_usd` against `estimated_cost_usd`, `reserved_*` tokens), so they stay
+    separate schemas.
+
     The pipeline inspector lists the newest 100 for the book; the analysis
     export's `analysis-attempts.json` lists all of them in this same shape.
-    Fields come from the stored attempt through a fixed allowlist and may be
-    absent on records from older versions. Prompts, responses, credentials
-    and server process IDs are never included.
+    Fields come from the stored attempt through a fixed allowlist, and every one is
+    always present: a field the stored attempt lacks is null (an attempt still
+    `reserved` has no `completed_at` or `http_status`, and records from older
+    versions may lack more). The export bundle's `analysis-attempts.json` omits
+    such fields instead of sending null. Prompts, responses, credentials and
+    server process IDs are never included.
     """
     id: str = Field(description='Attempt ID.')
-    book_id: str | None = Field(default=None, description='Book the attempt was made for.')
-    run_id: str | None = Field(default=None, description='Job ID of the run that sent it.')
-    stage: str | None = Field(default=None, description='Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records.')
-    unit_key: str | None = Field(default=None, description='Opaque cache key of the unit of work.')
-    chapter_id: str | None = Field(default=None, description='Chapter the request was about, when recorded.')
-    provider: str | None = Field(default=None, description='Provider ID.')
-    model: str | None = Field(default=None, description='Model ID.')
+    book_id: str | None = Field(description='Book the attempt was made for.')
+    run_id: str | None = Field(description='Job ID of the run that sent it.')
+    stage: str | None = Field(description='Pipeline step ID, or a stage of the removed Classic engine (`discovery`, `profiles`, `directing`) on older records.')
+    unit_key: str | None = Field(description='Opaque cache key of the unit of work.')
+    chapter_id: str | None = Field(description='Chapter the request was about, when recorded.')
+    provider: AnalysisProvider | None = Field(description='Analysis provider ID.')
+    model: str | None = Field(description='Model ID.')
     status: Literal['reserved', 'received', 'uncertain', 'not_sent', 'interrupted_unknown'] | None = Field(
-        default=None, description='`reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response '
-                                  'arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: '
-                                  'the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not '
-                                  'active, so the outcome is unknown.')
-    created_at: str | None = Field(default=None, description='ISO 8601 UTC reservation time.')
-    completed_at: str | None = Field(default=None, description='ISO 8601 UTC time the outcome was recorded; absent while reserved.')
-    http_status: int | None = Field(default=None, description='Provider HTTP status code. A 200 does not mean the output passed validation.')
-    input_tokens: int | None = Field(default=None, description='Reported input tokens; null when not reported.')
-    output_tokens: int | None = Field(default=None, description='Reported output tokens; null when not reported.')
-    cached_input_tokens: int | None = Field(default=None, description='Reported cached input tokens; null when not reported.')
-    cache_write_input_tokens: int | None = Field(default=None, description='Reported cache-write input tokens; null when not reported.')
-    reserved_input_tokens: int | None = Field(default=None, description='Input allowance reserved before sending (conservative).')
-    reserved_output_tokens: int | None = Field(default=None, description='Output allowance reserved before sending.')
-    charged_estimate_usd: float | None = Field(default=None, description='Conservative USD estimate for this attempt; null when unknown.')
-    cost_basis: str | None = Field(default=None, description='How `charged_estimate_usd` was made, e.g. `reservation`, '
+        description='`reserved`: allowance reserved and request possibly in flight. `received`: an HTTP response '
+                    'arrived (any status code). `uncertain`: sent but no response (billing unknown). `not_sent`: '
+                    'the connection failed before sending. `interrupted_unknown`: still `reserved` but its run is not '
+                    'active, so the outcome is unknown.')
+    created_at: str | None = Field(description='ISO 8601 UTC reservation time.')
+    completed_at: str | None = Field(description='ISO 8601 UTC time the outcome was recorded; absent while reserved.')
+    http_status: int | None = Field(description='Provider HTTP status code. A 200 does not mean the output passed validation.')
+    input_tokens: int | None = Field(description='Reported input tokens; null when not reported.')
+    output_tokens: int | None = Field(description='Reported output tokens; null when not reported.')
+    cached_input_tokens: int | None = Field(description='Reported cached input tokens; null when not reported.')
+    cache_write_input_tokens: int | None = Field(description='Reported cache-write input tokens; null when not reported.')
+    reserved_input_tokens: int | None = Field(description='Input allowance reserved before sending (conservative).')
+    reserved_output_tokens: int | None = Field(description='Output allowance reserved before sending.')
+    charged_estimate_usd: float | None = Field(description='Conservative USD estimate for this attempt; null when unknown.')
+    cost_basis: str | None = Field(description='How `charged_estimate_usd` was made, e.g. `reservation`, '
                                                             '`usage_estimate_with_guard_uplift`, `not_sent` or `unknown`.')
-    input_rate: float | None = Field(default=None, description='Input price used for the estimate, in USD per million input '
+    input_rate: float | None = Field(description='Input price used for the estimate, in USD per million input '
                                                                'tokens; null when the model has no known price.')
-    output_rate: float | None = Field(default=None, description='Output price used for the estimate, in USD per million output '
+    output_rate: float | None = Field(description='Output price used for the estimate, in USD per million output '
                                                                 'tokens; null when the model has no known price. '
                                                                 '`charged_estimate_usd` = (input tokens × `input_rate` × 1.25 + '
                                                                 'output tokens × `output_rate`) / 1,000,000, using reported '
                                                                 'usage when present and the reservation otherwise.')
-    price_as_of: str | None = Field(default=None, description='Date of the price table used for the estimate, or null.')
-    price_source: str | None = Field(default=None, description='URL of the price source used, or null.')
-    elapsed_seconds: float | None = Field(default=None, description='Measured wall time of the request in seconds; null when unknown.')
-    input_artifact_id: str | None = Field(default=None, description='Artifact ID of the retained request recipe (`analysis_input`).')
+    price_as_of: str | None = Field(description='Date of the price table used for the estimate, or null.')
+    price_source: str | None = Field(description='URL of the price source used, or null.')
+    elapsed_seconds: float | None = Field(description='Measured wall time of the request in seconds; null when unknown.')
+    input_artifact_id: str | None = Field(description='Artifact ID of the retained request recipe (`analysis_input`).')
     validation_state: Literal['accepted', 'rejected', 'unknown'] = Field(
         description='From retained events: `accepted` or `rejected` by output validation; `unknown` when no event links it.')
 
 
 class PipelineEvent(View):
-    """One retained analysis event (newest 100 for the book)."""
+    """One retained analysis event (newest 100 for the book). The last five fields describe particular events and are null for the others."""
     id: str = Field(description='Event ID (32 hex characters).')
     book_id: str = Field(description='Book ID the event belongs to.')
     run_id: str | None = Field(description='Job ID of the run.')
@@ -130,12 +142,12 @@ class PipelineEvent(View):
     event: Literal['started', 'accepted', 'cache_hit', 'cache_rejected', 'cache_superseded', 'validation_rejected',
                    'budget_limited', 'failed', 'cancelled'] = Field(description='What happened to the unit.')
     created_at: str = Field(description='ISO 8601 UTC.')
-    artifact_id: str | None = Field(default=None, description='Related artifact: request recipe (`started`), accepted output, '
+    artifact_id: str | None = Field(description='Related artifact: request recipe (`started`), accepted output, '
                                                              'cached output or rejection record.')
-    attempt_id: str | None = Field(default=None, description='Related HTTP attempt, when known.')
-    error: str | None = Field(default=None, description='Redacted failure or rejection text. Display only.')
-    cached_unit_key: str | None = Field(default=None, description='For `cache_rejected` in older Classic runs: the unit key of the rejected cache entry.')
-    repair: bool | None = Field(default=None, description='For step-pipeline `started`: true when this is an evidence-repair request.')
+    attempt_id: str | None = Field(description='Related HTTP attempt, when known.')
+    error: str | None = Field(description='Redacted failure or rejection text. Display only.')
+    cached_unit_key: str | None = Field(description='For `cache_rejected` in older Classic runs: the unit key of the rejected cache entry.')
+    repair: bool | None = Field(description='For step-pipeline `started`: true when this is an evidence-repair request.')
 
 
 class PipelineCapabilities(View):
@@ -185,11 +197,11 @@ class ResourceAggregate(View):
     cpu_seconds: float | None = Field(description='Sum of measured current-Python-thread CPU seconds.')
     audio_seconds: float | None = Field(description='Sum of produced or reused audio duration in seconds.')
     estimated_cost_usd: float | None = Field(description='Sum of known cost estimates in USD. Not an invoice.')
-    input_tokens: float | None = Field(description='Sum of reported input tokens.')
-    output_tokens: float | None = Field(description='Sum of reported output tokens.')
-    cached_input_tokens: float | None = Field(description='Sum of reported cached input tokens.')
-    cache_write_input_tokens: float | None = Field(description='Sum of reported cache-write input tokens.')
-    output_bytes: float | None = Field(description='Sum of recorded output sizes in bytes.')
+    input_tokens: int | None = Field(description='Sum of reported input tokens.')
+    output_tokens: int | None = Field(description='Sum of reported output tokens.')
+    cached_input_tokens: int | None = Field(description='Sum of reported cached input tokens.')
+    cache_write_input_tokens: int | None = Field(description='Sum of reported cache-write input tokens.')
+    output_bytes: int | None = Field(description='Sum of recorded output sizes in bytes.')
     unknown_elapsed_seconds_operations: int = Field(description='Rows with no recorded elapsed time (for example cache reuse or historical rows). Such rows are left out of `elapsed_seconds`; unknown is not zero.')
     unknown_cpu_seconds_operations: int = Field(description='Rows with no measured CPU time (CPU is only measured for opted-in local work, so most cloud and cached rows count here). Unknown is not zero.')
     unknown_audio_seconds_operations: int = Field(description='Rows with no recorded audio duration (including every non-audio row such as analysis requests). Unknown is not zero.')
@@ -223,21 +235,21 @@ class ResourceOperation(View):
     `kind` tells the three apart. `analysis_request` rows come from the
     analysis attempt ledger; `cache_reuse` rows from cache-hit events (no
     request, no measured duration); every other kind from the resource
-    ledger. Absent or null measurements are unknown, not zero.
+    ledger. Every field is always present; a null measurement is unknown, not zero.
     """
     id: str = Field(description='Row ID (32 hex characters): the analysis attempt ID for `analysis_request`, the cache-hit event ID '
                                 'for `cache_reuse`, otherwise the resource-ledger operation ID. Unique within the response.')
     book_id: str = Field(description='Book ID the work was recorded for.')
-    run_id: str | None = Field(default=None, description='Job ID, or null for work outside a job (e.g. imports).')
-    stage: str | None = Field(default=None, description='What was measured, e.g. `discovery`, `discovery_validation`, `publication`, '
+    run_id: str | None = Field(description='Job ID, or null for work outside a job (e.g. imports).')
+    stage: str | None = Field(description='What was measured, e.g. `discovery`, `discovery_validation`, `publication`, '
                                                        '`census`, `local_analysis`, `narration`, `simple_listen`, `listen_chunk`, '
                                                        '`voice_preview`, `voice_design`, `import`, `structure_repair`, '
                                                        '`metadata_refresh`, `audio_export`, or a pipeline step ID. `source_search` and '
                                                        '`analysis_export` rows were recorded by versions before contract 0.2.0 and remain.')
-    unit_key: str | None = Field(default=None, description='Opaque unit key (cache key, passage ID, preview ID or census fingerprint).')
-    chapter_id: str | None = Field(default=None, description='Chapter the work belongs to, when recorded.')
-    provider: str | None = Field(default=None, description='Provider ID (`local` for local work).')
-    model: str | None = Field(default=None, description='Model ID, when any.')
+    unit_key: str | None = Field(description='Opaque unit key (cache key, passage ID, preview ID or census fingerprint), or null when the work has none.')
+    chapter_id: str | None = Field(description='Chapter the work belongs to, when recorded.')
+    provider: str | None = Field(description='Provider ID (`local` for local work).')
+    model: str | None = Field(description='Model ID, when any.')
     kind: str = Field(description='`analysis_request`, `cache_reuse`, or a resource-ledger kind: `local`, `assembly`, `validation`, `narration`.')
     cached: bool = Field(description='True when saved output was reused without a provider request.')
     status: Literal['reserved', 'received', 'uncertain', 'not_sent', 'running', 'completed', 'failed', 'interrupted', 'unknown'] = Field(
@@ -245,31 +257,31 @@ class ResourceOperation(View):
                     'status was >= 400 or a failure event names it, `unknown` for legacy rows. Other rows: `running`, `completed`, '
                     '`failed`, `interrupted`. Rows left `running`/`reserved` by an earlier server process or a finished job are '
                     'reported `interrupted`.')
-    created_at: str | None = Field(default=None, description='ISO 8601 UTC start time.')
-    completed_at: str | None = Field(default=None, description='ISO 8601 UTC end time; absent while running.')
-    request_count: int | None = Field(default=None, description='Provider requests made: 1 for analysis requests, 0 for local/cached '
+    created_at: str | None = Field(description='ISO 8601 UTC start time, or null when it was not recorded.')
+    completed_at: str | None = Field(description='ISO 8601 UTC end time; absent while running.')
+    request_count: int | None = Field(description='Provider requests made: 1 for analysis requests, 0 for local/cached '
                                                               'work, null when unknown (e.g. a cloud narration that failed early).')
-    input_tokens: int | None = Field(default=None, description='Reported input tokens.')
-    output_tokens: int | None = Field(default=None, description='Reported output tokens.')
-    cached_input_tokens: int | None = Field(default=None, description='Reported cached input tokens.')
-    cache_write_input_tokens: int | None = Field(default=None, description='Reported cache-write input tokens.')
-    output_bytes: int | None = Field(default=None, description='Bytes written (audio, exports).')
-    elapsed_seconds: float | None = Field(default=None, description='Measured wall time of this step in seconds.')
-    cpu_seconds: float | None = Field(default=None, description='Measured CPU seconds of the current Python thread (local work only).')
-    audio_seconds: float | None = Field(default=None, description='Audio duration produced or reused, in seconds.')
-    estimated_cost_usd: float | None = Field(default=None, description='Estimated USD cost; 0 for local/cached/self-hosted work; null when unknown.')
-    cost_basis: str | None = Field(default=None, description='How the estimate was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, '
+    input_tokens: int | None = Field(description='Reported input tokens.')
+    output_tokens: int | None = Field(description='Reported output tokens.')
+    cached_input_tokens: int | None = Field(description='Reported cached input tokens.')
+    cache_write_input_tokens: int | None = Field(description='Reported cache-write input tokens.')
+    output_bytes: int | None = Field(description='Bytes written (audio, exports).')
+    elapsed_seconds: float | None = Field(description='Measured wall time of this step in seconds.')
+    cpu_seconds: float | None = Field(description='Measured CPU seconds of the current Python thread (local work only).')
+    audio_seconds: float | None = Field(description='Audio duration produced or reused, in seconds.')
+    estimated_cost_usd: float | None = Field(description='Estimated USD cost; 0 for local/cached/self-hosted work; null when unknown.')
+    cost_basis: str | None = Field(description='How the estimate was made, e.g. `reservation`, `usage_estimate_with_guard_uplift`, '
                                                             '`not_sent`, `no_provider_request`, `self_hosted`, '
                                                             '`standard_paid_tier_usage_estimate`, `legacy_estimate`, `unknown`.')
-    price_as_of: str | None = Field(default=None, description='Date of the price table used.')
-    price_source: str | None = Field(default=None, description='URL of the price source used.')
-    usage_source: str | None = Field(default=None, description='Where token usage came from (narration), e.g. `gemini_interactions` or `not_reported`.')
-    cpu_scope: str | None = Field(default=None, description='`current_python_thread` when CPU was measured.')
-    artifact_id: str | None = Field(default=None, description='Related retained artifact, when recorded.')
-    asset_id: str | None = Field(default=None, description='Related stored audio asset, when recorded.')
-    http_status: int | None = Field(default=None, description='Provider HTTP status, when any.')
+    price_as_of: str | None = Field(description='Date of the price table used.')
+    price_source: str | None = Field(description='URL of the price source used.')
+    usage_source: str | None = Field(description='Where token usage came from (narration), e.g. `gemini_interactions` or `not_reported`.')
+    cpu_scope: str | None = Field(description='`current_python_thread` when CPU was measured.')
+    artifact_id: str | None = Field(description='Related retained artifact, when recorded.')
+    asset_id: str | None = Field(description='Related stored audio asset, when recorded.')
+    http_status: int | None = Field(description='Provider HTTP status, when any.')
     validation_state: Literal['accepted', 'rejected', 'unknown'] | None = Field(
-        default=None, description='Analysis requests only: output validation outcome from retained events.')
+        description='Analysis requests only: output validation outcome from retained events.')
 
 
 class ResourceSummary(View):
@@ -349,16 +361,6 @@ class ArtifactDetail(ArtifactSummary):
                                      'origin, inputs, result}`.')
 
 
-class StoryMapLogicalSection(View):
-    """A contents-entry section inside one chapter (EPUB navigation)."""
-    title: str = Field(description='Contents-entry label from the EPUB navigation, non-empty, truncated to 300 characters.')
-    start: int = Field(description='Code-point offset into the chapter text (inclusive).')
-    end: int = Field(description='Code-point offset (exclusive).')
-    kind: str = Field(description='Section type, as for chapters.')
-    depth: int = Field(description='Navigation nesting depth (0 = top).')
-    title_source: str = Field(description='Where the title came from, e.g. `epub_nav` or `epub_ncx`.')
-
-
 class StoryMapScene(View):
     """A scene with its passages and attributed speakers."""
     id: str = Field(description='Scene ID.')
@@ -378,7 +380,7 @@ class StoryMapChapter(View):
     start: int = Field(description='Always 0.')
     end: int = Field(description='Chapter length in code points.')
     source_artifact_id: str | None = Field(description='Current `source` artifact for the chapter text, or null.')
-    logical_sections: list[StoryMapLogicalSection] = Field(description='EPUB contents entries that fall inside this chapter, in order; '
+    logical_sections: list[BookLogicalSection] = Field(description='EPUB contents entries that fall inside this chapter, in order; '
                                                                            'empty for books without EPUB navigation (for example plain-text imports).')
     scenes: list[StoryMapScene] = Field(description='Scenes of this chapter in stored order; empty before scene analysis.')
 
@@ -396,41 +398,95 @@ class StoryMapSourceAnchor(View):
     end: int = Field(description='Code-point offset (exclusive).')
 
 
-class StoryMapNode(View):
-    """A typed graph node. IDs are `<book_id>:<type>:<local id>`, so they are unique across books."""
-    id: str = Field(description='Graph node ID `<book_id>:<type>:<local id>`, where the local ID is the book, chapter, scene, passage or '
-                                'book-local character ID. Referenced by edge `from`/`to`.')
-    type: Literal['book', 'chapter', 'scene', 'passage', 'character'] = Field(
-        description='Node type; decides which of the optional ID fields below are present.')
-    book_id: str | None = Field(default=None, description='`book` nodes.')
-    chapter_id: str | None = Field(default=None, description='`chapter` and `passage` nodes.')
-    source_artifact_id: str | None = Field(default=None, description='`chapter` nodes: current source artifact, or null.')
-    scene_id: str | None = Field(default=None, description='`scene` nodes.')
-    passage_id: str | None = Field(default=None, description='`passage` nodes.')
-    source_anchor: StoryMapSourceAnchor | None = Field(default=None, description='`passage` nodes: verified anchor, or null when the '
-                                                                                 'passage text does not match its offsets.')
-    character_id: str | None = Field(default=None, description='`character` nodes.')
-    name: str | None = Field(default=None, description='`character` nodes.')
+class StoryMapBookNode(View):
+    """The one `book` node of the graph."""
+    id: str = Field(description='Graph node ID `<book_id>:book:<book_id>`. Referenced by edge `from`/`to`.')
+    type: Literal['book'] = Field(description='Tag of `StoryMapNode`: `book`.')
+    book_id: str = Field(description='The book ID.')
 
 
-class StoryMapEdge(View):
-    """A typed graph edge."""
+class StoryMapChapterNode(View):
+    """A `chapter` node."""
+    id: str = Field(description='Graph node ID `<book_id>:chapter:<chapter_id>`.')
+    type: Literal['chapter'] = Field(description='Tag of `StoryMapNode`: `chapter`.')
+    chapter_id: str = Field(description='The chapter ID.')
+    source_artifact_id: str | None = Field(description='The chapter\'s current `source` artifact, or null.')
+
+
+class StoryMapSceneNode(View):
+    """A `scene` node."""
+    id: str = Field(description='Graph node ID `<book_id>:scene:<scene_id>`.')
+    type: Literal['scene'] = Field(description='Tag of `StoryMapNode`: `scene`.')
+    scene_id: str = Field(description='The scene ID.')
+
+
+class StoryMapPassageNode(View):
+    """A `passage` node."""
+    id: str = Field(description='Graph node ID `<book_id>:passage:<passage_id>`.')
+    type: Literal['passage'] = Field(description='Tag of `StoryMapNode`: `passage`.')
+    passage_id: str = Field(description='The passage ID.')
+    chapter_id: str = Field(description='The chapter containing the passage.')
+    source_anchor: StoryMapSourceAnchor | None = Field(
+        description='Verified anchor of the passage in its chapter\'s source artifact, or null when the passage text does '
+                    'not match its offsets.')
+
+
+class StoryMapCharacterNode(View):
+    """A `character` node: one per cast member."""
+    id: str = Field(description='Graph node ID `<book_id>:character:<character_id>`.')
+    type: Literal['character'] = Field(description='Tag of `StoryMapNode`: `character`.')
+    character_id: str = Field(description='The book-local character ID.')
+    name: str = Field(description='The character\'s display name.')
+
+
+StoryMapNode = TypeAliasType('StoryMapNode', Annotated[
+    Union[StoryMapBookNode, StoryMapChapterNode, StoryMapSceneNode, StoryMapPassageNode, StoryMapCharacterNode], Field(
+        discriminator='type',
+        description='A typed graph node. IDs are `<book_id>:<type>:<local id>`, so they are unique across books. Select '
+                    'on `type`, which decides the fields.')])
+
+
+class StoryMapContainsEdge(View):
+    """A `contains` edge: book→chapter, chapter→scene, scene (or chapter)→passage."""
     from_: str = Field(alias='from', description='Source node ID.')
     to: str = Field(description='Target node ID. Every edge ends at a node in `nodes`.')
-    type: Literal['contains', 'next', 'attributed_speaker'] = Field(
-        description='`contains`: book→chapter, chapter→scene, scene (or chapter)→passage. `next`: reading order between passages '
-                    'of a chapter. `attributed_speaker`: dialogue passage→character (an attribution, not presence); '
-                    'omitted when the passage names a speaker that is no longer in the cast.')
-    order: int | None = Field(default=None, description='`contains` edges: zero-based position within the parent.')
-    confidence: float | None = Field(default=None, description='`attributed_speaker` edges: attribution confidence 0–1, or null.')
+    type: Literal['contains'] = Field(description='Tag of `StoryMapEdge`: `contains`.')
+    order: int = Field(description='Zero-based position within the parent.')
+
+
+class StoryMapNextEdge(View):
+    """A `next` edge: reading order between passages of a chapter."""
+    from_: str = Field(alias='from', description='Source node ID.')
+    to: str = Field(description='Target node ID. Every edge ends at a node in `nodes`.')
+    type: Literal['next'] = Field(description='Tag of `StoryMapEdge`: `next`.')
+
+
+class StoryMapSpeakerEdge(View):
+    """An `attributed_speaker` edge: dialogue passage→character. An attribution, not presence."""
+    from_: str = Field(alias='from', description='Source node ID.')
+    to: str = Field(description='Target node ID. Every edge ends at a node in `nodes`.')
+    type: Literal['attributed_speaker'] = Field(
+        description='Tag of `StoryMapEdge`: `attributed_speaker`. Omitted when the passage names a speaker that is no '
+                    'longer in the cast.')
+    confidence: float | None = Field(description='Attribution confidence 0–1, or null.')
+
+
+StoryMapEdge = TypeAliasType('StoryMapEdge', Annotated[
+    Union[StoryMapContainsEdge, StoryMapNextEdge, StoryMapSpeakerEdge], Field(
+        discriminator='type', description='A typed graph edge. Select on `type`.')])
 
 
 class StoryMapReference(View):
-    """A source reference to a character. Kinds are distinct evidence and must not be merged."""
+    """A source reference to a character, as the last pipeline write stored it. Kinds are distinct evidence and must not be merged.
+
+    The same fields as `CharacterReference`. Here the provenance fields (`confidence`, `step`, `version_id`, `origin`,
+    `projection`) are absent on a stored row that lacks them, because the analysis export bundle's `story-map.json`
+    carries the stored rows unchanged and equals this response.
+    """
     id: str = Field(description='Stable reference ID (hash of character, chapter, range and kind).')
     character_id: str = Field(description='Book-local character ID the reference is about (not a series identity).')
     chapter_id: str = Field(description='Chapter ID whose text `start`/`end` index into.')
-    segment_id: str | None = Field(description='First passage overlapping the range, or null.')
+    passage_id: str | None = Field(description='First passage overlapping the range, or null.')
     start: int = Field(description='Code-point offset into the chapter text (inclusive).')
     end: int = Field(description='Code-point offset (exclusive).')
     quote: str = Field(description='The exact source text of the range.')
@@ -492,7 +548,7 @@ class PassageSearchHit(View):
     book_title: str = Field(description='Title of that book.')
     chapter_id: str = Field(description='Chapter ID (within `book_id`) whose text `start`/`end` index into.')
     chapter_title: str = Field(description='Title of that chapter.')
-    passage_id: str = Field(description='Passage (segment) ID of the matching passage, within `book_id`.')
+    passage_id: str = Field(description='Passage ID of the matching passage, within `book_id`.')
     start: int = Field(description='Code-point offset into the chapter text (inclusive).')
     end: int = Field(description='Code-point offset (exclusive).')
     text: str = Field(description='The exact passage text.')
@@ -629,7 +685,8 @@ OPS: list[Op] = [
        '| `README.txt` | Plain-text guide to the bundle. |\n'
        '| `book.json` | The stored book document, including chapter text, passage IDs and stored take metadata '
        '(not the API presentation of `GET /api/books/{book_id}`). |\n'
-       '| `story-map.json` | Same body as `GET /api/books/{book_id}/story-map`. |\n'
+       '| `story-map.json` | The same graph as `GET /api/books/{book_id}/story-map`, with the stored key `segment_id` in '
+       '`references` (the bundle carries stored rows unchanged, like `references.json`). |\n'
        '| `series.json` | `{membership, links, series_characters}` for the book\'s series (nulls/empty when none). |\n'
        '| `observations.json` | Rows of the book\'s observation history table. Empty for most books: the removed Classic '
        'engine\'s observations are `character_observation` artifacts since contract 0.3.1. |\n'

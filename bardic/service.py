@@ -44,7 +44,7 @@ DEV_PROVIDERS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPI
                  "BREEZE_API_KEY",
                  # Self-hosted analysis servers: free per request, but they share the owner's GPU.
                  "BARDIC_LOCAL_LLM_URL", "BARDIC_BOOKNLP_URL", "BARDIC_NOVEL_ANALYZER_URL")
-DEV_BLANK = (*DEV_PROVIDERS, "BARDIC_LAN_NAME", "BARDIC_HOST", "BARDIC_ALLOWED_HOSTS")
+DEV_BLANK = (*DEV_PROVIDERS, "BARDIC_LAN_NAME", "BARDIC_HOST", "BARDIC_ALLOWED_HOSTS", "BARDIC_CORS_ORIGINS")
 ACTIVE = {"queued", "running"}  # Same as bardic.app.ACTIVE, without importing the application.
 BARDIC_COMMAND = re.compile(r"\s-m\s+(bardic|spintails)(\s|$)")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")

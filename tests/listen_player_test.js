@@ -19,7 +19,7 @@ const functions=[
 const helpers=source.split('\n').filter(line=>/^const (currentChapter|chapterSegments|segmentById|characterById|playable|simpleActive|listeningAudio|listeningReady|busyJob|progressKey) =/.test(line)).join('\n');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(predicate){for(let i=0;i<50;i++){if(predicate())return;await tick();}assert.fail('Expected async player transition did not occur');}
-const initialBook=()=>({id:'book',title:'The lamp',chapters:[{id:'c1',title:'First',kind:'chapter',narrative_order:1,text:'One. Two.'},{id:'c2',title:'Second',kind:'chapter',narrative_order:2,text:'Three.'}],characters:[{id:'narrator',name:'Narrator'}],segments:[
+const initialBook=()=>({id:'book',title:'The lamp',chapters:[{id:'c1',title:'First',kind:'chapter',narrative_order:1,text:'One. Two.'},{id:'c2',title:'Second',kind:'chapter',narrative_order:2,text:'Three.'}],characters:[{id:'narrator',name:'Narrator'}],passages:[
   {id:'s1',chapter_id:'c1',speaker_id:'narrator',text:'One.',start:0,end:4,audio:{url:'/enhanced-one.wav',duration:1,provider:'gemini'}},
   {id:'s2',chapter_id:'c1',speaker_id:'narrator',text:'Two.',start:5,end:9,audio:{url:'/enhanced-two.wav',duration:1,provider:'gemini'}},
   {id:'s3',chapter_id:'c2',speaker_id:'narrator',text:'Three.',start:0,end:6,audio:{url:'/enhanced-three.wav',duration:1,provider:'gemini'}}]});
@@ -297,9 +297,9 @@ function environment(ensure,previewRequest){
 
   // Voice auditions use the production controller and the same media element.
   // Their timestamps and selected passage must never become reading progress.
-  const example={id:'preview-1',source:'passage',text:'One.',segment_id:'s1',character_id:'narrator'};
+  const example={id:'preview-1',source:'passage',text:'One.',passage_id:'s1',character_id:'narrator'};
   const exampleAudio={url:'/example.wav',duration:2};
-  const sampleResponse=()=>({data:{preview:example,audio:exampleAudio,cached:true}});
+  const sampleResponse=()=>({data:{kind:'cached',preview:example,audio:exampleAudio}});
   const audition=environment(async(_book,segment)=>({url:`/simple-${segment.id}.wav`,duration:2}),sampleResponse);
   await audition.player.startSegment('s1');
   audition.audio.currentTime=1.25;
@@ -406,7 +406,7 @@ function environment(ensure,previewRequest){
   const oldSample=sampleToReader.voicePreview.start(sampleToReader.state.book,{provider:'system',voice:'Samantha'});
   await until(()=>acceptedPreview);
   const readAgain=sampleToReader.hooks.onToggle();
-  acceptedPreview({data:{preview:example,job:{id:'preview-job',status:'queued'}}});
+  acceptedPreview({data:{kind:'queued',preview:example,job:{id:'preview-job',status:'queued'}}});
   await until(()=>settledPreview);
   assert.equal(sampleToReader.calls.ensures.length,0,'Reader synthesis waits for cancelled preview generation');
   assert.equal(sampleToReader.calls.plays,0);
@@ -419,7 +419,7 @@ function environment(ensure,previewRequest){
 
   // Device/media failure returns to the book without evicting its simple take
   // or silently generating a replacement preview.
-  const failedSample=environment(async()=>null,()=>({data:{preview:{...example,segment_id:'s2'},audio:exampleAudio,cached:true}}));
+  const failedSample=environment(async()=>null,()=>({data:{kind:'cached',preview:{...example,passage_id:'s2'},audio:exampleAudio}}));
   failedSample.takes.set('s1',{url:'/saved-reading.wav',duration:2});
   failedSample.state.pendingOffset=.9;
   await failedSample.voicePreview.start(failedSample.state.book,{provider:'system',voice:'Samantha'});
@@ -438,7 +438,7 @@ function environment(ensure,previewRequest){
   const casting=environment(async()=>null,sampleResponse);
   const character={id:'mara',name:'Mara',voices:{gemini:{id:'Kore'},system:{id:'Samantha'}},direction:'Saved delivery.'};
   casting.state.book.characters.push(character);
-  casting.state.book.segments[1].speaker_id='mara';
+  casting.state.book.passages[1].speaker_id='mara';
   casting.state.segmentId='s2';
   const castBefore=JSON.stringify(casting.state.book);
   // A cast card shows one provider's voice select ("voice_choice"): "" is Default,
@@ -446,23 +446,23 @@ function environment(ensure,previewRequest){
   const characterForm={dataset:{characterForm:'mara',castProvider:'gemini'},elements:{voice_choice:{value:'id:Puck'},direction:{value:'An unsaved gentle delivery.'}}};
   casting.player.auditionCharacter(characterForm,'gemini');
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[0].body,{provider:'gemini',character_id:'mara',segment_id:'s2',voice:'Puck',model:'tts-test',direction:'An unsaved gentle delivery.'});
+  assert.deepEqual(casting.calls.previews[0].body,{provider:'gemini',character_id:'mara',passage_id:'s2',voice:'Puck',model:'tts-test',direction:'An unsaved gentle delivery.'});
   casting.state.segmentId='s1';
   casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:'id:Alex'}}},'system');
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.equal(casting.calls.previews[1].body.segment_id,'s2','Use this chapter\'s character passage when the selected passage has a different speaker');
+  assert.equal(casting.calls.previews[1].body.passage_id,'s2','Use this chapter\'s character passage when the selected passage has a different speaker');
   assert.equal(casting.calls.previews[1].body.voice,'Alex');
   casting.state.chapterId='c2';
   casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:''}}},'gemini');
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.equal(casting.calls.previews[2].body.segment_id,undefined,'Without a local passage, the server chooses character text or its demo fallback');
+  assert.equal(casting.calls.previews[2].body.passage_id,undefined,'Without a local passage, the server chooses character text or its demo fallback');
   assert.equal(casting.calls.previews[2].body.voice,'Kore','Gemini Default is Kore');
   // The passage helper selects its provider through the existing studio field.
   if(!casting.nodes.has('#render-provider')) casting.nodes.set('#render-provider',{value:'gemini'});
   else casting.nodes.get('#render-provider').value='gemini';
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[3].body,{provider:'gemini',character_id:'mara',segment_id:'s1',voice:'Kore',model:'tts-test',segment_direction:'Unsaved passage cue.'},
+  assert.deepEqual(casting.calls.previews[3].body,{provider:'gemini',character_id:'mara',passage_id:'s1',voice:'Kore',model:'tts-test',passage_direction:'Unsaved passage cue.'},
     'Legacy Gemini voice fields are still read');
   // Breeze Default needs a default voice; without one nothing is requested.
   casting.player.auditionCharacter({...characterForm,elements:{...characterForm.elements,voice_choice:{value:''}}},'breeze');
@@ -484,7 +484,7 @@ function environment(ensure,previewRequest){
   const pinnedBefore=JSON.stringify(casting.state.book);
   casting.player.auditionPassage({dataset:{segmentForm:'s1'},elements:{speaker_id:{value:'mara'},direction:{value:'Unsaved passage cue.'}}});
   await until(()=>casting.voicePreview.getState().status==='ready');
-  assert.deepEqual(casting.calls.previews[6].body,{provider:'breeze',character_id:'mara',segment_id:'s1',voice:'library:vl_narr',segment_direction:'Unsaved passage cue.'});
+  assert.deepEqual(casting.calls.previews[6].body,{provider:'breeze',character_id:'mara',passage_id:'s1',voice:'library:vl_narr',passage_direction:'Unsaved passage cue.'});
   assert.equal(JSON.stringify(casting.state.book),pinnedBefore,'No audition saves voice, direction or speaker edits');
   delete character.voices;
   console.log('Main player simple-listen integration checks passed.');

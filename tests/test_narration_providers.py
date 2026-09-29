@@ -433,9 +433,9 @@ def test_breeze_simple_listening_survives_restart_while_server_is_offline(tmp_pa
     with TestClient(create_app(tmp_path)) as client:
         connect(client)
         book = import_text(client)
-        segment = book["segments"][0]
+        passage = book["passages"][0]
         started = client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": "narrator",
-                                                                          "model": None, "segment_id": segment["id"]}).json()
+                                                                          "model": None, "passage_id": passage["id"]}).json()
         finished = wait_job(client, started["job"]["id"])
         assert finished["status"] == "completed", finished
         assert finished["audio"]["provider"] == "breeze" and finished["audio"]["breeze"]["timing_accepted"] is True
@@ -448,11 +448,27 @@ def test_breeze_simple_listening_survives_restart_while_server_is_offline(tmp_pa
     monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(offline))
     with TestClient(create_app(tmp_path)) as client:
         again = client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": "narrator",
-                                                                        "segment_id": segment["id"]})
+                                                                        "passage_id": passage["id"]})
         assert again.status_code == 200, again.text
-        assert again.json()["cached"] is True and again.json()["session"]["id"] == session["id"]
+        assert again.json()["kind"] == "cached" and again.json()["session"]["id"] == session["id"]
         assert client.get(again.json()["audio"]["url"]).status_code == 200
     assert len(fake_breeze.speech) == sent
+
+
+def test_breeze_listening_session_reports_pinned_sampling_settings(breeze_client, fake_breeze, monkeypatch):
+    # No route pins settings today, but a pinned voice may carry them: the session shows exactly the four keys
+    # `BookBreezeSettings` describes, as the contract says.
+    connect(breeze_client)
+    book = import_text(breeze_client)
+    runtime = breeze_client.app.state.runtime
+    pin = runtime.breeze_selection
+    monkeypatch.setattr(runtime, "breeze_selection",
+                        lambda voice, seed=None: {**pin(voice, seed), "settings": {"temperature": .5, "top_k": 40}})
+    started = breeze_client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": "narrator",
+                                                                            "passage_id": book["passages"][0]["id"]})
+    assert started.status_code == 200, started.text
+    assert started.json()["session"]["settings"] == {"temperature": .5, "top_k": 40}
+    assert wait_job(breeze_client, started.json()["job"]["id"])["status"] == "completed"
 
 
 def test_breeze_cast_voices_are_pinned_per_provider_and_enhanced_takes_stay_valid(breeze_client, fake_breeze):
@@ -460,12 +476,12 @@ def test_breeze_cast_voices_are_pinned_per_provider_and_enhanced_takes_stay_vali
     book = import_text(breeze_client)
     narrator = next(c for c in book["characters"] if c["id"] == "narrator")
     assert narrator["voices"] == {"gemini": {"id": "Kore"}}
-    segment = next(s for s in book["segments"] if s["speaker_id"] == "narrator")
+    passage = next(p for p in book["passages"] if p["speaker_id"] == "narrator")
     # Without a default voice, a character with no Breeze choice cannot render.
     runtime = breeze_client.app.state.runtime
     saved_default = runtime.preferences["narration_defaults"]["breeze"]
     runtime.preferences["narration_defaults"]["breeze"] = None
-    blocked = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "segment_id": segment["id"]})
+    blocked = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "passage_id": passage["id"]})
     assert blocked.status_code == 400 and "Narrator" in blocked.json()["detail"] and "default Breeze voice" in blocked.json()["detail"]
     runtime.preferences["narration_defaults"]["breeze"] = saved_default
     assert breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",
@@ -473,19 +489,19 @@ def test_breeze_cast_voices_are_pinned_per_provider_and_enhanced_takes_stay_vali
     edited = breeze_client.patch(f"/api/books/{book['id']}/characters/narrator",
                                  json={"voices": {"breeze": {"id": "narrator", "seed": 11}, "gemini": {"id": "Puck"}}}).json()
     voices = next(c for c in edited["characters"] if c["id"] == "narrator")["voices"]
-    assert voices["gemini"] == {"id": "Puck"} and voices["breeze"]["seed"] == 11 and len(voices["breeze"]["revision"]) == 64
+    assert voices["gemini"] == {"id": "Puck"} and voices["breeze"]["seed"] == 11 and len(voices["breeze"]["voice_revision"]) == 64
     stored = next(c for c in breeze_client.app.state.runtime.store.book(book["id"])["characters"] if c["id"] == "narrator")
     assert "voice" not in stored and "system_voice" not in stored and voice_id(stored, "gemini") == "Puck"
-    job = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "segment_id": segment["id"]}).json()
+    job = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "passage_id": passage["id"]}).json()
     assert wait_job(breeze_client, job["id"])["status"] == "completed"
     assert fake_breeze.speech[-1]["settings"] == {"seed": 11}
     presented = breeze_client.get(f"/api/books/{book['id']}").json()
-    take = next(s for s in presented["segments"] if s["id"] == segment["id"])["audio"]
+    take = next(p for p in presented["passages"] if p["id"] == passage["id"])["audio"]
     assert take and take["provider"] == "breeze" and take["voice"] == "narrator"
     # A new seed on the passage is a new take; the old audio stays in history.
-    retake = breeze_client.patch(f"/api/books/{book['id']}/segments/{segment['id']}", json={"seed": 12345}).json()
-    assert next(s for s in retake["segments"] if s["id"] == segment["id"])["audio"] is None
-    job = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "segment_id": segment["id"]}).json()
+    retake = breeze_client.patch(f"/api/books/{book['id']}/passages/{passage['id']}", json={"seed": 12345}).json()
+    assert next(p for p in retake["passages"] if p["id"] == passage["id"])["audio"] is None
+    job = breeze_client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "passage_id": passage["id"]}).json()
     assert wait_job(breeze_client, job["id"])["status"] == "completed"
     assert fake_breeze.speech[-1]["settings"] == {"seed": 12345}
     cleared = breeze_client.patch(f"/api/books/{book['id']}/characters/narrator", json={"voices": {"breeze": None}}).json()
@@ -499,7 +515,7 @@ def test_breeze_voice_example_pins_the_voice_in_its_retained_recipe(breeze_clien
     assert started.status_code == 200, started.text
     assert wait_job(breeze_client, started.json()["job"]["id"])["status"] == "completed"
     again = breeze_client.post(f"/api/books/{book['id']}/voice-preview", json={"provider": "breeze", "voice": "narrator"}).json()
-    assert again["cached"] is True and len(fake_breeze.speech) == 1
+    assert again["kind"] == "cached" and len(fake_breeze.speech) == 1
     missing = breeze_client.post(f"/api/books/{book['id']}/voice-preview", json={"provider": "breeze", "voice": "nobody"})
     assert missing.status_code == 400 and missing.json()["code"] == "narrator_voice_invalid"
 
@@ -513,6 +529,6 @@ def test_breeze_job_errors_redact_the_server_key(breeze_client, fake_breeze, mon
         raise AudioError("failed with server-secret in it")
     monkeypatch.setattr("bardic.breeze.generate", leak)
     started = breeze_client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": "narrator",
-                                                                           "segment_id": book["segments"][0]["id"]}).json()
+                                                                           "passage_id": book["passages"][0]["id"]}).json()
     failed = wait_job(breeze_client, started["job"]["id"])
     assert failed["status"] == "failed" and "server-secret" not in failed["error"] and "[redacted]" in failed["error"]

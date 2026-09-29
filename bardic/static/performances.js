@@ -133,7 +133,7 @@
     const narrator = listen?.narratorOptions?.(book, provider);
     const voice = form.voices[provider] ?? narrator?.voice ?? '';
     const result = panel.preview;
-    const counts = book.segments.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
+    const counts = book.passages.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
     const summary = !form.chapters.size ? 'Choose at least one chapter.'
       : !result ? 'Checking what is already saved…'
       : `${plural(result.passages_total, 'passage')} · ${result.passages_ready} already saved · ${result.passages_to_generate} to record${result.passages_to_generate ? ` · about ${plural(result.requests_estimate, 'request')}` : ''} · about ${span(result.expected_seconds)} of listening`;

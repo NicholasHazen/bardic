@@ -56,7 +56,7 @@ def test_import_preserves_unicode_text_and_presented_gaps(client):
     text = 'A moon 🌙 rose.\n\n“Wait,” she whispered.\n'
     book = import_text(client, text)
     chapter = book['chapters'][0]
-    rebuilt = ''.join(s['leading_text'] + s['text'] for s in book['segments']) + chapter['trailing_text']
+    rebuilt = ''.join(s['leading_text'] + s['text'] for s in book['passages']) + chapter['trailing_text']
     assert rebuilt == chapter['text'] == text
     assert client.get('/api/books').json()[0]['title'] == book['title']
     original = client.app.state.runtime.store.root / 'originals' / book['id'] / 'source.txt'
@@ -77,10 +77,10 @@ def test_key_is_never_returned_or_saved(client):
 def test_cloud_requires_key_and_unknown_fields_rejected(client):
     book = import_text(client)
     assert client.post(f"/api/books/{book['id']}/render", json={'provider': 'gemini'}).status_code == 400
-    segment = book['segments'][0]
-    response = client.patch(f"/api/books/{book['id']}/segments/{segment['id']}", json={'text': 'rewritten'})
+    passage = book['passages'][0]
+    response = client.patch(f"/api/books/{book['id']}/passages/{passage['id']}", json={'text': 'rewritten'})
     assert response.status_code == 422
-    response = client.patch(f"/api/books/{book['id']}/segments/{segment['id']}", json={'speaker_id': 'missing'})
+    response = client.patch(f"/api/books/{book['id']}/passages/{passage['id']}", json={'speaker_id': 'missing'})
     assert response.status_code == 400
 
 
@@ -97,14 +97,14 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
     url = f"/api/books/{book['id']}"
     first = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
     assert wait_job(client, first['id'])['status'] == 'completed'
-    assert len(calls) == len(book['segments'])
+    assert len(calls) == len(book['passages'])
     rendered = client.get(url).json()
-    assert all(s['audio'] for s in rendered['segments'])
-    audio_url = rendered['segments'][0]['audio']['url']
+    assert all(s['audio'] for s in rendered['passages'])
+    audio_url = rendered['passages'][0]['audio']['url']
     assert client.get(audio_url).content.startswith(b'RIFF')
     second = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
     assert wait_job(client, second['id'])['status'] == 'completed'
-    assert len(calls) == len(book['segments']), 'completed takes should be reused'
+    assert len(calls) == len(book['passages']), 'completed takes should be reused'
     export = client.get(f'{url}/export')
     assert export.status_code == 200
     # The export is a GET: it records no resource operation.
@@ -115,14 +115,14 @@ def test_render_resume_edit_invalidation_and_export(client, monkeypatch):
         assert manifest['complete'] is True
         assert manifest['timing_kind'] == 'segment'
         timeline = manifest['chapters'][0]['segments']
-        assert timeline[-1]['end'] == pytest.approx(.1 * len(book['segments']))
-    first_segment = rendered['segments'][0]
-    edited = client.patch(f"{url}/segments/{first_segment['id']}", json={'direction': 'Quiet wonder'}).json()
-    assert edited['segments'][0]['text'] == first_segment['text']
-    assert edited['segments'][0]['audio'] is None
-    assert all(s['audio'] for s in edited['segments'][1:])
+        assert timeline[-1]['end'] == pytest.approx(.1 * len(book['passages']))
+    first_passage = rendered['passages'][0]
+    edited = client.patch(f"{url}/passages/{first_passage['id']}", json={'direction': 'Quiet wonder'}).json()
+    assert edited['passages'][0]['text'] == first_passage['text']
+    assert edited['passages'][0]['audio'] is None
+    assert all(s['audio'] for s in edited['passages'][1:])
     assert client.get(audio_url).status_code == 404
-    assert 'edited' not in edited['segments'][0]  # edit locks are stored, not presented
+    assert 'edited' not in edited['passages'][0]  # edit locks are stored, not presented
     assert client.app.state.runtime.store.book(book['id'])['segments'][0]['edited'] is True
 
 
@@ -140,11 +140,11 @@ def test_worker_failure_retains_completed_takes_and_retry(client, monkeypatch):
     url = f"/api/books/{book['id']}"
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
     assert wait_job(client, job['id'])['status'] == 'failed'
-    assert sum(bool(s['audio']) for s in client.get(url).json()['segments']) == 1
+    assert sum(bool(s['audio']) for s in client.get(url).json()['passages']) == 1
     monkeypatch.setattr(module, 'synthesize', original)
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
     assert wait_job(client, job['id'])['status'] == 'completed'
-    assert len(calls) == len(book['segments'])
+    assert len(calls) == len(book['passages'])
 
 
 def test_restart_marks_incomplete_jobs_and_keeps_checkpoints(tmp_path):
@@ -195,8 +195,8 @@ def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, mon
     job = client.post(f'{url}/render', json={'provider': 'gemini'}).json()
     assert started.wait(2)
     try:
-        segment = book['segments'][0]
-        assert client.patch(f"{url}/segments/{segment['id']}", json={'direction': 'new'}).status_code == 409
+        passage = book['passages'][0]
+        assert client.patch(f"{url}/passages/{passage['id']}", json={'direction': 'new'}).status_code == 409
         assert client.post(f'{url}/render', json={'provider': 'gemini'}).status_code == 409
         response = client.post(f"/api/jobs/{job['id']}/cancel")
         assert response.json()['cancel_requested'] is True
@@ -204,4 +204,4 @@ def test_cancel_checkpoints_current_take_and_blocks_concurrent_edits(client, mon
         release.set()
     assert wait_job(client, job['id'])['status'] == 'cancelled'
     assert len(calls) == 1
-    assert sum(bool(s['audio']) for s in client.get(url).json()['segments']) == 1
+    assert sum(bool(s['audio']) for s in client.get(url).json()['passages']) == 1

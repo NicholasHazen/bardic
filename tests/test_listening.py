@@ -45,7 +45,7 @@ def stored(store, audio):
 
 
 PUBLIC = {'url', 'asset_id', 'duration', 'provider', 'model', 'voice', 'created_at', 'session_id', 'segment_id',
-          'reuse', 'provider_timing', 'breeze', 'voice_revision'}
+          'reuse', 'provider_timing', 'breeze', 'voice_revision', 'kind'}
 REUSE_PUBLIC = {'schema_version', 'take_id', 'book_id', 'session_id', 'segment_id'}
 
 

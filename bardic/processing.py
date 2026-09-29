@@ -102,7 +102,7 @@ class ProcessingStore:
 
     def usage(self, book_id):
         attempts = self.attempts(book_id)
-        return {'attempts': len(attempts), 'input_tokens': sum(a.get('input_tokens') or 0 for a in attempts),
+        return {'attempt_count': len(attempts), 'input_tokens': sum(a.get('input_tokens') or 0 for a in attempts),
                 'output_tokens': sum(a.get('output_tokens') or 0 for a in attempts),
                 'estimated_spend_usd': round(sum(a.get('charged_estimate_usd') or 0 for a in attempts), 6),
                 'unknown_cost_attempts': sum(a.get('charged_estimate_usd') is None for a in attempts),

@@ -60,8 +60,8 @@ async function request(path, options = {}) {
 const post = (path, body = {}) => request(path, {method:'POST', body:JSON.stringify(body)});
 const patch = (path, body) => request(path, {method:'PATCH', body:JSON.stringify(body)});
 const currentChapter = () => state.book?.chapters.find(c => c.id === state.chapterId);
-const chapterSegments = () => state.book?.segments.filter(s => s.chapter_id === state.chapterId) || [];
-const segmentById = (id) => state.book?.segments.find(s => s.id === id);
+const chapterSegments = () => state.book?.passages.filter(s => s.chapter_id === state.chapterId) || [];
+const segmentById = (id) => state.book?.passages.find(s => s.id === id);
 const characterById = (id) => state.book?.characters.find(c => c.id === id);
 const playable = (segment) => Boolean(segment?.audio?.url);
 const simpleActive = () => !previewEnhanced && Boolean(window.BardicListen?.isSimple(state.book));
@@ -946,7 +946,7 @@ function previewNarratorFromSheet() {
 function reportPlaybackIssue(event, details = {}) {
   const example = state.voicePreview ? window.BardicVoicePreview?.getState() : null;
   window.BardicDiagnostics?.record(event, {book_id:state.book?.id,
-    segment_id:state.voicePreview ? state.voicePreview.preview?.segment_id : state.segmentId,
+    segment_id:state.voicePreview ? state.voicePreview.preview?.passage_id : state.segmentId,
     ...(example?.jobId ? {job_id:example.jobId} : {}),
     playback_rate:audio.playbackRate,operation:'media',...details});
 }
@@ -1068,7 +1068,7 @@ async function selectBook(id) {
     state.referenceVersion++;
     const progress = safeRead(progressKey(), {});
     state.chapterId = book.chapters.some(c => c.id === progress.chapterId) ? progress.chapterId : book.chapters[0]?.id;
-    state.segmentId = book.segments.some(s => s.id === progress.segmentId && s.chapter_id === state.chapterId) ? progress.segmentId : book.segments.find(s => s.chapter_id === state.chapterId)?.id;
+    state.segmentId = book.passages.some(s => s.id === progress.segmentId && s.chapter_id === state.chapterId) ? progress.segmentId : book.passages.find(s => s.chapter_id === state.chapterId)?.id;
     state.pendingOffset = Number(progress.currentTime) || 0;
     state.jobs = [];
     renderBook();
@@ -1275,7 +1275,7 @@ function referenceContent(character) {
   const chapters = new Map(state.book.chapters.map(chapter => [chapter.id, chapter]));
   const segments = new Map();
   const byChapter = new Map();
-  for (const segment of state.book.segments) {
+  for (const segment of state.book.passages) {
     const chapterItems = byChapter.get(segment.chapter_id) || [];
     segments.set(segment.id, {segment, index:chapterItems.length});
     chapterItems.push(segment);
@@ -1283,7 +1283,7 @@ function referenceContent(character) {
   }
   return `<p class="field-help">Name mentions may describe someone who is not present in the scene. Profile observations record what analysis inferred from each quoted passage.</p><ol class="character-reference-list">${entry.references.slice(0, shown).map(reference => {
     const chapter = chapters.get(reference.chapter_id);
-    const anchored = segments.get(reference.segment_id);
+    const anchored = segments.get(reference.passage_id);
     const chapterItems = byChapter.get(reference.chapter_id) || [];
     const segment = anchored?.segment || chapterItems.find(item => Number.isFinite(reference.start) && item.start <= reference.start && item.end > reference.start);
     const passageIndex = anchored?.index ?? (segment ? chapterItems.indexOf(segment) : -1);
@@ -1666,7 +1666,7 @@ async function togglePlayback() {
 let orderedCache = {book:null, list:[]};
 function orderedSegments() {
   if (!state.book) return [];
-  if (orderedCache.book !== state.book) orderedCache = {book:state.book, list:state.book.chapters.flatMap(chapter => state.book.segments.filter(segment => segment.chapter_id === chapter.id))};
+  if (orderedCache.book !== state.book) orderedCache = {book:state.book, list:state.book.chapters.flatMap(chapter => state.book.passages.filter(segment => segment.chapter_id === chapter.id))};
   return orderedCache.list;
 }
 async function moveSegment(delta, autoplay = !audio.paused, continuation = false) {
@@ -1912,7 +1912,7 @@ async function startJob(kind, scope = {}, {confirmed = false} = {}) {
 // Narrate book and Narrate scene with a billed (Gemini) or GPU-bound (Breeze)
 // provider show an estimate first; nothing is posted until its Confirm. Device
 // narration is free and starts at once, as does one passage (Narrate/Retake).
-function renderNeedsConfirm(provider, scope = {}) { return ['gemini','breeze'].includes(provider) && !scope.segment_id; }
+function renderNeedsConfirm(provider, scope = {}) { return ['gemini','breeze'].includes(provider) && !scope.passage_id; }
 const plural = (count, word) => `${Number(count).toLocaleString()} ${word}${count === 1 ? '' : 's'}`;
 function approxSpan(seconds) {
   const minutes = Math.max(1, Math.round(seconds / 60));
@@ -1922,7 +1922,7 @@ function approxSpan(seconds) {
 // reused count is approximate and requests are an upper bound.
 function renderEstimate(scope, provider) {
   const book = state.book;
-  const selected = book.segments.filter(segment => !scope.scene_id || segment.scene_id === scope.scene_id);
+  const selected = book.passages.filter(segment => !scope.scene_id || segment.scene_id === scope.scene_id);
   const model = narrationModel(provider);
   const reusable = selected.filter(segment => playable(segment) && segment.audio.provider === provider && (!model || !segment.audio.model || segment.audio.model === model));
   const toNarrate = selected.filter(segment => !reusable.includes(segment));
@@ -2017,10 +2017,10 @@ async function retakeSegment(id) {
   const segment = segmentById(id);
   const seeded = state.status?.narration_providers?.[provider]?.capabilities?.seeded_takes === true;
   if (seeded && playable(segment) && segment.audio?.provider === provider) {
-    try { applyBook(await patch(`/api/books/${encodeURIComponent(state.book.id)}/segments/${encodeURIComponent(id)}`, {seed:randomSeed()})); }
+    try { applyBook(await patch(`/api/books/${encodeURIComponent(state.book.id)}/passages/${encodeURIComponent(id)}`, {seed:randomSeed()})); }
     catch (error) { toast(error.message, true); return null; }
   }
-  return startJob('render', {segment_id:id, force:true});
+  return startJob('render', {passage_id:id, force:true});
 }
 function openSettings(provider) {
   clearKeyInputs(); fillSettings(); cloudProviders.forEach(renderAccountCheck); updateSettingsControls(); $('#settings-error').hidden = true; $('#settings-dialog').showModal();
@@ -2173,7 +2173,7 @@ for (const selector of ['#cast-grid','#scene-list']) {
     if (state.voicePreview && event.target.matches('input,textarea,select')) window.BardicVoicePreview?.stop();
   });
 }
-$('#export-link').addEventListener('click', event => { const ready = state.book?.segments.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.segments.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
+$('#export-link').addEventListener('click', event => { const ready = state.book?.passages.filter(playable).length || 0; if (!ready) { event.preventDefault(); toast('Narrate at least one passage before exporting your audiobook.'); } else if (ready < state.book.passages.length) toast('Exporting available takes. Missing passages are listed in the export manifest.'); });
 $('#analyze-from-cast').addEventListener('click', () => { setTab('analysis', {focus:true}); });
 $('#render-button').addEventListener('click', () => startJob('render'));
 $('#studio-view').addEventListener('click', event => {

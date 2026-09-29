@@ -68,8 +68,8 @@ def test_series_characters_and_map_list_confirmed_identities_and_all_volumes(cli
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['series']['id'] == series['id'] and body['note']
-    assert [(v['position'], v['status'], v['book_id']) for v in body['series']['volumes']] == [
-        (1, 'available', 'one'), (2, 'available', 'two'), (3, 'planned', None)]
+    assert [(v['position'], v['kind'], v['status'], v.get('book_id')) for v in body['series']['volumes']] == [
+        (1, 'supplied', 'available', 'one'), (2, 'supplied', 'available', 'two'), (3, 'placeholder', 'planned', None)]
     assert [c['id'] for c in body['characters']] == [identity['id']]
 
     context = client.get('/api/books/two/series/context')
@@ -78,7 +78,7 @@ def test_series_characters_and_map_list_confirmed_identities_and_all_volumes(cli
     assert entry['observations'][0]['book_id'] == 'one' and entry['observations'][0]['quote'] == TEXT
 
     unlinked = client.put('/api/books/two/series/characters/mira', json={'series_character_id': None})
-    assert unlinked.json() == {'character_id': 'mira', 'linked': False}
+    assert unlinked.json() == {'character_id': 'mira', 'kind': 'unlinked'}
 
 
 def test_removed_series_stays_readable_on_the_map_and_keeps_its_identities(client):

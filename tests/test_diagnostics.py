@@ -15,7 +15,7 @@ from test_listen_api import begin, client, renderer  # Reuse offline-only fixtur
 def test_client_events_round_trip_are_scoped_and_downloadable(client):
     book, other = import_text(client), import_text(client, 'An original second test book.')
     payload = {'event': 'playback_media_error', 'book_id': book['id'],
-               'segment_id': book['segments'][0]['id'], 'playback_rate': 2.5,
+               'passage_id': book['passages'][0]['id'], 'playback_rate': 2.5,
                'media_error_code': 3, 'operation': 'media'}
     result = client.post('/api/diagnostics', json=payload)
     assert result.status_code == 200 and result.json()['recorded'] is True
@@ -38,7 +38,7 @@ def test_client_events_round_trip_are_scoped_and_downloadable(client):
 @pytest.mark.parametrize('operation', ['request', 'poll'])
 def test_voice_preview_client_failure_keeps_only_bounded_identifiers(client, operation):
     book = import_text(client)
-    payload = {'event': 'preview_failed', 'book_id': book['id'], 'segment_id': book['segments'][0]['id'],
+    payload = {'event': 'preview_failed', 'book_id': book['id'], 'passage_id': book['passages'][0]['id'],
                'job_id': uuid4().hex, 'operation': operation, 'http_status': 503}
     result = client.post('/api/diagnostics', json=payload)
     assert result.status_code == 200 and result.json()['recorded'] is True
@@ -60,7 +60,7 @@ def test_voice_preview_worker_events_cannot_be_spoofed_as_client_events(client, 
     {'url': 'https://provider.invalid/?api_key=secret-test-key'},
     {'stack': 'secret-test-key'}, {'api_key': 'secret-test-key'},
     {'event': 'secret-test-key'}, {'operation': 'secret-test-key'},
-    {'book_id': 'secret-test-key'}, {'segment_id': 'secret-test-key'},
+    {'book_id': 'secret-test-key'}, {'passage_id': 'secret-test-key'}, {'segment_id': 'secret-test-key'},  # old wire name
     {'session_id': 'secret-test-key'}, {'job_id': 'secret-test-key'},
     {'source': 'server'}, {'provider': 'gemini'}, {'status': 'failed'},
     {'playback_rate': 999}, {'playback_rate': '2.5'}, {'playback_rate': True},
@@ -93,7 +93,7 @@ def test_recent_duplicate_events_and_client_rate_are_bounded(client, monkeypatch
     assert duplicate == {'recorded': False, 'reason': 'duplicate', 'id': first['id']}
     second = client.post('/api/diagnostics', json={'event': 'cache_read_failed'}).json()
     dropped = client.post('/api/diagnostics', json={'event': 'playback_waiting'}).json()
-    assert second['recorded'] is True and dropped == {'recorded': False, 'reason': 'rate_limited'}
+    assert second['recorded'] is True and dropped == {'recorded': False, 'reason': 'rate_limited', 'id': None}
     assert len(client.get('/api/diagnostics').json()['events']) == 2
     # Client noise cannot suppress a server failure record at the rate limit.
     result = record_safely(client.app.state.runtime.store, 'listen_submit_failed', operation='submit', status='failed')
@@ -144,7 +144,7 @@ def test_failed_listen_job_is_correlated_without_copying_its_error(client, rende
     row = saved['events'][0]
     assert row['source'] == 'server' and row['event'] == 'listen_job_failed'
     assert row['job_id'] == job['id'] and row['session_id'] == started['session']['id']
-    assert row['segment_id'] == book['segments'][0]['id'] and row['status'] == 'failed'
+    assert row['passage_id'] == book['passages'][0]['id'] and row['status'] == 'failed'
     serialized = json.dumps(saved)
     assert all(private not in serialized for private in ('private-offline-secret', 'private text', 'https://private.invalid'))
 
@@ -172,7 +172,7 @@ def test_cancelled_listen_and_executor_rejection_are_correlated(client, renderer
         raise RuntimeError('Test worker unavailable')
     monkeypatch.setattr(runtime.pool, 'submit', rejected)
     response = client.post(f"/api/books/{book['id']}/listen", json={
-        'provider': 'gemini', 'voice': 'Kore', 'segment_id': book['segments'][0]['id']})
+        'provider': 'gemini', 'voice': 'Kore', 'passage_id': book['passages'][0]['id']})
     assert response.status_code == 503
     failure = client.get('/api/diagnostics').json()['events'][0]
     assert failure['event'] == 'listen_submit_failed' and failure['status'] == 'failed'
@@ -187,7 +187,7 @@ def test_broken_diagnostics_do_not_change_playback_or_failed_job_outcomes(client
         raise sqlite3.OperationalError('Diagnostic storage unavailable')
     monkeypatch.setattr(DiagnosticRepository, 'record', unavailable)
     response = client.post('/api/diagnostics', json={'event': 'playback_waiting'})
-    assert response.status_code == 200 and response.json() == {'recorded': False, 'reason': 'unavailable'}
+    assert response.status_code == 200 and response.json() == {'recorded': False, 'reason': 'unavailable', 'id': None}
     def failed(*_args):
         raise ValueError('Original narration failure')
     with monkeypatch.context() as scoped:

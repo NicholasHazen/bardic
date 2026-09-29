@@ -497,7 +497,7 @@
     else if (plan.value) {
       const value = plan.value;
       const steps = value.steps || [];
-      const units = steps.reduce((sum, step) => sum + (step.units || 0), 0);
+      const units = steps.reduce((sum, step) => sum + (step.unit_count || 0), 0);
       const missing = missingKeys(panel, plan.body.configs);
       const setupFor = missingProviders(panel, plan.body.configs)[0];
       // The server's answer wins over the overview, which may be older than the plan.
@@ -512,7 +512,7 @@
       // Steps that call your own servers or the Local LLM: free, but they load that machine's GPU.
       const selfHosted = steps.some(step => providerDef(panel, step.provider)?.self_hosted && !offline(stepDef(panel, step.step_id), step.provider));
       const model = steps.some(step => step.method !== 'plain' && !isService(panel, step.provider));
-      body = `<div class="ap-table-wrap"><table><caption class="sr-only">Estimated work per step</caption><thead><tr><th scope="col">Step</th><th scope="col">Units</th><th scope="col">Reused</th><th scope="col">Requests</th><th scope="col">Input tokens (est.)</th><th scope="col">Output allowance</th><th scope="col">Estimated cost</th></tr></thead><tbody>${steps.map(step => `<tr><th scope="row">${escapeHtml(step.label || step.step_id)}<small>${where(step)}</small>${step.note ? `<small class="ap-plan-step-note">${escapeHtml(step.note)}</small>` : ''}</th><td>${number(step.units)}</td><td>${number(step.cached_units)}</td><td>${step.service_calls ? escapeHtml(plural(step.service_calls, 'service call')) : number(step.requests)}</td><td>${number(step.estimated_input_tokens)}</td><td>${number(step.output_token_allowance)}</td><td>${escapeHtml(cost(step))}</td></tr>`).join('')}</tbody></table></div><dl class="ap-plan-totals"><div><dt>Model requests</dt><dd>${number(value.requests)}</dd></div>${value.service_calls ? `<div><dt>Calls to your servers</dt><dd>${number(value.service_calls)}</dd></div>` : ''}<div><dt>Reused results</dt><dd>${number(value.cached_units)}</dd></div><div><dt>Input tokens (est.)</dt><dd>${number(value.estimated_input_tokens)}</dd></div><div><dt>Estimated cost</dt><dd>${escapeHtml(value.requests && value.estimated_cost_usd !== 0 ? money(value.estimated_cost_usd) : 'Free')}</dd></div></dl>${value.estimated_cost_usd == null && value.requests ? '<p class="ap-note">A model in this plan has no known price, so the cost cannot be estimated.</p>' : ''}${value.note ? `<p class="ap-help">${escapeHtml(value.note)}</p>` : ''}${selfHosted ? '<p class="ap-note">Your own servers cost nothing per request, but they use that machine’s GPU. If Breeze narration runs there, listening may stall while this runs. Service calls are not counted as model requests.</p>' : ''}${model ? `<p class="ap-help">${escapeHtml(plural(Number(panel.run.concurrency), 'request'))} at once${panel.run.fresh ? ', with fresh samples' : ''}. There is no request or dollar cap. Each unit can take up to four requests (one retry after a transient error, and one evidence repair), so a run can send more requests than estimated. Cancel from the job banner at any time; validated work is kept.</p>` : ''}${problem ? `<p class="ap-error" role="alert">${escapeHtml(problem)}${missing.length && setupFor && problem.startsWith('Add ') ? ` ${setupButton(setupFor, 'setup-plan')}` : ''}</p>` : ''}<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="confirm-run" data-ap-key="confirm-run" ${problem || plan.starting ? 'disabled' : ''}>${plan.starting ? 'Starting…' : value.requests ? `Confirm and run · about ${escapeHtml(plural(value.requests, 'request'))}${value.estimated_cost_usd != null ? `, ${escapeHtml(money(value.estimated_cost_usd))}` : ''}` : value.service_calls ? `Confirm and run · ${escapeHtml(plural(value.service_calls, 'call'))} to your servers` : 'Confirm and run locally'}</button></div>`;
+      body = `<div class="ap-table-wrap"><table><caption class="sr-only">Estimated work per step</caption><thead><tr><th scope="col">Step</th><th scope="col">Units</th><th scope="col">Reused</th><th scope="col">Requests</th><th scope="col">Input tokens (est.)</th><th scope="col">Output allowance</th><th scope="col">Estimated cost</th></tr></thead><tbody>${steps.map(step => `<tr><th scope="row">${escapeHtml(step.label || step.step_id)}<small>${where(step)}</small>${step.note ? `<small class="ap-plan-step-note">${escapeHtml(step.note)}</small>` : ''}</th><td>${number(step.unit_count)}</td><td>${number(step.cached_units)}</td><td>${step.service_calls ? escapeHtml(plural(step.service_calls, 'service call')) : number(step.requests)}</td><td>${number(step.estimated_input_tokens)}</td><td>${number(step.output_token_allowance)}</td><td>${escapeHtml(cost(step))}</td></tr>`).join('')}</tbody></table></div><dl class="ap-plan-totals"><div><dt>Model requests</dt><dd>${number(value.requests)}</dd></div>${value.service_calls ? `<div><dt>Calls to your servers</dt><dd>${number(value.service_calls)}</dd></div>` : ''}<div><dt>Reused results</dt><dd>${number(value.cached_units)}</dd></div><div><dt>Input tokens (est.)</dt><dd>${number(value.estimated_input_tokens)}</dd></div><div><dt>Estimated cost</dt><dd>${escapeHtml(value.requests && value.estimated_cost_usd !== 0 ? money(value.estimated_cost_usd) : 'Free')}</dd></div></dl>${value.estimated_cost_usd == null && value.requests ? '<p class="ap-note">A model in this plan has no known price, so the cost cannot be estimated.</p>' : ''}${value.note ? `<p class="ap-help">${escapeHtml(value.note)}</p>` : ''}${selfHosted ? '<p class="ap-note">Your own servers cost nothing per request, but they use that machine’s GPU. If Breeze narration runs there, listening may stall while this runs. Service calls are not counted as model requests.</p>' : ''}${model ? `<p class="ap-help">${escapeHtml(plural(Number(panel.run.concurrency), 'request'))} at once${panel.run.fresh ? ', with fresh samples' : ''}. There is no request or dollar cap. Each unit can take up to four requests (one retry after a transient error, and one evidence repair), so a run can send more requests than estimated. Cancel from the job banner at any time; validated work is kept.</p>` : ''}${problem ? `<p class="ap-error" role="alert">${escapeHtml(problem)}${missing.length && setupFor && problem.startsWith('Add ') ? ` ${setupButton(setupFor, 'setup-plan')}` : ''}</p>` : ''}<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="confirm-run" data-ap-key="confirm-run" ${problem || plan.starting ? 'disabled' : ''}>${plan.starting ? 'Starting…' : value.requests ? `Confirm and run · about ${escapeHtml(plural(value.requests, 'request'))}${value.estimated_cost_usd != null ? `, ${escapeHtml(money(value.estimated_cost_usd))}` : ''}` : value.service_calls ? `Confirm and run · ${escapeHtml(plural(value.service_calls, 'call'))} to your servers` : 'Confirm and run locally'}</button></div>`;
     }
     const error = plan.error ? `<p class="ap-error" role="alert">${escapeHtml(plan.error)}${plan.setup ? ` ${setupButton(plan.setup, 'setup-plan-error')}` : ''}</p>${plan.stale ? '<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Cancel</button><button type="button" class="button primary" data-ap-action="replan">Preview again</button></div>' : ''}` : '';
     put(panel, 'plan', `<section class="ap-plan" aria-label="Run preview">${head}${body}${error}${!plan.value && !plan.loading && !plan.stale ? '<div class="ap-actions"><button type="button" class="button subtle" data-ap-action="cancel-plan">Close</button></div>' : ''}</section>`);
@@ -771,7 +771,7 @@
   function unitsText(item) {
     const units = item.units || {};
     if (item.origin !== 'run' || !units.total) return '';
-    return `${number(units.done)}/${number(units.total)} units done · ${number(units.cached)} reused · ${number(units.failed)} failed`;
+    return `${number(units.done)}/${number(units.total)} units done · ${number(units.cached_units)} reused · ${number(units.failed)} failed`;
   }
 
   function paintVersions(panel) {
@@ -810,7 +810,7 @@
   function conflictHtml(panel, conflict) {
     const book = panel.book || {};
     const character = (book.characters || []).find(item => item.id === conflict.item_id);
-    const segment = character ? null : (book.segments || []).find(item => item.id === conflict.item_id);
+    const segment = character ? null : (book.passages || []).find(item => item.id === conflict.item_id);
     const field = conflict.field === 'direction' ? (segment ? 'delivery' : 'voice direction')
       : FIELD_LABELS[conflict.field] || String(conflict.field || 'value').replaceAll('_', ' ');
     const what = character ? escapeHtml(character.name || 'Unnamed character')
@@ -829,9 +829,10 @@
       return !speaker || speaker.toLowerCase() === 'unassigned' || speaker === ctx.unassigned;
     }},
     {id:'low-confidence', label:'Low confidence', column:'confidence', test:row => finite(row.confidence) && row.confidence <= LOW_CONFIDENCE},
-    // The BookNLP check column reads "Differs · BookNLP: <name>" (bardic/pipeline/steps/quotes.py CHECK_LABELS).
-    {id:'booknlp-differs', label:'BookNLP disagrees', column:'check', test:row => /^Differs\b/.test(String(row.check ?? ''))},
-    {id:'edited', label:'Your edits', column:'edited', test:row => Boolean(String(row.edited ?? '').trim())},
+    // The BookNLP check column holds an identifier ('differs'); ROW_LABELS says how it reads.
+    {id:'booknlp-differs', label:'BookNLP disagrees', column:'check', test:row => row.check === 'differs'},
+    // edited lists the fields a person changed by hand (an empty list when none).
+    {id:'edited', label:'Your edits', column:'edited', test:row => Array.isArray(row.edited) && row.edited.length > 0},
   ];
   const filtersFor = columns => FILTERS.filter(filter => columns.some(column => column.key === filter.column));
   const filterContext = panel => ({unassigned:(panel.book?.characters || []).find(item => item.id === 'unassigned')?.name || null});
@@ -839,7 +840,7 @@
   // Passages by ID, rebuilt when the app passes a new book object.
   function segmentIndex(panel) {
     if (panel.segments?.book !== panel.book) {
-      panel.segments = {book:panel.book, map:new Map((panel.book?.segments || []).filter(item => item?.id).map(item => [item.id, item]))};
+      panel.segments = {book:panel.book, map:new Map((panel.book?.passages || []).filter(item => item?.id).map(item => [item.id, item]))};
     }
     return panel.segments.map;
   }
@@ -928,6 +929,32 @@
   // Confidence columns read as percentages, like the rest of the app.
   const valueText = (column, value) => /confidence/i.test(`${column.key} ${column.label || ''}`) && finite(value) && value >= 0 && value <= 1 ? formatPercent(value) : cell(value);
 
+  // Result rows carry stable identifiers in some columns (`kind` of a Quote attribution row, `check`); the words a
+  // person reads are the UI's, kept in this one place. An identifier this map does not know reads as plain words.
+  const ROW_LABELS = {
+    kind:{quotation:'Quotation', character:'Character'},
+    check:{agrees:'Agrees', differs:'Differs', suggests:'Suggests a speaker', not_in_cast:'Speaker not in cast',
+      narrator:'First-person narrator', no_quote:'No quotation found', in_cast:'In cast'},
+  };
+  const plainWords = id => { const words = String(id).replaceAll('_', ' '); return words.charAt(0).toUpperCase() + words.slice(1); };
+  const hasLabel = (key, value) => Object.prototype.hasOwnProperty.call(ROW_LABELS[key], value);
+  function rowLabel(key, value, row, speaker = '') {
+    if (value === null || value === undefined || value === '') return '';
+    let label = hasLabel(key, value) ? ROW_LABELS[key][value] : plainWords(value);
+    // A character row that BookNLP found and the cast lacks reads shorter than a quotation whose speaker is missing.
+    if (key === 'check' && value === 'not_in_cast' && row.kind === 'character') label = 'Not in cast';
+    // For a disagreement or suggestion, BookNLP's own speaker follows the label.
+    return key === 'check' && speaker ? `${label} · BookNLP: ${speaker}` : label;
+  }
+  // What one table cell shows: `source` is the row itself, or its `previous` values for the before-text of a changed cell.
+  function rowValueText(column, row, source = row) {
+    const value = source[column.key];
+    if (column.key === 'check') return rowLabel('check', value, row, source.check_speaker) || '—';
+    // Only Quote attribution rows keep an identifier in `kind`; Sections has a `kind` column of its own words.
+    if (column.key === 'kind' && typeof value === 'string' && (row.step ? row.step === 'quotes' : hasLabel('kind', value))) return rowLabel('kind', value, row) || '—';
+    return valueText(column, value);
+  }
+
   // Result rows are grouped under their section (and scene) instead of repeating it in every row.
   // A column that already names the result (Section, Character) replaces the grouping.
   // Rows that are passages (Speakers & delivery) get an Evidence column with Show in text.
@@ -938,7 +965,7 @@
     const named = columns.some(column => rows.every(row => cell(row[column.key]) === name(row)));
     const scene = named ? null : columns.find(column => column.key === 'scene');
     // A changed scene stays visible as a column, with its previous value.
-    const foldScene = Boolean(scene) && !rows.some(row => Array.isArray(row._changed) && row._changed.includes('scene'));
+    const foldScene = Boolean(scene) && !rows.some(row => Array.isArray(row.changed_keys) && row.changed_keys.includes('scene'));
     const shown = columns.filter(column => !(foldScene && column === scene));
     const group = row => {
       const section = name(row);
@@ -951,12 +978,12 @@
       const heading = named ? '' : group(row);
       const head = !named && heading !== previous ? `<tr class="ap-group"><th scope="colgroup" colspan="${shown.length + 1 + (passages ? 1 : 0)}">${escapeHtml(heading)}</th></tr>` : '';
       previous = heading;
-      const changed = new Set(Array.isArray(row._changed) ? row._changed : []);
-      const kind = row._diff === 'added' ? 'added' : row._diff === 'changed' ? 'changed' : '';
+      const changed = new Set(Array.isArray(row.changed_keys) ? row.changed_keys : []);
+      const kind = row.diff_state === 'added' ? 'added' : row.diff_state === 'changed' ? 'changed' : '';
       return `${head}<tr class="${kind ? `ap-row-${kind}` : ''}"><td>${kind ? `<span class="ap-chip ${kind === 'added' ? 'accepted' : 'stale'}">${kind === 'added' ? 'New' : 'Changed'}</span>` : ''}</td>${shown.map(column => {
-        const value = valueText(column, row[column.key]);
+        const value = rowValueText(column, row);
         if (!changed.has(column.key)) return `<td>${escapeHtml(value)}</td>`;
-        const before = valueText(column, row._previous?.[column.key]);
+        const before = rowValueText(column, row, row.previous || {});
         return `<td class="ap-cell-changed" title="${escapeHtml(clip(`Previously: ${before}`, 400))}"><span class="sr-only">Changed. Now: </span>${escapeHtml(value)}<del class="ap-previous"><span class="sr-only">Previously: </span>${escapeHtml(before)}</del></td>`;
       }).join('')}${passages ? evidenceCell(panel, row, segments.get(row.id)) : ''}</tr>`;
     }).join('');

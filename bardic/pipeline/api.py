@@ -23,6 +23,7 @@ from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import wire
 from ..analysis import PIPELINE_LLM_LABELS, PROVIDER_LABELS
 from ..artifacts import MAX_OFFSET
 from ..errors import Conflict, Invalid, NotFound, Unavailable
@@ -145,7 +146,7 @@ def provider_views(runtime):
         view = {'id': provider, 'label': LABELS[provider], 'kind': 'service' if provider in SERVICE_PROVIDERS else 'model',
                 'self_hosted': self_hosted, 'needs': 'url' if self_hosted else 'api_key',
                 # A key or URL is set; it does not prove the server answers.
-                'configured': bool(credentials.get(provider))}
+                'configured': bool(credentials.get(provider)), 'models': None}
         if provider == 'local_llm':
             view['models'] = local_llm_catalog(credentials.get(provider))['models']
         views.append(view)
@@ -204,6 +205,7 @@ def _versions_view(repository, registry, conn, book_id, step, step_runs):
         items.append({**{k: run.get(k) for k in ('id', 'run_id', 'step_id', 'step_version', 'origin', 'provider', 'model', 'status',
                                                    'units', 'error', 'created_at', 'completed_at', 'chapter_ids',
                                                    'unchanged_scopes', 'incomplete_scopes')},
+                      'units': wire.units(run.get('units')),
                       'scope_count': len(scopes), 'accepted_scopes': len(accepted), 'state': state})
     return items
 
@@ -251,7 +253,11 @@ def _step_states(store, repository, registry, book, book_id, eligible):
 
 def _public_step_run(run):
     """A stored step run without storage-only fields (``conflicts`` is always empty; preview reports conflicts)."""
-    return None if run is None else {k: v for k, v in run.items() if k != 'conflicts'}
+    if run is None:
+        return None
+    result = wire.complete({k: v for k, v in run.items() if k != 'conflicts'}, ('incomplete_scopes',))
+    result['units'] = wire.units(result.get('units'))
+    return result
 
 
 def unmet_message(registry, step_id, inputs):
@@ -416,7 +422,7 @@ def build_router(registry: Registry):
             book = store.book(book_id)
             steps = [{'id': item['id'], 'settings': settings[item['id']], **{k: v for k, v in item.items() if k != 'id'}}
                      for item in step_states(store, repository, registry, book)]
-        runs = repository.runs(book_id, 5)
+        runs = [wire.run(r) for r in repository.runs(book_id, 5)]
         active = next((r for r in runs if r['status'] in ACTIVE), None)
         return {'book_id': book_id, 'revision': book.get('revision', 0), 'steps': steps, 'active_run': active,
                 'recent_runs': runs, 'chapters': [{'id': c['id'], 'title': c['title'], 'kind': c.get('kind', 'section')}
@@ -492,7 +498,7 @@ def build_router(registry: Registry):
 
             limits = body.limits.model_dump()
             # The worker mutates `run` while it records step versions: answer with a copy taken now.
-            snapshot = {'job': deepcopy(job), 'run': deepcopy(run)}
+            snapshot = {'job': deepcopy(job), 'run': wire.run(deepcopy(run))}
             try:
                 runtime.pool.submit(lambda: execute_run(runtime, registry, job, run, secrets, limits=limits,
                                                         concurrency=body.concurrency, fresh=body.fresh))
@@ -576,20 +582,25 @@ def build_router(registry: Registry):
         table = step.summarize(book, {s: payloads[i]['result'] for s, i in scopes.items() if i in payloads})
         baseline = step.summarize(book, {s: payloads[i]['result'] for s, i in other.items() if i in payloads}) if other else None
         rows = table['rows']
-        diff = {'compared_with': compare if other else None, 'same': 0, 'changed': 0, 'added': 0, 'removed': 0}
+        for row in rows:
+            row['step'] = step.id
+            # Always sent: null unless the table was compared with another version (and null `changed_keys` and
+            # `previous` for an added row).
+            row.update(diff_state=None, changed_keys=None, previous=None)
+        diff = {'compared_with': compare if other else None, 'same': 0, 'changed': 0, 'added': 0, 'removed': 0, 'agreement': None}
         if baseline is not None:
             before = {row['id']: row for row in baseline['rows']}
             keys = [c['key'] for c in table['columns']]
             for row in rows:
                 previous = before.pop(row['id'], None)
                 if previous is None:
-                    row['_diff'] = 'added'
+                    row['diff_state'] = 'added'
                     diff['added'] += 1
                     continue
                 changed = [k for k in keys if row.get(k) != previous.get(k)]
-                row['_diff'] = 'changed' if changed else 'same'
-                row['_changed'] = changed
-                row['_previous'] = {k: previous.get(k) for k in changed}
+                row['diff_state'] = 'changed' if changed else 'same'
+                row['changed_keys'] = changed
+                row['previous'] = {k: previous.get(k) for k in changed}
                 diff['changed' if changed else 'same'] += 1
             diff['removed'] = len(before)
             compared = diff['same'] + diff['changed']
@@ -597,7 +608,7 @@ def build_router(registry: Registry):
         if scope:
             rows = [row for row in rows if row['scope'] == scope]
         if changed_only:
-            rows = [row for row in rows if row.get('_diff') in {'changed', 'added'}]
+            rows = [row for row in rows if row.get('diff_state') in {'changed', 'added'}]
         heads = {}
         with runtime.store.lock, runtime.store.connect() as conn:
             heads = repository.heads(conn, book_id, step.id)

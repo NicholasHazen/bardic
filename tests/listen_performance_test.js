@@ -12,7 +12,7 @@ class Container { constructor() { this.innerHTML = ''; this.listeners = {}; } ad
 // Three chapters of two passages; the performance covers chapters one and three.
 const book = () => ({id:'book-p',revision:1,
   chapters:[{id:'c1',kind:'chapter'},{id:'c2',kind:'chapter'},{id:'c3',kind:'chapter'}],
-  segments:['c1','c1','c2','c2','c3','c3'].map((chapter,i) => ({id:`p${i}`,chapter_id:chapter,start:i*10,end:i*10+8,text:`Passage ${i}.`}))});
+  passages:['c1','c1','c2','c2','c3','c3'].map((chapter,i) => ({id:`p${i}`,chapter_id:chapter,start:i*10,end:i*10+8,text:`Passage ${i}.`}))});
 const clip = id => ({url:`/api/books/book-p/audio-assets/${id}`,duration:2,asset_id:id});
 const record = (job = {id:'job-p',status:'completed'}) => ({id:'pf_1',name:'Evening reading',mode:'simple',chapter_ids:['c1','c3'],
   narrator_label:'Kore · Gemini',job,progress:{passages_total:4,passages_ready:4,seconds_ready:8,chapters:[]}});
@@ -46,9 +46,9 @@ test('a performance plays its own audio and never requests narration', async () 
   await env.init();
   assert.equal(env.api.enabled(env.book),true,'the app plays it through the one-voice path');
   assert.equal(env.api.getPerformance(env.book).name,'Evening reading');
-  assert.equal((await env.api.prepare(env.book,env.book.segments[0],{})).asset_id,'p0');
-  assert.equal(env.api.resolve(env.book,env.book.segments[2]),null,'no audio outside the performance');
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{}),/not part of “Evening reading”/);
+  assert.equal((await env.api.prepare(env.book,env.book.passages[0],{})).asset_id,'p0');
+  assert.equal(env.api.resolve(env.book,env.book.passages[2]),null,'no audio outside the performance');
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[2],{}),/not part of “Evening reading”/);
   assert.equal(env.posts().length,0);
   assert.match(env.container.innerHTML,/<h3>Performance<\/h3><p>Evening reading/);
 });
@@ -56,7 +56,7 @@ test('a performance plays its own audio and never requests narration', async () 
 test('continuous playback skips chapters the performance leaves out and ends after its last chapter', async () => {
   const env = environment();
   await env.init();
-  const [p0,p1,p2,p3,p4,p5] = env.book.segments;
+  const [p0,p1,p2,p3,p4,p5] = env.book.passages;
   assert.equal(env.api.nextSegment(env.book,p0).id,'p1');
   assert.equal(env.api.nextSegment(env.book,p1).id,'p4','chapter two is skipped');
   assert.equal(env.api.nextSegment(env.book,p5),null,'the performance ends after its last chapter');
@@ -75,7 +75,7 @@ test('while the performance is processing, a missing passage waits for it; a sto
   const env = environment({performance:() => record(job),
     audio:() => ({p0:clip('p0'),p1:clip('p1'),...(ready ? {p4:clip('p4')} : {})})});
   await env.init();
-  const waiting = env.api.prepare(env.book,env.book.segments[4],{});
+  const waiting = env.api.prepare(env.book,env.book.passages[4],{});
   await settle();
   assert.match(env.container.innerHTML,/Waiting for “Evening reading”/);
   ready = true;
@@ -83,7 +83,7 @@ test('while the performance is processing, a missing passage waits for it; a sto
   assert.equal((await waiting).asset_id,'p4');
   job = {id:'job-p',status:'quota_limited'};
   await env.api.refreshPerformance(env.book);
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[5],{}),/daily request limit/);
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[5],{}),/daily request limit/);
   assert.equal(env.posts().length,0);
 });
 
@@ -96,7 +96,7 @@ test('the chosen performance is remembered for the book, and leaving it returns 
   await again.api.render(again.container,again.book,again.options);
   await settle();
   assert.equal(again.api.getPerformance(again.book).loaded,true,'a reload restores the performance');
-  assert.equal(again.api.resolve(again.book,again.book.segments[4]).asset_id,'p4');
+  assert.equal(again.api.resolve(again.book,again.book.passages[4]).asset_id,'p4');
   again.api.leavePerformance(again.book);
   assert.equal(again.api.getPerformance(again.book),null);
   assert.equal(again.api.getSelection(again.book).mode,'simple');

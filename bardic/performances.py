@@ -292,7 +292,7 @@ def cast_ready(runtime, record: dict, segments: list[dict], rows=None, *, valida
                     asset_id=content, duration=body.get('duration'), provider=body.get('provider'),
                     model=body.get('model'), voice=body.get('voice'), created_at=body.get('created_at'),
                     speaker_id=body.get('speaker_id'), character_id=body.get('character_id'),
-                    fallback=bool(body.get('fallback')))
+                    fallback=bool(body.get('fallback')), kind='cast')
                 break
     return ready
 
@@ -351,10 +351,9 @@ def present(runtime, record: dict, book: dict | None = None, ready: dict | None 
     book = book or runtime.store.book(record['book_id'])
     ready = ready_audio(runtime, record, book) if ready is None else ready
     result = {key: value for key, value in record.items() if key not in ('cast_snapshot', 'pronunciation_snapshot')}
-    if record.get('pronunciation_snapshot'):
-        result['pronunciation_count'] = len(record['pronunciation_snapshot'])
-    if record['mode'] == 'cast':
-        result['cast'] = cast_summary(runtime, record, book)
+    result['pronunciation_count'] = len(record['pronunciation_snapshot']) if record.get('pronunciation_snapshot') else None
+    result.setdefault('session_id', None)
+    result['cast'] = cast_summary(runtime, record, book) if record['mode'] == 'cast' else None
     result['job'] = job_summary(runtime.store, record.get('job_id'))
     result['progress'] = progress(book, record, ready)
     result['narrator_label'] = narrator_label(runtime, record)
@@ -557,7 +556,7 @@ def start(runtime, record: dict, total: int) -> dict:
     options = chunk_options(runtime)
     job = store.create_job(book_id, 'performance', total)
     job = store.update_job(job['id'], performance_id=record['id'], mode=record['mode'], provider=provider,
-                           model=record['model'], phase='performance', child_job_ids=[], child_job_id=None,
+                           model=record['model'], child_job_ids=[], child_job_id=None,
                            message='Waiting for the performance worker')
     PerformanceRepository(store).update(book_id, record['id'], job_id=job['id'])
     work = {'simple': _simple_work, 'cast': _cast_work}[record['mode']]
@@ -617,7 +616,7 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
                     child['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                     model=model, voice=session['voice'], intent='queue',
                     scope_start_segment_id=first['id'], focus_segment_id=first['id'],
-                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, chunks=[],
                     calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id)
                 parent = store.job(job_id)
                 store.update_job(job_id, child_job_id=child['id'],

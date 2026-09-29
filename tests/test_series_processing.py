@@ -239,6 +239,7 @@ def test_cancelling_the_parent_cancels_queued_children_which_never_start(client)
     assert client.post(f"/api/jobs/{parent['id']}/cancel").status_code == 200
     kids = {c['book_id']: c for c in children(client, series)}
     assert kids[books[1]['id']]['status'] == 'cancelled' and kids[books[2]['id']]['status'] == 'cancelled'
+    assert kids[books[1]['id']]['not_started'] is True and kids[books[2]['id']]['not_started'] is True
     assert wait_job(client, parent['id'])['status'] == 'cancelled'
     client.app.state.runtime.series_pool.submit(lambda: None).result(timeout=5)
     kids = children(client, series)

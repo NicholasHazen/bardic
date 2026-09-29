@@ -218,8 +218,8 @@ class SeriesRepository:
                       "author": book.get("author", ""), 'archived': archived}
             if include_archived or not archived:
                 item["books"].append(volume)
-            item['volumes'].append(dict(volume, status='archived' if archived else 'available'))
-        item['volumes'].extend({'series_id': item['id'], 'position': position, 'title': title, 'status': status, 'book_id': None}
+            item['volumes'].append(dict(volume, status='archived' if archived else 'available', kind='supplied'))
+        item['volumes'].extend({'series_id': item['id'], 'position': position, 'title': title, 'status': status, 'kind': 'placeholder'}
                                for position, title, status in conn.execute('SELECT position,title,status FROM series_volume_slots WHERE series_id=?', (item['id'],)))
         item['volumes'].sort(key=lambda v: (v['position'], v.get('book_id') or ''))
         item["character_count"] = conn.execute("SELECT count(*) FROM series_characters WHERE series_id=?",
@@ -304,7 +304,7 @@ class SeriesRepository:
             book = _book(conn, book_id)
             characters = {c["id"] for c in book.get("characters", [])}
             return [dict(zip(("character_id", "series_character_id", "name", "confirmed_at"), row),
-                         stale=row[0] not in characters)
+                         stale=row[0] not in characters, kind="linked")
                     for row in conn.execute("""SELECT l.character_id,l.series_character_id,c.name,l.confirmed_at
                         FROM series_character_links l JOIN series_characters c ON c.id=l.series_character_id
                         WHERE l.book_id=? ORDER BY l.character_id""", (book_id,))]
@@ -335,7 +335,7 @@ class SeriesRepository:
                          (book_id, character_id, series_character_id, confirmed_at))
             capture_series(conn, book_id)
             return {"character_id": character_id, "series_character_id": series_character_id,
-                    "name": identity[1], "confirmed_at": confirmed_at, "stale": False}
+                    "name": identity[1], "confirmed_at": confirmed_at, "stale": False, "kind": "linked"}
 
     @staticmethod
     def _editable_membership(conn, book_id):
@@ -357,7 +357,7 @@ class SeriesRepository:
             capture_series(conn, book_id, legacy_provenance=True, only_missing=True)
             conn.execute("DELETE FROM series_character_links WHERE book_id=? AND character_id=?", (book_id, character_id))
             capture_series(conn, book_id)
-        return {"character_id": character_id, "linked": False}
+        return {"character_id": character_id, "kind": "unlinked"}
 
     def observations(self, book_id, character_id=None):
         """Rows of the observation history table for inspection, including old source versions.

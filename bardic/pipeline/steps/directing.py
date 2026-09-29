@@ -21,7 +21,7 @@ from ...analysis_common import split_chapter as _split_chapter
 from ...errors import Invalid
 from ..prompts import direction_specs
 from ..contract import LLM_PROVIDERS, Conflict, LLMRequest, ServiceRequest, Step, Unit, locked
-from .quotes import CHECK_LABELS, compare
+from .quotes import compare
 
 SEGMENT_FIELDS = ('scene_id', 'speaker_id', 'confidence', 'direction', 'cues', 'evidence', 'analysis_provider',
                   'analysis_model', 'speaker_check')
@@ -449,13 +449,14 @@ class DirectingStep(Step):
                              'kind': kind, 'text': text if len(text) <= 160 else text[:157] + '…',
                              'speaker': names.get(values.get('speaker_id'), values.get('speaker_id') or ''),
                              'confidence': values.get('confidence'), 'direction': values.get('direction') or '',
-                             'cues': ', '.join(values.get('cues') or []),
-                             'check': CHECK_LABELS.get((values.get('speaker_check') or {}).get('result'), '')
-                             + (f" · BookNLP: {names.get(values['speaker_check'].get('speaker_id')) or values['speaker_check'].get('speaker') or '?'}"
-                                if (values.get('speaker_check') or {}).get('result') in ('differs', 'suggests') else ''),
+                             'cues': list(values.get('cues') or []),
+                             'check': (values.get('speaker_check') or {}).get('result'),
+                             # BookNLP's own speaker, when it differs from or suggests the passage's speaker.
+                             'check_speaker': ((names.get(values['speaker_check'].get('speaker_id')) or values['speaker_check'].get('speaker') or '?')
+                                               if (values.get('speaker_check') or {}).get('result') in ('differs', 'suggests') else ''),
                              # Fields a person edited keep their value whichever version is accepted.
-                             'edited': ', '.join(name for name in ('speaker_id', 'direction', 'cues')
-                                                 if locked(current.get(segment_id, {}), name)).replace('speaker_id', 'speaker')})
+                             'edited': ['speaker' if name == 'speaker_id' else name for name in ('speaker_id', 'direction', 'cues')
+                                        if locked(current.get(segment_id, {}), name)]})
         rows.sort(key=lambda row: order.get(row['id'], len(order)))
         dialogue = [r for r in rows if r['kind'] == 'dialogue']
         unassigned = sum(payloads[r['scope']]['segments'][r['id']].get('speaker_id') == 'unassigned' for r in dialogue)

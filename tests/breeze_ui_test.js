@@ -16,7 +16,7 @@ class Container {
   closest(selector) { return selector === 'details' ? this.drawer : null; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
 }
-const book = {id:'book-b',revision:1,chapters:[{id:'chapter-1'}],segments:[
+const book = {id:'book-b',revision:1,chapters:[{id:'chapter-1'}],passages:[
   {id:'segment-1',chapter_id:'chapter-1',start:0,end:11,text:'Mara spoke.'},
   {id:'segment-2',chapter_id:'chapter-1',start:12,end:25,text:'Elio replied.'},
 ],characters:[],scenes:[]};
@@ -30,8 +30,8 @@ function status(extra = {}) {
     providers:[{id:'system',available:true},{id:'gemini',available:true},{id:'breeze',available:true,reason:null}],
     narration_providers:Object.fromEntries(Object.entries(capabilities).map(([id, value]) => [id,{id,capabilities:value}])),
     breeze:{configured:true,state:'ready',message:'Connected',default_voice_id:'storyteller',voices:[
-      {id:'narrator',name:'Narrator',kind:'cloned',usable:true,revision:'r1',seed:null},
-      {id:'storyteller',name:'Story <teller>',kind:'cloned',usable:true,revision:'r2',seed:null},
+      {id:'narrator',name:'Narrator',kind:'cloned',usable:true,voice_revision:'r1',seed:null},
+      {id:'storyteller',name:'Story <teller>',kind:'cloned',usable:true,voice_revision:'r2',seed:null},
       {id:'sailor',name:'Old Sailor',kind:'designed',usable:false,reason:'Designed voices drift between segments'},
     ]},
     ...extra};
@@ -68,11 +68,11 @@ function library(extra = {}) {
   return {
     voices:[
       {id:'vl_narr',provider:'breeze',name:'Narrator',origin:'imported',current_version:1,assignable:true,is_default:false,
-        versions:[{version:1,provider_voice_id:'narrator',revision:'r1',made:'imported',server_state:'ok'}],usage:[],warnings:[]},
+        versions:[{version:1,provider_voice_id:'narrator',voice_revision:'r1',made:'imported',server_state:'ok'}],usage:[],warnings:[]},
       {id:'vl_story',provider:'breeze',name:'Story <teller>',origin:'designed',current_version:1,assignable:true,is_default:true,
-        versions:[{version:1,provider_voice_id:'storyteller',revision:'r2',made:'designed',server_state:'ok'}],usage:[],warnings:[]},
+        versions:[{version:1,provider_voice_id:'storyteller',voice_revision:'r2',made:'designed',server_state:'ok'}],usage:[],warnings:[]},
       {id:'vl_gone',provider:'breeze',name:'Old Sailor',origin:'imported',current_version:1,assignable:false,
-        versions:[{version:1,provider_voice_id:'sailor',revision:'r3',made:'imported',server_state:'missing'}],usage:[],warnings:[]},
+        versions:[{version:1,provider_voice_id:'sailor',voice_revision:'r3',made:'imported',server_state:'missing'}],usage:[],warnings:[]},
       {id:'vl_gem',provider:'gemini',name:'Astronomer',origin:'designed',current_version:1,assignable:true,
         versions:[{version:1,provider_voice_id:'voice_abc',made:'designed',server_state:'ok'}],usage:[],warnings:[]},
     ],
@@ -103,11 +103,11 @@ test('Breeze narration defaults to the library default voice, lists library voic
   assert.ok(!menu(env.api).some(([, name]) => name === 'Astronomer'),'Gemini voices are not offered for Breeze');
   assert.match(env.container.drawer.summary.textContent,/One narrator: Default \(Story <teller>\) \/ Breeze · runs on your Breeze server/);
   assert.doesNotMatch(env.container.innerHTML,/data-listen-field/,'Narrator and expert settings are not in More options');
-  const result = await env.api.ensure(book,book.segments[0]);
+  const result = await env.api.ensure(book,book.passages[0]);
   assert.equal(result.asset_id,'take');
   const posts = env.calls.filter(call => call.method === 'POST');
   assert.equal(posts.length,1);
-  assert.deepEqual(posts[0].body,{provider:'breeze',voice:'',model:null,segment_id:'segment-1'});
+  assert.deepEqual(posts[0].body,{provider:'breeze',voice:'',model:null,passage_id:'segment-1'});
   assert.equal(env.calls.filter(call => call.url.includes('/listen/chapter')).length,0,'No chapter job for a non-chunked provider');
   const saved = JSON.parse(env.storage.get('bardic:listen:book-b'));
   assert.equal(saved.provider,'breeze');
@@ -149,7 +149,7 @@ test('a new current version or default voice never reuses the earlier listening 
   const env = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Kore',breeze:'library:vl_story'},model:'gemini-3.8-flash-tts'});
   const first = library();
   await env.api.render(env.container,book,options({voiceLibrary:first}));
-  await env.api.ensure(book,book.segments[0]);
+  await env.api.ensure(book,book.passages[0]);
   const saved = JSON.parse(env.storage.get('bardic:listen:book-b'));
   assert.equal(saved.sessionId,'session-b');
   // A fresh book state with the same library reloads that session's saved takes.
@@ -160,7 +160,7 @@ test('a new current version or default voice never reuses the earlier listening 
   const switched = environment(saved);
   const next = library();
   const story = next.voices.find(voice => voice.id === 'vl_story');
-  story.versions.push({version:2,provider_voice_id:'storyteller-v2',revision:'r9',made:'designed',server_state:'ok'});
+  story.versions.push({version:2,provider_voice_id:'storyteller-v2',voice_revision:'r9',made:'designed',server_state:'ok'});
   story.current_version = 2;
   await switched.api.render(switched.container,book,options({voiceLibrary:next}));
   assert.equal(switched.calls.filter(call => call.url.includes('/takes?')).length,0,'Saved takes of the old version are not loaded as current');
@@ -169,6 +169,39 @@ test('a new current version or default voice never reuses the earlier listening 
   const moved = library({defaults:{breeze:'vl_narr'}});
   await onDefault.api.render(onDefault.container,book,options({voiceLibrary:moved}));
   assert.equal(onDefault.calls.filter(call => call.url.includes('/takes?')).length,0);
+});
+
+test('a new voice_revision makes a different narrator, for a library version and for a direct server voice', async () => {
+  const takesReads = env => env.calls.filter(call => call.url.includes('/takes?')).length;
+  const remembered = async (choice, voiceLibrary, serverStatus) => {
+    const env = environment({mode:'simple',provider:'breeze',voices:{system:'',gemini:'Leda',breeze:choice},model:null});
+    await env.api.render(env.container,book,options({voiceLibrary,status:serverStatus}));
+    await env.api.ensure(book,book.passages[0]);
+    return JSON.parse(env.storage.get('bardic:listen:book-b'));
+  };
+  // A library voice whose version keeps its provider voice ID but moves to a new revision.
+  const saved = await remembered('library:vl_story',library(),status());
+  assert.equal(saved.sessionId,'session-b');
+  const same = environment(saved);
+  await same.api.render(same.container,book,options({voiceLibrary:library()}));
+  assert.equal(takesReads(same),1,'The same revision reads the saved takes back');
+  const moved = library();
+  moved.voices.find(voice => voice.id === 'vl_story').versions[0].voice_revision = 'r2-retrained';
+  const other = environment(saved);
+  await other.api.render(other.container,book,options({voiceLibrary:moved}));
+  assert.equal(takesReads(other),0,'A new revision of the same library voice never reuses the old session');
+
+  // A server voice outside the library, tracked by the last Breeze check.
+  const serverVoices = revision => status({breeze:{configured:true,state:'ready',message:'Connected',default_voice_id:'retired',
+    voices:[{id:'retired',name:'Retired',kind:'cloned',usable:true,voice_revision:revision,seed:null}]}});
+  const direct = await remembered('retired',library({voices:[],defaults:{breeze:null}}),serverVoices('a1'));
+  assert.equal(direct.sessionId,'session-b');
+  const unchanged = environment(direct);
+  await unchanged.api.render(unchanged.container,book,options({voiceLibrary:library({voices:[],defaults:{breeze:null}}),status:serverVoices('a1')}));
+  assert.equal(takesReads(unchanged),1);
+  const retrained = environment(direct);
+  await retrained.api.render(retrained.container,book,options({voiceLibrary:library({voices:[],defaults:{breeze:null}}),status:serverVoices('a2')}));
+  assert.equal(takesReads(retrained),0,'A server voice with a new voice_revision is a different narrator');
 });
 
 test('selecting an unchecked Breeze server asks the app to refresh once; rendering never does', async () => {
@@ -200,7 +233,7 @@ test('chunked chapter listening follows the provider capability, not its name', 
   await gated.api.render(gated.container,book,options({status:noChunks}));
   gated.change('mode','simple');
   gated.change('provider','gemini');
-  await gated.api.ensure(book,book.segments[0]);
+  await gated.api.ensure(book,book.passages[0]);
   const posts = gated.calls.filter(call => call.method === 'POST');
   assert.equal(posts.length,1);
   assert.equal(posts[0].url,'/api/books/book-b/listen','Without the capability Gemini uses single passages');
@@ -276,7 +309,7 @@ test('cast choices encode the per-provider map and decode to assignments', () =>
   const {cast, characterVoice} = castHelpers();
   const unset = {id:'mara',voices:{}};
   assert.equal(characterVoice(unset,'breeze'),'','No Breeze choice means Default');
-  const mapped = {id:'mara',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr',id:'narrator',revision:'r1'},system:{id:''}}};
+  const mapped = {id:'mara',voices:{gemini:{id:'Leda'},breeze:{library:'vl_narr',id:'narrator',voice_revision:'r1'},system:{id:''}}};
   assert.equal(characterVoice(mapped,'gemini'),'id:Leda');
   assert.equal(characterVoice(mapped,'breeze'),'library:vl_narr','A library reference wins over its resolved concrete voice');
   assert.equal(characterVoice(mapped,'system'),'');

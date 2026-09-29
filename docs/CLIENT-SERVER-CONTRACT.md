@@ -9,31 +9,70 @@ This proposal was written on September 28, 2026. Part of it is now implemented; 
 **Update, September 28, 2026:** the owner has answered the open question about what drives the split. Bardic's server will eventually move away from Python, and dedicated clients will be built. That changes three things:
 
 - **The contract becomes normative.** The Python code generates `contract/openapi.json` today, but the checked-in file is the source of truth. It must outlive the Python server, which a replacement server has to satisfy. Every API change updates it in the same commit, as described in [the API workflow](API-WORKFLOW.md).
-- **Same-origin applies only to the browser UI.** Dedicated clients that are not served by the Bardic server need authentication, CORS for browser-based ones, and a threat model. That work moves from "out of scope" to a prerequisite for shipping such a client. It is not designed yet.
+- **Same-origin applies only to the browser UI.** Dedicated clients that are not served by the Bardic server need authentication and a threat model. That work moves from "out of scope" to a prerequisite for shipping such a client. It is not designed yet. CORS for browser-based clients exists since contract 0.4.1 as an operator opt-in (`BARDIC_CORS_ORIGINS`, off by default, no credentials, no authentication; see [API.md](API.md#transport-and-security)).
 - **A port needs a black-box conformance suite.** The current tests call the Python app in process. A suite that runs over real HTTP against any base URL, and checks the recorded contract, is the acceptance test for a replacement server. This is planned, not built.
 
 **Implemented** (Phases 0–1 of the original plan, for the server side):
-- `bardic/apispec/` describes every operation: 100 as of contract 0.1.2.
+- `bardic/apispec/` describes every operation: 99 as of contract 0.4.0.
 - `contract/` holds the generated spec, a readable reference and a changelog.
 - The test suite validates every API response against the contract.
 - The workflow rules are in AGENTS.md and [API-WORKFLOW.md](API-WORKFLOW.md).
+- Stable error codes (0.2.0), the version handshake (`Status.contract` and the `Bardic-Contract-Version` header) and `GET /api/jobs/{job_id}` (0.4.0).
+- A first audit for a strongly typed generated client (0.4.0): see [the audit](#contract-audit-for-generated-clients-contract-040).
+- One deliberate breaking reshaping for generated clients (0.5.0), settling what the audit left open: tagged unions everywhere (including `Job`), the always-sent-fields pass, one name per concept, named provider enumerations. See [the resolution](#resolution-in-contract-050) and the changelog.
 
 **Still open:**
 - The client-side request-conformance helper for the Node tests.
-- Error codes, and a version handshake in `/api/status`.
-- `GET /api/jobs/{id}`.
 - The `BardicApi` client module.
 - Runtime enforcement of the views.
 - Authentication for off-origin clients.
 - The HTTP conformance suite.
 - A breaking-change differ. Versions are forced per change, but a person classifies each one.
-- A pass that turns always-sent optional fields into required, nullable fields.
-- Explicit union discriminators for the audio and pipeline-row unions.
+- The optional response fields that stay optional on purpose after 0.5.0 (the changelog lists them and why).
+
+## Resolution in contract 0.5.0
+
+The owner decided (2026-09-28) to make one breaking change before any generated client, Rust server or external user exists, and to update the browser UI in the same change. It was checked by generating code from the contract: typify 0.8.0 (Rust types), progenitor 0.15.0 (a Rust client), openapi-typescript (`npm run contract:codegen`) and the recorded real responses of the test and conformance suites (about 4,100 payloads) deserialized with the generated Rust types and serialized again. What it settled, against the audit below:
+
+- **Unions.** Every union of objects is a named `oneOf` with a `discriminator`, one required single-value string `enum` tag per member and a one-to-one mapping: `ListeningAudio`, `PerformanceAudio`, `ListenResult`, `VoicePreviewResult`, `SeriesCharacterLinkResult`, `SeriesVolume` (tag `kind`, not the four-status `status`), `PipelineVersionRow` (tag `step`), `StoryMapNode` and `StoryMapEdge` (tag `type`). Where a tag did not exist it was added to the responses. `Job` and `SeriesRunChild` are `oneOf` unions whose branches are written inline, one branch per job kind (the table in the changelog), so typify generates a `#[serde(tag = "kind")]` enum for them. The audio unions no longer decode a chunk clip as a passage take. A build-time check and a test refuse an untagged or nested union, an `anyOf` of objects and a bare `null` type.
+- **Always-sent fields.** 127 response fields of existing schemas became required (and every field a `Job` kind always has), nullable where the value can be null, with a presenter backfill (`bardic/wire.py`). The `PipelineAttempt` backfill happens only in the inspector, so the analysis export bundle is unchanged and its `schema_version` stays 2. Left optional and listed: sparse per-passage extras, Breeze-specific audio extras, kind-specific fields that `Job` now declares per kind, and the stored-rows story map references.
+- **Shapes.** Two always-null fields were removed (`AccountCheck.balance`, `SeriesVolumeSlot.book_id`). Every integer has `int32` or `int64`. The 416 of the range-capable files is the JSON `Error`, which made progenitor fail on eight operations before. The advice on unknown enum values now says what generators actually do.
+- **Names and types.** The wire says passage, never segment (the server translates at its boundary in `bardic/wire.py`; storage is unchanged); a Breeze voice's `revision` is `voice_revision`; sentence timing has `start_seconds` and `end_seconds`; counts have `*_count` or `*_units`; result-table lists are arrays and their labels are identifiers; providers are declared once per domain; five duplicated shapes are merged.
+- **What generation still cannot do.** progenitor 0.15 does not generate the two multipart operations (`importBook`, `cloneBreezeVoice`), so a Rust client writes those by hand. typify emits closed enums, so a Rust client post-processes response enums to add an unrecognized variant (see "Compatibility rules for clients" in the contract). Optional-nullable response fields turn `null` into an absent key when a Rust client serializes a response again; a client that only reads is unaffected. Untyped JSON remains in `ArtifactDetail.payload` and `PipelineResultRow.previous`.
+
+## Contract audit for generated clients (contract 0.4.0)
+
+The audit below is the state at 0.4.0, kept as the record of what was found; [the resolution](#resolution-in-contract-050) says what 0.5.0 changed.
+
+Written for the decision to fix the contract before a Rust server and generated clients exist. Method: every response schema was listed; the test suite was run with a temporary recorder of which optional properties each observed response carried; then each candidate was traced through the code that builds it, including stored legacy shapes, because the tests over-represent current data. The recorder is not kept.
+
+**Unions.** The volume union of a series (`Series.volumes`, `SeriesPlan.volumes` and `SeriesPlan.skipped_volumes`) has a real string discriminator, `status`. No other union of objects has a literal tag that every variant always carries:
+
+| Union (operation) | Why it cannot be tagged today |
+| --- | --- |
+| `ListenCached` or `ListenQueued` (`listenToPassage`), `VoicePreviewCached` or `VoicePreviewQueued` (`startVoicePreview`) | The tag is a boolean, `cached`. An OpenAPI discriminator maps string values, and Pydantic emits `"True"`/`"False"` keys that do not match JSON `true`/`false`, so a generated client would be wrong. Variants differ in required fields (`audio` or `job`), so an untagged union works. |
+| `SeriesCharacterLinkState` or `SeriesCharacterUnlinked` (`linkSeriesCharacter`) | Only the unlinked variant has a tag (`linked: false`, a boolean). One PUT that links or unlinks is the underlying shape. |
+| `ListeningPassageAudio`, `ListeningChunkClipAudio`, `VoicePreviewAudio`, `PerformanceCastAudio` (`Job.audio`, `ListenCached.audio`, `ListeningTake.audio`, `getPerformanceAudio`) | Audio objects carry no kind field (a 0.2.0 decision). A clip is told from a passage take by the presence of `chunk_id`; a job's audio kind follows `Job.kind`. |
+| `PipelineVersionDetail.rows` (`getAnalysisPipelineStepVersion`) | The row shape follows the parent's `step_id` (an open set that can grow); rows carry no tag. The response is documented as a generic table (`columns` and rows of `id`, `scope` and cells). |
+| Scalars: the values of `PipelineVersionDetail.stats` (integer, number, string or null), `Error.detail` (string or issue list), `ValidationIssue.loc` items | Not object unions; a client needs an untagged enum. |
+
+Adding a string `kind` (audio) or `step` (rows) field is additive, but a closed tagged union then fails on a value it does not know, which conflicts with the rule that clients tolerate unknown values. That trade-off is the owner's.
+
+**Response fields made required (0.4.0, 12).** `BookAnalysisSummary.notes`, `LibraryVoiceRecipe.description`, `AudioTakeBreezeInfo.request_id`, `ResourceOperation.{run_id, stage, unit_key, created_at, request_count, estimated_cost_usd, cost_basis}` and `PipelineAttempt.{book_id, run_id}`. Each is set by every code path (traced); `LibraryVoiceRecipe.description` needed a one-line presenter backfill (`""`) for a version that recorded no recipe, which no route creates. The shapes the tests never produced (a `cache_reuse` row, a sparse attempt, a recipe-less version) now have tests.
+
+**Left optional although the tests always saw them, because a stored or code path can omit them:** `Book.structure_version` and `BookChapter.{kind, title_source, source_href, logical_sections}` (books stored before they existed; a structure rollback restores that shape), `BookSpeakerCheck.*` (the `no_quote` result stores only `source` and `result`), `BookScene.{title, summary, tone, direction}` (accepting a directing version pops a field the proposal leaves null), `CharacterReference.{confidence, provider, model}` and `StoryMapReference.confidence` (older evidence rows, modeled by test fixtures and named in the view; `StoryMapReference` already requires `provider` and `model`, which older rows may also lack), `PipelineStepRun.incomplete_scopes` (unset until the run finishes its units), `AccountCheckUsage.*` (a count is kept only when positive), `SeriesRun.{book_ids, child_job_ids}` (absent on a parent whose creation was interrupted), `PipelineAttempt.status` (set on every attempt the server records, but the presenter copies only keys the stored record has), and the other `ResourceOperation` and `PipelineAttempt` fields (a `cache_reuse` row, an in-flight attempt).
+
+**Could become required with a presenter change (not done: needs a decision, and for some an export `schema_version`):** backfilling `null` for every allowlisted `PipelineAttempt` field in `public_attempt` (also used by the analysis export bundle, whose content would change) and every `ResourceOperation` key (about 20 fields); backfilling `BookSpeakerCheck` in the `no_quote` branch; backfilling `null` reference provenance in the presenter. Legacy chapter fields cannot be backfilled without guessing.
+
+**Fixed as part of the same version (0.4.0, BREAKING, see the changelog):** the `Job.analysis_limits` union of two identically shaped objects, token and byte totals typed as floating point, and an untyped `settings` object.
+
+**Not fixed, for the owner:** `Job` is one object with 52 optional fields whose presence depends on `kind` (`SeriesRun` and `SeriesRunChild` repeat them); a `oneOf` by `kind` would give each job kind a real type at the cost of a breaking schema change and unknown-kind failures. Also: pipeline result rows encode lists as comma-separated strings (`aliases`, `cues`, `edited`) and use display labels as values (`kind: "Quotation"`); the same key means different types (`revision` is an integer for books and a string for voices, `AudioTakeSentenceSpan.start` and `end` are seconds while `start` and `end` elsewhere are code-point offsets, `cached` is a boolean or a count, `evidence` a list or a count); `provider` is an enumeration in 17 schemas and a plain string in about 25 others; near-duplicate shapes (`PipelineProviderModel` and `AnalysisCatalogModel`, `ResourceOperation` and `PipelineAttempt` with `estimated_cost_usd` versus `charged_estimate_usd`, the audio objects' repeated `reuse`, `provider_timing`, `breeze` and `voice_revision`, two source-anchor and two logical-section shapes); `segment_id` versus `passage_id` naming. Genuinely arbitrary JSON remains in `ArtifactDetail.payload` and `PipelineResultRow.previous`.
 
 **Superseded details.** Where the original text below disagrees with the implementation, the implementation wins:
 - **Versioning** follows [the contract changelog](../contract/CHANGELOG.md): semantic 0.x versions, a new version for every change, and a hash recorded per version. There is no integer major or `api` block yet.
 - **Enumerations** use `Literal` types in the views. They are checked only in tests, because the views are not applied at runtime. Before any route is enforced at runtime, its enumerations must be made tolerant.
 - **Response validation** runs on every response the existing test suites produce, not on generated example files, which were not built.
+- **Job progress.** `GET /api/jobs/{job_id}` (`getJob`) exists since contract 0.4.0, so finding #9 below is answered on the server side. The six UI pollers still list jobs; moving them is a client change that has not been made.
 
 The review and reasoning below are otherwise unchanged from the original proposal.
 
@@ -92,7 +131,7 @@ Build the contract first. Treat the repository split as a later, optional, mostl
 | 8 | **There are no wire versioning or concurrency semantics.** There is no API version, and the existing `schema_version` fields describe storage. The book `revision` is incremented but no PATCH checks it. A stale series plan returns 400 where a stale pipeline plan returns 409. | `app.py:1268`, `series_processing.py:52,68`, `pipeline/api.py:351-357` | Once client and server ship independently, a mismatch must be detectable. |
 | 9 | **Job progress is found by listing.** There is no `GET /api/jobs/{id}`. Six UI call sites poll `GET /api/jobs?book_id=` and search the list. `bardicctl` also reads `/api/jobs?active=true` and expects a bare list. | `app.js:1644,1655`, `listen.js:287,354,677,743`, `voice-preview.js:59`; `bardic/service.py:223-248` | "Watch my job" is an implicit contract with three consumers, one of which is the operations tool. |
 | 10 | **Some request-side rules are two-sided.** The diagnostics event allowlist and ID formats exist in both `diagnostics.js` and the server, and they differ: the client allows 9 events and a generic ID regex, the server 10 events and exact formats. The client sends best-effort, so drift silently drops events. The custom 422 body is not the advertised `HTTPValidationError`. | `diagnostics.js:5-15`; `app.py:162`, `diagnostics.py:28-33`, `app.py:922-926` | Enums and ID formats are contract, not opaque strings. |
-| 11 | **The runtime assumes one origin.** The write guard compares `Origin` with `Host`, and there is no CORS. Media URLs built by the server are root-relative, and `index.html` loads `/static/...`. The middleware also overwrites the cover's `private, max-age=300` with `no-store`, so its `?v=` cache-buster does nothing. | `app.py:897-909`, `app.py:1508`, `index.html:12-33` | This is fine if the server keeps serving the UI, as proposed. It is a security design task if not. |
+| 11 | **The runtime assumes one origin.** The write guard compares `Origin` with `Host`, and there is no CORS (opt-in CORS has existed since contract 0.4.1; it is off by default). Media URLs built by the server are root-relative, and `index.html` loads `/static/...`. The middleware also overwrites the cover's `private, max-age=300` with `no-store`, so its `?v=` cache-buster does nothing. | `app.py:897-909`, `app.py:1508`, `index.html:12-33` | This is fine if the server keeps serving the UI, as proposed. It is a security design task if not. |
 | 12 | **UI copy is persisted into storage.** Accepting a pipeline step writes `'{label} accepted in the Analysis tab.'` into the book's notes. | `pipeline/api.py:413-414` | Stored data depends on the UI's layout. |
 
 These are client-internal costs, not contract problems:
@@ -306,7 +345,7 @@ If most features still need synchronized breaking changes, a split costs more th
 
 ## Out of scope
 
-- Authentication, multiuser access, public hosting and CORS. These become necessary only if the client leaves the server's origin.
+- Authentication, multiuser access and public hosting. These become necessary only if the client leaves the server's origin. (CORS is available as an opt-in server setting, contract 0.4.1; it grants access, it does not authenticate.)
 - Rewriting the UI (a framework, TypeScript or a bundler), or splitting app.js into modules. These are client decisions and independent of the contract.
 - Changing storage formats, the whole-book edit responses or job execution. The contract first describes current behavior.
 - A `/v1` URL prefix, GraphQL, SSE and WebSockets.

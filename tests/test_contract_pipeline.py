@@ -35,8 +35,10 @@ def test_version_tables_diffs_and_decision_errors(client, monkeypatch):  # noqa:
     candidate = latest(client, book['id'], 'discovery')
     assert candidate['state'] == 'candidate'
     detail = client.get(f"{base}/steps/discovery/versions/{candidate['id']}", params={'changed_only': True}).json()
-    assert detail['diff']['changed'] and detail['rows'][0]['_changed'] == ['description']
-    assert detail['rows'][0]['_previous']['description'].endswith('draft.')
+    assert detail['diff']['changed'] and detail['rows'][0]['changed_keys'] == ['description']
+    assert detail['rows'][0]['previous']['description'].endswith('draft.')
+    assert detail['rows'][0]['diff_state'] == 'changed' and detail['rows'][0]['step'] == 'discovery'
+    assert isinstance(detail['rows'][0]['aliases'], list)  # discovery aliases are an array
     scope = detail['scopes'][0]['scope']
     assert all(row['scope'] == scope for row in client.get(
         f"{base}/steps/discovery/versions/{candidate['id']}", params={'scope': scope}).json()['rows'])

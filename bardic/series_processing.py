@@ -49,6 +49,7 @@ from .pipeline.repository import ACTIVE, PipelineRepository
 from .pipeline.runner import plan as book_plan
 from .series import EVIDENCE_STEPS, SeriesRepository, evidence_inputs
 from .store import now, public_job
+from . import wire
 from .errors import Conflict, Invalid, NotFound, Unavailable
 from .series import SERIES_ARCHIVED
 
@@ -566,7 +567,7 @@ def runs(runtime, series_id, limit=20):
                 continue  # A dangling child job ID in stored data: skip it, as cancelJob does.
             if child.get('run_id'):
                 try:
-                    run = repository.run(child['run_id'])
+                    run = wire.run(repository.run(child['run_id']))
                     child['run'] = {k: run.get(k) for k in ('id', 'status', 'outcomes', 'error')}
                 except KeyError:
                     child['run'] = None

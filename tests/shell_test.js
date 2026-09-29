@@ -21,11 +21,11 @@ function setup({chapterId = 'c1', steps = []} = {}) {
   const passages = [];
   const renderChapter = id => {
     passages.length = 0;
-    for (const segment of book.segments.filter(item => item.chapter_id === id)) {
+    for (const segment of book.passages.filter(item => item.chapter_id === id)) {
       passages.push(new Node({dataset:{segment:segment.id}, scrollIntoView:options => log.push(['scroll', segment.id, options.block]), focus:() => log.push(['focus', segment.id])}));
     }
   };
-  const book = {id:'b1', title:'Quay', segments:[{id:'s1', chapter_id:'c1'}, {id:'s2', chapter_id:'c1'}, {id:'s9', chapter_id:'c2'}], chapters:[{id:'c1'}, {id:'c2'}]};
+  const book = {id:'b1', title:'Quay', passages:[{id:'s1', chapter_id:'c1'}, {id:'s2', chapter_id:'c1'}, {id:'s9', chapter_id:'c2'}], chapters:[{id:'c1'}, {id:'c2'}]};
   const state = {book, books:[book], tab:'read', chapterId, libraryView:false};
   const picker = new Node();
   picker.addEventListener('change', () => { log.push(['chapter', picker.value]); state.chapterId = picker.value; renderChapter(picker.value); });

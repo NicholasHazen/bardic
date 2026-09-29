@@ -64,9 +64,9 @@
   // the old session. Direct Breeze ids fall back to the last server check.
   function voiceIdentity(state) {
     const resolved = resolvedVoice(state);
-    if (resolved) return [resolved.voice.id,resolved.voice.current_version,resolved.version?.provider_voice_id ?? null,resolved.version?.revision ?? null];
+    if (resolved) return [resolved.voice.id,resolved.voice.current_version,resolved.version?.provider_voice_id ?? null,resolved.version?.voice_revision ?? null];
     if (state.provider !== 'breeze') return undefined;
-    return (state.status?.breeze?.voices || []).find(voice => voice.id === state.voices.breeze)?.revision || null;
+    return (state.status?.breeze?.voices || []).find(voice => voice.id === state.voices.breeze)?.voice_revision || null;
   }
   const configKey = state => JSON.stringify([state.provider,state.voices[state.provider],modelFor(state),
     ...(voiceIdentity(state) !== undefined ? [voiceIdentity(state)] : [])]);
@@ -76,8 +76,8 @@
   const enabled = book => ['simple','performance'].includes(stateFor(book)?.mode);
   const performing = state => state?.mode === 'performance';
   const playbackRates = [.75,1,1.25,1.5,1.75,2,2.25,2.5];
-  const selectedSegment = panel => panel.state.book.segments.find(segment => segment.id === panel.options.segmentId) ||
-    panel.state.book.segments.find(segment => segment.chapter_id === panel.options.chapterId);
+  const selectedSegment = panel => panel.state.book.passages.find(segment => segment.id === panel.options.segmentId) ||
+    panel.state.book.passages.find(segment => segment.chapter_id === panel.options.chapterId);
 
   function getSelection(book) {
     const state = stateFor(book);
@@ -217,11 +217,11 @@
     state.takes.set(segment.id,{source:sourceKey(segment),audio});
   }
   function remaining(state, segmentId) {
-    const start = state.book.segments.findIndex(item => item.id === segmentId);
+    const start = state.book.passages.findIndex(item => item.id === segmentId);
     if (start < 0) return [];
-    const chapter = state.book.segments[start].chapter_id;
+    const chapter = state.book.passages[start].chapter_id;
     const result = [];
-    for (const segment of state.book.segments.slice(start)) {
+    for (const segment of state.book.passages.slice(start)) {
       if (segment.chapter_id !== chapter) break;
       result.push(segment);
     }
@@ -232,7 +232,7 @@
   function readingOrder(state) {
     if (state.order?.book !== state.book) {
       const chapters = state.book.chapters;
-      const list = chapters?.length ? chapters.flatMap(chapter => state.book.segments.filter(segment => segment.chapter_id === chapter.id)) : state.book.segments;
+      const list = chapters?.length ? chapters.flatMap(chapter => state.book.passages.filter(segment => segment.chapter_id === chapter.id)) : state.book.passages;
       const backMatter = new Set((chapters || []).filter(chapter => chapter.kind === 'back_matter').map(chapter => chapter.id));
       state.order = {book:state.book,list,backMatter,index:new Map(list.map((segment,i) => [segment.id,i]))};
     }
@@ -371,7 +371,7 @@
     if (!await settleKnownJob(state,task) || !current(state,version)) return null;
     task.operation = 'prepare';
     const result = await request(base(state),{provider:state.provider,voice:state.voices[state.provider],
-      model:modelFor(state),segment_id:segment.id});
+      model:modelFor(state),passage_id:segment.id});
     if (result.job?.id) state.knownJob = {id:result.job.id};
     if (!current(state,version)) { cancelJob(result?.job?.id); return null; }
     if (result.session?.id) {
@@ -421,14 +421,14 @@
       if (!audio && state.sessionId) {
         task.operation = 'cache_read';
         const cached = await request(base(state) + '/takes?session_id=' + encode(state.sessionId));
-        audio = cached.takes?.find(item => item.segment_id === segment.id)?.audio;
+        audio = cached.takes?.find(item => item.passage_id === segment.id)?.audio;
       }
     }
     if (!current(state,version)) return null;
-    const latest = state.book.segments.find(item => item.id === segment.id);
+    const latest = state.book.passages.find(item => item.id === segment.id);
     if (!latest || sourceKey(latest) !== signature) return null;
     remember(state,segment,audio);
-    state.message = result.cached ? 'Using saved audio.' : 'Passage audio saved.';
+    state.message = result.kind === 'cached' ? 'Using saved audio.' : 'Passage audio saved.';
     notify(state);
     return current(state,version) ? audio : null;
   }
@@ -692,7 +692,7 @@
   }
 
   // Chapter jobs ------------------------------------------------------------
-  const chapterSegmentsOf = (state, chapterId) => state.book.segments.filter(segment => segment.chapter_id === chapterId);
+  const chapterSegmentsOf = (state, chapterId) => state.book.passages.filter(segment => segment.chapter_id === chapterId);
   // Adopt a session only for the narrator configuration the request was sent
   // with; a late response for a previous voice/model must not bind its audio.
   function adoptSession(state, session, sentKey) {
@@ -703,14 +703,14 @@
     return true;
   }
   function chapterBody(state, segment, intent) {
-    return {provider:state.provider,voice:voiceFor(state),model:modelFor(state),segment_id:segment.id,intent};
+    return {provider:state.provider,voice:voiceFor(state),model:modelFor(state),passage_id:segment.id,intent};
   }
   function settleWaiters(state) {
     for (const resolveWaiter of state.chapter.waiters.splice(0)) resolveWaiter();
   }
   const nextChapterUpdate = state => new Promise(resolveWaiter => state.chapter.waiters.push(resolveWaiter));
-  const jobSignature = job => JSON.stringify([job?.id,job?.status,(job?.chunks || []).map(entry => [entry.status,entry.first_segment_id]),
-    (job?.projection || []).map(entry => [entry.first_segment_id,entry.last_segment_id])]);
+  const jobSignature = job => JSON.stringify([job?.id,job?.status,(job?.chunks || []).map(entry => [entry.status,entry.first_passage_id]),
+    (job?.projection || []).map(entry => [entry.first_passage_id,entry.last_passage_id])]);
   function shareJob(state, job) {
     // The app shell shows the job banner and locks editing while it runs.
     if (job) state.panel?.options.onJob?.(job);
@@ -873,7 +873,7 @@
     const position = new Map(segments.map((item,i) => [item.id,i]));
     const at = position.get(segment.id);
     return [...(job.chunks || []).filter(entry => entry.status === 'requesting'),...(job.projection || [])]
-      .some(entry => position.get(entry.first_segment_id) <= at && at <= position.get(entry.last_segment_id));
+      .some(entry => position.get(entry.first_passage_id) <= at && at <= position.get(entry.last_passage_id));
   }
   async function prepareFromChapter(state, segment, {playbackRate=1,offset=0,continuation=false}) {
     let intent = state.intent;
@@ -978,7 +978,7 @@
       const slots = running.map(entry => Math.max(now+1,Date.parse(entry.started_at)/1000 + (entry.expected_latency || latency(entry.expected_seconds))));
       while (slots.length < concurrency) slots.push(now + (job.waiting_seconds || 0));
       const assign = (entry, time) => {
-        const first = index.get(entry.first_segment_id), last = index.get(entry.last_segment_id);
+        const first = index.get(entry.first_passage_id), last = index.get(entry.last_passage_id);
         if (first === undefined && last === undefined) return;
         for (let i = first ?? 0; i <= (last ?? scope.length-1); i++) finish[i] = Math.min(finish[i],time);
       };
@@ -1044,7 +1044,7 @@
     if (job && !CHAPTER_TERMINAL.has(job.status) && job.chapter_id === chapterId) {
       const position = new Map(segments.map((segment,i) => [segment.id,i]));
       const mark = (entry, status) => {
-        const first = position.get(entry.first_segment_id), last = position.get(entry.last_segment_id);
+        const first = position.get(entry.first_passage_id), last = position.get(entry.last_passage_id);
         if (first === undefined || last === undefined) return;
         for (let i = first; i <= last; i++) if (!marks.has(segments[i].id)) marks.set(segments[i].id,{status});
       };
@@ -1282,7 +1282,7 @@
     const voiceName = voices.find(voice => (voice.id ?? voice.name) === selectedVoice)?.name;
     return {changed:draftChanges(current,draft).length > 0,savedHere:current.takes.size,unavailableReason:available ? '' : unavailableReason(state),
       voiceName:voiceName || (state.provider === 'system' ? 'Default Mac voice' : state.provider === 'breeze' ? 'Default Breeze voice' : selectedVoice || 'Kore'),
-      paid:PAID.has(state.provider),hasFullCast:current.book.segments.some(segment => valid(segment.audio)),performanceName:current.performance?.record.name || (current.performanceId ? 'Saved performance' : ''),
+      paid:PAID.has(state.provider),hasFullCast:current.book.passages.some(segment => valid(segment.audio)),performanceName:current.performance?.record.name || (current.performanceId ? 'Saved performance' : ''),
       mode:state.mode,provider:state.provider,providers:PROVIDERS.map(id => ({id,label:PROVIDER_LABELS[id],available:availability[id]})),
       voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false,reason:voice.reason || ''})),
       voice:selectedVoice,available,breezeVoiceReady,hiddenVoices,showAllVoices:Boolean(state.showAllVoices),continuous:state.continuous,chunked:chunkCapable(state),
@@ -1471,8 +1471,8 @@
   function prepareAction(panel, action) {
     const state = panel.state;
     if (!state) return;
-    const segment = state.book.segments.find(item => item.id === (state.intent?.segmentId || panel.options.segmentId)) ||
-      state.book.segments.find(item => item.chapter_id === panel.options.chapterId);
+    const segment = state.book.passages.find(item => item.id === (state.intent?.segmentId || panel.options.segmentId)) ||
+      state.book.passages.find(item => item.chapter_id === panel.options.chapterId);
     if (!segment) return;
     if (action === 'prepare-chapter' && chunked(state)) { void queueChapter(state,segment); return; }
     if (action === 'retry' && state.intent?.type === 'play' && state.intent.phase === 'playing') {
@@ -1506,7 +1506,7 @@
           return;
         }
         for (const item of result.takes || []) {
-          const segment = state.book.segments.find(segment => segment.id === item.segment_id);
+          const segment = state.book.passages.find(segment => segment.id === item.passage_id);
           if (segment) remember(state,segment,item.audio);
         }
         paint(state.panel);
@@ -1581,7 +1581,7 @@
         // A book with no saved choice starts with one narrator, unless it already
         // has Studio takes to play. A saved choice (including Full cast) is kept.
         mode:prior.mode === 'simple' || (prior.mode === 'performance' && prior.performanceId) ? prior.mode
-          : prior.mode === 'enhanced' || book.segments.some(segment => valid(segment.audio)) ? 'enhanced' : 'simple',
+          : prior.mode === 'enhanced' || book.passages.some(segment => valid(segment.audio)) ? 'enhanced' : 'simple',
         performanceId:prior.mode === 'performance' ? prior.performanceId : null,performance:null,provider:PROVIDERS.includes(prior.provider) ? prior.provider : systemAvailable ? 'system' : 'gemini',
         voices:{system:typeof prior.voices?.system === 'string' ? prior.voices.system : '',gemini:prior.voices?.gemini || 'Kore',
           breeze:typeof prior.voices?.breeze === 'string' ? prior.voices.breeze : ''},status,library:options.voiceLibrary || null,
@@ -1597,7 +1597,7 @@
       options.chapterId === nextChapterId(state,state.intent.segmentId);
     if (state.intent && ((!followsPlayback && panel.options.chapterId !== options.chapterId) ||
         remaining(state,state.intent.segmentId).some(previous => {
-          const next = book.segments.find(item => item.id === previous.id);
+          const next = book.passages.find(item => item.id === previous.id);
           return !next || sourceKey(next) !== sourceKey(previous);
         }))) invalidate(state);
     // A speed change during warmup affects its remaining target, but rendering
@@ -1622,7 +1622,7 @@
       save(state);
     }
     for (const [id,item] of state.takes) {
-      const segment = book.segments.find(segment => segment.id === id);
+      const segment = book.passages.find(segment => segment.id === id);
       if (!segment || sourceKey(segment) !== item.source) state.takes.delete(id);
     }
     paint(panel);

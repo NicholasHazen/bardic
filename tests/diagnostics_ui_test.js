@@ -18,7 +18,8 @@ test('diagnostics sends operational fields locally and drops text, credentials, 
   assert.equal(sent.length,1);
   assert.equal(sent[0].url,'/api/diagnostics');
   assert.equal(sent[0].keepalive,true);
-  assert.deepEqual(JSON.parse(sent[0].body),{event:'buffer_failed',book_id:'book-1',segment_id:'seg-1',
+  // Callers name the passage segment_id; the request body says passage_id and never the old name.
+  assert.deepEqual(JSON.parse(sent[0].body),{event:'buffer_failed',book_id:'book-1',passage_id:'seg-1',
     session_id:'session-1',job_id:'job-1',operation:'poll',playback_rate:2.5,http_status:503});
   assert.ok(!JSON.stringify(sent).includes('secret-key'));
 });

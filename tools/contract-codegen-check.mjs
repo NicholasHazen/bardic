@@ -58,9 +58,41 @@ export const bookPath: paths['/api/books/{book_id}']['get']['parameters']['path'
 export type RunBody = NonNullable<operations['startBookAnalysisPipelineRun']['requestBody']>['content']['application/json'];
 export const run: RunBody = { steps: ['census'], expected_fingerprint: 'plan' };
 
+// Tagged unions narrow on their tag, and a member's own fields exist only on that member.
+export const clipSeconds = (audio: Schemas['ListeningAudio']): number =>
+  audio.kind === 'clip' ? audio.clip_end - audio.clip_start : audio.duration;
+export const jobDetail = (job: Schemas['Job']): string | null => {
+  switch (job.kind) {
+    case 'listen': return job.passage_id;
+    case 'listen_chapter': return job.chapter_id;
+    case 'pipeline': return job.run_id;
+    case 'series': return job.series_id;
+    case 'performance': return job.performance_id;
+    case 'voice_preview': return job.preview_id;
+    default: return null;
+  }
+};
+// @ts-expect-error session_id belongs to the narration kinds that declare it, not to every Job
+export const sessionOfAnyJob = (job: Schemas['Job']) => job.session_id;
+export const volumeTitle = (volume: Schemas['SeriesVolume']): string =>
+  volume.kind === 'supplied' ? volume.author : volume.title;
+export const rowStep = (row: Schemas['PipelineVersionRow']): string => (row.step === 'quotes' ? row.kind : row.step);
+
+// The wire says passage, once. The retired name is not a field.
+export const listen: Schemas['ListenRequest'] = { passage_id: 'p' };
+// @ts-expect-error segment_id was renamed passage_id
+export const oldListen: Schemas['ListenRequest'] = { passage_id: 'p', segment_id: 'p' };
+export const passageCount = (book: Schemas['Book']): number => book.passages.length;
+
+// Providers are named enumerations, and a value outside them does not compile.
+export const narrator: Schemas['NarrationProvider'] = 'breeze';
+// @ts-expect-error 'openai' is not a narration provider
+export const badNarrator: Schemas['NarrationProvider'] = 'openai';
+
 // Transport-level statuses are part of the contract.
 export type WriteGuard = operations['createDemoBook']['responses'][403];
 export type PartialAudio = operations['getListeningAudio']['responses'][206];
+export type RangeRefused = operations['getListeningAudio']['responses'][416]['content']['application/json'];
 `;
 
 const dir = mkdtempSync(join(tmpdir(), 'bardic-codegen-'));

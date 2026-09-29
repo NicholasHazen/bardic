@@ -345,7 +345,7 @@ def test_active_jobs_are_listed_beyond_the_hundred_most_recent(tmp_path):
         running = store.create_job("book", "analyze")
         store.update_job(running["id"], status="running")
         for _ in range(120):
-            store.update_job(store.create_job("book", "listen")["id"], status="completed")
+            store.update_job(store.create_job("book", "render")["id"], status="completed")
         assert running["id"] not in {job["id"] for job in client.get("/api/jobs").json()}
         assert [job["id"] for job in client.get("/api/jobs", params={"active": "true"}).json()] == [running["id"]]
 

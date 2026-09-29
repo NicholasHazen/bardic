@@ -4,9 +4,11 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const book = {id:'book-1', revision:1, characters:[{id:'mara', voice:'Kore'}], segments:[{id:'segment-1', text:'Mara opened the window.'}]};
+const book = {id:'book-1', revision:1, characters:[{id:'mara', voice:'Kore'}], passages:[{id:'segment-1', text:'Mara opened the window.'}]};
+// What callers pass to start(), and what the voice-preview request body says on the wire (passage_id, passage_direction).
 const config = {provider:'gemini', voice:'Leda', model:'tts-model', segment_id:'segment-1', character_id:'mara', direction:'Warm.', segment_direction:'Quietly.'};
-const preview = {id:'preview-1', source:'passage', text:'Mara opened the window.', segment_id:'segment-1', character_id:'mara', voice:'Leda'};
+const wire = {provider:'gemini', voice:'Leda', model:'tts-model', passage_id:'segment-1', character_id:'mara', direction:'Warm.', passage_direction:'Quietly.'};
+const preview = {id:'preview-1', source:'passage', text:'Mara opened the window.', passage_id:'segment-1', character_id:'mara', voice:'Leda'};
 const audio = {url:'/api/books/book-1/voice-preview/audio/asset', asset_id:'asset', duration:2};
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) { for (let i=0;i<50;i++) { if (predicate()) return; await tick(); } assert.fail('Expected asynchronous step did not occur.'); }
@@ -25,7 +27,7 @@ function environment(handler) {
     onState:state => {states.push(state); lifecycle.push(state.status);}, onReady:(...args) => ready.push(args)});
   return {api, calls, ready, states, lifecycle, diagnostics, setLogger:logger => {scope.window.BardicDiagnostics = logger;}};
 }
-const cached = () => ({data:{preview, audio, cached:true}});
+const cached = () => ({data:{kind:'cached', preview, audio}});
 const postCount = env => env.calls.filter(call => call.method === 'POST' && call.url.endsWith('/voice-preview')).length;
 
 test('only explicit audition requests a sample, preserves inputs and uses the shared-player callbacks', async () => {
@@ -33,7 +35,8 @@ test('only explicit audition requests a sample, preserves inputs and uses the sh
   assert.equal(env.api.getState().status, 'idle');
   assert.equal(env.calls.length, 0);
   const result = await env.api.start(book, {...config, unused:'do not send'}, 'Mara · Leda');
-  assert.deepEqual(env.calls[0], {url:'/api/books/book-1/voice-preview', method:'POST', body:config});
+  assert.deepEqual(env.calls[0], {url:'/api/books/book-1/voice-preview', method:'POST', body:wire});
+  assert.ok(!('segment_id' in env.calls[0].body) && !('segment_direction' in env.calls[0].body), 'The request never uses the old segment names.');
   assert.equal(env.lifecycle[0], 'start');
   assert.equal(env.lifecycle[1], 'loading');
   assert.equal(result.audio, audio);
@@ -110,7 +113,7 @@ test('identical pending audition clicks join a single request', async () => {
 
 test('queued generation polls once and uses completed job metadata', async () => {
   const completedPreview = {...preview, truncated:true};
-  const env = environment(call => call.method === 'POST' ? {data:{preview, job:{id:'job-1', kind:'voice_preview', status:'queued'}, cached:false}} :
+  const env = environment(call => call.method === 'POST' ? {data:{kind:'queued', preview, job:{id:'job-1', kind:'voice_preview', status:'queued'}}} :
     {data:[{id:'job-1', status:'completed', audio, preview:completedPreview}]});
   const result = await env.api.start(book, config);
   assert.equal(env.calls[1].url, '/api/jobs?book_id=book-1');
@@ -143,7 +146,7 @@ test('a late accepted job is cancelled and a new audition waits for that job to 
   const first = env.api.start(book, config);
   await until(() => postCount(env) === 1);
   const next = env.api.start({...book, id:'book-2'}, {...config, voice:'Puck'});
-  response.resolve({data:{preview, job:{id:'old-job', status:'queued'}}});
+  response.resolve({data:{kind:'queued', preview, job:{id:'old-job', status:'queued'}}});
   await until(() => reads === 2);
   assert.equal(await first, null);
   assert.equal(postCount(env), 1, 'No new synthesis may race the cancelled provider job.');
@@ -161,7 +164,7 @@ test('Stop during a status request cannot play the late successful job', async (
   const env = environment(call => {
     if (call.url.endsWith('/cancel')) return {data:{status:'cancelled'}};
     if (call.method === 'GET') return status.promise;
-    return {data:{preview, job:{id:'job-1', status:'queued'}}};
+    return {data:{kind:'queued', preview, job:{id:'job-1', status:'queued'}}};
   });
   const pending = env.api.start(book, config);
   await until(() => env.calls.some(call => call.method === 'GET'));
@@ -182,7 +185,7 @@ test('the reader can await a cancelled preview including its late accepted POST'
   const pending = env.api.start(book, config);
   await until(() => postCount(env) === 1);
   const stopped = env.api.waitForStopped();
-  response.resolve({data:{preview, job:{id:'job-1', status:'queued'}}});
+  response.resolve({data:{kind:'queued', preview, job:{id:'job-1', status:'queued'}}});
   await until(() => env.calls.some(call => call.method === 'GET'));
   assert.equal(await pending, null);
   assert.equal(env.api.getState().status, 'idle');
@@ -203,7 +206,7 @@ test('a new audition supersedes the reader cancellation barrier without overlapp
   const first = env.api.start(book, config);
   await until(() => postCount(env) === 1);
   const stopped = env.api.waitForStopped();
-  response.resolve({data:{preview, job:{id:'job-1', status:'queued'}}});
+  response.resolve({data:{kind:'queued', preview, job:{id:'job-1', status:'queued'}}});
   await until(() => reads === 1);
   const next = env.api.start(book, {...config, voice:'Puck'});
   status.resolve({data:[{id:'job-1', status:'running'}]});
@@ -218,7 +221,7 @@ test('a new audition supersedes the reader cancellation barrier without overlapp
 test('at most two transient read retries recover without repeating synthesis', async () => {
   let reads = 0;
   const env = environment(call => {
-    if (call.method === 'POST') return {data:{preview, job:{id:'job-1', status:'running'}}};
+    if (call.method === 'POST') return {data:{kind:'queued', preview, job:{id:'job-1', status:'running'}}};
     if (++reads < 3) return {ok:false, status:503, data:{detail:'Temporarily unavailable.'}};
     return {data:[{id:'job-1', status:'completed', audio, preview}]};
   });
@@ -232,7 +235,7 @@ test('exhausted status retries preserve the job barrier for the next explicit au
   let reads = 0;
   const env = environment(call => {
     if (call.url.endsWith('/cancel')) return {data:{status:'running'}};
-    if (call.method === 'POST') return postCount(env) === 1 ? {data:{preview, job:{id:'job-1', status:'running'}}} : cached();
+    if (call.method === 'POST') return postCount(env) === 1 ? {data:{kind:'queued', preview, job:{id:'job-1', status:'running'}}} : cached();
     if (++reads <= 3) throw new Error('Network unavailable.');
     return {data:[{id:'job-1', status:'completed', audio, preview}]};
   });
@@ -263,7 +266,7 @@ test('an uncertain POST failure is surfaced without retry or provider fallback',
 });
 
 test('poll failures log operational identifiers only and a broken logger cannot reject the audition', async () => {
-  const env = environment(call => call.method === 'POST' ? {data:{preview, job:{id:'job-1', status:'running'}}} :
+  const env = environment(call => call.method === 'POST' ? {data:{kind:'queued', preview, job:{id:'job-1', status:'running'}}} :
     {ok:false, status:403, data:{detail:'Sensitive provider response.'}});
   await env.api.start(book, config);
   assert.equal(env.diagnostics.length, 1);
@@ -281,7 +284,7 @@ test('failed jobs never trigger a second sample', async () => {
   for (const outcome of [
     {status:'failed', error:'Quota exhausted.'},
   ]) {
-    const env = environment(call => call.method === 'POST' ? {data:{preview, job:{id:'job-1', status:'queued'}}} :
+    const env = environment(call => call.method === 'POST' ? {data:{kind:'queued', preview, job:{id:'job-1', status:'queued'}}} :
       {data:[{id:'job-1', ...outcome}]});
     await env.api.start(book, config);
     assert.equal(env.api.getState().status, 'error');
@@ -291,8 +294,8 @@ test('failed jobs never trigger a second sample', async () => {
 });
 
 test('generic examples omit source IDs and use server-selected demo text', async () => {
-  const demo = {...preview, source:'demo', text:'A short original demo.', segment_id:null, character_id:null};
-  const env = environment(() => ({data:{preview:demo, audio, cached:true}}));
+  const demo = {...preview, source:'demo', text:'A short original demo.', passage_id:null, character_id:null};
+  const env = environment(() => ({data:{kind:'cached', preview:demo, audio}}));
   await env.api.start(book, {provider:'system', voice:'Samantha'});
   assert.deepEqual(env.calls[0].body, {provider:'system', voice:'Samantha'});
   assert.equal(env.ready[0][1].source, 'demo');

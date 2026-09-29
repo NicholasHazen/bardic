@@ -10,7 +10,7 @@ class Container {
   addEventListener(name,fn) { this.listeners[name]=fn; }
 }
 function story(count=20) {
-  return {id:'buffer-book',revision:1,segments:Array.from({length:count+2},(_,i)=>({
+  return {id:'buffer-book',revision:1,passages:Array.from({length:count+2},(_,i)=>({
     id:`p${i}`,chapter_id:i<count ? 'chapter-a' : 'chapter-b',start:i*20,end:i*20+10,text:`Original passage ${i}.`,
   }))};
 }
@@ -20,7 +20,7 @@ function environment({book=story(),duration=12,handler,records,continuous}={}) {
   let plays=0;
   const audio=id=>({url:`/saved/${id}.wav`,duration,asset_id:id});
   const normal=call=>call.url.endsWith('/cancel') ? {status:'cancelled'} : {
-    session:{id:'session-buffer'},audio:audio(call.body.segment_id),cached:false,
+    kind:'cached',session:{id:'session-buffer'},audio:audio(call.body.passage_id),
   };
   const scope={window:records ? {BardicDiagnostics:{record:(event,fields)=>records.push({event,...fields})}} : {},setTimeout:fn=>setImmediate(fn),localStorage:{
     getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),
@@ -45,9 +45,9 @@ function environment({book=story(),duration=12,handler,records,continuous}={}) {
 test('warmup uses measured durations, playback rate and resume offset; rendering is passive',async()=>{
   for (const [rate,offset,expected] of [[1,0,1],[2.5,0,3],[1,11,2]]) {
     const env=environment(); await env.init();
-    env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:rate});
+    env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:rate});
     assert.equal(env.posts().length,0,'Neither render nor a time update creates playback intent');
-    const selected=await env.api.prepare(env.book,env.book.segments[0],{playbackRate:rate,offset});
+    const selected=await env.api.prepare(env.book,env.book.passages[0],{playbackRate:rate,offset});
     assert.equal(selected.asset_id,'p0');
     assert.equal(env.posts().length,expected);
     const buffer=env.api.getBuffer(env.book);
@@ -62,19 +62,19 @@ test('warmup uses measured durations, playback rate and resume offset; rendering
 
 test('playing fills a rate-aware rolling buffer and replenishes it as time advances',async()=>{
   const env=environment({duration:10}); await env.init();
-  await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+  await env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
   assert.equal(env.posts().length,3);
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5,currentTime:0});
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:2.5,currentTime:0});
   await settle();
   assert.equal(env.posts().length,12,'120 seconds of audio covers 48 seconds at 2.5×');
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5,currentTime:9});
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:2.5,currentTime:9});
   await settle();
   assert.equal(env.posts().length,13);
-  const continuation=await env.api.prepare(env.book,env.book.segments[1],{playbackRate:2.5});
+  const continuation=await env.api.prepare(env.book,env.book.passages[1],{playbackRate:2.5});
   assert.equal(continuation.asset_id,'p1');
   assert.equal(env.posts().length,13,'Already-buffered automatic continuation has no extra warmup');
   env.api.stop(env.book);
-  env.api.updatePlayback(env.book,env.book.segments[10],{playbackRate:2.5});
+  env.api.updatePlayback(env.book,env.book.passages[10],{playbackRate:2.5});
   await settle();
   assert.equal(env.posts().length,13,'A paused time event never restarts work');
 });
@@ -83,12 +83,12 @@ test('a shared speed change during warmup adjusts its remaining target without s
   for (const [initialRate,nextRate,expected] of [[1,2.5,3],[2.5,1,1]]) {
     let release;
     const env=environment({duration:12,handler:(call,normal)=>{
-      if (call.body?.segment_id==='p0') return new Promise(resolve=>{release=()=>resolve(normal(call));});
+      if (call.body.passage_id==='p0') return new Promise(resolve=>{release=()=>resolve(normal(call));});
       return normal(call);
     }}); await env.init();
     env.options.playbackRate=initialRate;
     await env.api.render(env.container,env.book,env.options);
-    const preparing=env.api.prepare(env.book,env.book.segments[0],{playbackRate:initialRate});
+    const preparing=env.api.prepare(env.book,env.book.passages[0],{playbackRate:initialRate});
     while (!release) await tick();
     await env.api.render(env.container,env.book,{...env.options,playbackRate:nextRate,preparing:true});
     assert.equal(env.api.getBuffer(env.book).rate,nextRate);
@@ -106,14 +106,14 @@ test('a shared speed change during warmup adjusts its remaining target without s
 
 test('the shared speed callback keeps playback intent and saved audio without cancelling queued work',async()=>{
   const env=environment({duration:12}); await env.init();
-  await env.api.prepare(env.book,env.book.segments[0],{playbackRate:1});
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:1}); await settle();
+  await env.api.prepare(env.book,env.book.passages[0],{playbackRate:1});
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:1}); await settle();
   const initial=env.posts().length;
   assert.equal(initial,4);
   env.options.playing=true;
   env.options.onRateChange=rate=>{
     env.options.playbackRate=rate;
-    env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:rate});
+    env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:rate});
     void env.api.render(env.container,env.book,env.options);
   };
   await env.api.render(env.container,env.book,env.options);
@@ -121,7 +121,7 @@ test('the shared speed callback keeps playback intent and saved audio without ca
   await settle();
   assert.equal(env.api.getBuffer(env.book).rate,2.5);
   assert.equal(env.posts().length,10,'The existing rolling buffer grows for the faster shared playback rate');
-  assert.equal(env.posts().filter(call=>call.body.segment_id==='p0').length,1,'The current passage is never generated again');
+  assert.equal(env.posts().filter(call=>call.body.passage_id==='p0').length,1,'The current passage is never generated again');
   assert.ok(!env.calls.some(call=>call.url.endsWith('/cancel')),'A speed choice does not cancel the listening job');
   assert.match(env.container.innerHTML,/aria-label="Pause listening">Pause/);
   assert.match(env.container.innerHTML,/Ready ahead · \d+ seconds at 2\.5×/,'The ready-ahead figure follows the shared speed');
@@ -131,12 +131,12 @@ test('the shared speed callback keeps playback intent and saved audio without ca
 test('short passages obey the warmup cap and 12-future-passage bound, without crossing chapters when continuous is off',async()=>{
   for (const count of [2,30]) {
     const env=environment({book:story(count),duration:.1,continuous:false}); await env.init();
-    await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+    await env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
     assert.equal(env.posts().length,Math.min(3,count));
-    env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5});
+    env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:2.5});
     await settle();
     assert.equal(env.posts().length,Math.min(13,count));
-    assert.ok(env.posts().every(call=>Number(call.body.segment_id.slice(1))<count));
+    assert.ok(env.posts().every(call=>Number(call.body.passage_id.slice(1))<count));
     env.api.stop(env.book);
   }
 });
@@ -144,14 +144,14 @@ test('short passages obey the warmup cap and 12-future-passage bound, without cr
 test('continuous listening carries warmup and the rolling queue into the next chapter, still bounded',async()=>{
   for (const count of [2,30]) {
     const env=environment({book:story(count),duration:.1}); await env.init();
-    await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+    await env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
     assert.equal(env.posts().length,3,'Warmup may include the next chapter\'s opening passages');
-    env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5});
+    env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:2.5});
     await settle();
     assert.equal(env.posts().length,Math.min(13,count+2),'At most 12 future passages, across the chapter boundary');
-    assert.equal(env.posts().some(call=>Number(call.body.segment_id.slice(1))>=count),count<12);
+    assert.equal(env.posts().some(call=>Number(call.body.passage_id.slice(1))>=count),count<12);
     // Playback moving into the next chapter keeps the same intent and queue.
-    const next=env.book.segments[count];
+    const next=env.book.passages[count];
     env.api.updatePlayback(env.book,next,{playbackRate:2.5});
     assert.equal(env.api.getBuffer(env.book).preparing || env.api.getBuffer(env.book).seconds>0,true);
     const continued=await env.api.prepare(env.book,next,{playbackRate:2.5,continuation:true});
@@ -169,7 +169,7 @@ test('explicit rest-of-chapter preparation is serial, chapter-scoped and never a
   await env.api.render(env.container,env.book,env.options);
   env.click('prepare-chapter'); await settle();
   assert.equal(maximum,1);
-  assert.deepEqual(env.posts().map(call=>call.body.segment_id),['p2','p3','p4','p5','p6','p7']);
+  assert.deepEqual(env.posts().map(call=>call.body.passage_id),['p2','p3','p4','p5','p6','p7']);
   assert.equal(env.plays(),0);
   assert.ok(env.container.innerHTML.includes('rest of this chapter is saved and ready'));
   assert.equal(env.api.getBuffer(env.book).chapterPreparation,false);
@@ -184,7 +184,7 @@ test('chapter preparation waits for the audition barrier before submitting any p
   assert.equal(env.posts().length,0);
   assert.equal(env.api.getBuffer(env.book).chapterPreparation,true);
   release(true); await settle();
-  assert.deepEqual(env.posts().map(call=>call.body.segment_id),['p0','p1','p2']);
+  assert.deepEqual(env.posts().map(call=>call.body.passage_id),['p0','p1','p2']);
   assert.equal(env.plays(),0);
 });
 
@@ -202,14 +202,14 @@ test('Stop, book change or a newer chapter intent cancels a chapter waiting on a
       await env.api.render(env.container,env.book,env.options);
       // A newer explicit request uses its own intent and barrier, even while
       // the earlier request has yet to receive its cancellation completion.
-      void env.api.prepareChapter(env.book,env.book.segments[2]);
+      void env.api.prepareChapter(env.book,env.book.passages[2]);
     }
     releases[0](true); await settle();
     assert.equal(env.posts().length,0,'The stale chapter cannot submit after its wait finishes');
     if (action==='newer') {
       assert.equal(releases.length,2);
       releases[1](true); await settle();
-      assert.deepEqual(env.posts().map(call=>call.body.segment_id),['p2']);
+      assert.deepEqual(env.posts().map(call=>call.body.passage_id),['p2']);
     }
   }
 });
@@ -228,7 +228,7 @@ test('a failed audition barrier preserves a retryable chapter without generating
   assert.match(env.container.innerHTML,/data-listen-action="retry">Try again/);
   env.click('retry'); await settle();
   assert.equal(attempts,2,'Retry must also cross the audition barrier');
-  assert.deepEqual(env.posts().map(call=>call.body.segment_id),['p0','p1']);
+  assert.deepEqual(env.posts().map(call=>call.body.passage_id),['p0','p1']);
 
   const stopped=environment({book:story(2)}); await stopped.init();
   stopped.options.beforeChapterPrepare=async()=>false;
@@ -242,19 +242,19 @@ test('a failed audition barrier preserves a retryable chapter without generating
 test('a future failure preserves ready playback and requires an explicit retry',async()=>{
   let failure=true;
   const env=environment({handler:(call,normal)=>{
-    if (call.body?.segment_id==='p1'&&failure) { failure=false; return {ok:false,statusCode:429,detail:'Provider quota unavailable.'}; }
+    if (call.body.passage_id==='p1'&&failure) { failure=false; return {ok:false,statusCode:429,detail:'Provider quota unavailable.'}; }
     return normal(call);
   }}); await env.init();
-  await env.api.prepare(env.book,env.book.segments[0]);
-  env.api.updatePlayback(env.book,env.book.segments[0]); await settle();
+  await env.api.prepare(env.book,env.book.passages[0]);
+  env.api.updatePlayback(env.book,env.book.passages[0]); await settle();
   assert.equal(env.posts().length,2);
-  assert.equal(env.api.resolve(env.book,env.book.segments[0]).asset_id,'p0');
+  assert.equal(env.api.resolve(env.book,env.book.passages[0]).asset_id,'p0');
   assert.match(env.container.innerHTML,/Provider quota unavailable/);
   assert.match(env.container.innerHTML,/data-listen-action="retry">Try again/);
-  env.api.updatePlayback(env.book,env.book.segments[0]); await settle();
+  env.api.updatePlayback(env.book,env.book.passages[0]); await settle();
   assert.equal(env.posts().length,2);
-  assert.equal((await env.api.prepare(env.book,env.book.segments[0])).asset_id,'p0');
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[1]),/quota unavailable/);
+  assert.equal((await env.api.prepare(env.book,env.book.passages[0])).asset_id,'p0');
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[1]),/quota unavailable/);
   assert.equal(env.posts().length,2,'Automatic continuation must not retry a failed paid request');
   env.click('retry'); await settle();
   assert.ok(env.posts().length>2);
@@ -262,11 +262,11 @@ test('a future failure preserves ready playback and requires an explicit retry',
 });
 
 test('warmup failure beyond the first passage does not prevent playback of saved current audio',async()=>{
-  const env=environment({duration:8,handler:(call,normal)=>call.body?.segment_id==='p1'
+  const env=environment({duration:8,handler:(call,normal)=>call.body.passage_id==='p1'
     ? {ok:false,statusCode:401,detail:'Add a provider key.'} : normal(call)}); await env.init();
-  assert.equal((await env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5})).asset_id,'p0');
+  assert.equal((await env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5})).asset_id,'p0');
   assert.equal(env.posts().length,2);
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:2.5}); await settle();
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:2.5}); await settle();
   assert.equal(env.posts().length,2);
   assert.match(env.container.innerHTML,/Add a provider key/);
   env.api.stop(env.book);
@@ -276,17 +276,17 @@ test('stop invalidates queued passages and cancels a late job without returning 
   let release;
   const env=environment({handler:(call,normal)=>call.url.endsWith('/cancel') ? normal(call)
     : new Promise(resolve=>{release=resolve;})}); await env.init();
-  const selected=env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
-  const queued=env.api.ensure(env.book,env.book.segments[4]);
+  const selected=env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
+  const queued=env.api.ensure(env.book,env.book.passages[4]);
   await tick();
   env.api.stop(env.book);
-  release({session:{id:'late'},job:{id:'late-job',status:'queued'}});
+  release({kind:'queued',session:{id:'late'},job:{id:'late-job',status:'queued'}});
   assert.equal(await selected,null);
   assert.equal(await queued,null);
   await settle();
   assert.equal(env.posts().length,1);
   assert.ok(env.calls.some(call=>call.url==='/api/jobs/late-job/cancel'));
-  assert.equal(env.api.resolve(env.book,env.book.segments[0]),null);
+  assert.equal(env.api.resolve(env.book,env.book.passages[0]),null);
 });
 
 test('the stopped-listen barrier waits for a late POST job using only cancellation and status reads',async()=>{
@@ -296,7 +296,7 @@ test('the stopped-listen barrier waits for a late POST job using only cancellati
     if (call.method==='POST') return new Promise(resolve=>{releasePost=resolve;});
     return new Promise(resolve=>{releaseStatus=resolve;});
   }}); await env.init();
-  const pending=env.api.prepare(env.book,env.book.segments[0]);
+  const pending=env.api.prepare(env.book,env.book.passages[0]);
   while (!releasePost) await tick();
   env.api.stop(env.book);
   let settled=false;
@@ -304,7 +304,7 @@ test('the stopped-listen barrier waits for a late POST job using only cancellati
   await tick();
   assert.equal(settled,false,'An uncertain POST must reveal its job before the barrier opens');
   assert.equal(env.posts().length,1);
-  releasePost({job:{id:'old-listen',status:'running'}});
+  releasePost({kind:'queued',job:{id:'old-listen',status:'running'}});
   assert.equal(await pending,null);
   while (!releaseStatus) await tick();
   assert.equal(settled,false);
@@ -325,18 +325,18 @@ test('the stopped-listen barrier is invalidated by another book or fresh playbac
       if (call.method==='POST') return new Promise(resolve=>{releasePost=resolve;});
       return new Promise(resolve=>{releaseStatus=resolve;});
     }}); await env.init();
-    const pending=env.api.prepare(env.book,env.book.segments[0]);
+    const pending=env.api.prepare(env.book,env.book.passages[0]);
     while (!releasePost) await tick();
     env.api.stop(env.book);
     const barrier=env.api.waitForStopped(env.book);
     if (action==='book') await env.api.render(env.container,{...env.book,id:'other-book'},env.options);
     else {
       // A new explicit intent must not be mistaken for the request we stopped.
-      const newer=env.api.prepare(env.book,env.book.segments[1]);
+      const newer=env.api.prepare(env.book,env.book.passages[1]);
       env.api.stop(env.book);
       await newer;
     }
-    releasePost({job:{id:'old-listen',status:'running'}});
+    releasePost({kind:'queued',job:{id:'old-listen',status:'running'}});
     assert.equal(await pending,null);
     assert.equal(await barrier,false);
     assert.equal(releaseStatus,undefined,'A stale barrier must not even begin status polling');
@@ -348,12 +348,12 @@ test('book, chapter, source or voice changes invalidate pending warmup and futur
   for (const action of ['book','chapter','source','voice']) {
     let release;
     const env=environment({handler:()=>new Promise(resolve=>{release=resolve;})}); await env.init();
-    const preparing=env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+    const preparing=env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
     await tick();
     if (action==='voice') env.change('voice','Samantha');
     else {
       const next=action==='book' ? {...env.book,id:'another'} : action==='source'
-        ? {...env.book,segments:env.book.segments.map((s,i)=>i===0?{...s,text:'New canonical source.'}:s)} : env.book;
+        ? {...env.book,passages:env.book.passages.map((s,i)=>i===0?{...s,text:'New canonical source.'}:s)} : env.book;
       await env.api.render(env.container,next,{...env.options,chapterId:action==='chapter'?'chapter-b':'chapter-a'});
     }
     release({audio:{url:'/late.wav',duration:20,asset_id:'late'}});
@@ -366,23 +366,23 @@ test('book, chapter, source or voice changes invalidate pending warmup and futur
 test('polling retries transient reads twice; an uncertain POST is never automatically retried',async()=>{
   let polls=0;
   const env=environment({handler:(call,_normal,audio)=>call.method==='POST'
-    ? {job:{id:'poll-job',status:'queued'}} : ++polls<3 ? new Error('Temporary connection failure')
+    ? {kind:'queued',job:{id:'poll-job',status:'queued'}} : ++polls<3 ? new Error('Temporary connection failure')
       : [{id:'poll-job',status:'completed',audio:audio('p0')}]}); await env.init();
-  assert.equal((await env.api.ensure(env.book,env.book.segments[0])).asset_id,'p0');
+  assert.equal((await env.api.ensure(env.book,env.book.passages[0])).asset_id,'p0');
   assert.equal(polls,3); assert.equal(env.posts().length,1);
   const uncertain=environment({handler:()=>new Error('POST response was lost')}); await uncertain.init();
-  await assert.rejects(uncertain.api.prepare(uncertain.book,uncertain.book.segments[0]),/response was lost/);
-  uncertain.api.updatePlayback(uncertain.book,uncertain.book.segments[0]); await settle();
+  await assert.rejects(uncertain.api.prepare(uncertain.book,uncertain.book.passages[0]),/response was lost/);
+  uncertain.api.updatePlayback(uncertain.book,uncertain.book.passages[0]); await settle();
   assert.equal(uncertain.posts().length,1);
 });
 
 test('evicting an unplayable browser asset only rechecks it on explicit preparation',async()=>{
   const env=environment(); await env.init();
-  await env.api.ensure(env.book,env.book.segments[0]);
-  env.api.forgetAudio(env.book,env.book.segments[0]);
-  assert.equal(env.api.resolve(env.book,env.book.segments[0]),null);
+  await env.api.ensure(env.book,env.book.passages[0]);
+  env.api.forgetAudio(env.book,env.book.passages[0]);
+  assert.equal(env.api.resolve(env.book,env.book.passages[0]),null);
   await settle(); assert.equal(env.posts().length,1);
-  await env.api.ensure(env.book,env.book.segments[0]);
+  await env.api.ensure(env.book,env.book.passages[0]);
   assert.equal(env.posts().length,2,'Backend rechecks matching local cache without a force flag');
   assert.ok(env.posts().every(call=>!call.body.force));
 });
@@ -396,14 +396,14 @@ test('a new selection waits for cooperative cancellation before posting another 
       polls++;
       return [{id:'slow-job',status:previousFinished?'cancelled':'running'}];
     }
-    if (call.body.segment_id==='p0') return new Promise(resolve=>{releasePost=resolve;});
+    if (call.body.passage_id==='p0') return new Promise(resolve=>{releasePost=resolve;});
     assert.equal(previousFinished,true,'No new POST until the known old provider request has finished');
     return normal(call);
   }}); await env.init();
-  const old=env.api.prepare(env.book,env.book.segments[0]); await tick();
+  const old=env.api.prepare(env.book,env.book.passages[0]); await tick();
   env.api.stop(env.book);
-  const selected=env.api.prepare(env.book,env.book.segments[5]);
-  releasePost({job:{id:'slow-job',status:'running'}});
+  const selected=env.api.prepare(env.book,env.book.passages[5]);
+  releasePost({kind:'queued',job:{id:'slow-job',status:'running'}});
   assert.equal(await old,null);
   while (!polls) await tick();
   assert.equal(env.posts().length,1);
@@ -422,15 +422,15 @@ test('polling exhaustion retains the known job for Stop and the next explicit re
       finished=true;
       return [{id:'known-job',status:'completed',audio:audio('p0')}];
     }
-    if (!finished) return {job:{id:'known-job',status:'running'}};
+    if (!finished) return {kind:'queued',job:{id:'known-job',status:'running'}};
     return normal(call);
   }}); await env.init();
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[0]),/Read connection unavailable/);
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[0]),/Read connection unavailable/);
   assert.equal(env.posts().length,1);
   env.api.stop(env.book);
   assert.ok(env.calls.some(call=>call.url==='/api/jobs/known-job/cancel'));
   failReads=false;
-  assert.equal((await env.api.prepare(env.book,env.book.segments[1])).asset_id,'p1');
+  assert.equal((await env.api.prepare(env.book,env.book.passages[1])).asset_id,'p1');
   assert.equal(env.posts().length,2);
   assert.equal(finished,true);
   env.api.stop(env.book);
@@ -441,7 +441,7 @@ test('buffer diagnostics contain safe IDs and stage/status without source or err
   const records=[];
   const env=environment({records,handler:()=>({ok:false,statusCode:429,detail:'Sensitive source and provider response go here.'})});
   await env.init();
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5}));
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5}));
   assert.equal(records.length,1);
   assert.equal(records[0].event,'buffer_failed');
   assert.equal(records[0].book_id,env.book.id);
@@ -461,10 +461,10 @@ test('Stop keeps its status when a late POST or completed-job response arrives',
     const env=environment({handler:(call,normal,audio)=>{
       if (call.url.endsWith('/cancel')) return normal(call);
       if (responseType==='post') return new Promise(resolve=>{release=()=>resolve({audio:audio('p0')});});
-      if (call.method==='POST') return {job:{id:'finishing-job',status:'running'}};
+      if (call.method==='POST') return {kind:'queued',job:{id:'finishing-job',status:'running'}};
       return new Promise(resolve=>{release=()=>resolve([{id:'finishing-job',status:'completed',audio:audio('p0')}]);});
     }}); await env.init();
-    const preparing=env.api.prepare(env.book,env.book.segments[0],{playbackRate:2.5});
+    const preparing=env.api.prepare(env.book,env.book.passages[0],{playbackRate:2.5});
     while (!release) await tick();
     env.click('stop');
     assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
@@ -482,7 +482,7 @@ test('Stop invoked during the completion notification invalidates the result and
   const env=environment(); await env.init();
   env.options.onChange=()=>env.api.stop(env.book);
   await env.api.render(env.container,env.book,env.options);
-  assert.equal(await env.api.ensure(env.book,env.book.segments[0]),null);
+  assert.equal(await env.api.ensure(env.book,env.book.passages[0]),null);
   await settle();
   assert.equal(env.posts().length,1);
   assert.match(env.container.innerHTML,/Stopped\. Finished audio is saved/);
@@ -498,7 +498,7 @@ test('a late saved-take read cannot overwrite Stop; stopped rate follows current
     }
     return normal(call);
   }}); await env.init();
-  await env.api.ensure(env.book,env.book.segments[0]);
+  await env.api.ensure(env.book,env.book.passages[0]);
   const reading=env.api.render(env.container,env.book,env.options);
   while (!readStarted) await tick();
   env.api.stop(env.book);

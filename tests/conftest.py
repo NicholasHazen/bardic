@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from bardic.apispec import match, validate_response
+from bardic.apispec import VERSION, match, validate_response
 from bardic.apispec.spec import registry
 from bardic.tts_limits import LIMITER
 
@@ -38,6 +38,9 @@ def _checked_send(self, request, *args, **kwargs):
         return response
     problems = validate_response(request.method, path, response.status_code,
                                  response.headers.get('content-type', ''), response.content)
+    if response.headers.get('bardic-contract-version') != VERSION:
+        problems.append(f'{request.method} {path} -> {response.status_code}: the Bardic-Contract-Version header is '
+                        f'{response.headers.get("bardic-contract-version")!r}, expected {VERSION!r} on every /api response')
     entry = match(request.method, path)
     if entry is not None and 200 <= response.status_code < 300:
         _succeeded.add(entry.id)

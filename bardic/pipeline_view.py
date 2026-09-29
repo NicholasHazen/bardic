@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 import json
 import zipfile
 
+from . import wire
 from .artifacts import ArtifactRepository
 from .processing import ProcessingStore
 from .series import SeriesRepository
@@ -171,14 +172,16 @@ def pipeline(store, book, valid_audio, registry):
     stage('export', 'Reusable analysis export', None, None, 'bundles', ['import'],
           'Download source, graph, profiles, observations, version history and provenance without generating audio. '
           'Audio files use the separate audiobook export.', status='ready')
-    events = processing.events(book['id'], 100)
+    events = [wire.complete(dict(event), wire.EVENT_FIELDS) for event in processing.events(book['id'], 100)]
     # Look up validation for displayed attempts across all history, not just the
     # event preview. HTTP success alone never means an output passed validation.
     attempts = processing.attempts(book['id'])[-100:]
     with store.lock, store.connect() as conn:
         validation = attempt_validation(conn, book['id'])
     active_runs = {j['id'] for j in store.jobs(book['id'], limit=None, active=True)}
-    public_attempts = [public_attempt(attempt, validation, active_runs) for attempt in attempts]
+    # The inspector sends every allowlisted field (null when the stored attempt lacks it); the export bundle keeps
+    # its fields as stored, so its content is unchanged.
+    public_attempts = [wire.complete(public_attempt(attempt, validation, active_runs), ATTEMPT_FIELDS) for attempt in attempts]
     return {'schema_version': 1, 'book_id': book['id'], 'stages': stages,
             'jobs': [public_job(j) for j in jobs],
             'usage': processing.usage(book['id']), 'attempts': public_attempts, 'events': events,

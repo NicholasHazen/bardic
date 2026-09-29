@@ -23,7 +23,8 @@ from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import breeze, gemini_voices
+from . import breeze, gemini_voices, wire
+from .apispec.enums import VoiceLibraryProvider
 from .audio import BREEZE_MODEL, AudioError, UncertainRequest, _VOICE_NAMES, list_system_voices
 from .audio_refs import audio_ref
 from .errors import ApiError, Conflict, Invalid, NotFound, ProviderFailure, TooLarge
@@ -41,7 +42,7 @@ class StrictModel(BaseModel):
 
 
 class DraftCreate(StrictModel):
-    provider: Literal["breeze", "gemini"]
+    provider: VoiceLibraryProvider
     base_voice_id: str | None = Field(default=None, max_length=40)
     book_id: str | None = Field(default=None, max_length=200)
     character_id: str | None = Field(default=None, max_length=200)
@@ -166,12 +167,13 @@ def register(app, rt, edit):
             state = version_state(runtime, voice, version, breeze_voices, gemini)
             recipe = version.get("recipe") or {}
             versions.append({"version": version["version"], "provider_voice_id": version["provider_voice_id"],
-                             "revision": version.get("revision"),
+                             "voice_revision": version.get("revision"),
                              "made": version["made"], "created_at": version["created_at"],
                              "expires_at": version.get("expires_at"), "server_state": state,
                              "audition": audition_ref(voice, version),
-                             "recipe": {key: recipe.get(key) for key in ("description", "sample_text", "model", "language_code", "gender")
-                                        if recipe.get(key) is not None}})
+                             # `description` is empty when none was recorded; the other fields are null when not stored.
+                             "recipe": {"description": recipe["description"] if isinstance(recipe.get("description"), str) else "",
+                                        **{key: recipe.get(key) for key in ("sample_text", "model", "language_code", "gender")}}})
         current = next(v for v in versions if v["version"] == voice["current_version"])
         if voice.get("server_deleted") and not voice.get("deleted_at"):
             warnings.append(f"An unfinished deletion already removed {len(voice['server_deleted'])} of this voice's "
@@ -233,7 +235,7 @@ def register(app, rt, edit):
         return {
             "voices": voices, "defaults": defaults, "drafts": [draft_view(runtime, draft) for draft in drafts],
             "providers": {
-                "breeze": breeze_view,
+                "breeze": wire.breeze_status(breeze_view),
                 "gemini": {**gemini_state, "state": gemini.get("state", "unchecked"), "message": gemini.get("message", ""),
                            "checked_at": gemini.get("checked_at"), "design_models": list(gemini_voices.DESIGN_MODELS),
                            "designed_voices_supported": gemini_state["tts_model"] in gemini_voices.DESIGN_MODELS,
@@ -405,7 +407,7 @@ def register(app, rt, edit):
         runtime = rt(request)
         voice = runtime.voices.voice(voice_id)
         if voice.get("deleted_at"):
-            return {"deleted": voice_id, "server_deleted": []}
+            return {"voice_id": voice_id, "server_deleted": []}
         if runtime.narration_defaults().get(voice["provider"]) == voice_id:
             raise Conflict("voice_is_default", "The voice is the Breeze default voice.")
         require_no_narration(runtime, {row["book_id"] for row in followers(runtime, voice_id)})
@@ -441,7 +443,7 @@ def register(app, rt, edit):
                 if removed and voice["provider"] == "breeze":
                     note_breeze_voices(runtime, removed=removed)
         runtime.voices.tombstone(voice_id, server_deleted=sorted(done))
-        return {"deleted": voice_id, "server_deleted": sorted(done)}
+        return {"voice_id": voice_id, "server_deleted": sorted(done)}
 
     @app.post("/api/voices/defaults")
     def choose_default(body: DefaultVoice, request: Request):
@@ -752,7 +754,8 @@ def register(app, rt, edit):
                 runtime.voice_busy.discard(draft_id)
         if body.make_default:
             set_default(runtime, "breeze", voice["id"])
-        result = {"voice": voice_view(runtime, runtime.voices.voice(voice["id"]))}
+        result = {"voice": voice_view(runtime, runtime.voices.voice(voice["id"])), "book": None, "assignment_error": None,
+                  "cleanup_error": None}
         if cleanup:
             result["cleanup_error"] = cleanup[0]
         if body.assign:
@@ -811,7 +814,7 @@ def register(app, rt, edit):
                 error.detail += note
             raise
         note_breeze_voices(runtime, added={**pinned, "name": name.strip(), "description": description})
-        result = {"voice": voice_view(runtime, voice)}
+        result = {"voice": voice_view(runtime, voice), "book": None, "assignment_error": None}
         if source:
             book, error = assign(runtime, Assignment(book_id=book_id, character_id=character_id), "breeze", voice["id"])
             if book is not None:

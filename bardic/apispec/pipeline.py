@@ -7,17 +7,19 @@ acceptance changes the book. See docs/ANALYSIS-PIPELINE.md for the semantics.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import Field
+from typing_extensions import TypeAliasType
 
 from .base import Op, View, op
-from .common import Job, PipelineRunLimits, PipelineStepConfigView
+from .enums import AnalysisProvider
+from .system import AnalysisCatalogModel
+from .common import PipelineJob, PipelineRunLimits, PipelineStepConfigView
 
 TAG = 'Analysis pipeline'
 
 StepId = str
-PipelineProviderId = Literal['gemini', 'openai', 'anthropic', 'local_llm', 'booknlp', 'novel_analyzer']
 Gate = Literal['auto', 'review']
 Origin = Literal['run', 'baseline', 'external']
 DecisionMode = Literal['user', 'auto', 'baseline', 'external']
@@ -34,7 +36,7 @@ STEP_IDS = ('`structure`, `census`, `discovery`, `quotes`, `profiles` and `direc
 
 class PipelineStepSettingsView(View):
     """The effective provider, model and gate for one step: the saved choice, or a default."""
-    provider: str = Field(description='Provider ID: `local` for plain (local) steps, otherwise one of the step\'s `providers`.')
+    provider: AnalysisProvider = Field(description='Provider ID: `local` for plain (local) steps, otherwise one of the step\'s `providers`.')
     model: str | None = Field(description='Model ID, or null for local steps, service providers (`booknlp`, `novel_analyzer`) '
                                           'and an LLM step whose default provider has no configured model. Planning or '
                                           'running an LLM step with a null model is refused (400 `step_model_missing`) '
@@ -69,9 +71,9 @@ class PipelineStepDefinition(View):
                                      'on each version as `step_version`.')
     parallel: int = Field(description='Maximum concurrent units of this step (1–8); a run\'s `concurrency` also caps it.')
     default_gate: Gate = Field(description='Gate used when none is saved or sent.')
-    providers: list[str] = Field(description='Provider IDs the owner may choose: `["local"]` for plain steps, otherwise '
+    providers: list[AnalysisProvider] = Field(description='Provider IDs the owner may choose: `["local"]` for plain steps, otherwise '
                                              'IDs from the top-level `providers` list.')
-    offline_providers: list[str] = Field(description='Providers this step reads accepted results from instead of '
+    offline_providers: list[AnalysisProvider] = Field(description='Providers this step reads accepted results from instead of '
                                                      'contacting (directing\'s `booknlp`), so a run needs no key or URL for them.')
     default_model_role: Literal['scan', 'analysis'] = Field(
         description='Which configured model a new LLM step uses by default: the economy `scan` model or the `analysis` model.')
@@ -83,31 +85,17 @@ class PipelineStepDefinition(View):
     settings: PipelineStepSettingsView = Field(description='Effective provider, model and gate for this step.')
 
 
-class PipelineProviderModel(View):
-    """A curated model entry for the self-hosted LLM. Listing it does not prove the server has it loaded."""
-    id: str = Field(description='Model ID to send as `model`.')
-    label: str = Field(description='Display name of the model.')
-    tier: str = Field(description='Rough capability tier, for example `balanced`.')
-    roles: list[str] = Field(description='Where the model is suggested: `preprocess` (scan) and/or `analysis`.')
-    structured_output: bool = Field(description='Whether the model supports schema-constrained output.')
-    context_tokens: int = Field(description='Context window in tokens.')
-    max_output_tokens: int = Field(description='Largest output in tokens.')
-    input_usd_per_million: float = Field(description='Price per million input tokens in USD (0 for a self-hosted server).')
-    output_usd_per_million: float = Field(description='Price per million output tokens in USD (0 for a self-hosted server).')
-    availability: str = Field(description='`unverified`: taken from a curated list, not from the server.')
-
-
 class PipelineProvider(View):
     """A provider a pipeline step can use. Each step lists which of these it accepts."""
-    id: PipelineProviderId = Field(description='Provider ID.')
+    id: AnalysisProvider = Field(description='Provider ID.')
     label: str = Field(description='Display name.')
     kind: Literal['model', 'service'] = Field(description='`model`: takes a model ID (prompt and schema). `service`: a '
                                                           'self-hosted chapter service without a model choice (send `model: null`).')
     self_hosted: bool = Field(description='True for a server on the owner\'s network (`local_llm`, `booknlp`, `novel_analyzer`).')
     needs: Literal['api_key', 'url'] = Field(description='What must be configured in Settings: an API key (cloud) or a server URL.')
     configured: bool = Field(description='A key or URL is set. It does not prove the server answers or the key works.')
-    models: list[PipelineProviderModel] | None = Field(
-        None, description='Present only for `local_llm`: curated models for the self-hosted server.')
+    models: list[AnalysisCatalogModel] | None = Field(
+        description='For `local_llm`: curated models for the self-hosted server. Null for every other provider.')
 
 
 class PipelineDefinitions(View):
@@ -123,7 +111,7 @@ class PipelineUnitCounts(View):
     """Unit progress of one step version."""
     total: int = Field(description='Units planned.')
     done: int = Field(description='Units that produced a validated result (including cached ones).')
-    cached: int = Field(description='Of `done`, units reused from the validated-unit cache without a new request.')
+    cached_units: int = Field(description='Of `done`, units reused from the validated-unit cache without a new request.')
     failed: int = Field(description='Units that failed, were stopped by a limit or were cancelled.')
 
 
@@ -140,7 +128,7 @@ class PipelineStepRun(View):
     origin: Origin = Field(description='`run`: produced by a pipeline run. `baseline`: the book\'s state the first time '
                                        'the pipeline saw it. `external`: a later change made outside the pipeline (older '
                                        'analysis controls, series runs, structure repair). Captures have unknown producers.')
-    provider: str | None = Field(description='Provider ID used (`local` for plain steps), or null for captures.')
+    provider: AnalysisProvider | None = Field(description='Provider ID used (`local` for plain steps), or null for captures.')
     model: str | None = Field(description='Model ID, or null for plain steps, services and captures.')
     status: StepRunStatus = Field(description='`running` while it works (`queued` is never written today). `interrupted`: '
                                               'the server restarted while it ran. Captures are created `completed`.')
@@ -157,9 +145,9 @@ class PipelineStepRun(View):
     updated_at: str = Field(description='ISO 8601 UTC time of the last change.')
     completed_at: str | None = Field(description='ISO 8601 UTC time the run finished, or null (always null for captures).')
     incomplete_scopes: list[str] | None = Field(
-        None, description='Scopes with at least one unit that did not validate (so no version was recorded for them). '
-                          'Absent until the run finishes, on captures, on runs interrupted by a restart, and on runs '
-                          'that failed before their units were assembled.')
+        description='Scopes with at least one unit that did not validate (so no version was recorded for them). '
+                    'Null until the run finishes, on captures, on runs interrupted by a restart, and on runs '
+                    'that failed before their units were assembled.')
 
 
 class PipelineStepVersion(View):
@@ -173,7 +161,7 @@ class PipelineStepVersion(View):
     origin: Origin = Field(description='`run` (produced by a pipeline run), `baseline` (the book state the pipeline '
                                        'first saw) or `external` (a later change made outside the pipeline). See '
                                        '`PipelineStepRun.origin`.')
-    provider: str | None = Field(description='Provider ID used (`local` for plain steps), or null for '
+    provider: AnalysisProvider | None = Field(description='Provider ID used (`local` for plain steps), or null for '
                                              '`baseline`/`external` captures.')
     model: str | None = Field(description='Model ID used, or null for plain steps, service providers and captures.')
     status: StepRunStatus = Field(description='Execution status, as on the step run (`interrupted`: the server '
@@ -221,11 +209,11 @@ class PipelineRunOutcome(View):
     status: Literal['completed', 'failed', 'budget_limited', 'cancelled', 'skipped'] = Field(
         description='`skipped`: not started, because a required input did not complete, is waiting for review, has no '
                     'accepted result, or the run stopped.')
-    reason: str | None = Field(None, description='Present when `skipped`: human-readable reason.')
-    step_run_id: str | None = Field(None, description='The step version created, or null if it failed before one was created. Absent when skipped.')
-    scopes: int | None = Field(None, description='Number of scope versions recorded. Absent when skipped.')
-    accepted: bool | None = Field(None, description='True when the `auto` gate accepted the result. Absent when skipped.')
-    error: str | None = Field(None, description='Present on some failures: human-readable error text.')
+    reason: str | None = Field(description='When `skipped`: human-readable reason. Null otherwise.')
+    step_run_id: str | None = Field(description='The step version created, or null if it failed before one was created, and when skipped.')
+    scope_count: int | None = Field(description='Number of scope versions recorded. Null when skipped.')
+    accepted: bool | None = Field(description='True when the `auto` gate accepted the result. Null when skipped.')
+    error: str | None = Field(description='On some failures: human-readable error text. Null otherwise.')
 
 
 class PipelineRun(View):
@@ -255,18 +243,17 @@ class PipelineRun(View):
     error: str | None = Field(description='Human-readable failure text, or null. Display only.')
     created_at: str = Field(description='ISO 8601 UTC.')
     updated_at: str = Field(description='ISO 8601 UTC.')
-    started_at: str | None = Field(None, description='ISO 8601 UTC time the worker began. Absent while queued.')
-    completed_at: str | None = Field(None, description='ISO 8601 UTC finish time. Absent until the worker finishes.')
+    started_at: str | None = Field(description='ISO 8601 UTC time the worker began. Null while queued.')
+    completed_at: str | None = Field(description='ISO 8601 UTC finish time. Null until the worker finishes.')
     outcomes: dict[StepId, PipelineRunOutcome] | None = Field(
-        None, description='Per-step outcome keyed by step ID. Absent until the worker finishes.')
+        description='Per-step outcome keyed by step ID. Null until the worker finishes.')
     series_run_id: str | None = Field(
-        None, description='Present only on a run started by a series run: the parent `series` job ID. Absent on runs '
-                          'started from the book.')
+        description='On a run started by a series run: the parent `series` job ID. Null on runs started from the book.')
 
 
 class PipelineRunStarted(View):
     """The queued job and the run record. A queued job is not a result: poll the job."""
-    job: Job = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added).')
+    job: PipelineJob = Field(description='The job of kind `pipeline` (with `run_id`, `steps` and `scheduling` added).')
     run: PipelineRun = Field(description='The run as created (`status: queued`, empty `step_run_ids`).')
 
 
@@ -313,11 +300,11 @@ class PipelinePlanStep(View):
     label: str = Field(description="The step's display name.")
     method: Literal['plain', 'llm', 'service'] = Field(description='`plain` (local, free), `llm` (model requests, may '
                                                                    'be billed) or `service` (self-hosted, free).')
-    provider: str = Field(description="Provider ID the plan used: the request's `configs` entry, otherwise the saved or"
+    provider: AnalysisProvider = Field(description="Provider ID the plan used: the request's `configs` entry, otherwise the saved or"
                                       ' default step setting. `local` for plain steps.')
     model: str | None = Field(description='Model ID the plan used, or null for plain steps and service providers (and '
                                           'for an LLM step whose default provider has no configured model).')
-    units: int = Field(description='Units planned from the currently accepted inputs.')
+    unit_count: int = Field(description='Units planned from the currently accepted inputs.')
     cached_units: int = Field(description='Model or service units with a cached validated result (0 when `fresh`).')
     requests: int = Field(description='Model requests to send (uncached LLM units), before retries or evidence repairs.')
     service_calls: int = Field(description='Free calls to self-hosted services, not counted as model requests.')
@@ -328,8 +315,8 @@ class PipelinePlanStep(View):
     inputs_pending: list[StepId] = Field(description='Inputs also requested in this plan: the estimate uses their currently '
                                                      'accepted results, and the real work depends on what the run produces.')
     missing_inputs: list[StepId] = Field(description='Required inputs with no accepted result that are not in this plan (a run would be refused).')
-    scopes: int = Field(description='Number of distinct scopes the units cover.')
-    note: str | None = Field(None, description='Present when `inputs_pending` is not empty: display text explaining the caveat.')
+    scope_count: int = Field(description='Number of distinct scopes the units cover.')
+    note: str | None = Field(description='When `inputs_pending` is not empty: display text explaining the caveat. Null otherwise.')
 
 
 class PipelinePlan(View):
@@ -362,23 +349,24 @@ class PipelineResultColumn(View):
 class PipelineResultRow(View):
     """Common fields of every result-table row.
 
-    The diff fields are present only when the table was compared with another
-    version (`diff.compared_with` not null).
+    The three diff fields are always sent and are null unless the table was compared with another version
+    (`diff.compared_with` not null).
     """
     id: str = Field(description='Stable row ID used to match rows across versions (a chapter, character, passage or '
                                 'candidate identity, depending on the step).')
     scope: str = Field(description='The version scope the row belongs to (`book`, a chapter ID or a character ID).')
     diff_state: Literal['added', 'changed', 'same'] | None = Field(
-        None, alias='_diff', description='`added` (no row with this ID in the compared version), `changed` or `same`.')
+        description='`added` (no row with this ID in the compared version), `changed` or `same`; null when not compared.')
     changed_keys: list[str] | None = Field(
-        None, alias='_changed', description='Column keys whose value differs from the compared row. Absent for `added` rows.')
+        description='Column keys whose value differs from the compared row. Null for `added` rows and when not compared.')
     previous: dict[str, Any] | None = Field(
-        None, alias='_previous', description='The compared row\'s value for each changed column key (cell values are '
-                                             'strings, numbers, booleans or null). Absent for `added` rows.')
+        description='The compared row\'s value for each changed column key (cell values are strings, numbers, '
+                    'booleans, lists of strings or null). Null for `added` rows and when not compared.')
 
 
 class PipelineStructureRow(PipelineResultRow):
     """`structure` row: one chapter's title and kind."""
+    step: Literal['structure'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
     title: str = Field(description='Chapter title recorded in this version, or empty.')
     kind: str = Field(description='Section kind, for example `chapter` or `front_matter`.')
     source: str = Field(description='Where the title came from (the chapter\'s `title_source`), or empty.')
@@ -386,63 +374,83 @@ class PipelineStructureRow(PipelineResultRow):
 
 class PipelineCensusRow(PipelineResultRow):
     """`census` row: one known character or name candidate (ID is a character ID or `candidate_<hash>`)."""
+    step: Literal['census'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
     name: str = Field(description='For a cast character, its name when the census ran (not refreshed to the current '
                                   'name); for a candidate, the name as found in the text.')
     priority: str = Field(description='Heuristic profile effort: `deep`, `standard` or `basic`.')
     mentions: int = Field(description='Name mentions in eligible chapters.')
     speech_tags: int = Field(description='Explicit speech tags naming it.')
     dialogue_turns: int = Field(description='Dialogue passages currently attributed to it.')
-    chapters: int = Field(description='Eligible chapters mentioning it.')
+    chapter_count: int = Field(description='Eligible chapters mentioning it.')
     known: Literal['yes', 'candidate'] = Field(description='`yes` for a cast character, `candidate` for a name not in the cast.')
 
 
 class PipelineDiscoveryRow(PipelineResultRow):
     """`discovery` row: one character found in one scanned range (ID `<chapter>:<range start>:<name key>`)."""
+    step: Literal['discovery'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
     chapter: str = Field(description='Chapter title, or the chapter ID when the chapter no longer exists.')
     name: str = Field(description='Character name as the model reported it in this range.')
-    aliases: str = Field(description='Comma-separated aliases.')
-    evidence: int = Field(description='Number of exact supporting quotations.')
+    aliases: list[str] = Field(description='Aliases the model reported for the name in this range.')
+    evidence_count: int = Field(description='Number of exact supporting quotations.')
     description: str = Field(description='Draft notes.')
 
 
 class PipelineQuotesRow(PipelineResultRow):
     """`quotes` row: a quotation (ID is a passage ID) or a BookNLP character (ID `<chapter>:character:<n>`)."""
-    kind: Literal['Quotation', 'Character'] = Field(description='`Quotation`: a passage BookNLP attributed (row ID is '
-                                                                'the passage ID). `Character`: a character BookNLP '
-                                                                'found in the chapter. Capitalized display labels.')
+    step: Literal['quotes'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
+    kind: Literal['quotation', 'character'] = Field(description='`quotation`: a passage BookNLP attributed (row ID is '
+                                                                'the passage ID). `character`: a character BookNLP '
+                                                                'found in the chapter.')
     text: str = Field(description='Passage text truncated to 160 characters, or a character summary.')
     booknlp: str = Field(description='BookNLP\'s speaker or character name.')
-    current: str = Field(description='The book\'s current speaker (or matched cast character) name.')
-    check: str = Field(description='Display label of the comparison, for example `Agrees`, `Differs`, `In cast`.')
+    current_speaker: str = Field(description='The book\'s current speaker (or matched cast character) name.')
+    check: Literal['agrees', 'differs', 'suggests', 'not_in_cast', 'narrator', 'no_quote', 'in_cast'] = Field(
+        description='The comparison with the book. A `quotation` row: `agrees`, `differs` (BookNLP names another cast '
+                    'member), `suggests` (the passage is unassigned and BookNLP names someone), `not_in_cast` (BookNLP\'s '
+                    'speaker matches no cast member), `narrator` (a first-person narrator not in the cast) or `no_quote`. A '
+                    '`character` row: `in_cast` or `not_in_cast`. Stable identifiers: show a label of your own.')
     tag: str = Field(description='The speech tag or action beat text beside the quotation, or empty.')
     conflict: bool = Field(description='True when BookNLP\'s own tag contradicts its speaker.')
 
 
 class PipelineProfilesRow(PipelineResultRow):
     """`profiles` row: one character's profile (ID is the character ID)."""
+    step: Literal['profiles'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
     name: str = Field(description="The character's current name, or its character ID when it is no longer in the cast.")
     priority: str = Field(description='Profile effort tier, or empty.')
     description: str = Field(description='Character description (profile text) in this version, or empty.')
     direction: str = Field(description='Voice direction.')
-    evidence: int = Field(description='Number of supporting quotations.')
-    edited: str = Field(description='Comma-separated fields a person edited (`description`, `direction`); those keep their value whichever version is accepted.')
+    evidence_count: int = Field(description='Number of supporting quotations.')
+    edited: list[Literal['description', 'direction']] = Field(
+        description='Fields a person edited; those keep their value whichever version is accepted. Empty when none.')
 
 
 class PipelineDirectingRow(PipelineResultRow):
     """`directing` row: one passage (ID is the passage ID)."""
+    step: Literal['directing'] = Field(description='Tag of `PipelineVersionRow`: the step the row belongs to.')
     scene: str = Field(description='Scene title, or empty.')
     kind: str = Field(description='Passage kind, for example `dialogue` or `narration`.')
     text: str = Field(description='Passage text truncated to 160 characters.')
     speaker: str = Field(description='Proposed speaker\'s name (or ID when not in the cast).')
     confidence: float | None = Field(description='Proposed speaker confidence 0–1, or null.')
     direction: str = Field(description='Delivery note.')
-    cues: str = Field(description='Comma-separated vocal cues.')
-    check: str = Field(description='BookNLP check label (with BookNLP\'s speaker when it differs or suggests), or empty.')
-    edited: str = Field(description='Comma-separated fields a person edited (`speaker`, `direction`, `cues`); those keep their value.')
+    cues: list[str] = Field(description='Vocal cues, in order; empty when none.')
+    check: Literal['agrees', 'differs', 'suggests', 'not_in_cast', 'narrator', 'no_quote'] | None = Field(
+        description='The BookNLP check result of the passage (as for `BookSpeakerCheck.result`), or null when it was not '
+                    'checked. A stable identifier: show a label of your own.')
+    check_speaker: str = Field(description='BookNLP\'s speaker for a `differs` or `suggests` check (the cast name, else BookNLP\'s own '
+                                           'name, else `?`); an empty string otherwise.')
+    edited: list[Literal['speaker', 'direction', 'cues']] = Field(
+        description='Fields a person edited; those keep their value. Empty when none.')
 
 
-PipelineResultRowAny = Union[PipelineDirectingRow, PipelineQuotesRow, PipelineProfilesRow, PipelineDiscoveryRow,
-                             PipelineCensusRow, PipelineStructureRow]
+PipelineVersionRow = TypeAliasType('PipelineVersionRow', Annotated[
+    Union[PipelineStructureRow, PipelineCensusRow, PipelineDiscoveryRow, PipelineQuotesRow, PipelineProfilesRow,
+          PipelineDirectingRow], Field(
+        discriminator='step',
+        description='One row of a step version\'s result table. The row shape is the step\'s: select on `step`, which '
+                    'equals the `step_id` of the version. A step added to the pipeline adds a member in a new contract '
+                    'version.')])
 
 
 class PipelineVersionDiff(View):
@@ -457,8 +465,8 @@ class PipelineVersionDiff(View):
     added: int = Field(description='Rows of this version with no row of the same ID in the compared version. 0 when '
                                    'nothing was compared.')
     removed: int = Field(description='Rows of the compared version with no matching row ID here (not returned as rows).')
-    agreement: float | None = Field(None, description='`same / (same + changed)` rounded to 4 decimals, or null when no '
-                                                      'rows matched. Absent when nothing was compared.')
+    agreement: float | None = Field(description='`same / (same + changed)` rounded to 4 decimals, or null when no '
+                                               'rows matched and when nothing was compared.')
 
 
 class PipelineVersionScope(View):
@@ -493,7 +501,7 @@ class PipelineVersionDetail(View):
     total_rows: int = Field(description='Rows after the `scope` and `changed_only` filters, before paging.')
     offset: int = Field(description='Rows skipped: the `offset` query parameter, clamped to 0–9007199254740991 (2^53 − 1).')
     limit: int = Field(description='The page size used: the `limit` query parameter clamped to 1–1000.')
-    rows: list[PipelineResultRowAny] = Field(
+    rows: list[PipelineVersionRow] = Field(
         description='The requested page of rows. Most cell values reflect the book\'s current names and passages; census rows use the names stored in the result and structure rows use the version\'s own titles. The row '
                     'shape depends on the step (one variant per step); every row has `id` and `scope`.')
     scopes: list[PipelineVersionScope] = Field(description='Every scope of the displayed version.')
