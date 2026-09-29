@@ -87,6 +87,12 @@ class ListeningReuse(View):
     session_id: str = Field(description='Listening session ID (64 hex) of the original take; may differ from the current session.')
     passage_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
 
+class ListeningSubstitute(View):
+    """Marks a take that stands in for a passage Gemini's content policy blocked."""
+    reason: Literal['content_blocked'] = Field(description='Why Gemini did not narrate the passage: its content policy blocked the text.')
+    for_provider: NarrationProvider = Field(description='The provider of the session this audio stands in for (`gemini`).')
+    for_model: str = Field(description='The speech model of the session this audio stands in for.')
+
 class ListeningPassageAudio(AudioRef):
     """A retained single-passage simple-listening take, ready to play.
 
@@ -99,8 +105,9 @@ class ListeningPassageAudio(AudioRef):
     model: str = Field(description='Speech model that produced the bytes.')
     voice: str = Field(description='Provider voice actually used (the device voice name after resolution).')
     created_at: str = Field(description='ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently).')
-    session_id: str = Field(description='Listening session the take belongs to.')
+    session_id: str = Field(description='Listening session the take belongs to. For a `substitute`, the fallback narrator\'s session, not the Gemini session it stands in for.')
     passage_id: str = Field(description='Passage the take narrates.')
+    substitute: ListeningSubstitute | None = Field(None, description='Present when a fallback narrator (`provider` is not `gemini`) read this passage because Gemini blocked its text. It is a normal immutable take of the fallback narrator, never Gemini audio. Absent otherwise.')
     reuse: ListeningReuse | None = Field(None, description='Present when the bytes were copied from an equivalent retained take instead of being generated.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null when the server timing did not validate.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')

@@ -189,7 +189,7 @@ reference is `contract/API-REFERENCE.md`.
 - **Inspection** — [`GET /api/books/{book_id}/analysis-export`](#exportbookanalysis), [`GET /api/books/{book_id}/artifacts`](#listbookartifacts), [`GET /api/books/{book_id}/artifacts/{artifact_id}`](#getbookartifact), [`GET /api/books/{book_id}/pipeline`](#getpipelineinspector), [`GET /api/books/{book_id}/resources`](#getbookresourceusage), [`GET /api/books/{book_id}/search`](#searchbookpassages), [`GET /api/books/{book_id}/story-map`](#getstorymap)
 - **Narration** — [`GET /api/audio/{book_id}/{passage_id}`](#getpassageaudio), [`GET /api/books/{book_id}/audio-assets/{asset_id}`](#getretainedaudioasset), [`POST /api/books/{book_id}/render`](#startenhancedrender)
 - **Listening** — [`POST /api/books/{book_id}/listen`](#listentopassage), [`GET /api/books/{book_id}/listen/audio/{asset_id}`](#getlisteningaudio), [`POST /api/books/{book_id}/listen/chapter`](#startchapterlistening), [`POST /api/books/{book_id}/listen/chapter/preview`](#previewchapterlistening), [`GET /api/books/{book_id}/listen/takes`](#listlisteningtakes)
-- **Performances** — [`GET /api/books/{book_id}/performances`](#listperformances), [`POST /api/books/{book_id}/performances`](#createperformance), [`POST /api/books/{book_id}/performances/preview`](#previewperformance), [`GET /api/books/{book_id}/performances/{performance_id}`](#getperformance), [`PATCH /api/books/{book_id}/performances/{performance_id}`](#updateperformance), [`GET /api/books/{book_id}/performances/{performance_id}/audio`](#getperformanceaudio), [`POST /api/books/{book_id}/performances/{performance_id}/prepare`](#prepareperformance)
+- **Performances** — [`GET /api/books/{book_id}/performances`](#listperformances), [`POST /api/books/{book_id}/performances`](#createperformance), [`POST /api/books/{book_id}/performances/preview`](#previewperformance), [`GET /api/books/{book_id}/performances/{performance_id}`](#getperformance), [`PATCH /api/books/{book_id}/performances/{performance_id}`](#updateperformance), [`GET /api/books/{book_id}/performances/{performance_id}/audio`](#getperformanceaudio), [`POST /api/books/{book_id}/performances/{performance_id}/chapters`](#addperformancechapters), [`POST /api/books/{book_id}/performances/{performance_id}/prepare`](#prepareperformance), [`POST /api/books/{book_id}/performances/{performance_id}/preview`](#previewperformanceresume)
 - **Voice previews** — [`POST /api/books/{book_id}/voice-preview`](#startvoicepreview), [`GET /api/books/{book_id}/voice-preview/audio/{asset_id}`](#getvoicepreviewaudio)
 - **Voices** — [`GET /api/voices`](#getvoicelibrary), [`POST /api/voices/breeze/clone`](#clonebreezevoice), [`POST /api/voices/defaults`](#setdefaultlibraryvoice), [`POST /api/voices/drafts`](#createvoicedraft), [`PATCH /api/voices/drafts/{draft_id}`](#updatevoicedraft), [`POST /api/voices/drafts/{draft_id}/abandon`](#abandonvoicedraft), [`GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`](#getvoicedraftcandidateaudio), [`POST /api/voices/drafts/{draft_id}/candidates/{candidate_id}/discard`](#discardvoicedraftcandidate), [`POST /api/voices/drafts/{draft_id}/generate`](#generatevoicedraftcandidates), [`POST /api/voices/drafts/{draft_id}/save`](#savevoicedraft), [`POST /api/voices/gemini/refresh`](#refreshgeminivoices), [`PATCH /api/voices/{voice_id}`](#updatelibraryvoice), [`DELETE /api/voices/{voice_id}`](#deletelibraryvoice), [`POST /api/voices/{voice_id}/current`](#setlibraryvoicecurrentversion), [`GET /api/voices/{voice_id}/versions/{version}/audition`](#getlibraryvoiceaudition)
 
@@ -1950,6 +1950,11 @@ cancellation are job outcomes; audio finished during a Stop is still retained an
 `/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
 after an uncertain network response; retry only read-only polling.
 
+If Gemini's content policy blocks the passage (HTTP 400 `content_blocked`), the job fails with
+`error_code: "content_blocked"` and a fixed error sentence, and the passage is remembered as blocked: a
+later request for it fails at once without a Gemini request. A fallback take made by chapter listening
+(`substitute`) is returned as a cache hit.
+
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
 warmup (about 10 listening seconds, at most three passages), lookahead (about 45 seconds, at most 12
@@ -2039,13 +2044,37 @@ full-size chunk has been measured), retries a per-minute 429 up to 5 consecutive
 after a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It
 reports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last
 passage IDs, `passage_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,
-`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
+`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`blocked`/`failed`, `split`, `split_into`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
 `speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
 the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
 other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
 start the chapter again to resume.
+
+**Text Gemini blocks.** Gemini can refuse text under its content policy with HTTP 400 and the error code
+`content_blocked`; it does not say which passage, and this is not a model, voice or length problem. The
+provider's error text is never kept. The job handles a block with a fixed budget of requests:
+
+1. The blocked chunk (`status: "blocked"`) is retained as a block for this session, chapter, exact text
+   and recipe, and is never sent again.
+2. A chunk of two or more passages is split once, at a passage boundary near its middle (preferring a
+   scene change, then a paragraph break, then a sentence end), into two halves (`split: true`). Each half
+   is requested like any chunk: reserved against the daily count and the per-minute limiter before it is
+   sent, and counted in `quota`.
+3. A half that is blocked again is not split further, and a blocked one-passage chunk is not split.
+   Those passages are read one by one by the free local **fallback narrator** snapshotted in `fallback`
+   (a device voice when `say` and ffmpeg are available, otherwise Breeze when configured), with no Gemini
+   request. That audio is an ordinary immutable take of the fallback session, marked `substitute`, and plays
+   with the rest. When no fallback narrator is available, or it fails, the passages stay unrecorded.
+
+One blocked chunk therefore costs at most three Gemini requests: the original and its two halves. A block
+is remembered durably, so starting the chapter again (or resuming a performance) never resends text
+Gemini already blocked; a changed source text, voice, model or pronunciation invalidates that memory and
+the text is requested again. Successful halves are kept as normal chunks. A block never fails the job: it
+ends `completed`, `content_blocked` lists the passages read by the fallback narrator and the ones left
+unrecorded, and `message` says so. Blocked passages are not counted in `progress` unless a fallback
+narrator read them.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2100,7 +2129,10 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 **List a listening session's playable audio** · operation `listListeningTakes` · cost `none`
 
 Saved simple audio for the session, one entry per passage in book order: a chunk clip when one
-applies, otherwise the newest single-passage take whose source recipe still matches the passage.
+applies, otherwise the newest single-passage take whose source recipe still matches the passage. For a
+Gemini session, a passage Gemini's content policy blocked that has no Gemini audio is listed with the
+fallback narrator's take, whose `substitute` marks it (see `startChapterListening`); a blocked passage with no
+fallback take is omitted.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
 No generation and no stored change. Works for archived books.
@@ -2161,13 +2193,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound).
 
@@ -2281,6 +2317,62 @@ change; file existence is checked but WAVs are not re-validated.
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
+<a id="addperformancechapters"></a>
+### `POST /api/books/{book_id}/performances/{performance_id}/chapters`
+
+**Add chapters to a performance and record them** · operation `addPerformanceChapters` · cost `may_charge`
+
+Extend the performance's chapter selection and start recording what is missing, without creating a new
+performance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so
+audio already retained is reused and only passages without current audio are narrated (a simple
+performance also counts takes made by live listening with the same narrator). The added chapters are
+saved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never
+rewritten. Returns `{performance, job}`; `job` is null when every passage is already ready. Refused with 409
+while any job is active for the book, including this performance's own: stop it, or wait, first. Blocking
+problems are refused with 400 as for `createPerformance`.
+
+The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
+start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
+`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is
+checked between passages. Device and Breeze simple performances render one passage at a time
+(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a
+child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) listed in the parent's
+`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each
+chapter's child job settles. A live listener's chapter request is refused
+(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
+error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+for reuse of another performance's or a Studio take with the identical recipe) and never change the
+Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
+`quota_limited` at the provider's daily quota or
+at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
+times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
+three performances of different books run at once; one job per book still applies, counting every active
+job for the book (including child jobs beyond the 100-job list bound).
+
+| Parameter | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `book_id` | path | string | yes | Book ID. |
+| `performance_id` | path | string | yes | Performance ID (`pf_…`). |
+
+Request body (`application/json`): [PerformanceChapters](#schema-performancechapters)
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `no_chapters_selected`: `chapter_ids` is empty. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
+
 <a id="prepareperformance"></a>
 ### `POST /api/books/{book_id}/performances/{performance_id}/prepare`
 
@@ -2304,13 +2396,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound).
 
@@ -2329,6 +2425,34 @@ job for the book (including child jobs beyond the 100-job list bound).
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
+
+<a id="previewperformanceresume"></a>
+### `POST /api/books/{book_id}/performances/{performance_id}/preview`
+
+**Estimate recording the rest of a performance** · operation `previewPerformanceResume` · cost `none`
+
+Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,
+what a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`
+lists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are
+ignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is
+contacted. Allowed while a job runs.
+
+| Parameter | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `book_id` | path | string | yes | Book ID. |
+| `performance_id` | path | string | yes | Performance ID (`pf_…`). |
+
+Request body (`application/json`): [PerformanceChapters](#schema-performancechapters)
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | [PerformancePlan](#schema-performanceplan) | Success. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Voice previews
 
@@ -3742,7 +3866,8 @@ new job; old job IDs are never revived. A queued series child that is
 cancelled or passed over never starts later.
 
 **Kinds.** Every kind has the fields `id`, `book_id`, `kind`, `status`, `progress`, `total`, `message`, `error`,
-`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`) and only the
+`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`, `error_code` on
+a job that failed for a documented cause) and only the
 fields of its own kind below; a field that a kind does not declare is not sent for it. A route that always returns
 one kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePreviewJob`, `PerformanceJob`, `PipelineJob`,
 `SeriesJob`, `RenderJob`), which has the same fields as the branch here.
@@ -3754,7 +3879,7 @@ one kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePrevie
 | `pipeline` | an analysis pipeline run, or a series run (one child per book) | `run_id`, `steps`, `scheduling`; a series child also `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |
 | `series` | series processing (the parent) | `series_id`, `book_ids`, `child_job_ids`, the run settings (`steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits`, `estimated_cost_usd`, `requests`, `context_pending_books`), `finished_at`, `waiting_for_review` |
 | `listen` | simple passage listening | `session_id`, `passage_id`, `provider`, `model`, `audio` |
-| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing` |
+| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing`, `fallback`, `content_blocked` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `passage_id`, `provider`, `model`, `audio` |
 | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id` |
 
@@ -3801,6 +3926,7 @@ Tagged union: select the member by its `kind`. The union is closed (no other val
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"render"` | yes | Tag of `Job`: `render`. |
 
 **`kind` = `analyze`**
@@ -3820,6 +3946,7 @@ Tagged union: select the member by its `kind`. The union is closed (no other val
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"analyze"` | yes | Tag of `Job`: `analyze`. |
 | `provider` | [AnalysisProvider](#schema-analysisprovider) \| null |  | The analysis provider (`local`, `gemini`, `openai` or `anthropic`). |
 | `model` | string \| null |  | The analysis model snapshotted when the job was queued, or null for local analysis. |
@@ -3850,6 +3977,7 @@ started from the book has none of them.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"pipeline"` | yes | Tag of `Job`: `pipeline`. |
 | `run_id` | string \| null | yes | The pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string | yes | The requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
@@ -3886,6 +4014,7 @@ fields, and `analyze` children.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"series"` | yes | Tag of `Job`: `series`. |
 | `series_id` | string | yes | The series. |
 | `book_ids` | list of string | yes | The books processed, in reading order (missing volumes excluded). |
@@ -3924,6 +4053,7 @@ fields, and `analyze` children.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"listen"` | yes | Tag of `Job`: `listen`. |
 | `session_id` | string | yes | The narrator session (64 hex). |
 | `passage_id` | string | yes | The passage. |
@@ -3950,6 +4080,7 @@ fields, and `analyze` children.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"listen_chapter"` | yes | Tag of `Job`: `listen_chapter`. |
 | `session_id` | string | yes | The narrator session (64 hex). |
 | `chapter_id` | string | yes | The chapter. |
@@ -3970,6 +4101,8 @@ fields, and `analyze` children.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null | yes | Daily quota use at the last report; null until the worker reports. |
 | `waiting_seconds` | number \| null | yes | Seconds the next send waits for the per-minute rate limit, or null when not waiting (and before the worker reports). |
 | `closing` | boolean \| null | yes | True once the worker decided to finish; a new chapter request then gets 409 until the job ends. Null until the worker reports. |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null | yes | The free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when none was available (and on a job queued before contract 0.3.3). |
+| `content_blocked` | [JobContentBlocked](#schema-jobcontentblocked) \| null | yes | Present once Gemini blocked text of this chapter, with how each blocked passage ended. Null when nothing was blocked. |
 
 **`kind` = `voice_preview`**
 
@@ -3988,6 +4121,7 @@ fields, and `analyze` children.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"voice_preview"` | yes | Tag of `Job`: `voice_preview`. |
 | `preview_id` | string | yes | The preview ID. |
 | `preview` | [VoicePreview](#schema-voicepreview) | yes | The preview request being rendered. |
@@ -4014,6 +4148,7 @@ performance advances only when each chapter's child job settles).
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"performance"` | yes | Tag of `Job`: `performance`. |
 | `performance_id` | string | yes | The saved performance being prepared. |
 | `mode` | `"simple"` \| `"cast"` | yes | `simple` (one narrator) or `cast` (character voices). |
@@ -4040,16 +4175,46 @@ One chunk request a ``listen_chapter`` job has sent (or is sending), in send ord
 | `expected_latency` | number | yes | Expected seconds until the response, from calibration. |
 | `realtime_factor` | number | yes | Calibration realtime factor (audio seconds per waiting second) at send time. |
 | `epoch` | integer | yes | Planning generation; increases after a truncation forces smaller re-planning. |
-| `status` | `"requesting"` \| `"done"` \| `"rate_limited"` \| `"truncated"` \| `"failed"` | yes | `requesting` while in flight (on a job that is no longer running: in flight when it stopped, and its outcome unknown); `done` when its audio was retained; `rate_limited` when the provider refused it with HTTP 429 (nothing generated; its passages are planned again); `truncated` when the audio was cut short or far too short and was discarded; `failed` on any other error (the job then stops). |
+| `status` | `"requesting"` \| `"done"` \| `"rate_limited"` \| `"truncated"` \| `"blocked"` \| `"failed"` | yes | `requesting` while in flight (on a job that is no longer running: in flight when it stopped, and its outcome unknown); `done` when its audio was retained; `rate_limited` when the provider refused it with HTTP 429 (nothing generated; its passages are planned again); `truncated` when the audio was cut short or far too short and was discarded; `blocked` when Gemini refused the text under its content policy (HTTP 400 `content_blocked`; the block is retained and this text is never sent again; the job continues, see `Job.content_blocked`); `failed` on any other error (the job then stops). |
+| `split` | boolean \| null |  | True for a half of a chunk Gemini blocked. A half is requested once and never split again. Absent otherwise. |
+| `split_into` | integer \| null |  | `blocked` only: the number of halves the chunk was split into (2), or absent when it was not split (a one-passage chunk or a half, whose passages go to the fallback narrator). |
 | `started_at` | string | yes | When the request was sent: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `finished_at` | string \| null |  | When the request finished; absent while `requesting`. ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
-| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated` or `failed` (at most 300 characters for `failed`). |
+| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated`, `blocked` or `failed` (at most 300 characters for `failed`). |
 | `duration` | number \| null |  | Seconds of audio received (`done`, `truncated`). |
 | `chunk_id` | string \| null |  | ID of the retained chunk audio (`done`). |
 | `latency` | number \| null |  | Measured seconds from send to response (`done`). |
 | `flags` | list of `"weak_alignment"` \| null |  | Quality flags (`done`). `weak_alignment`: fewer than 60% of passage boundaries matched, so passage clip times are rough. |
 | `matched` | integer \| null |  | Passage boundaries the aligner matched in the audio (`done`). |
 | `boundaries` | integer \| null |  | Passage boundaries the aligner tried to match (`done`). |
+
+<a id="schema-jobcontentblocked"></a>
+### JobContentBlocked
+
+What Gemini's content policy did to a job's text, and how each blocked passage ended.
+
+Present once Gemini blocked any text of the job's chapter. The job itself still ends `completed`: the rest of
+the chapter was prepared, and its `message` says how many passages were read by the fallback narrator or left
+unrecorded. A saved performance reports the same outcome per chapter in `Performance.progress`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null | yes | The fallback narrator that reads blocked passages, or null when none is available (a device voice needs macOS `say` and ffmpeg; Breeze needs a configured server with a usable default voice). |
+| `fallback_passage_ids` | list of string | yes | Blocked passages the fallback narrator read, in reading order. Their audio plays with the rest, is marked `substitute` and is not Gemini audio. |
+| `blocked_passage_ids` | list of string | yes | Blocked passages with no audio at all (no fallback narrator, or it failed), in reading order. They are not requested from Gemini again. |
+| `fallback_error` | string \| null | yes | Why the fallback narrator could not read a passage (at most 300 characters), or null. |
+
+<a id="schema-jobfallbacknarrator"></a>
+### JobFallbackNarrator
+
+The free local narrator a job snapshotted for passages Gemini blocks.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `session_id` | string | yes | The narrator session (64 hex) whose takes read the blocked passages. |
+| `provider` | [NarrationProvider](#schema-narrationprovider) | yes | `system` (a device voice) or `breeze`; never `gemini`. |
+| `model` | string | yes | Speech model of the fallback narrator (`macos-say` or the Breeze model). |
+| `voice` | string | yes | Voice choice of the fallback session; empty for the default device voice. |
 
 <a id="schema-librarybookcover"></a>
 ### LibraryBookCover
@@ -4256,6 +4421,7 @@ A passage served from retained audio; nothing was queued.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"listen_chapter"` | yes | Tag of `Job`: `listen_chapter`. |
 | `session_id` | string | yes | The narrator session (64 hex). |
 | `chapter_id` | string | yes | The chapter. |
@@ -4276,6 +4442,8 @@ A passage served from retained audio; nothing was queued.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null | yes | Daily quota use at the last report; null until the worker reports. |
 | `waiting_seconds` | number \| null | yes | Seconds the next send waits for the per-minute rate limit, or null when not waiting (and before the worker reports). |
 | `closing` | boolean \| null | yes | True once the worker decided to finish; a new chapter request then gets 409 until the job ends. Null until the worker reports. |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null | yes | The free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when none was available (and on a job queued before contract 0.3.3). |
+| `content_blocked` | [JobContentBlocked](#schema-jobcontentblocked) \| null | yes | Present once Gemini blocked text of this chapter, with how each blocked passage ended. Null when nothing was blocked. |
 
 <a id="schema-listenjob"></a>
 ### ListenJob
@@ -4295,6 +4463,7 @@ A passage served from retained audio; nothing was queued.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"listen"` | yes | Tag of `Job`: `listen`. |
 | `session_id` | string | yes | The narrator session (64 hex). |
 | `passage_id` | string | yes | The passage. |
@@ -4394,8 +4563,9 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `session_id` | string | yes | Listening session the take belongs to. |
+| `session_id` | string | yes | Listening session the take belongs to. For a `substitute`, the fallback narrator's session, not the Gemini session it stands in for. |
 | `passage_id` | string | yes | Passage the take narrates. |
+| `substitute` | [ListeningSubstitute](#schema-listeningsubstitute) \| null |  | Present when a fallback narrator (`provider` is not `gemini`) read this passage because Gemini blocked its text. It is a normal immutable take of the fallback narrator, never Gemini audio. Absent otherwise. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
@@ -4435,6 +4605,17 @@ changed on the server (new revision) starts a new session and keeps old takes.
 | `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. |
 | `seed` | integer \| null |  | Breeze only: the pinned generation seed. |
 | `settings` | [BookBreezeSettings](#schema-bookbreezesettings) \| null |  | Breeze only, when set: pinned sampling overrides for the voice. Absent when none were set. |
+
+<a id="schema-listeningsubstitute"></a>
+### ListeningSubstitute
+
+Marks a take that stands in for a passage Gemini's content policy blocked.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reason` | `"content_blocked"` | yes | Why Gemini did not narrate the passage: its content policy blocked the text. |
+| `for_provider` | [NarrationProvider](#schema-narrationprovider) | yes | The provider of the session this audio stands in for (`gemini`). |
+| `for_model` | string | yes | The speech model of the session this audio stands in for. |
 
 <a id="schema-listeningtake"></a>
 ### ListeningTake
@@ -4575,20 +4756,21 @@ never include.
 | `schema_version` | integer | yes | Record format version (1). |
 | `name` | string | yes | Display name, at most 200 characters. Defaults to the narrator label plus the scope, for example `Kore · Gemini · 3 chapters`. |
 | `mode` | `"simple"` \| `"cast"` | yes | `simple`: one narrator voice for every passage. `cast`: each speaker in their cast voice, with the narrator as fallback. |
-| `chapter_ids` | list of string | yes | Selected chapters in book order at creation. Chapters later removed from the book are skipped. |
+| `chapter_ids` | list of string | yes | Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped. |
 | `provider` | [NarrationProvider](#schema-narrationprovider) | yes | Narration provider pinned at creation. |
 | `model` | string | yes | Speech model pinned at creation. |
 | `voice` | string \| null | yes | Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null. |
 | `pronunciation_count` | integer \| null | yes | Cast performances only: how many book pronunciations were pinned when it was created. Null when none were (including performances made before pronunciations existed) and for simple performances, which always use the book's current pronunciations. |
 | `session_id` | string \| null | yes | Simple only: the pinned listening session. Null for a cast performance. |
 | `created_at` | string | yes | ISO 8601 UTC. |
-| `updated_at` | string | yes | ISO 8601 UTC; changes on rename, archive and when a job starts. |
+| `updated_at` | string | yes | ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts. |
 | `archived` | boolean | yes | True when hidden from the default list (listed only with `archived=true`). Its audio is kept. |
 | `job_id` | string \| null | yes | Latest job ID, or null if no job was ever needed. |
 | `cast` | list of [PerformanceCastMember](#schema-performancecastmember) \| null | yes | Cast only: the narrator and each speaker in the chosen chapters. Null for a simple performance. |
 | `job` | [PerformanceJob](#schema-performancejob) \| null | yes | The latest `performance` job, or null when no job was ever needed. |
 | `progress` | [PerformanceProgress](#schema-performanceprogress) | yes |  |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`. |
+| `chapters_added` | list of [PerformanceChaptersAdded](#schema-performancechaptersadded) | yes | Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. Empty when none were added. `chapter_ids` already includes them. |
 
 <a id="schema-performanceaudio"></a>
 ### PerformanceAudio
@@ -4657,7 +4839,29 @@ Readiness of one selected chapter.
 | `id` | string | yes | Chapter ID. |
 | `title` | string | yes | Chapter title; empty string when the chapter has none. |
 | `passages_total` | integer | yes | Passages in the chapter. |
-| `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
+| `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. Includes passages a fallback narrator read. |
+| `passages_fallback` | integer | yes | Of the ready passages, those read by a fallback narrator because Gemini blocked their text (audio marked `substitute`). |
+| `passages_blocked` | integer | yes | Passages Gemini blocked that have no audio at all, so they are not ready. They are not requested from Gemini again; they are not a failure. |
+| `blocked_passage_ids` | list of string | yes | The passages counted in `passages_blocked`, in reading order. |
+
+<a id="schema-performancechapters"></a>
+### PerformanceChapters
+
+Chapters to add to an existing performance.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `chapter_ids` | list of string |  | Chapter IDs of this book to add, at most 5000 (each at most 200 characters). Already-selected chapters are ignored. Empty is allowed for `previewPerformanceResume` (plan the performance as it is) and refused by `addPerformanceChapters`. (max items `5000`) |
+
+<a id="schema-performancechaptersadded"></a>
+### PerformanceChaptersAdded
+
+One extension of a performance's chapter selection.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | string | yes | ISO 8601 UTC time the chapters were added. |
+| `chapter_ids` | list of string | yes | The chapters newly added, in book order. Chapters already selected are not repeated. |
 
 <a id="schema-performanceedit"></a>
 ### PerformanceEdit
@@ -4697,6 +4901,7 @@ performance advances only when each chapter's child job settles).
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"performance"` | yes | Tag of `Job`: `performance`. |
 | `performance_id` | string | yes | The saved performance being prepared. |
 | `mode` | `"simple"` \| `"cast"` | yes | `simple` (one narrator) or `cast` (character voices). |
@@ -4735,6 +4940,7 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
+| `added_chapter_ids` | list of string \| null | yes | `previewPerformanceResume` only: the requested chapters that are not yet part of the performance, in book order (empty when none are new). Null in the plan `previewPerformance` returns. |
 
 <a id="schema-performanceproblem"></a>
 ### PerformanceProblem
@@ -4756,6 +4962,9 @@ Readiness against each passage's current source.
 | `passages_total` | integer | yes | Passages in the selected chapters that are still in the book. |
 | `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
 | `seconds_ready` | number | yes | Audio seconds ready. |
+| `passages_fallback` | integer | yes | Of the ready passages, those read by a fallback narrator because Gemini blocked their text. Nonzero means the performance is not entirely Gemini audio. |
+| `passages_blocked` | integer | yes | Passages Gemini blocked that have no audio at all (no fallback narrator was available, or it failed). Counted neither as ready nor as a failure; they are not requested again. |
+| `fallback_provider` | [NarrationProvider](#schema-narrationprovider) \| null | yes | The provider that read the `passages_fallback` passages (`system` or `breeze`, never `gemini`), or null when there are none. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Selected chapters still in the book, in book order. |
 
 <a id="schema-performancequota"></a>
@@ -5089,6 +5298,7 @@ started from the book has none of them.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"pipeline"` | yes | Tag of `Job`: `pipeline`. |
 | `run_id` | string \| null | yes | The pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string | yes | The requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
@@ -5649,6 +5859,7 @@ A pronunciation entry with its use in the book.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"render"` | yes | Tag of `Job`: `render`. |
 
 <a id="schema-renderrequest"></a>
@@ -6125,6 +6336,7 @@ fields, and `analyze` children.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"series"` | yes | Tag of `Job`: `series`. |
 | `series_id` | string | yes | The series. |
 | `book_ids` | list of string | yes | The books processed, in reading order (missing volumes excluded). |
@@ -6341,6 +6553,7 @@ A series parent job (kind `series`) with its child jobs.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"series"` | yes | Tag of `Job`: `series`. |
 | `series_id` | string | yes | The series. |
 | `book_ids` | list of string | yes | The books processed, in reading order (missing volumes excluded). |
@@ -6394,6 +6607,7 @@ A child always has the series fields, which a `pipeline` job started from the bo
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"pipeline"` | yes | Tag of `Job`: `pipeline`. |
 | `run_id` | string \| null | yes | The pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string | yes | The requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
@@ -6426,6 +6640,7 @@ A child always has the series fields, which a `pipeline` job started from the bo
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"analyze"` | yes | Tag of `Job`: `analyze`. |
 | `provider` | [AnalysisProvider](#schema-analysisprovider) \| null |  | The analysis provider (`local`, `gemini`, `openai` or `anthropic`). |
 | `model` | string \| null |  | The analysis model snapshotted when the job was queued, or null for local analysis. |
@@ -7259,6 +7474,7 @@ An audition served from retained audio.
 | `updated_at` | string | yes | Time of the last change: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `cancel_requested` | boolean | yes | True after a cancel request. A running job stops at the next safe boundary; requests already sent to a provider can still finish and be billed. |
 | `resume_after` | string \| null |  | Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. Absent on every other job. |
+| `error_code` | `"content_blocked"` \| null |  | Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (for example a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent on every other job. The set of values is open. |
 | `kind` | `"voice_preview"` | yes | Tag of `Job`: `voice_preview`. |
 | `preview_id` | string | yes | The preview ID. |
 | `preview` | [VoicePreview](#schema-voicepreview) | yes | The preview request being rendered. |

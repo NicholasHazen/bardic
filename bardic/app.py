@@ -35,7 +35,7 @@ from .apispec.spec import identity as contract_identity
 from .processing import BudgetReached
 from .account_checks import check_account
 from . import breeze, local_services, pronunciation
-from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, assemble_audio, list_system_voices,
+from .audio import (BREEZE_MODEL, PROVIDERS as NARRATION_PROVIDERS, AudioError, ContentBlocked, assemble_audio, list_system_voices,
                     providers_status, render_fingerprint, synthesize, validate_audio, voice_id, voice_selection)
 from .voice_library import VoiceLibrary, assignments, concrete_selection, library_reference
 from .voice_routes import import_breeze_voices, register as register_voice_routes
@@ -134,6 +134,10 @@ class PerformanceRequest(StrictModel):
     provider: NarrationProvider
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
+
+
+class PerformanceChapters(StrictModel):
+    chapter_ids: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=5000)
 
 
 class PerformanceEdit(StrictModel):
@@ -587,6 +591,28 @@ class Runtime:
             return self.breeze_config()
         return None
 
+    def fallback_narrator(self, book_id):
+        """The free local narrator that reads passages Gemini blocks, or None when neither is usable.
+
+        The device voice comes first: it needs no network and no owner-shared GPU. Breeze is used only when
+        the device voice is unavailable and a Breeze server with a usable default voice is configured.
+        Local only. The result is what a queued job snapshots: ``{session_id, provider, model, voice}``.
+        """
+        from .audio import SYSTEM_MODEL
+        from .listening import ListeningRepository
+        repository = ListeningRepository(self.store)
+        try:
+            if shutil.which("say") and shutil.which("ffmpeg"):
+                session = repository.session(book_id, "system", "", SYSTEM_MODEL)
+            elif self.breeze_url():
+                voice, pinned = self.narrator_choice("breeze", "")
+                session = repository.session(book_id, "breeze", voice, BREEZE_MODEL, selection=pinned)
+            else:
+                return None
+        except (ApiError, HTTPException, ValueError):
+            return None
+        return {"session_id": session["id"], "provider": session["provider"], "model": session["model"], "voice": session["voice"]}
+
     def narration_secrets(self, provider):
         key = {"gemini": self.api_keys["gemini"], "breeze": self.narration_keys["breeze"]}.get(provider)
         return (key,) if key else ()
@@ -917,7 +943,9 @@ class Runtime:
                 if key:
                     message = message.replace(key, "[redacted]")
             message = message[:1200]
-            self.store.update_job(job_id, status="failed", error=message,
+            # A cause the UI can hint on. Only a documented, fixed code is ever recorded, never a provider's text.
+            cause = {"error_code": ContentBlocked.code} if isinstance(exc, ContentBlocked) or isinstance(exc.__cause__, ContentBlocked) else {}
+            self.store.update_job(job_id, status="failed", error=message, **cause,
                                   message="Stopped on an error. Validated chapter work is saved." if job["kind"] in {"analyze", "pipeline"} else "Stopped on an error. Completed takes are saved.")
         finally:
             CANCEL_CHECK.reset(cancel_token)
@@ -2170,7 +2198,9 @@ def create_app(data_dir: Path | None = None):
         options = normalize_options(chosen)
         takes = repository.takes(book_id, session['id'])['takes']
         ready = {take['segment_id']: take['audio'] for take in takes}
-        blocked = {segment_id for segment_id, audio in ready.items() if audio.get('chunk_id')}
+        # Text Gemini refused is never planned into a request (it goes to the fallback narrator instead).
+        blocked = ({segment_id for segment_id, audio in ready.items() if audio.get('chunk_id')} |
+                   set(repository.content_blocks(book_id, session['id'])['refused']))
         previous = next((job for job in store.jobs(book_id, limit=None)
                          if job['kind'] == 'listen_chapter' and job.get('session_id') == session['id'] and job.get('calibration')), None)
         calibration = Calibration(previous.get('calibration') if previous else None)
@@ -2249,16 +2279,22 @@ def create_app(data_dir: Path | None = None):
                 raise QuotaRefused('daily_quota_reached', f'This library has used {used} of its {limits["rpd"]} daily Gemini '
                                    f'requests for this model. The count resets at midnight Pacific time, in about '
                                    f'{max(1, round(wait / 3600))} h.', headers={'Retry-After': str(max(1, int(wait + 0.999)))})
+            # Snapshotted like the key and limits: the free local narrator for passages Gemini blocks, if any.
+            fallback = runtime.fallback_narrator(book_id)
+            fallback_credentials = runtime.narration_credentials(fallback['provider']) if fallback else None
             job = store.create_job(book_id, 'listen_chapter', len(segments) - position[segment['id']])
             job = store.update_job(job['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
                                    model=session['model'], voice=session['voice'], intent=body.intent,
                                    scope_start_segment_id=segment['id'], focus_segment_id=segment['id'],
                                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, chunks=[],
-                                   calibration=calibration.view())
+                                   calibration=calibration.view(), fallback=fallback)
             coordinator = ChapterCoordinator(store, job['id'], key, runtime.narration_pool,
-                                             cancelled=lambda: runtime.cancelled(job['id']))
+                                             cancelled=lambda: runtime.cancelled(job['id']),
+                                             fallback_credentials=fallback_credentials)
             try:
-                future = runtime.listen_pool.submit(runtime.run, job, coordinator.run, (key,))
+                future = runtime.listen_pool.submit(runtime.run, job, coordinator.run,
+                                                    (key, *runtime.narration_secrets(fallback['provider'] if fallback else '')),
+                                                    coordinator.completed_message)
             except RuntimeError:
                 store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                                  message='No narration was started. Restart Bardic and try again.')
@@ -2320,6 +2356,20 @@ def create_app(data_dir: Path | None = None):
         runtime = rt(request)
         with runtime.store.lock:
             return performances.prepare(runtime, book_id, performance_id)
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/preview')
+    def preview_performance_resume(book_id: str, performance_id: str, body: PerformanceChapters, request: Request):
+        from . import performances
+        runtime = rt(request)
+        require_active_book(runtime.store, book_id)
+        return performances.preview_resume(runtime, book_id, performance_id, body.chapter_ids)
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/chapters')
+    def add_performance_chapters(book_id: str, performance_id: str, body: PerformanceChapters, request: Request):
+        from . import performances
+        runtime = rt(request)
+        with runtime.store.lock:
+            return performances.prepare(runtime, book_id, performance_id, body.chapter_ids)
 
     @app.patch('/api/books/{book_id}/performances/{performance_id}')
     def edit_performance(book_id: str, performance_id: str, body: PerformanceEdit, request: Request):

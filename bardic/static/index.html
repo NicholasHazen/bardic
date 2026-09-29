@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/components.css">
   <script defer src="/static/ui.js"></script>
   <script defer src="/static/lifecycle.js"></script>
+  <script defer src="/static/follow-scroll.js"></script>
   <script defer src="/static/shell.js"></script>
   <link rel="stylesheet" href="/static/series.css">
   <link rel="stylesheet" href="/static/pipeline.css">
@@ -315,6 +316,15 @@
               <a id="export-link" class="button subtle"><svg><use href="#i-download"/></svg> Export audiobook</a>
             </div>
           </header>
+          <section id="studio-performances" class="studio-performances" aria-labelledby="studio-performances-heading">
+            <header class="section-head">
+              <div class="section-head-text">
+                <h3 id="studio-performances-heading">Performances</h3>
+                <p class="section-head-lead">Chapters recorded ahead with one narrator or the full cast. Listen to one while it records, and add chapters to it later without starting over.</p>
+              </div>
+            </header>
+            <div id="performances-hub" class="performances-hub"></div>
+          </section>
           <div class="production-controls record-controls">
             <div class="production-step">
               <div>
@@ -380,7 +390,7 @@
   <dialog id="library-dialog" class="modal library-dialog" aria-labelledby="library-dialog-title">
     <div class="modal-header">
       <h2 id="library-dialog-title">Books &amp; series</h2>
-      <button class="icon-button" data-close="library-dialog" aria-label="Close library manager">×</button>
+      <button class="icon-button" data-close="library-dialog" aria-label="Close library manager"><svg><use href="#i-close"/></svg></button>
     </div>
     <div id="library-manager"></div>
     <div id="series-processing"></div>

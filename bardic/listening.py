@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .alignment import align_file
-from .audio import (AudioError, BREEZE_MODEL, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, TTS_MODELS, render_fingerprint,
+from .audio import (AudioError, BREEZE_MODEL, ContentBlocked, DEFAULT_TTS_MODEL, PROVIDERS, SYSTEM_MODEL, TTS_MODELS, render_fingerprint,
                     validate_audio)
 from .chunking import CHUNKING_VERSION, OUTPUT_TOKEN_CAP, PROVIDER_AUDIO_CAP_SECONDS
 from .store import now
@@ -32,10 +32,24 @@ SYNTHESIS_CACHE_VERSION = 1
 # Version 1 multi-passage takes: one WAV for an exact chapter slice, with
 # estimated passage clips from pause alignment. See docs/DATA-MODEL.md.
 CHUNK_VERSION = 1
+# Version 1 records of text Gemini refused under its content policy, and of the fallback narrator's takes
+# that stand in for those passages. See docs/DATA-MODEL.md.
+BLOCKED_VERSION = 1
+SUBSTITUTE_VERSION = 1
+# A block of these roles is final for its passages: 'half' (one half of a split chunk) and 'single'
+# (a one-passage request). A 'chunk' block is open: it is split once into halves.
+FINAL_BLOCK_ROLES = ('half', 'single')
 # Faster than this many code points per audio second suggests skipped text.
 _SUSPICIOUS_CHARS_PER_SECOND = 26.0
 # Integrity results per asset file state: (root, book, asset, size, mtime_ns) -> ok.
 _asset_checks: dict[tuple, bool] = {}
+
+
+class KnownContentBlock(ContentBlocked):
+    """Bardic already knows Gemini blocked this text, so no request was sent."""
+
+    def __init__(self):
+        super().__init__("Gemini already blocked this text under its content policy, so it was not sent again.")
 
 
 class TruncatedChunk(AudioError):
@@ -55,7 +69,7 @@ def _hash(value):
 
 # Optional public extras of a single-passage take, copied when the stored record has them.
 # Provider usage is served by the resources routes, not with the audio.
-_PASSAGE_EXTRAS = ('provider_timing', 'breeze', 'voice_revision')
+_PASSAGE_EXTRAS = ('provider_timing', 'breeze', 'voice_revision', 'substitute')
 # Public fields of a reuse pointer; its recipe and producer fingerprint stay in storage.
 _REUSE_FIELDS = ('schema_version', 'take_id', 'book_id', 'session_id', 'segment_id')
 
@@ -139,7 +153,23 @@ class ListeningRepository:
             conn.execute('''CREATE TRIGGER IF NOT EXISTS listening_chunks_no_replace
                 BEFORE INSERT ON listening_chunks WHEN EXISTS(SELECT 1 FROM listening_chunks WHERE id=NEW.id)
                 BEGIN SELECT RAISE(IGNORE); END''')
-            for table in ('listening_takes', 'listening_chunks'):
+            # Immutable facts: this exact text and recipe was refused by the provider (no response body is kept),
+            # and which fallback narrator's take stands in for a refused passage.
+            conn.execute('''CREATE TABLE IF NOT EXISTS listening_blocked (
+                id TEXT PRIMARY KEY, book_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                chapter_id TEXT NOT NULL, body TEXT NOT NULL)''')
+            conn.execute('''CREATE INDEX IF NOT EXISTS listening_blocked_session
+                ON listening_blocked(book_id,session_id,chapter_id)''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS listening_substitutes (
+                id TEXT PRIMARY KEY, book_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                segment_id TEXT NOT NULL, body TEXT NOT NULL)''')
+            conn.execute('''CREATE INDEX IF NOT EXISTS listening_substitutes_session
+                ON listening_substitutes(book_id,session_id,segment_id)''')
+            for table in ('listening_blocked', 'listening_substitutes'):
+                conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_no_replace
+                    BEFORE INSERT ON {table} WHEN EXISTS(SELECT 1 FROM {table} WHERE id=NEW.id)
+                    BEGIN SELECT RAISE(IGNORE); END''')
+            for table in ('listening_takes', 'listening_chunks', 'listening_blocked', 'listening_substitutes'):
                 for operation in ('UPDATE', 'DELETE'):
                     name = f'{table}_no_{operation.lower()}'
                     conn.execute(f'''CREATE TRIGGER IF NOT EXISTS {name}
@@ -357,7 +387,8 @@ class ListeningRepository:
                           'fingerprint': original['fingerprint']})
             metadata = self._retain(book_id, session_id, segment_id, identity, recipe, content_key, reused)
             return present_take(book_id, metadata)
-        return None
+        # Last: audio Gemini made for this text (here or in another book) always wins over a stand-in.
+        return self._substitutes(self.store.book(book_id), session).get(segment_id)
 
     def takes(self, book_id, session_id):
         session = self.get_session(book_id, session_id)
@@ -372,6 +403,8 @@ class ListeningRepository:
         # Chunk clips come first: consecutive clips in one WAV play gaplessly.
         clips = self._chunk_clips(book, session)
         lexicon = pronunciation.book_lexicon(book)
+        # A fallback narrator's take stands in only where Gemini has no audio of its own for the passage.
+        substitutes = self._substitutes(book, session)
         takes = []
         for segment in book['segments']:
             if segment['id'] in clips:
@@ -388,6 +421,9 @@ class ListeningRepository:
                 if self._path(book_id, metadata['asset_id']).is_file():
                     takes.append({'segment_id': segment['id'], 'audio': present_take(book_id, metadata)})
                     break
+            else:
+                if segment['id'] in substitutes:
+                    takes.append({'segment_id': segment['id'], 'audio': substitutes[segment['id']]})
         return {'session': session, 'takes': takes}
 
     # Multi-passage chunks -------------------------------------------------
@@ -419,10 +455,10 @@ class ListeningRepository:
         return ListeningRepository._audio_recipe({'id': source_id, 'text': text}, session, lexicon)
 
     @classmethod
-    def _chunk_valid(cls, chunk, chapters, segments, session, lexicon=None):
+    def _chunk_valid(cls, chunk, chapters, segments, session, lexicon=None, version=CHUNK_VERSION):
         """A chunk applies only while its source slice, anchors and recipe are unchanged."""
         chapter = chapters.get(chunk.get('chapter_id'))
-        if chunk.get('schema_version') != CHUNK_VERSION or chunk.get('session_id') != session['id'] or not chapter:
+        if chunk.get('schema_version') != version or chunk.get('session_id') != session['id'] or not chapter:
             return False
         start, end = chunk.get('start'), chunk.get('end')
         if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(chapter['text']):
@@ -479,11 +515,8 @@ class ListeningRepository:
             raise NotFound('chapter_not_found', 'Chapter not found in this book')
         return chapter, [segment for segment in book['segments'] if segment['chapter_id'] == chapter_id]
 
-    def render_chunk(self, book_id, session_id, chapter_id, segment_ids, api_key=None, *,
-                     synthesizer=None, check_cancel=lambda: None, request=None):
-        """Synthesize one exact chapter slice and retain it with estimated passage clips."""
-        check_cancel()
-        session = self.get_session(book_id, session_id)
+    def _chunk_inputs(self, book_id, session, chapter_id, segment_ids):
+        """Exact slice, recipe and identity of a request for consecutive passages of one chapter."""
         book = self.store.book(book_id)
         chapter, ordered = self.chapter_segments(book, chapter_id)
         positions = {segment['id']: index for index, segment in enumerate(ordered)}
@@ -501,6 +534,138 @@ class ListeningRepository:
                     'book_id': book_id, 'session_id': session['id'], 'chapter_id': chapter_id,
                     'start': start, 'end': end, 'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
                     'segments': [[s['id'], s['start'], s['end']] for s in selected], 'fingerprint': fingerprint}
+        return {'book': book, 'chapter': chapter, 'selected': selected, 'lexicon': lexicon, 'start': start, 'end': end,
+                'text': text, 'passage': passage, 'narrator': narrator, 'identity': identity}
+
+    # Text Gemini refused ---------------------------------------------------
+
+    def record_block(self, book_id, session_id, chapter_id, segment_ids, role, request=None):
+        """Remember durably that Gemini refused this exact text under this recipe. Idempotent; keeps no response body."""
+        session = self.get_session(book_id, session_id)
+        inputs = self._chunk_inputs(book_id, session, chapter_id, segment_ids)
+        identity = inputs['identity']
+        body = {**{key: identity[key] for key in ('book_id', 'session_id', 'chapter_id', 'start', 'end', 'text_sha256',
+                                                  'segments', 'fingerprint')},
+                'schema_version': BLOCKED_VERSION, 'role': role, 'code': ContentBlocked.code,
+                'request': request or {}, 'created_at': now()}
+        body['id'] = _hash([book_id, session_id, chapter_id, identity['start'], identity['end'],
+                            identity['text_sha256'], identity['fingerprint'], role])
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO listening_blocked VALUES (?,?,?,?,?)',
+                         (body['id'], book_id, session_id, chapter_id, json.dumps(body)))
+            return json.loads(conn.execute('SELECT body FROM listening_blocked WHERE id=?', (body['id'],)).fetchone()[0])
+
+    def _valid_blocks(self, book, session):
+        """Retained blocks that still describe the passage source and the session's recipe, newest first."""
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('SELECT body FROM listening_blocked WHERE book_id=? AND session_id=? ORDER BY rowid DESC',
+                                (book['id'], session['id'])).fetchall()
+        if not rows:
+            return []
+        chapters = {chapter['id']: chapter for chapter in book['chapters']}
+        segments = {segment['id']: segment for segment in book['segments']}
+        lexicon = pronunciation.book_lexicon(book)
+        records = (json.loads(body) for (body,) in rows)
+        return [record for record in records
+                if record.get('schema_version') == BLOCKED_VERSION and
+                self._chunk_valid({**record, 'schema_version': CHUNK_VERSION}, chapters, segments, session, lexicon)]
+
+    def has_blocks(self, book_id, session_id):
+        """Whether any block was ever retained for the session: a cheap check that avoids loading the book."""
+        with self.store.lock, self.store.connect() as conn:
+            return conn.execute('SELECT 1 FROM listening_blocked WHERE book_id=? AND session_id=? LIMIT 1',
+                                (book_id, session_id)).fetchone() is not None
+
+    def content_blocks(self, book_id, session_id):
+        """What is known about text Gemini refused: ``refused`` maps each passage that must not be requested again
+        (final blocks) to its block ID; ``open`` lists blocks of whole chunks that are still to be split."""
+        book, session = self.store.book(book_id), self.get_session(book_id, session_id)
+        blocks = self._valid_blocks(book, session)
+        refused = {}
+        for record in blocks:
+            if record['role'] in FINAL_BLOCK_ROLES:
+                for segment_id, _, _ in record['segments']:
+                    refused.setdefault(segment_id, record['id'])
+        return {'refused': refused, 'open': [record for record in blocks if record['role'] not in FINAL_BLOCK_ROLES],
+                'blocks': blocks}
+
+    @staticmethod
+    def known_block_within(blocks, chapter_id, start, end):
+        """A retained block whose text lies entirely inside [start, end): sending that slice would resend it."""
+        return next((record for record in blocks if record['chapter_id'] == chapter_id
+                     and start <= record['start'] and record['end'] <= end), None)
+
+    def _retain_substitute(self, book_id, session_id, segment_id, block_id, fallback_session_id, asset_id):
+        body = {'schema_version': SUBSTITUTE_VERSION, 'session_id': session_id, 'segment_id': segment_id,
+                'blocked_id': block_id, 'reason': ContentBlocked.code, 'fallback_session_id': fallback_session_id,
+                'asset_id': asset_id, 'created_at': now()}
+        body['id'] = _hash([book_id, session_id, segment_id, block_id, fallback_session_id, asset_id])
+        with self.store.lock, self.store.connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO listening_substitutes VALUES (?,?,?,?,?)',
+                         (body['id'], book_id, session_id, segment_id, json.dumps(body)))
+        return body
+
+    def read_by_fallback(self, book_id, session_id, segment_id, fallback, credentials=None, *,
+                         synthesizer=None, check_cancel=lambda: None):
+        """Have the fallback narrator read a passage Gemini refused, and link its retained take to the block.
+
+        The take is an ordinary immutable take of the fallback session (its own recipe and content hash);
+        nothing is written into the Gemini session's takes. Returns the public audio object.
+        """
+        block_id = self.content_blocks(book_id, session_id)['refused'].get(segment_id)
+        if block_id is None:
+            raise ValueError('Only a passage Gemini refused can be read by the fallback narrator.')
+        audio = self.render_passage(book_id, fallback['session_id'], segment_id, credentials,
+                                    synthesizer=synthesizer, check_cancel=check_cancel)
+        self._retain_substitute(book_id, session_id, segment_id, block_id, fallback['session_id'], audio['asset_id'])
+        return self._substitutes(self.store.book(book_id), self.get_session(book_id, session_id))[segment_id]
+
+    def _substitutes(self, book, session):
+        """Current fallback takes standing in for refused passages, in public shape, by passage ID."""
+        with self.store.lock, self.store.connect() as conn:
+            rows = conn.execute('SELECT body FROM listening_substitutes WHERE book_id=? AND session_id=? ORDER BY rowid DESC',
+                                (book['id'], session['id'])).fetchall()
+        if not rows:
+            return {}
+        block_ids = {record['id'] for record in self._valid_blocks(book, session) if record['role'] in FINAL_BLOCK_ROLES}
+        chapters = {chapter['id']: chapter for chapter in book['chapters']}
+        segments = {segment['id']: segment for segment in book['segments']}
+        lexicon = pronunciation.book_lexicon(book)
+        found = {}
+        for (body,) in rows:
+            record = json.loads(body)
+            segment = segments.get(record['segment_id'])
+            if segment is None or record['segment_id'] in found or record['blocked_id'] not in block_ids:
+                continue
+            try:
+                other = self.get_session(book['id'], record['fallback_session_id'])
+                recipe = self._source_inputs(book['id'], other, segment, chapters.get(segment['chapter_id']), lexicon)[-1]
+            except (NotFound, ValueError):
+                continue
+            with self.store.lock, self.store.connect() as conn:
+                take = conn.execute('''SELECT body FROM listening_takes WHERE book_id=? AND session_id=? AND segment_id=?
+                    AND recipe=? AND asset_id=? ORDER BY rowid DESC''',
+                                    (book['id'], other['id'], record['segment_id'], recipe, record['asset_id'])).fetchone()
+            if take and self._path(book['id'], record['asset_id']).is_file():
+                found[record['segment_id']] = present_take(book['id'], {
+                    **json.loads(take[0]), 'substitute': {'reason': ContentBlocked.code, 'for_provider': session['provider'],
+                                                          'for_model': session['model']}})
+        return found
+
+    def render_chunk(self, book_id, session_id, chapter_id, segment_ids, api_key=None, *,
+                     synthesizer=None, check_cancel=lambda: None, request=None, block_role='chunk'):
+        """Synthesize one exact chapter slice and retain it with estimated passage clips.
+
+        Text Gemini is already known to have blocked is never sent again (``KnownContentBlock``). A refusal
+        during this request is retained under ``block_role`` and raised as ``ContentBlocked``.
+        """
+        check_cancel()
+        session = self.get_session(book_id, session_id)
+        inputs = self._chunk_inputs(book_id, session, chapter_id, segment_ids)
+        book, chapter, selected, lexicon = inputs['book'], inputs['chapter'], inputs['selected'], inputs['lexicon']
+        start, end, text, passage, narrator, identity = (inputs[key] for key in ('start', 'end', 'text', 'passage', 'narrator', 'identity'))
+        if session['provider'] == 'gemini' and self.known_block_within(self._valid_blocks(book, session), chapter_id, start, end):
+            raise KnownContentBlock()
         # Boundaries are estimated from what was spoken, so respelled names weigh as heard.
         alignment_input = [{'id': segment['id'],
                             'text': pronunciation.apply(segment['text'], lexicon, session['provider'])[0],
@@ -534,8 +699,12 @@ class ListeningRepository:
             return {'timing': timing}
 
         check_cancel()
-        metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
-                                self.store.root / 'listen-audio' / book_id, synthesizer=synthesizer, accept=accept)
+        try:
+            metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
+                                    self.store.root / 'listen-audio' / book_id, synthesizer=synthesizer, accept=accept)
+        except ContentBlocked:
+            self.record_block(book_id, session_id, chapter_id, segment_ids, block_role, request)
+            raise
         timing = metadata.pop('timing')
         flags = []
         quality = timing['quality']
@@ -567,8 +736,15 @@ class ListeningRepository:
         """Synthesize and retain a new take without consulting the cache. Public shape."""
         session, passage, narrator, identity, recipe = self._inputs(book_id, session_id, segment_id)
         check_cancel()
-        metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
-                                self.store.root / 'listen-audio' / book_id, synthesizer=synthesizer)
+        segment = next(s for s in self.store.book(book_id)['segments'] if s['id'] == segment_id)
+        if session['provider'] == 'gemini' and segment_id in self.content_blocks(book_id, session_id)['refused']:
+            raise KnownContentBlock()
+        try:
+            metadata = produce_take(passage, narrator, {}, session['provider'], session['model'], api_key,
+                                    self.store.root / 'listen-audio' / book_id, synthesizer=synthesizer)
+        except ContentBlocked:
+            self.record_block(book_id, session_id, segment['chapter_id'], [segment_id], 'single')
+            raise
         # Concurrent enhanced changes do not affect this recipe. A source change
         # must not publish a new take against the wrong passage coordinates.
         if self._inputs(book_id, session_id, segment_id)[-1] != recipe:

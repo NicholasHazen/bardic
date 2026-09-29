@@ -90,6 +90,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | Analysis pipeline (**Analyze** tab) | `analysis-pipeline.js`, `analysis-pipeline.css` | `/api/analysis-pipeline`, book `/analysis-pipeline` (plan, runs, versions, preview, accept, reject) |
 | Pipeline inspection (**Details** tab) | `pipeline.js`, `pipeline.css` | Book `/pipeline`, `/artifacts`, `/story-map`, `/search`, `/analysis-export` |
 | Resource usage (**Details** tab) | `resources.js`, `resources.css` | Book `/resources` |
+| Reader follow-the-narration scrolling | `follow-scroll.js` (`window.BardicFollow`: pure `geometry` and `spring`, plus a requestAnimationFrame controller driven by `app.js`) | Nothing (geometry, audio position) |
 | Book lifecycle strip, routes, breadcrumb | `lifecycle.js` (`window.BardicLifecycle`, pure), `shell.js` (`window.BardicShell`) | Book `/analysis-pipeline` overview (read-only) |
 
 The table summarizes endpoint families. The complete, versioned contract is checked in as [`contract/openapi.json`](../contract/openapi.json), with a readable [reference](../contract/API-REFERENCE.md). It is generated from the route DTOs and the descriptions in [`bardic/apispec/`](../bardic/apispec/), which the test suite checks against every response. The contract is normative for future clients and for any replacement server; see [the API workflow](API-WORKFLOW.md). The running server also serves the contract at `/openapi.json`; Swagger `/docs` and ReDoc are disabled.

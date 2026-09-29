@@ -27,6 +27,9 @@ body.reader-mode[data-reader-spacing=compact] { --reader-leading:1.5; }
 body.reader-mode[data-reader-spacing=relaxed] { --reader-leading:2.05; }
 body.reader-mode[data-reader-width=narrow] { --reader-measure:30em; }
 body.reader-mode[data-reader-width=wide] { --reader-measure:48em; }
+/* Wider and Full push the margins out for big screens (12.9-inch iPad Pro); Full uses the whole width inside main's safe-area padding. */
+body.reader-mode[data-reader-width=wider] { --reader-measure:64em; }
+body.reader-mode[data-reader-width=full] { --reader-measure:none; }
 
 /* Hide the workspace around the text. */
 body.reader-mode .sidebar, body.reader-mode .topbar, body.reader-mode .book-header, body.reader-mode .workspace-nav,
@@ -44,7 +47,7 @@ body.reader-mode .reader-text {
   font-family:var(--reader-font); font-size:var(--reader-size); line-height:var(--reader-leading); color:var(--reader-ink);
   -webkit-text-size-adjust:100%; hyphens:auto; -webkit-hyphens:auto;
 }
-body.reader-mode .passage { transition:background .25s; scroll-margin-top:90px; }
+body.reader-mode .passage { transition:background .25s; scroll-margin-top:calc(90px + env(safe-area-inset-top)); }
 body.reader-mode .passage.active { background:var(--reader-highlight); box-shadow:3px 0 0 var(--reader-highlight),-3px 0 0 var(--reader-highlight); color:var(--reader-ink); }
 body.reader-mode .passage:hover { background:none; }
 body.reader-mode .passage.active:hover { background:var(--reader-highlight); }
@@ -55,16 +58,14 @@ body.reader-mode :focus-visible:not(dialog, dialog *) { outline-color:var(--read
 body.reader-mode .chapter-navigation { border-top-color:var(--reader-line); }
 body.reader-mode .chapter-navigation .button { color:var(--reader-accent); min-height:44px; font-size:14px; }
 
-/* Reader bar: exit, title and chapter, appearance and narrator. */
+/* Reader bar: sticky and always shown, so the tools are one tap away at any scroll position. Exit, title and chapter, appearance and narrator. */
 .reader-bar {
   position:fixed; z-index:30; top:0; left:0; right:0;
   display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:6px;
   padding:calc(8px + env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
   background:var(--reader-chrome); color:var(--reader-ink); border-bottom:1px solid var(--reader-line);
   -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
-  transition:transform .25s ease;
 }
-body.reader-chrome-hidden .reader-bar { transform:translateY(-100%); }
 .reader-bar-button {
   display:inline-flex; align-items:center; justify-content:center; gap:4px; min-width:44px; min-height:44px; padding:0 10px;
   border:0; border-radius:10px; background:none; color:inherit; font-size:14px;
@@ -155,7 +156,6 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 @media (max-width:620px) { .reader-toolbar-actions { width:100%; margin-left:0; } .reader-toolbar-actions .button { flex:1; justify-content:center; } }
 
 /* Listen sheet. */
-.listen-sheet { width:560px; }
 .listen-sheet-where { margin:14px 0 6px; font-size:14px; color:var(--muted); }
 .listen-sheet-where strong { color:var(--ink); font-weight:600; }
 .listen-sheet-field { margin-top:16px; }
@@ -166,7 +166,7 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
 .listen-sheet-voice select { flex:1; min-width:0; min-height:44px; font-size:15px; }
 .listen-sheet-voice .button { min-height:44px; white-space:nowrap; }
 .listen-sheet-toggle { display:flex; align-items:center; gap:10px; margin-top:16px; min-height:44px; font-size:14px; }
-.listen-sheet-toggle input { width:20px; height:20px; accent-color:var(--green); }
+.listen-sheet-toggle input { margin:0; flex:none; width:20px; height:20px; accent-color:var(--green); }
 .listen-sheet .field-help { margin-top:8px; }
 .listen-sheet-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
 .listen-sheet-actions .button { min-height:48px; padding:0 20px; font-size:15px; }
@@ -180,13 +180,13 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
   animation:listen-spin .9s linear infinite;
 }
 @keyframes listen-spin { to { transform:rotate(360deg); } }
-@media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } .reader-bar { transition:none; } }
+@media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } }
 /* Phones: a bottom sheet. The actions stay in view while the choices scroll. */
 @media (max-width:620px) {
   .listen-sheet[open] { width:100%; max-width:100%; margin:auto 0 0; max-height:88dvh; border-radius:var(--radius-2xl) var(--radius-2xl) 0 0; border-bottom:0; padding:16px 16px 0; }
   .listen-sheet .modal-header h2 { font-size:var(--text-2xl); }
   .listen-sheet .choice[data-kind=cards] { grid-template-columns:1fr; gap:var(--space-1-5); }
-  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:baseline; gap:var(--space-2); }
+  .listen-sheet .choice[data-kind=cards] > button { min-height:var(--control-touch); padding:var(--space-1-5) var(--space-3); display:flex; align-items:center; gap:var(--space-2); }
   .listen-sheet-field { margin-top:12px; }
   .listen-sheet-voice { flex-wrap:wrap; }
   .listen-sheet-voice .button { flex:1; }

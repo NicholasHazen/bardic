@@ -38,15 +38,23 @@ class JobChapterChunk(View):
     expected_latency: float = Field(description='Expected seconds until the response, from calibration.')
     realtime_factor: float = Field(description='Calibration realtime factor (audio seconds per waiting second) at send time.')
     epoch: int = Field(description='Planning generation; increases after a truncation forces smaller re-planning.')
-    status: Literal['requesting', 'done', 'rate_limited', 'truncated', 'failed'] = Field(
+    status: Literal['requesting', 'done', 'rate_limited', 'truncated', 'blocked', 'failed'] = Field(
         description='`requesting` while in flight (on a job that is no longer running: in flight when it stopped, and '
                     'its outcome unknown); `done` when its audio was retained; `rate_limited` when the '
                     'provider refused it with HTTP 429 (nothing generated; its passages are planned again); '
-                    '`truncated` when the audio was cut short or far too short and was discarded; `failed` on any '
-                    'other error (the job then stops).')
+                    '`truncated` when the audio was cut short or far too short and was discarded; `blocked` when '
+                    'Gemini refused the text under its content policy (HTTP 400 `content_blocked`; the block is '
+                    'retained and this text is never sent again; the job continues, see `Job.content_blocked`); '
+                    '`failed` on any other error (the job then stops).')
+    split: bool | None = Field(
+        None, description='True for a half of a chunk Gemini blocked. A half is requested once and never split '
+                          'again. Absent otherwise.')
+    split_into: int | None = Field(
+        None, description='`blocked` only: the number of halves the chunk was split into (2), or absent when it was '
+                          'not split (a one-passage chunk or a half, whose passages go to the fallback narrator).')
     started_at: str = Field(description='When the request was sent: ' + TIME)
     finished_at: str | None = Field(None, description='When the request finished; absent while `requesting`. ' + TIME)
-    error: str | None = Field(None, description='Human-readable reason for `rate_limited`, `truncated` or `failed` '
+    error: str | None = Field(None, description='Human-readable reason for `rate_limited`, `truncated`, `blocked` or `failed` '
                                                 '(at most 300 characters for `failed`).')
     duration: float | None = Field(None, description='Seconds of audio received (`done`, `truncated`).')
     chunk_id: str | None = Field(None, description='ID of the retained chunk audio (`done`).')
@@ -56,6 +64,34 @@ class JobChapterChunk(View):
                           'so passage clip times are rough.')
     matched: int | None = Field(None, description='Passage boundaries the aligner matched in the audio (`done`).')
     boundaries: int | None = Field(None, description='Passage boundaries the aligner tried to match (`done`).')
+
+
+class JobFallbackNarrator(View):
+    """The free local narrator a job snapshotted for passages Gemini blocks."""
+    session_id: str = Field(description='The narrator session (64 hex) whose takes read the blocked passages.')
+    provider: NarrationProvider = Field(description='`system` (a device voice) or `breeze`; never `gemini`.')
+    model: str = Field(description='Speech model of the fallback narrator (`macos-say` or the Breeze model).')
+    voice: str = Field(description='Voice choice of the fallback session; empty for the default device voice.')
+
+
+class JobContentBlocked(View):
+    """What Gemini's content policy did to a job's text, and how each blocked passage ended.
+
+    Present once Gemini blocked any text of the job's chapter. The job itself still ends `completed`: the rest of
+    the chapter was prepared, and its `message` says how many passages were read by the fallback narrator or left
+    unrecorded. A saved performance reports the same outcome per chapter in `Performance.progress`.
+    """
+    fallback: JobFallbackNarrator | None = Field(
+        description='The fallback narrator that reads blocked passages, or null when none is available (a device '
+                    'voice needs macOS `say` and ffmpeg; Breeze needs a configured server with a usable default voice).')
+    fallback_passage_ids: list[str] = Field(
+        description='Blocked passages the fallback narrator read, in reading order. Their audio plays with the rest, is '
+                    'marked `substitute` and is not Gemini audio.')
+    blocked_passage_ids: list[str] = Field(
+        description='Blocked passages with no audio at all (no fallback narrator, or it failed), in reading order. They '
+                    'are not requested from Gemini again.')
+    fallback_error: str | None = Field(
+        description='Why the fallback narrator could not read a passage (at most 300 characters), or null.')
 
 
 # ----------------------------------------------------------------------- pipeline run settings
@@ -129,6 +165,12 @@ class JobBase(View):
     resume_after: str | None = Field(
         None, description='Only on a job that ended `quota_limited`: when the daily quota resets (next midnight Pacific '
                           'time), as ' + TIME + ' Absent on every other job.')
+    error_code: Literal['content_blocked'] | None = Field(
+        None, description='Only on a job that ended `failed` for a documented cause the UI can explain: `content_blocked` is '
+                          'Gemini\'s content policy (HTTP 400 with error code `content_blocked`) refusing text that has no '
+                          'fallback path (for example a full-cast performance passage or a single-passage `listen` job). '
+                          'The provider\'s own error text is never kept: `error` is a fixed sentence. '
+                          'Absent on every other job. The set of values is open.')
 
 
 class RenderJob(JobBase):
@@ -293,6 +335,12 @@ class ListenChapterJob(JobBase):
     closing: bool | None = Field(
         description='True once the worker decided to finish; a new chapter request then gets 409 until the job ends. Null '
                     'until the worker reports.')
+    fallback: JobFallbackNarrator | None = Field(
+        description='The free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when '
+                    'none was available (and on a job queued before contract 0.3.3).')
+    content_blocked: JobContentBlocked | None = Field(
+        description='Present once Gemini blocked text of this chapter, with how each blocked passage ended. Null when '
+                    'nothing was blocked.')
 
 
 class VoicePreviewJob(JobBase):
@@ -351,7 +399,8 @@ new job; old job IDs are never revived. A queued series child that is
 cancelled or passed over never starts later.
 
 **Kinds.** Every kind has the fields `id`, `book_id`, `kind`, `status`, `progress`, `total`, `message`, `error`,
-`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`) and only the
+`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`, `error_code` on
+a job that failed for a documented cause) and only the
 fields of its own kind below; a field that a kind does not declare is not sent for it. A route that always returns
 one kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePreviewJob`, `PerformanceJob`, `PipelineJob`,
 `SeriesJob`, `RenderJob`), which has the same fields as the branch here.
@@ -363,7 +412,7 @@ one kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePrevie
 | `pipeline` | an analysis pipeline run, or a series run (one child per book) | `run_id`, `steps`, `scheduling`; a series child also `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |
 | `series` | series processing (the parent) | `series_id`, `book_ids`, `child_job_ids`, the run settings (`steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits`, `estimated_cost_usd`, `requests`, `context_pending_books`), `finished_at`, `waiting_for_review` |
 | `listen` | simple passage listening | `session_id`, `passage_id`, `provider`, `model`, `audio` |
-| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing` |
+| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing`, `fallback`, `content_blocked` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `passage_id`, `provider`, `model`, `audio` |
 | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id` |
 

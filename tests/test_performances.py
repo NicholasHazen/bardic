@@ -499,3 +499,150 @@ def test_live_listening_does_not_join_a_performance_chapter_job(gemini):
     assert 'saved performance' in response.json()['detail']
     for job in (child, parent):
         store.update_job(job['id'], status='cancelled')
+
+
+# Extending a performance ----------------------------------------------------------
+
+def test_adding_chapters_extends_the_same_performance_and_reuses_what_is_saved(client, monkeypatch):
+    calls = device(monkeypatch)
+    book = import_book(client)
+    one, two, three = book['chapters']
+    first = create(client, book, [one], name='Evenings')
+    assert wait_job(client, first['job']['id'])['status'] == 'completed'
+    performance_id = first['performance']['id']
+    before = audio(client, book, first['performance'])
+    base = f"/api/books/{book['id']}/performances/{performance_id}"
+
+    plan = client.post(f'{base}/preview', json={'chapter_ids': [two['id']]})
+    assert plan.status_code == 200, plan.text
+    plan = plan.json()
+    assert plan['added_chapter_ids'] == [two['id']] and plan['chapter_ids'] == [one['id'], two['id']]
+    assert plan['passages_ready'] == len(before) and plan['passages_to_generate'] == len(passages(book, two))
+    assert client.get(base).json()['performance']['chapter_ids'] == [one['id']], 'a preview stores nothing'
+    assert client.post(f'{base}/preview', json={'chapter_ids': []}).json()['added_chapter_ids'] == []
+
+    made = len(calls)
+    added = client.post(f'{base}/chapters', json={'chapter_ids': [three['id'], two['id'], one['id']]})
+    assert added.status_code == 200, added.text
+    result = added.json()
+    assert result['performance']['id'] == performance_id and result['performance']['name'] == 'Evenings'
+    assert result['performance']['chapter_ids'] == [one['id'], two['id'], three['id']], 'book order, no duplicates'
+    assert [entry['chapter_ids'] for entry in result['performance']['chapters_added']] == [[two['id'], three['id']]]
+    assert wait_job(client, result['job']['id'])['status'] == 'completed'
+    assert len(calls) - made == len(passages(book, two, three)), 'only the added chapters are narrated'
+    after = audio(client, book, first['performance'])
+    assert {key: after[key] for key in before} == before, 'retained audio is never rewritten'
+    assert len(after) == len(book['passages'])
+    assert len(client.get(f"/api/books/{book['id']}/performances").json()['performances']) == 1
+
+    # Nothing new and nothing missing: no job, and no history entry.
+    again = client.post(f'{base}/chapters', json={'chapter_ids': [two['id']]}).json()
+    assert again['job'] is None
+    assert len(again['performance']['chapters_added']) == 1, 'an unchanged selection adds no history'
+
+
+def test_adding_chapters_is_validated_and_needs_an_idle_book(client, monkeypatch):
+    gate = threading.Event()
+    calls = device(monkeypatch, gate)
+    book = import_book(client)
+    one, two, _ = book['chapters']
+    first = create(client, book, [one])
+    wait_for(lambda: calls)
+    base = f"/api/books/{book['id']}/performances/{first['performance']['id']}"
+    busy = client.post(f'{base}/chapters', json={'chapter_ids': [two['id']]})
+    assert busy.status_code == 409 and busy.json()['code'] == 'job_active'
+    assert client.post(f'{base}/preview', json={'chapter_ids': [two['id']]}).status_code == 200, 'planning is a local read'
+    gate.set()
+    assert wait_job(client, first['job']['id'])['status'] == 'completed'
+    missing = client.post(f'{base}/chapters', json={'chapter_ids': ['nope']})
+    assert missing.status_code == 400 and missing.json()['code'] == 'unknown_chapter'
+    empty = client.post(f'{base}/chapters', json={'chapter_ids': []})
+    assert empty.status_code == 400 and empty.json()['code'] == 'no_chapters_selected'
+    assert client.post(f'{base}/preview', json={'chapter_ids': ['nope']}).json()['code'] == 'unknown_chapter'
+    assert client.post(f"/api/books/{book['id']}/performances/pf_none/chapters", json={'chapter_ids': [two['id']]}).status_code == 404
+    assert client.get(base).json()['performance']['chapter_ids'] == [one['id']], 'a refused request changes nothing'
+
+
+def test_cast_extension_keeps_the_pinned_cast_and_says_so(client, monkeypatch):
+    calls = device(monkeypatch)
+    book = import_book(client)
+    one, two, _ = book['chapters']
+    first = create(client, book, [one], mode='cast', provider='system', voice=None)
+    assert wait_job(client, first['job']['id'])['status'] == 'completed'
+    base = f"/api/books/{book['id']}/performances/{first['performance']['id']}"
+    plan = client.post(f'{base}/preview', json={'chapter_ids': [two['id']]}).json()
+    assert any('pinned when this performance was created' in note for note in plan['notes'])
+    made = len(calls)
+    result = client.post(f'{base}/chapters', json={'chapter_ids': [two['id']]}).json()
+    assert wait_job(client, result['job']['id'])['status'] == 'completed'
+    assert len(calls) - made == len(passages(book, two))
+    assert set(audio(client, book, first['performance'])) == {s['id'] for s in passages(book, one, two)}
+
+
+# Listening never changes what is requested ------------------------------------------
+
+def request_plan(store, book_id, sent, known_jobs):
+    """What was sent to the provider and how the jobs planned it: request sizes in order, chunk shapes,
+    the chunking each chapter job snapshotted, and the jobs that exist."""
+    jobs = [job for job in store.jobs(book_id, limit=None) if job['id'] not in known_jobs]
+    children = sorted((job for job in jobs if job['kind'] == 'listen_chapter'), key=lambda job: job['created_at'])
+    return {'requests': [len(text) for text in sent],
+            'jobs': sorted(job['kind'] for job in jobs),
+            'chunks': [[(entry['segment_count'], entry['chars']) for entry in child.get('chunks', [])] for child in children],
+            'chunking': [child['chunking'] for child in children],
+            'joins': [child.get('joins') for child in children]}
+
+
+def listen_while_recording(client, book, performance, job_id):
+    """A listener making the reads the player makes, as fast as it can, until the job settles.
+    Returns the ready-passage counts it saw."""
+    base = f"/api/books/{book['id']}/performances/{performance['id']}"
+    store = client.app.state.runtime.store
+    seen = []
+    while store.job(job_id)['status'] in {'queued', 'running'}:
+        record = client.get(base).json()['performance']
+        ready = client.get(f'{base}/audio').json()['audio']
+        seen.append(record['progress']['passages_ready'])
+        for reference in list(ready.values())[:2]:
+            assert client.get(reference['url'], headers={'Range': 'bytes=0-63'}).status_code in (200, 206)
+        time.sleep(.005)
+    return seen
+
+
+@pytest.mark.parametrize('mode,provider', [('simple', 'gemini'), ('cast', 'system')])
+def test_an_active_listener_never_changes_the_requests_a_performance_makes(gemini, monkeypatch, mode, provider):
+    client = gemini
+    sent = []
+    chunked = fake_chunk_synthesizer([])
+
+    def slow(segment, character, scene, prov, model, key, path, **kwargs):
+        time.sleep(.03)  # long enough for the listener to overlap every request
+        sent.append(segment['text'])
+        if prov == 'gemini':
+            return chunked(segment, character, scene, prov, model, key, path, **kwargs)
+        path.write_bytes(wav_bytes(frames=2400 + 16 * len(sent)))
+        return {'fingerprint': render_fingerprint(segment, character, scene, prov, model), 'duration': .1,
+                'provider': prov, 'model': model, 'voice': voice_id(character, prov)}
+    monkeypatch.setattr('bardic.chapter_listening.synthesize', slow)
+    monkeypatch.setattr('bardic.performances.synthesize', slow)
+    fields = ({'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL} if mode == 'simple'
+              else {'provider': 'system', 'voice': None})
+    store = client.app.state.runtime.store
+    plans, seen = [], []
+    for listening in (False, True):
+        # Same shape, same-length words, so the second run cannot reuse the first run's audio.
+        book = import_book(client, long_text(3, 4).replace('lantern', 'candle!' if listening else 'lantern'))
+        sent.clear()
+        known = {job['id'] for job in store.jobs(book['id'], limit=None)}
+        result = create(client, book, book['chapters'], mode=mode, **fields)
+        if listening:
+            seen = listen_while_recording(client, book, result['performance'], result['job']['id'])
+        assert wait_job(client, result['job']['id'])['status'] == 'completed'
+        assert len(audio(client, book, result['performance'])) == len(book['passages'])
+        plans.append(request_plan(store, book['id'], list(sent), known))
+    quiet, loud = plans
+    assert quiet['requests'], 'the run made provider requests'
+    assert loud == quiet, 'the same requests, sizes, chunks and jobs with a listener as without'
+    assert min(seen) < max(seen), 'the listener overlapped the recording and saw it progress'
+    assert not [job for job in store.jobs(book['id'], limit=None)
+                if job['kind'] in {'listen', 'listen_chapter'} and not job.get('parent_id')], 'listening started no job of its own'

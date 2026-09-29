@@ -184,7 +184,16 @@ class PerformanceChapterProgress(View):
     id: str = Field(description='Chapter ID.')
     title: str = Field(description='Chapter title; empty string when the chapter has none.')
     passages_total: int = Field(description='Passages in the chapter.')
-    passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text.')
+    passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text. Includes passages a fallback narrator read.')
+    passages_fallback: int = Field(description='Of the ready passages, those read by a fallback narrator because Gemini blocked their text (audio marked `substitute`).')
+    passages_blocked: int = Field(description='Passages Gemini blocked that have no audio at all, so they are not ready. They are not requested from Gemini again; they are not a failure.')
+    blocked_passage_ids: list[str] = Field(description='The passages counted in `passages_blocked`, in reading order.')
+
+
+class PerformanceChaptersAdded(View):
+    """One extension of a performance's chapter selection."""
+    at: str = Field(description='ISO 8601 UTC time the chapters were added.')
+    chapter_ids: list[str] = Field(description='The chapters newly added, in book order. Chapters already selected are not repeated.')
 
 
 class PerformanceProgress(View):
@@ -192,6 +201,9 @@ class PerformanceProgress(View):
     passages_total: int = Field(description='Passages in the selected chapters that are still in the book.')
     passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text.')
     seconds_ready: float = Field(description='Audio seconds ready.')
+    passages_fallback: int = Field(description='Of the ready passages, those read by a fallback narrator because Gemini blocked their text. Nonzero means the performance is not entirely Gemini audio.')
+    passages_blocked: int = Field(description='Passages Gemini blocked that have no audio at all (no fallback narrator was available, or it failed). Counted neither as ready nor as a failure; they are not requested again.')
+    fallback_provider: NarrationProvider | None = Field(description='The provider that read the `passages_fallback` passages (`system` or `breeze`, never `gemini`), or null when there are none.')
     chapters: list[PerformanceChapterProgress] = Field(description='Selected chapters still in the book, in book order.')
 
 
@@ -208,7 +220,7 @@ class Performance(View):
                                    'for example `Kore · Gemini · 3 chapters`.')
     mode: Literal['simple', 'cast'] = Field(description='`simple`: one narrator voice for every passage. `cast`: each speaker in their '
                                                         'cast voice, with the narrator as fallback.')
-    chapter_ids: list[str] = Field(description='Selected chapters in book order at creation. Chapters later removed from the book are skipped.')
+    chapter_ids: list[str] = Field(description='Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped.')
     provider: NarrationProvider = Field(description='Narration provider pinned at creation.')
     model: str = Field(description='Speech model pinned at creation.')
     voice: str | None = Field(description='Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null.')
@@ -218,13 +230,16 @@ class Performance(View):
                     'performances, which always use the book\'s current pronunciations.')
     session_id: str | None = Field(description='Simple only: the pinned listening session. Null for a cast performance.')
     created_at: str = Field(description='ISO 8601 UTC.')
-    updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive and when a job starts.')
+    updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts.')
     archived: bool = Field(description='True when hidden from the default list (listed only with `archived=true`). Its audio is kept.')
     job_id: str | None = Field(description='Latest job ID, or null if no job was ever needed.')
     cast: list[PerformanceCastMember] | None = Field(description='Cast only: the narrator and each speaker in the chosen chapters. Null for a simple performance.')
     job: PerformanceJob | None = Field(description='The latest `performance` job, or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
+    chapters_added: list[PerformanceChaptersAdded] = Field(
+        description='Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. '
+                    'Empty when none were added. `chapter_ids` already includes them.')
 
 
 class PerformanceList(View):
@@ -289,6 +304,9 @@ class PerformancePlan(View):
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
                                             'prefix of the default name.')
+    added_chapter_ids: list[str] | None = Field(
+        description='`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, '
+                    'in book order (empty when none are new). Null in the plan `previewPerformance` returns.')
 
 
 # ------------------------------------------------------------ voice previews
@@ -353,6 +371,11 @@ cancellation are job outcomes; audio finished during a Stop is still retained an
 `/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
 after an uncertain network response; retry only read-only polling.
 
+If Gemini's content policy blocks the passage (HTTP 400 `content_blocked`), the job fails with
+`error_code: "content_blocked"` and a fixed error sentence, and the passage is remembered as blocked: a
+later request for it fails at once without a Gemini request. A fallback take made by chapter listening
+(`substitute`) is returned as a cache hit.
+
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
 warmup (about 10 listening seconds, at most three passages), lookahead (about 45 seconds, at most 12
@@ -398,13 +421,37 @@ full-size chunk has been measured), retries a per-minute 429 up to 5 consecutive
 after a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It
 reports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last
 passage IDs, `passage_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,
-`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
+`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`blocked`/`failed`, `split`, `split_into`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
 `speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
 the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
 other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
-start the chapter again to resume."""
+start the chapter again to resume.
+
+**Text Gemini blocks.** Gemini can refuse text under its content policy with HTTP 400 and the error code
+`content_blocked`; it does not say which passage, and this is not a model, voice or length problem. The
+provider's error text is never kept. The job handles a block with a fixed budget of requests:
+
+1. The blocked chunk (`status: "blocked"`) is retained as a block for this session, chapter, exact text
+   and recipe, and is never sent again.
+2. A chunk of two or more passages is split once, at a passage boundary near its middle (preferring a
+   scene change, then a paragraph break, then a sentence end), into two halves (`split: true`). Each half
+   is requested like any chunk: reserved against the daily count and the per-minute limiter before it is
+   sent, and counted in `quota`.
+3. A half that is blocked again is not split further, and a blocked one-passage chunk is not split.
+   Those passages are read one by one by the free local **fallback narrator** snapshotted in `fallback`
+   (a device voice when `say` and ffmpeg are available, otherwise Breeze when configured), with no Gemini
+   request. That audio is an ordinary immutable take of the fallback session, marked `substitute`, and plays
+   with the rest. When no fallback narrator is available, or it fails, the passages stay unrecorded.
+
+One blocked chunk therefore costs at most three Gemini requests: the original and its two halves. A block
+is remembered durably, so starting the chapter again (or resuming a performance) never resends text
+Gemini already blocked; a changed source text, voice, model or pronunciation invalidates that memory and
+the text is requested again. Successful halves are kept as normal chunks. A block never fails the job: it
+ends `completed`, `content_blocked` lists the passages read by the fallback narrator and the ones left
+unrecorded, and `message` says so. Blocked passages are not counted in `progress` unless a fallback
+narrator read them."""
 
 _VOICE_PREVIEW_DESCRIPTION = """\
 Audition a voice on a short, exact excerpt of the book (or the fixed demo text). `voice` accepts the
@@ -460,13 +507,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound)."""
 
@@ -535,7 +586,10 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
        "List a listening session's playable audio",
        """\
 Saved simple audio for the session, one entry per passage in book order: a chunk clip when one
-applies, otherwise the newest single-passage take whose source recipe still matches the passage.
+applies, otherwise the newest single-passage take whose source recipe still matches the passage. For a
+Gemini session, a passage Gemini's content policy blocked that has no Gemini audio is listed with the
+fallback narrator's take, whose `substitute` marks it (see `startChapterListening`); a blocked passage with no
+fallback take is omitted.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
 No generation and no stored change. Works for archived books.""",
@@ -653,6 +707,37 @@ with `job` null when nothing is missing. Blocking problems are refused with 400 
                404: _PERFORMANCE_404,
                409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/preview', 'previewPerformanceResume', 'Performances',
+       'Estimate recording the rest of a performance',
+       """\
+Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,
+what a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`
+lists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are
+ignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is
+contacted. Allowed while a job runs.""",
+       response=PerformancePlan,
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.'},
+               404: _PERFORMANCE_404, 409: _ARCHIVED},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/chapters', 'addPerformanceChapters', 'Performances',
+       'Add chapters to a performance and record them',
+       f"""\
+Extend the performance's chapter selection and start recording what is missing, without creating a new
+performance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so
+audio already retained is reused and only passages without current audio are narrated (a simple
+performance also counts takes made by live listening with the same narrator). The added chapters are
+saved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never
+rewritten. Returns `{{performance, job}}`; `job` is null when every passage is already ready. Refused with 409
+while any job is active for the book, including this performance's own: stop it, or wait, first. Blocking
+problems are refused with 400 as for `createPerformance`.
+
+{_PERFORMANCE_JOB}""",
+       response=PerformanceStarted,
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
+                     'no_chapters_selected': '`chapter_ids` is empty.',
+                     **_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing']},
+               404: _PERFORMANCE_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
     op('PATCH', '/api/books/{book_id}/performances/{performance_id}', 'updatePerformance', 'Performances',
        'Rename or archive a performance',
        'Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is '
@@ -737,6 +822,12 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'voice': 'Simple mode narrator: ' + _VOICE_VALUES + ' Ignored for `cast`.',
         'model': 'Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed '
                  'models (`macos-say`, `breeze-tts-2`) and reject any other value. At most 200 characters.',
+    },
+    'PerformanceChapters': {
+        '__doc__': 'Chapters to add to an existing performance.',
+        'chapter_ids': 'Chapter IDs of this book to add, at most 5000 (each at most 200 characters). Already-selected chapters '
+                       'are ignored. Empty is allowed for `previewPerformanceResume` (plan the performance as it is) and '
+                       'refused by `addPerformanceChapters`.',
     },
     'PerformanceEdit': {
         '__doc__': 'Label changes. Omitted or null fields are unchanged.',

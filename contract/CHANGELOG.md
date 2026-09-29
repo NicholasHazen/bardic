@@ -23,7 +23,7 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
 ## 0.5.0 — 2026-09-29
-<!-- contract-sha256: 7b89912ee6bf85d526960479c6e6c60c5bb076f8bd433bb8415398081f2bc316 -->
+<!-- contract-sha256: f696b3297b7b928c03a45e4830de77b21c2a71d2f865d19df17c46d325adf65f -->
 
 **BREAKING.** One deliberate reshaping of the contract before any generated client, Rust server or external user exists, so that strongly typed generated code (Rust with typify/progenitor, TypeScript with openapi-typescript) is good and stays good. The browser UI is updated in the same change. Changes are grouped by kind; each says what clients must change. Response schemas stay open (ignore unknown fields), enumerations stay open sets (see "Compatibility rules for clients"), operation IDs do not change.
 
@@ -116,6 +116,18 @@ Every union of objects is now a **named schema** that is a `oneOf` with a `discr
 - **The advice on unknown enum values was wrong for Rust generators and is corrected** ("Compatibility rules for clients"): write clients to tolerate unknown values; generators differ (openapi-typescript emits closed literal unions, `enumUnknownDefaultCase` exists only for some openapi-generator generators and not for its Rust one, typify and progenitor emit closed enums); a Rust client needs a post-processing step that adds an unrecognized variant to every response enum. The contract keeps response enumerations as enums. Tagged unions are closed and described as such.
 - `INFO` now describes the tagged-union shape and the rule that a nullable union is `anyOf` with `null`.
 
+### Merge reconciliation: 0.3.2 and 0.3.3 landed on main while 0.4.0 to 0.5.0 were built
+
+Contract 0.3.2 (extend a performance with more chapters) and 0.3.3 (text Gemini blocks) were merged on `main` while this overhaul was being built on 0.3.1. Both are additive and part of this version: `previewPerformanceResume`, `addPerformanceChapters`, `PerformanceChapters`, `PerformanceChaptersAdded`, `Job.error_code`, `JobFallbackNarrator`, `JobContentBlocked`, `JobChapterChunk.status` `blocked` with `split` and `split_into`, `ListeningSubstitute`, and the `passages_fallback`, `passages_blocked`, `blocked_passage_ids` and `fallback_provider` fields of the performance progress. Their entries below (0.3.3, then 0.3.2) are kept as written on `main`. Nothing outside this repository had consumed them, so where they broke a 0.5.0 convention the merge brought them into line. Read the 0.3.2 and 0.3.3 entries together with these differences:
+
+- **Passage naming.** Every 0.3.2 and 0.3.3 field uses the wire names of this version: `ListeningPassageAudio.passage_id` (so a `substitute` take reports its passage as `passage_id`), `JobChapterChunk.first_passage_id`, `last_passage_id` and `passage_count`, `Book.passages`. The new operations' bodies and paths are unchanged (`chapter_ids` only).
+- **The new `Job` fields sit on the right branch of the `Job` union.** `error_code` is declared on every `Job` branch, beside `resume_after`: optional, present only on a job that ended `failed` for a documented cause. `fallback` and `content_blocked` exist only on the `listen_chapter` branch (`ListenChapterJob`).
+- **`ListenChapterJob.fallback` and `content_blocked` are always sent** (0.3.3 described them as optional): `fallback` is `null` when no fallback narrator was available and on a job queued before contract 0.3.3, and `content_blocked` is `null` until Gemini blocks text of the chapter. Clients: test for `null`, not for absence.
+- **`Performance.chapters_added` is always sent** (0.3.2 described it as absent when nothing was added): an empty list until `addPerformanceChapters` adds chapters. **`PerformancePlan.added_chapter_ids` is always sent**: `null` in the plan `previewPerformance` returns, a list (empty when nothing is new) from `previewPerformanceResume`.
+- **Providers are named.** `JobFallbackNarrator.provider` and `PerformanceProgress.fallback_provider` are `NarrationProvider` (the value is `system` or `breeze`, never `gemini`) instead of an inline `system`/`breeze` enumeration, and `ListeningSubstitute.for_provider` is a `NarrationProvider` instead of a plain string.
+- **Left optional on purpose, like the other per-passage extras:** `ListeningPassageAudio.substitute` (absent on a take Gemini made), `JobChapterChunk.split` and `split_into` (depend on the chunk's status).
+- **Operation IDs and paths of the two new operations are final**: `previewPerformanceResume` (`POST /api/books/{book_id}/performances/{performance_id}/preview`) and `addPerformanceChapters` (`POST /api/books/{book_id}/performances/{performance_id}/chapters`); `addPerformanceChapters` returns `PerformanceStarted`, whose `job` is a `PerformanceJob`.
+
 ## 0.4.1 — 2026-09-28
 <!-- contract-sha256: 9ac0e208caa33bf2e966eb1532163d8ab477f8de734c34a0685e4315cb01051e -->
 
@@ -157,6 +169,29 @@ The remaining optional response fields are absent in some legitimate case (a kin
 - **`Job.analysis_limits` is `PipelineRunLimits` or null; `SeriesJobLimits` is removed** (also on `SeriesRun` and `SeriesRunChild`). Reason: the two shapes have the same four field names and cannot be told apart by any tag, so a generated union was ambiguous, and every `SeriesJobLimits` value is a valid `PipelineRunLimits`. Clients: read `analysis_limits` as `PipelineRunLimits`. A series run recorded before contract 0.3.0 has the same fields with `max_requests`, `max_input_tokens` and `max_output_tokens` set (its per-book allowance).
 - **`ResourceAggregate` token and byte totals are integers, not numbers**: `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_write_input_tokens` and `output_bytes` on `ResourceSummary.totals`, each `ResourceStageAggregate` and each `ResourceRunAggregate`. Reason: they are sums of integer counts and were never fractional, so a generated client should not use a floating-point type. The server now sums only integer counts (a non-integer count is unknown, like a missing one). Seconds and USD stay numbers.
 - **`ListeningSession.settings` is `BookBreezeSettings`** (`temperature`, `cfg_scale`, `top_p`, `top_k`, each optional) instead of an open object with provider-defined keys. Reason: the server has only ever accepted and stored those four keys. It is absent unless a Breeze voice pinned settings, which no current API sets. `BookBreezeSettings` (also used by `BookCharacterVoice.settings`) is unchanged.
+
+## 0.3.3 — 2026-09-29
+<!-- contract-sha256: f24c55e562d710342a317f527eef7eda5a8c1ca4d59723fafc42d867b8e2c986 -->
+
+Additive: text Gemini blocks under its content policy is recognised, retained, split once, and read by a fallback narrator, instead of failing a chapter or performance with a generic "check the model, voice and passage length" error.
+
+- New optional `Job.error_code` (`content_blocked`): set on a `failed` job whose cause is Gemini's content policy refusing text (HTTP 400, error code `content_blocked`) where no fallback path exists (a cast performance passage, a single-passage `listen` job). `error` is a fixed sentence; the provider's error text is never kept. Clients can add a hint keyed on the code.
+- `Job` of kind `listen_chapter`: new optional `fallback` (`JobFallbackNarrator`: `session_id`, `provider` `system`/`breeze`, `model`, `voice`; the free local narrator snapshotted at queue time, or null) and `content_blocked` (`JobContentBlocked`: `fallback`, `fallback_passage_ids`, `blocked_passage_ids`, `fallback_error`; present once Gemini blocked text of the chapter). A chapter with blocked text still ends `completed`; its `message` says how many passages a fallback narrator read or were left unrecorded.
+- `JobChapterChunk.status` gains `blocked`; new optional `split` (a half of a blocked chunk) and `split_into`. A blocked chunk of two or more passages is split once into halves; a blocked half or one-passage chunk is not split again, and its passages go to the fallback narrator. At most three Gemini requests per blocked chunk (the original and two halves), each reserved against the per-minute limiter and the daily count. Blocks are retained per session, exact text and recipe, so no later job resends them.
+- New optional `ListeningPassageAudio.substitute` (`ListeningSubstitute`: `reason` `content_blocked`, `for_provider`, `for_model`): marks a take of the fallback narrator standing in for a blocked passage. It is returned by `listListeningTakes`, `POST /listen` cache hits and the performance audio map like any passage take; for such a take `session_id` is the fallback narrator's session.
+- `PerformanceProgress` gains `passages_fallback`, `passages_blocked` and `fallback_provider`; `PerformanceChapterProgress` gains `passages_fallback`, `passages_blocked` and `blocked_passage_ids`. `passages_ready` includes passages a fallback narrator read (they play). A blocked passage with no audio is counted in `passages_blocked`, not as a failure. `PerformancePlan` `notes` mention blocked passages, and blocked passages without an available fallback narrator are excluded from `passages_to_generate` and `requests_estimate`.
+- Descriptions of `startChapterListening`, `startListening`, `listListeningTakes` and the performance job say how blocks are handled.
+
+## 0.3.2 — 2026-09-29
+<!-- contract-sha256: 5adb59cbd70e985aea8dbe5e49e4d23a7ff722b246b31a267da142b2356dc40c -->
+
+Additive: a performance can be extended with more chapters without recreating it.
+
+- New operation `previewPerformanceResume` (`POST /api/books/{book_id}/performances/{performance_id}/preview`): the local plan (readiness, passages to record, request estimate, `problems`, `notes`) for recording the rest of an existing performance, optionally with more chapters. Stores nothing and sends nothing; allowed while a job runs.
+- New operation `addPerformanceChapters` (`POST /api/books/{book_id}/performances/{performance_id}/chapters`, `may_charge`): adds chapters to the performance and starts recording what is missing, reusing retained audio and keeping the pinned narrator session or cast snapshot. Refused with 409 `job_active` while a job is active for the book. Codes: `unknown_chapter`, `no_chapters_selected`, the provider problem codes and `narrator_voice_missing` (400); `book_archived`, `job_active`, `series_run_active` (409); `shutting_down` (503).
+- New request schema `PerformanceChapters` (`chapter_ids`).
+- New response schema `PerformanceChaptersAdded`; new optional `Performance.chapters_added` (history of chapters added after creation, absent when none) and optional `PerformancePlan.added_chapter_ids` (only from `previewPerformanceResume`).
+- `Performance.chapter_ids` now includes chapters added later; `updated_at` also changes when chapters are added. `preparePerformance` is unchanged and still records only what the selection lacks.
 
 ## 0.3.1 — 2026-09-28
 <!-- contract-sha256: f73d1d60f6928bb4abde88034d9a50acfa90dc7124bce5e182fae80664ca41be -->

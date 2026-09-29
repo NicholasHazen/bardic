@@ -636,7 +636,7 @@ const unlockEvent = () => unlockingAudio && !audio.getAttribute('src');
 // Reader view: the chapter text, the player and nothing else. Appearance is a
 // per-browser preference; the reading position is the book's usual bookmark.
 const READER_THEMES = [['paper','Paper','#ffffff'],['sepia','Sepia','#f6efe2'],['dusk','Dusk','#2b2b2e'],['night','Night','#000000']];
-const READER_CHOICES = {font:[['serif','Serif'],['sans','Sans']], spacing:[['compact','Tight'],['normal','Normal'],['relaxed','Loose']], width:[['narrow','Narrow'],['normal','Medium'],['wide','Wide']]};
+const READER_CHOICES = {font:[['serif','Serif'],['sans','Sans']], spacing:[['compact','Tight'],['normal','Normal'],['relaxed','Loose']], width:[['narrow','Narrow'],['normal','Medium'],['wide','Wide'],['wider','Wider'],['full','Full']]};
 const READER_SIZES = [16, 32];
 function readerPrefs() {
   if (!state.readerPrefs) {
@@ -661,7 +661,7 @@ function setReaderPref(key, value) {
   prefs[key] = key === 'size' ? Math.min(READER_SIZES[1], Math.max(READER_SIZES[0], Number(value) || prefs.size)) : value;
   safeWrite('bardic:reader', prefs);
   applyReaderPrefs(); renderReaderAppearance();
-  if (state.readerMode) updateHighlight({scroll:true, force:key !== 'follow' || value});
+  if (state.readerMode) updateHighlight({scroll:true, force:key !== 'follow' || value, jump:key !== 'follow'});
 }
 function renderReaderAppearance() {
   const panel = $('#reader-appearance');
@@ -696,22 +696,21 @@ function enterReader() {
   state.readerMode = true; state.manualScrollAt = 0;
   safeWrite('bardic:readerMode', true);
   document.body.classList.add('reader-mode');
-  document.body.classList.remove('reader-chrome-hidden');
   $('#reader-bar').hidden = false;
   applyReaderPrefs(); renderReaderBar(); updatePlayer();
   if (!document.querySelector('dialog[open]')) $('#exit-reader').focus({preventScroll:true});
-  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true, jump:true}));
 }
 function exitReader() {
   if (!state.readerMode) return;
   state.readerMode = false;
   safeWrite('bardic:readerMode', false);
-  document.body.classList.remove('reader-mode', 'reader-chrome-hidden');
+  document.body.classList.remove('reader-mode');
   $('#reader-bar').hidden = true; $('#reader-follow').hidden = true;
   toggleReaderAppearance(false);
   applyReaderPrefs(); keepAwake(false); updatePlayer();
   if (!state.libraryView) $('#open-reader').focus({preventScroll:true});
-  requestAnimationFrame(() => updateHighlight({scroll:true, force:true}));
+  requestAnimationFrame(() => updateHighlight({scroll:true, force:true, jump:true}));
 }
 // After the reader scrolls away by hand, stop following for a while and offer
 // a way back instead of pulling the page out from under them.
@@ -719,17 +718,37 @@ const MANUAL_SCROLL_MS = 12000;
 function activePassage() { return $$('.passage').find(el => el.dataset.segment === state.segmentId); }
 function readingBand() {
   const bar = $('#player').getBoundingClientRect();
-  return {top:state.readerMode ? 70 : 80, bottom:Math.min(window.innerHeight, bar.height ? bar.top : window.innerHeight) - 20};
+  // The sticky reader bar covers the top of the screen, so the band starts below it.
+  const chrome = state.readerMode ? $('#reader-bar').getBoundingClientRect().bottom : 0;
+  return {top:state.readerMode ? Math.max(70, chrome + 10) : 80, bottom:Math.min(window.innerHeight, bar.height ? bar.top : window.innerHeight) - 20};
 }
 // A passage taller than the screen counts as in view while it spans it.
 function passageInView(element) {
   const box = element.getBoundingClientRect(), band = readingBand();
   return (box.top >= band.top && box.top < band.bottom - 40) || (box.top < band.top && box.bottom > band.bottom - 40);
 }
-function scrollToPassage(element) {
-  const box = element.getBoundingClientRect(), band = readingBand();
-  element.scrollIntoView({behavior:scrollMotion(), block:box.height > (band.bottom - band.top) * .6 ? 'start' : 'center'});
+// The reader glides to keep the active passage on a reading line (follow-scroll.js).
+let followForced = false; // a forced move (entering the reader, Back to narration) ignores the follow toggle until it settles
+function followHeld() {
+  return state.readerMode && !followForced && (!readerPrefs().follow || Date.now() - (state.manualScrollAt || 0) < MANUAL_SCROLL_MS);
 }
+function followSample() {
+  const element = activePassage();
+  if (!element || state.tab !== 'read') return null;
+  const box = element.getBoundingClientRect(), band = readingBand(), scroller = document.scrollingElement || document.documentElement;
+  const segment = segmentById(state.segmentId), sounding = state.audioSegmentId === state.segmentId;
+  const duration = sounding ? passageDuration(segment) : 0;
+  return {
+    boxTop:box.top, boxHeight:box.height, bandTop:band.top, bandBottom:band.bottom,
+    scrollTop:window.scrollY, maxScroll:scroller.scrollHeight - window.innerHeight,
+    progress:duration > 0 ? Math.min(1, passageTime() / duration) : 0, playing:sounding && !audio.paused
+  };
+}
+const follower = window.BardicFollow?.create({
+  sample:followSample, held:followHeld, onStop:() => { followForced = false; },
+  scrollTo:y => window.scrollTo({top:y, behavior:'instant'}),
+  reduced:() => scrollMotion() === 'auto'
+});
 function updateFollowButton() {
   const active = state.readerMode && !audio.paused && activePassage();
   $('#reader-follow').hidden = !active || passageInView(active);
@@ -774,23 +793,39 @@ function renderPerformances() {
     onPlay:playPerformance,
   });
 }
-// Play a saved performance from where you are, if that is inside it, or
-// from the start of its first chapter.
-async function playPerformance(record) {
+// Play a saved performance from where you are, if that passage is ready, or else from the first
+// passage that is. While the performance is still recording, an unready passage would only wait, so
+// starting from what is ready lets you listen at once; playback then follows new passages as they land.
+async function playPerformance(record, {fromHub = false} = {}) {
   const listen = window.BardicListen;
   if (!state.book || !listen) return;
   stopAudio();
-  try { if (!await listen.usePerformance(state.book, record)) throw new Error('The performance could not be opened. Try again.'); }
+  let loaded;
+  try { loaded = await listen.usePerformance(state.book, record); if (!loaded) throw new Error('The performance could not be opened. Try again.'); }
   catch (error) { state.listenError = error.message; setSheetTab('live'); renderListenSheet(); return; }
-  const chapters = record.chapter_ids || [];
-  if (!chapters.includes(segmentById(state.segmentId)?.chapter_id)) {
-    state.chapterId = chapters[0];
-    state.segmentId = chapterSegments()[0]?.id;
+  const at = performanceStart(loaded, segmentById(state.segmentId));
+  if (at && at.id !== state.segmentId) {
+    state.chapterId = at.chapter_id;
+    state.segmentId = at.id;
     state.pendingOffset = 0;
     renderReader(); renderStudio(); saveProgress();
   }
+  if (fromHub) setTab('read');
   setSheetTab('live');
   await startListening();
+}
+// The passage a performance should start from: the current one if it has audio, otherwise the next
+// ready one after it, otherwise the first ready one. With nothing ready, the current one inside the
+// performance (it will wait for the job), otherwise its first passage.
+function performanceStart(loaded, current) {
+  const chapters = new Set(loaded.record.chapter_ids || []);
+  const inside = state.book.passages.filter(segment => chapters.has(segment.chapter_id));
+  const ready = segment => loaded.audio.has(segment.id);
+  if (current && chapters.has(current.chapter_id) && ready(current)) return current;
+  const index = current ? inside.findIndex(segment => segment.id === current.id) : -1;
+  const next = (index >= 0 ? inside.slice(index + 1).find(ready) : null) || inside.find(ready);
+  if (next) return next;
+  return current && chapters.has(current.chapter_id) ? current : inside[0];
 }
 function renderListenSheet() {
   const body = $('#listen-sheet-body'), listen = window.BardicListen, ui = window.BardicUI;
@@ -1370,9 +1405,22 @@ function renderProduction() {
     onJobStarted: async job => { if (!job || job.book_id !== state.book?.id) return; if (!state.jobs.some(j => j.id === job.id)) state.jobs.unshift(job); renderJob(); await pollJobs(true); },
     onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); if (state.book?.id !== id) return; state.referenceCache.clear(); state.referenceVersion++; applyBook(book); $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences)); await refreshLibrary(); void loadVoiceLibrary(); } });
 }
+// The Performances hub in Script & record: every performance of this book with its status, opened
+// to add chapters or record the rest. It shares BardicPerformances with the listen sheet's tab.
+function renderPerformancesHub() {
+  const listen = window.BardicListen;
+  window.BardicPerformances?.render($('#performances-hub'), state.book, {
+    listen, castProvider:state.castProvider,
+    visible:() => state.tab === 'studio' && !$('#studio-view').hidden,
+    onJob:trackJob,
+    onLeave:() => listen?.leavePerformance(state.book),
+    onPlay:record => playPerformance(record, {fromHub:true}),
+  });
+}
 function renderStudio() {
   // The script (one chapter, Needs a look, saves on change, bulk speaker) is script.js's.
   window.BardicScript?.render();
+  if (state.tab === 'studio') renderPerformancesHub();
   updateBusyControls();
   renderProduction();
   paintRenderConfirm();
@@ -1400,6 +1448,7 @@ function setTab(tab, {reveal = true, focus = false} = {}) {
   if (focus && state.tab === 'voices') $('#voices-heading')?.focus?.();
   // Leaving Voices stops any audition playing there.
   if (state.tab !== 'voices') window.BardicVoices?.stop?.();
+  if (state.tab === 'studio' && state.book) renderPerformancesHub();
 }
 function syncWorkspaceNavigation() {
   const voices = state.tab === 'voices' && !state.libraryView;
@@ -1466,7 +1515,7 @@ function setChapter(id, {scroll = true} = {}) {
   if (scroll) window.scrollTo({top:0, behavior:scrollMotion()});
   if (keepListening && state.segmentId) void startSegment(state.segmentId, {autoplay:true});
 }
-function updateHighlight({scroll = false, force = false} = {}) {
+function updateHighlight({scroll = false, force = false, jump = false} = {}) {
   const passages = $$('.passage'), placed = passages.some(el => el.dataset.segment === state.segmentId);
   passages.forEach((el, index) => {
     const active = el.dataset.segment === state.segmentId;
@@ -1478,8 +1527,8 @@ function updateHighlight({scroll = false, force = false} = {}) {
   if (scroll && state.tab === 'read') {
     const active = activePassage();
     const held = state.readerMode && !force && (!readerPrefs().follow || Date.now() - (state.manualScrollAt || 0) < MANUAL_SCROLL_MS);
-    if (active && !held && !passageInView(active)) scrollToPassage(active);
     if (force) state.manualScrollAt = 0;
+    if (active && !held) { followForced = force; follower?.retarget({jump}); }
   }
   if (state.readerMode) updateFollowButton();
   renderPassageDetail();
@@ -2323,13 +2372,26 @@ document.addEventListener('click', event => {
 for (const name of ['touchmove','wheel']) window.addEventListener(name, event => {
   if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) state.manualScrollAt = Date.now();
 }, {passive:true});
-let lastScrollY = window.scrollY;
+// A finger on the text pauses following so the glide never fights a drag or iOS momentum; lifting
+// it without scrolling resumes. Scrolling by hand holds following (MANUAL_SCROLL_MS) as before.
+window.addEventListener('touchstart', event => {
+  if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) follower?.suspend();
+}, {passive:true});
+for (const name of ['touchend','touchcancel']) window.addEventListener(name, () => follower?.resume(), {passive:true});
+window.addEventListener('keydown', event => {
+  // Keys that scroll the page, or move focus through the text (the browser then scrolls to it), are manual scrolling.
+  const scrolls = ['PageUp','PageDown','End','Home'].includes(event.key) || event.target.closest?.('#reader-text') && event.key.startsWith('Arrow');
+  if (state.readerMode && scrolls && !event.target.closest?.('input,textarea,select,dialog')) state.manualScrollAt = Date.now();
+});
+// New width, orientation or browser chrome moves the text: settle the passage on its line again.
+let followResize = 0;
+window.addEventListener('resize', () => {
+  if (!state.readerMode || followResize) return;
+  followResize = requestAnimationFrame(() => { followResize = 0; if (!followHeld()) follower?.retarget({jump:true}); });
+});
 window.addEventListener('scroll', () => {
   if (!state.readerMode) return;
-  const y = window.scrollY, delta = y - lastScrollY;
-  lastScrollY = y;
-  // Hide the reader bar while reading down; show it again on the way up.
-  if (Math.abs(delta) > 6 && $('#reader-appearance').hidden) document.body.classList.toggle('reader-chrome-hidden', delta > 0 && y > 80);
+  // The reader bar is sticky and always shown, so scrolling only affects the follow button.
   updateFollowButton();
 }, {passive:true});
 // The sheet's radio groups (listen to, service, speed) are BardicUI choices: one tab
