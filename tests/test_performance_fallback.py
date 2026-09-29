@@ -143,7 +143,7 @@ def test_a_passage_the_main_narrator_cannot_produce_is_read_by_the_fallback_and_
     assert len(calls) == sent
     # The status notes it, durably.
     note = status(client, book, record)['notes']
-    assert [(n['segment_id'], n['reason'], n['voice']) for n in note] == [(poison['id'], 'failed', BACKUP)]
+    assert [(n['passage_id'], n['reason'], n['voice']) for n in note] == [(poison['id'], 'failed', BACKUP)]
     assert note[0]['excerpt'] == poison['text'][:80]
 
 
@@ -158,7 +158,7 @@ def test_a_passage_no_narrator_can_read_stays_unrecorded_and_the_rest_completes(
     assert '1 passage could not be recorded by any narrator' in job['message']
     detail = status(client, book, made['performance'])
     assert detail['totals']['passages_remaining'] == 1 and detail['state'] == 'partial'
-    assert [issue['segment_id'] for issue in detail['run']['issues']] == [poison['id']]
+    assert [issue['passage_id'] for issue in detail['run']['issues']] == [poison['id']]
     assert detail['run']['issues'][0]['outcome'] == 'unrecorded' and detail['chapters'][0]['state'] == 'partial'
 
 
@@ -250,7 +250,7 @@ def test_rerecording_a_chapter_keeps_the_original_and_can_be_undone(client, monk
     started = rerecord(client, book, performance, chapter_id=two['id'])
     assert started.status_code == 200, started.text
     job = wait_job(client, started.json()['job']['id'])
-    assert job['status'] == 'completed' and job['phase'] == 'rerecord' and job['fallback']['voice'] == 'Fred', job
+    assert job['status'] == 'completed' and job['fallback']['voice'] == 'Fred', job
     assert job['message'].startswith(f"Re-recorded {len(passages(book, two))} passages with Fred")
     now = audio(client, book, performance)
     for segment in passages(book, one):
@@ -264,23 +264,23 @@ def test_rerecording_a_chapter_keeps_the_original_and_can_be_undone(client, monk
     # Every retained take can be listed; the newest is current.
     first = passages(book, two)[0]
     takes = client.get(f"/api/books/{book['id']}/performances/{performance['id']}/takes",
-                       params={'segment_id': first['id']}).json()['takes']
+                       params={'passage_id': first['id']}).json()['takes']
     assert [(t['reason'], t['current'], t['voice']) for t in takes] == [('rerecord', True, 'Fred')]
     assert takes[0]['audio']['url'] == now[first['id']]['url'] and client.get(takes[0]['audio']['url']).status_code == 200
     # Back to the original: the performance's own audio plays again; the re-record stays retained.
     back = client.post(f"/api/books/{book['id']}/performances/{performance['id']}/takes/restore",
-                       json={'segment_ids': [first['id']]})
+                       json={'passage_ids': [first['id']]})
     assert back.status_code == 200, back.text
     assert audio(client, book, performance)[first['id']] == before[first['id']]
-    listed = client.get(f"/api/books/{book['id']}/performances/{performance['id']}/takes", params={'segment_id': first['id']}).json()['takes']
+    listed = client.get(f"/api/books/{book['id']}/performances/{performance['id']}/takes", params={'passage_id': first['id']}).json()['takes']
     assert [(t['action'], t['current']) for t in listed] == [('original', True), ('use', False)]
     # And forward again to the earlier take.
     forward = client.post(f"/api/books/{book['id']}/performances/{performance['id']}/takes/restore",
-                          json={'segment_ids': [first['id']], 'take_id': listed[1]['id']})
+                          json={'passage_ids': [first['id']], 'take_id': listed[1]['id']})
     assert forward.status_code == 200, forward.text
     again = audio(client, book, performance)[first['id']]
     assert again['voice'] == 'Fred' and again['substitute']['reason'] == 'rerecord'
-    final = client.get(f"/api/books/{book['id']}/performances/{performance['id']}/takes", params={'segment_id': first['id']}).json()['takes']
+    final = client.get(f"/api/books/{book['id']}/performances/{performance['id']}/takes", params={'passage_id': first['id']}).json()['takes']
     assert len(final) == 3 and [t['current'] for t in final] == [True, False, False] and final[0]['restored_from'] == listed[1]['id']
 
 
@@ -304,13 +304,13 @@ def test_rerecording_only_the_fallback_passages_and_scope_validation(client, mon
     empty = rerecord(client, book, performance, only='fallback')
     assert empty.status_code == 400 and empty.json()['code'] == 'nothing_to_rerecord'
     segments = passages(book, one)
-    checks = [({'segment_ids': ['nope']}, 'unknown_passage'), ({'chapter_id': 'nope'}, 'unknown_chapter'),
-              ({'from_segment_id': segments[0]['id']}, 'range_incomplete'),
-              ({'from_segment_id': segments[3]['id'], 'to_segment_id': segments[1]['id']}, 'range_invalid')]
+    checks = [({'passage_ids': ['nope']}, 'unknown_passage'), ({'chapter_id': 'nope'}, 'unknown_chapter'),
+              ({'from_passage_id': segments[0]['id']}, 'range_incomplete'),
+              ({'from_passage_id': segments[3]['id'], 'to_passage_id': segments[1]['id']}, 'range_invalid')]
     for body, code in checks:
         response = rerecord(client, book, performance, **body)
         assert response.status_code == 400 and response.json()['code'] == code, (body, response.text)
-    ranged = rerecord(client, book, performance, from_segment_id=segments[0]['id'], to_segment_id=segments[1]['id'])
+    ranged = rerecord(client, book, performance, from_passage_id=segments[0]['id'], to_passage_id=segments[1]['id'])
     assert ranged.status_code == 200 and wait_job(client, ranged.json()['job']['id'])['total'] == 2
 
 
@@ -332,20 +332,20 @@ def test_restore_is_validated_stale_takes_are_hidden_and_a_busy_book_refuses_a_r
     path = f"/api/books/{book['id']}/performances/{performance['id']}/takes/restore"
     listing = f"/api/books/{book['id']}/performances/{performance['id']}/takes"
     first = passages(book, two)[0]
-    assert client.post(path, json={'segment_ids': ['nope']}).json()['code'] == 'unknown_passage'
-    assert client.post(path, json={'segment_ids': [first['id']], 'take_id': 'nope'}).json()['code'] == 'take_not_found'
+    assert client.post(path, json={'passage_ids': ['nope']}).json()['code'] == 'unknown_passage'
+    assert client.post(path, json={'passage_ids': [first['id']], 'take_id': 'nope'}).json()['code'] == 'take_not_found'
     assert wait_job(client, rerecord(client, book, performance, chapter_id=two['id']).json()['job']['id'])['status'] == 'completed'
-    take = client.get(listing, params={'segment_id': first['id']}).json()['takes'][0]
-    many = client.post(path, json={'segment_ids': [first['id'], passages(book, two)[1]['id']], 'take_id': take['id']})
+    take = client.get(listing, params={'passage_id': first['id']}).json()['takes'][0]
+    many = client.post(path, json={'passage_ids': [first['id'], passages(book, two)[1]['id']], 'take_id': take['id']})
     assert many.status_code == 400 and many.json()['code'] == 'restore_ambiguous'
     # A changed passage makes its old takes stale: they are neither listed nor selectable.
     from test_performances import edit_passage
     store = client.app.state.runtime.store
     edited = passages(book, two)[1]  # the first passage is the chapter heading
-    old_take = client.get(listing, params={'segment_id': edited['id']}).json()['takes'][0]
+    old_take = client.get(listing, params={'passage_id': edited['id']}).json()['takes'][0]
     edit_passage(store, book['id'], edited['id'], 'Rain', 'Hail')
-    assert client.get(listing, params={'segment_id': edited['id']}).json()['takes'] == []
-    stale = client.post(path, json={'segment_ids': [edited['id']], 'take_id': old_take['id']})
+    assert client.get(listing, params={'passage_id': edited['id']}).json()['takes'] == []
+    stale = client.post(path, json={'passage_ids': [edited['id']], 'take_id': old_take['id']})
     assert stale.status_code == 400 and stale.json()['code'] == 'take_stale'
     # One job at a time per book.
     gate = threading.Event()
@@ -448,7 +448,7 @@ def test_the_new_operations_refuse_unknown_performances(client):
     base = f"/api/books/{book['id']}/performances/pf_missing"
     for method, path, body in (('get', '/status', None), ('get', '/takes', None),
                                ('post', '/rerecord/preview', {'provider': 'system'}), ('post', '/rerecord', {'provider': 'system'}),
-                               ('post', '/takes/restore', {'segment_ids': ['x']})):
+                               ('post', '/takes/restore', {'passage_ids': ['x']})):
         response = getattr(client, method)(base + path, **({} if body is None else {'json': body}))
         assert response.status_code == 404 and response.json()['code'] == 'performance_not_found', (path, response.text)
 
@@ -478,7 +478,7 @@ def test_a_success_between_failures_resets_the_streak(client, monkeypatch):
 
 def test_an_empty_segment_list_is_refused_not_read_as_everything(client, monkeypatch):
     book, (one, two, _), performance, _ = ready_performance(client, monkeypatch)
-    response = rerecord(client, book, performance, segment_ids=[])
+    response = rerecord(client, book, performance, passage_ids=[])
     assert response.status_code == 422
 
 
@@ -490,7 +490,7 @@ def test_restoring_the_original_of_a_passage_that_never_had_one_is_refused(clien
     made = create(client, book, [one], fallback=fallback_choice())
     assert wait_job(client, made['job']['id'])['status'] == 'completed'
     response = client.post(f"/api/books/{book['id']}/performances/{made['performance']['id']}/takes/restore",
-                           json={'segment_ids': [poison['id']]})
+                           json={'passage_ids': [poison['id']]})
     assert response.status_code == 400 and response.json()['code'] == 'no_original'
     assert audio(client, book, made['performance'])[poison['id']]['voice'] == BACKUP
 
@@ -503,7 +503,7 @@ def test_restore_is_refused_while_a_job_runs(client, monkeypatch):
     store = client.app.state.runtime.store
     wait_for(lambda: store.job(started.json()['job']['id'])['status'] == 'running')
     response = client.post(f"/api/books/{book['id']}/performances/{performance['id']}/takes/restore",
-                           json={'segment_ids': [passages(book, two)[0]['id']]})
+                           json={'passage_ids': [passages(book, two)[0]['id']]})
     assert response.status_code == 409 and response.json()['code'] == 'job_active'
     gate.set()
     wait_job(client, started.json()['job']['id'])

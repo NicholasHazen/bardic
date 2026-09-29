@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from bardic.app import create_app
 from bardic.importer import parse_book
+from bardic.pipeline_view import ATTEMPT_FIELDS
 from bardic.processing import ProcessingStore
 from bardic.series import SeriesRepository
 from bardic.store import Store
@@ -125,7 +126,9 @@ def test_analysis_export_attempts_use_the_inspector_allowlist(client):
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         exported = json.loads(archive.read('analysis-attempts.json'))
-    assert exported == inspector
+    # The export keeps an attempt's fields as stored; the inspector sends every allowlisted field (null when unstored).
+    assert [{**dict.fromkeys(ATTEMPT_FIELDS), **item} for item in exported] == inspector
+    assert 'cached_input_tokens' in exported[0] and 'input_rate' not in exported[1] and inspector[1]['input_rate'] is None
     first = exported[0]
     assert first['validation_state'] == 'accepted' and first['cost_basis'] == 'usage_estimate_with_guard_uplift'
     assert not {'process_id', 'api_key', 'private_response'} & set(first)

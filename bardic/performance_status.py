@@ -56,7 +56,7 @@ def status(runtime, record: dict, *, at: datetime | None = None) -> dict:
     view = progress(book, record, ready, refused)
     job = _job(store, record.get('job_id'))
     active = bool(job and job['status'] in ACTIVE)
-    rerecord = (job or {}).get('rerecord') if (job or {}).get('phase') == 'rerecord' else None
+    rerecord = (job or {}).get('rerecord')
 
     # Per-chapter facts -----------------------------------------------------------------------
     rows, chars_total, chars_ready, remaining_chars, remaining_passages = [], 0, 0, 0, 0

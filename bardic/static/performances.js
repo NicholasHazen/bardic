@@ -243,7 +243,7 @@
     return `Speed not measured yet${eta.note ? ` · ${eta.note}` : ''}`;
   }
   const chapterName = (book, id) => book.chapters.find(chapter => chapter.id === id)?.title || 'Untitled chapter';
-  const passageText = (book, id) => book.segments.find(segment => segment.id === id)?.text || '';
+  const passageText = (book, id) => book.passages.find(segment => segment.id === id)?.text || '';
   const clip = (text, size = 140) => { const line = String(text || '').replace(/\s+/g, ' ').trim(); return line.length > size ? `${line.slice(0, size - 1)}…` : line; };
   const voiceOf = note => [note.provider ? PROVIDER_LABELS[note.provider] || note.provider : '', note.voice].filter(Boolean).join(' · ');
   // "3 of 5 ready · 2 read by a fallback voice · 1 re-recorded · 4,200 characters · done in about 12 min"
@@ -271,9 +271,9 @@
     const issues = status.run?.issues || [];
     if (!issues.length) return '';
     const items = issues.map(issue => {
-      const text = clip(passageText(panel.book, issue.segment_id));
+      const text = clip(passageText(panel.book, issue.passage_id));
       return `<li><strong>${escape(chapterName(panel.book, issue.chapter_id))}</strong> · ${escape(ISSUE_REASONS[issue.reason] || issue.reason)}${issue.message ? `<small>${escape(issue.message)}</small>` : ''}${text ? `<small>“${escape(text)}”</small>` : ''}
-        <button type="button" class="button text-button" data-performance-action="rerecord-note" data-segment="${escape(issue.segment_id)}" ${running ? 'disabled' : ''}>Record with another voice…</button></li>`;
+        <button type="button" class="button text-button" data-performance-action="rerecord-note" data-segment="${escape(issue.passage_id)}" ${running ? 'disabled' : ''}>Record with another voice…</button></li>`;
     }).join('');
     return UI.callout({tone:'bad', title:`${plural(issues.length, 'passage')} no narrator could record`, html:`<ul class="performance-notes">${items}</ul>`});
   }
@@ -281,13 +281,13 @@
     const notes = status.notes || [];
     if (!notes.length) return '';
     const open = Boolean(panel.detail.notesOpen);
-    const items = notes.slice(0, NOTE_LIMIT).map(note => `<li class="performance-note" data-note="${escape(note.segment_id)}">
+    const items = notes.slice(0, NOTE_LIMIT).map(note => `<li class="performance-note" data-note="${escape(note.passage_id)}">
       <p>“${escape(clip(note.excerpt))}”</p>
       <small>${escape([chapterName(panel.book, note.chapter_id), NOTE_REASONS[note.reason] || note.reason, voiceOf(note)].filter(Boolean).join(' · '))}</small>
       <span class="performance-actions">
-        <button type="button" class="button subtle" data-performance-action="rerecord-note" data-segment="${escape(note.segment_id)}" ${running ? 'disabled' : ''}>Re-record…</button>
-        <button type="button" class="button subtle" data-performance-action="restore-original" data-segment="${escape(note.segment_id)}" ${running ? 'disabled' : ''}>Use original</button>
-        <button type="button" class="button text-button" data-performance-action="takes" data-segment="${escape(note.segment_id)}">Takes</button>
+        <button type="button" class="button subtle" data-performance-action="rerecord-note" data-segment="${escape(note.passage_id)}" ${running ? 'disabled' : ''}>Re-record…</button>
+        <button type="button" class="button subtle" data-performance-action="restore-original" data-segment="${escape(note.passage_id)}" ${running ? 'disabled' : ''}>Use original</button>
+        <button type="button" class="button text-button" data-performance-action="takes" data-segment="${escape(note.passage_id)}">Takes</button>
       </span></li>`).join('');
     return `<div class="performance-notes-section"><button type="button" class="button text-button" data-performance-action="toggle-notes" aria-expanded="${open}" aria-controls="performance-notes-list">Passages another narrator reads (${notes.length}) ${open ? '▾' : '▸'}</button>
       ${open ? `<div id="performance-notes-list"><ul class="performance-notes">${items}</ul>${notes.length > NOTE_LIMIT ? `<p class="field-help">Showing the first ${NOTE_LIMIT} of ${notes.length}.</p>` : ''}</div>` : ''}</div>`;
@@ -313,8 +313,8 @@
     const {book} = panel;
     if (kind === 'chapter') return {chapter_id:id, label:`Chapter “${chapterName(book, id)}”`};
     if (kind === 'passage') {
-      const note = panel.detail.status?.notes?.find(item => item.segment_id === id);
-      return {segment_ids:[id], label:`One passage: “${clip(note?.excerpt || passageText(book, id), 80) || 'text'}”`};
+      const note = panel.detail.status?.notes?.find(item => item.passage_id === id);
+      return {passage_ids:[id], label:`One passage: “${clip(note?.excerpt || passageText(book, id), 80) || 'text'}”`};
     }
     return {only:'fallback', label:'Every passage another narrator reads'};
   }
@@ -327,9 +327,9 @@
   }
   function rerecordBody(panel) {
     const rr = panel.detail.rerecord, narrator = panel.options.listen?.narratorOptions?.(panel.book, rr.provider);
-    const {chapter_id, segment_ids, only} = rr.scope;
+    const {chapter_id, passage_ids, only} = rr.scope;
     return {provider:rr.provider, voice:rr.voices[rr.provider] ?? narrator?.voice ?? null, model:rr.provider === 'gemini' ? narrator?.model || null : null,
-      ...(chapter_id ? {chapter_id} : {}), ...(segment_ids ? {segment_ids} : {}), only:only || 'all'};
+      ...(chapter_id ? {chapter_id} : {}), ...(passage_ids ? {passage_ids} : {}), only:only || 'all'};
   }
   // What re-recording would do. Local: nothing is stored or sent until the confirm.
   function previewRerecord(panel) {
@@ -410,27 +410,27 @@
     Promise.resolve(audio.play()).catch(() => done('This take could not be played.'));
     paint(panel);
   }
-  async function loadTakes(panel, segment_id) {
+  async function loadTakes(panel, passage_id) {
     const detail = panel.detail;
     if (!detail) return;
-    const takes = detail.takes = {segment_id, loading:true, list:[], error:'', playing:''};
+    const takes = detail.takes = {passage_id, loading:true, list:[], error:'', playing:''};
     stopTake(panel); detail.rerecord = null; paint(panel);
     try {
-      const result = await request(`${base(panel.book)}/${encode(detail.id)}/takes?segment_id=${encode(segment_id)}`);
+      const result = await request(`${base(panel.book)}/${encode(detail.id)}/takes?passage_id=${encode(passage_id)}`);
       if (detail.takes === takes) takes.list = result.takes || [];
     } catch (error) { if (detail.takes === takes) takes.error = error.message; }
     if (detail.takes === takes) { takes.loading = false; if (panel.detail === detail) paint(panel); }
   }
   // Choose which take plays: a take id, or none for the performance's own audio.
-  async function restore(panel, segment_ids, take_id) {
+  async function restore(panel, passage_ids, take_id) {
     const detail = panel.detail, book = panel.book;
     if (!detail || detail.restoring) return;
     detail.restoring = true; detail.error = ''; detail.notice = ''; paint(panel);
     try {
-      await request(`${base(book)}/${encode(detail.id)}/takes/restore`, {method:'POST', body:take_id ? {segment_ids, take_id} : {segment_ids}});
+      await request(`${base(book)}/${encode(detail.id)}/takes/restore`, {method:'POST', body:take_id ? {passage_ids, take_id} : {passage_ids}});
       detail.notice = take_id ? 'That take now plays for this passage.' : 'This passage plays the performance’s own audio again.';
       if (panel.options.listen?.getPerformance?.(book)?.id === detail.id) void panel.options.listen.refreshPerformance(book).catch(() => {});
-      if (detail.takes && segment_ids.includes(detail.takes.segment_id)) await loadTakes(panel, detail.takes.segment_id);
+      if (detail.takes && passage_ids.includes(detail.takes.passage_id)) await loadTakes(panel, detail.takes.passage_id);
       await refresh(panel);
     } catch (error) { detail.error = error.message; }
     finally { detail.restoring = false; if (panel.detail === detail) paint(panel); }
@@ -438,7 +438,7 @@
   function takesMarkup(panel, running) {
     const takes = panel.detail.takes;
     if (!takes) return '';
-    const text = clip(panel.detail.status?.notes?.find(note => note.segment_id === takes.segment_id)?.excerpt || passageText(panel.book, takes.segment_id), 120);
+    const text = clip(panel.detail.status?.notes?.find(note => note.passage_id === takes.passage_id)?.excerpt || passageText(panel.book, takes.passage_id), 120);
     const original = !takes.list.some(take => take.current && take.action === 'use');
     const rows = takes.list.map(take => {
       const label = take.action === 'original' ? 'The performance’s own audio' : take.voice_label || voiceOf(take) || 'A take';
@@ -447,7 +447,7 @@
         <small>${escape([TAKE_REASONS[take.reason] || take.reason, time && !Number.isNaN(time.getTime()) ? time.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}) : ''].filter(Boolean).join(' · '))}${take.available === false ? ' · audio not available' : ''}</small>
         <span class="performance-actions">
           ${take.action === 'use' && take.available !== false && take.audio?.url ? `<button type="button" class="button subtle" data-performance-action="take-play" data-take="${escape(take.id)}" aria-pressed="${takes.playing === take.id}">${takes.playing === take.id ? 'Stop preview' : 'Play take'}</button>` : ''}
-          ${take.action === 'use' && !take.current && take.available !== false ? `<button type="button" class="button subtle" data-performance-action="take-use" data-segment="${escape(takes.segment_id)}" data-take="${escape(take.id)}" ${running ? 'disabled' : ''}>Use this take</button>` : ''}
+          ${take.action === 'use' && !take.current && take.available !== false ? `<button type="button" class="button subtle" data-performance-action="take-use" data-segment="${escape(takes.passage_id)}" data-take="${escape(take.id)}" ${running ? 'disabled' : ''}>Use this take</button>` : ''}
         </span></li>`;
     }).join('');
     return `<section class="performance-panel" aria-labelledby="takes-title"><h3 id="takes-title">Takes for this passage</h3>
@@ -455,7 +455,7 @@
       ${takes.loading ? '<p class="field-help">Loading takes…</p>' : rows ? `<ul class="performance-notes">${rows}</ul>` : '<p class="field-help">This passage has only its own audio.</p>'}
       ${takes.error ? `<p class="inline-error" role="alert">${escape(takes.error)}</p>` : ''}
       <div class="performance-form-actions"><button type="button" class="button subtle" data-performance-action="takes-close">Close</button>
-        <button type="button" class="button primary" data-performance-action="take-original" data-segment="${escape(takes.segment_id)}" ${running || original ? 'disabled' : ''}>Use the original</button></div>
+        <button type="button" class="button primary" data-performance-action="take-original" data-segment="${escape(takes.passage_id)}" ${running || original ? 'disabled' : ''}>Use the original</button></div>
     </section>`;
   }
 
@@ -488,7 +488,7 @@
     const state = stateOf(record), result = detail.preview;
     const current = panel.options.listen?.getPerformance?.(book)?.id === record.id;
     const inside = new Map((progress.chapters || []).map(row => [row.id, row]));
-    const counts = book.segments.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
+    const counts = book.passages.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
     const chosen = detail.add.size;
     const status = detail.status, statusRows = new Map((status?.chapters || []).map(row => [row.id, row]));
     const rows = book.chapters.map(chapter => {
@@ -561,7 +561,7 @@
     // The plan reports the fallback it would pin; while nothing is overridden that is the saved default.
     if (!form.fallback?.provider && result) panel.savedFallback = result.fallback?.label || 'none available';
     const savedFallback = panel.savedFallback || 'automatic';
-    const counts = book.segments.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
+    const counts = book.passages.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
     const summary = !form.chapters.size ? 'Choose at least one chapter.'
       : !result ? 'Checking what is already saved…'
       : `${plural(result.passages_total, 'passage')} · ${result.passages_ready} already saved · ${result.passages_to_generate} to record${result.passages_to_generate ? ` · about ${plural(result.requests_estimate, 'request')}` : ''} · about ${span(result.expected_seconds)} of listening`;

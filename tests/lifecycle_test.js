@@ -25,7 +25,7 @@ function book({voices = {}, audio = {}, unassigned = 1} = {}) {
   const speakers = ['narrator', 'wren', 'odo', 'narrator', 'wren', 'odo'];
   for (let i = 0; i < unassigned; i++) speakers[speakers.length - 1 - i] = 'unassigned';
   const segments = speakers.map((speaker_id, index) => ({id:`s${index}`, chapter_id:'c1', text:`Line ${index} by the quay.`, speaker_id, audio:audio[`s${index}`] || null}));
-  return {id:'b1', title:'Quay lanterns', chapters:[{id:'c1', title:'One'}], characters, segments};
+  return {id:'b1', title:'Quay lanterns', chapters:[{id:'c1', title:'One'}], characters, passages:segments};
 }
 const step = (id, fields = {}) => ({id, has_accepted:false, accepted_scopes:0, total_scopes:1, pending_versions:0, stale_scopes:[], ...fields});
 const overview = (fields = {}, extra = {}) => ({steps:['structure', 'census', 'discovery', 'quotes', 'profiles', 'directing'].map(id => step(id, fields[id])), active_run:null, ...extra});

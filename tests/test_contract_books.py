@@ -35,7 +35,7 @@ def item(book, collection, item_id):
 
 def dialogue(book, name):
     cid = next(c['id'] for c in book['characters'] if c['name'] == name)
-    return cid, [s for s in book['segments'] if s['speaker_id'] == cid]
+    return cid, [s for s in book['passages'] if s['speaker_id'] == cid]
 
 
 def use_breeze_catalog(client):
@@ -63,20 +63,20 @@ def test_scene_edit_records_changed_fields_and_returns_the_book(client):
     record = item(stored(client, book['id']), 'scenes', scene['id'])
     assert record['edited'] is True and record['edited_fields'] == ['title']  # unchanged tone is not locked
     assert updated['revision'] == book['revision'] + 1
-    assert [s['text'] for s in updated['segments']] == [s['text'] for s in book['segments']]
+    assert [s['text'] for s in updated['passages']] == [s['text'] for s in book['passages']]
 
 
 def test_unchanged_or_empty_edits_change_nothing(client):
     book = client.post('/api/demo').json()
     scene = book['scenes'][0]
-    passage = book['segments'][0]
+    passage = book['passages'][0]
     mara_id, _ = dialogue(book, 'Mara')
     mara = item(book, 'characters', mara_id)
     requests = [
         (f"scenes/{scene['id']}", {}),
         (f"scenes/{scene['id']}", {'title': scene['title'], 'tone': scene['tone'], 'summary': scene['summary']}),
-        (f"segments/{passage['id']}", {}),
-        (f"segments/{passage['id']}", {'speaker_id': passage['speaker_id'], 'direction': passage['direction'],
+        (f"passages/{passage['id']}", {}),
+        (f"passages/{passage['id']}", {'speaker_id': passage['speaker_id'], 'direction': passage['direction'],
                                        'cues': passage['cues']}),
         (f"characters/{mara_id}", {}),
         (f"characters/{mara_id}", {'name': mara['name'], 'description': mara['description'],
@@ -114,13 +114,13 @@ def test_real_edit_locks_only_changed_fields_and_confirmation_locks_the_speaker(
     line = lines[0]
     assert line['confidence'] < 1
     # Confirming the proposed speaker is a review: confidence becomes 1.0 and the speaker is locked.
-    response = client.patch(f"/api/books/{book['id']}/segments/{line['id']}",
+    response = client.patch(f"/api/books/{book['id']}/passages/{line['id']}",
                             json={'speaker_id': mara_id, 'direction': line['direction']})
     assert response.status_code == 200
     assert response.json()['revision'] == book['revision'] + 1
     record = item(stored(client, book['id']), 'segments', line['id'])
     assert record['confidence'] == 1.0 and record['edited'] is True and record['edited_fields'] == ['speaker_id']
-    again = client.patch(f"/api/books/{book['id']}/segments/{line['id']}", json={'speaker_id': mara_id})
+    again = client.patch(f"/api/books/{book['id']}/passages/{line['id']}", json={'speaker_id': mara_id})
     assert again.json()['revision'] == book['revision'] + 1
 
 
@@ -137,7 +137,7 @@ def test_legacy_whole_item_lock_is_kept_by_a_later_edit(client):
 
 def test_passage_speaker_must_be_in_the_cast(client):
     book = client.post('/api/demo').json()
-    response = client.patch(f"/api/books/{book['id']}/segments/{book['segments'][0]['id']}", json={'speaker_id': 'nobody'})
+    response = client.patch(f"/api/books/{book['id']}/passages/{book['passages'][0]['id']}", json={'speaker_id': 'nobody'})
     assert response.status_code == 400 and response.json()['code'] == 'character_not_in_cast'
 
 
@@ -174,7 +174,7 @@ def test_seed_is_rejected_where_it_does_not_apply(client):
         assert response.json()['code'] == 'seed_not_applicable'
     assert stored(client, book['id'])['revision'] == book['revision']
     pinned = client.patch(url, json={'voices': {'breeze': {'id': 'tide', 'seed': 11}}})
-    assert item(pinned.json(), 'characters', mara_id)['voices']['breeze'] == {'id': 'tide', 'revision': 'r2', 'seed': 11}
+    assert item(pinned.json(), 'characters', mara_id)['voices']['breeze'] == {'id': 'tide', 'voice_revision': 'r2', 'seed': 11}
     unknown = client.patch(url, json={'voices': {'breeze': {'id': 'nobody'}}})
     assert unknown.status_code == 400 and unknown.json()['code'] == 'breeze_voice_unavailable'
     library = client.patch(url, json={'voices': {'gemini': {'library': 'vl_0123456789abcdef'}}})
@@ -185,13 +185,13 @@ def test_seed_is_rejected_where_it_does_not_apply(client):
 
 def test_passage_seed_can_be_set_and_cleared(client):
     book = client.post('/api/demo').json()
-    passage = book['segments'][0]
-    url = f"/api/books/{book['id']}/segments/{passage['id']}"
-    assert item(client.patch(url, json={'seed': 5}).json(), 'segments', passage['id'])['seed'] == 5
+    passage = book['passages'][0]
+    url = f"/api/books/{book['id']}/passages/{passage['id']}"
+    assert item(client.patch(url, json={'seed': 5}).json(), 'passages', passage['id'])['seed'] == 5
     kept = client.patch(url, json={'direction': 'Softly'}).json()
-    assert item(kept, 'segments', passage['id'])['seed'] == 5  # omitted: unchanged
+    assert item(kept, 'passages', passage['id'])['seed'] == 5  # omitted: unchanged
     cleared = client.patch(url, json={'seed': None}).json()
-    assert 'seed' not in item(cleared, 'segments', passage['id'])
+    assert 'seed' not in item(cleared, 'passages', passage['id'])
     assert cleared['revision'] == book['revision'] + 3
     assert 'seed' in item(stored(client, book['id']), 'segments', passage['id'])['edited_fields']
 
@@ -230,18 +230,18 @@ def test_references_follow_manual_edits_and_other_projection_writers(client):
     elias_id, elias_lines = dialogue(book, 'Elias')
     url = f"/api/books/{book['id']}/characters/{mara_id}/references"
     refs = client.get(url).json()
-    assert {r['segment_id'] for r in refs if r['kind'] == 'dialogue'} == {s['id'] for s in lines}
+    assert {r['passage_id'] for r in refs if r['kind'] == 'dialogue'} == {s['id'] for s in lines}
     assert any(r['kind'] == 'mention' and r['quote'] == 'Mara' for r in refs)
     chapters = {c['id']: c['text'] for c in book['chapters']}
     assert all(chapters[r['chapter_id']][r['start']:r['end']] == r['quote'] for r in refs)
     # A manual reassignment is reflected at once, as a reviewed attribution.
     moved = elias_lines[0]
-    client.patch(f"/api/books/{book['id']}/segments/{moved['id']}", json={'speaker_id': mara_id})
+    client.patch(f"/api/books/{book['id']}/passages/{moved['id']}", json={'speaker_id': mara_id})
     after = client.get(url).json()
-    reviewed = next(r for r in after if r['segment_id'] == moved['id'] and r['kind'] == 'dialogue')
+    reviewed = next(r for r in after if r['passage_id'] == moved['id'] and r['kind'] == 'dialogue')
     assert reviewed['provider'] == 'reviewed' and reviewed['confidence'] == 1.0
     elias_refs = client.get(f"/api/books/{book['id']}/characters/{elias_id}/references").json()
-    assert moved['id'] not in {r['segment_id'] for r in elias_refs if r['kind'] == 'dialogue'}
+    assert moved['id'] not in {r['passage_id'] for r in elias_refs if r['kind'] == 'dialogue'}
     # A rename changes the mentions.
     client.patch(f"/api/books/{book['id']}/characters/{mara_id}", json={'name': 'Marah'})
     assert not any(r['kind'] == 'mention' for r in client.get(url).json())
@@ -277,7 +277,7 @@ def test_unknown_ids_in_the_path_are_404_with_specific_codes(client):
         (client.get('/api/books/missing'), 'book_not_found'),
         (client.patch('/api/books/missing/scenes/x', json={'title': 'X'}), 'book_not_found'),
         (client.patch(f'{base}/scenes/missing', json={'title': 'X'}), 'scene_not_found'),
-        (client.patch(f'{base}/segments/missing', json={'direction': 'X'}), 'passage_not_found'),
+        (client.patch(f'{base}/passages/missing', json={'direction': 'X'}), 'passage_not_found'),
         (client.patch(f'{base}/characters/missing', json={'name': 'X'}), 'character_not_found'),
         (client.get(f'{base}/characters/missing/references'), 'character_not_found'),
         (client.get('/api/books/missing/characters/narrator/references'), 'book_not_found'),
@@ -376,7 +376,7 @@ def test_presented_book_omits_internal_bookkeeping(client):
     for name in ('voice', 'system_voice', 'profile_input_key', 'edited', 'edited_fields'):
         assert name not in character
     assert character['voices'] == {'gemini': {'id': 'Leda'}, 'system': {'id': 'Samantha'}}  # legacy folded in
-    for collection in ('scenes', 'segments'):
+    for collection in ('scenes', 'passages'):
         assert all('edited' not in x and 'edited_fields' not in x for x in presented[collection])
     # Storage keeps the bookkeeping.
     kept = stored(client, book['id'])

@@ -41,7 +41,7 @@ def test_status_reports_configuration_without_probing(client, monkeypatch):
     configured = set_keys(client, openai="test-openai-secret")["account_checks"]["openai"]
     assert configured["state"] == "unchecked"
     assert configured["checked_at"] is None
-    assert configured["balance"] is None
+    assert "balance" not in configured
     assert configured["usage"] is None
     assert configured["billing_url"].startswith("https://platform.openai.com/")
     assert configured["usage_url"].startswith("https://platform.openai.com/")
@@ -70,7 +70,7 @@ def test_checks_use_only_the_selected_provider_key_and_saved_model(client, monke
         assert result["state"] == "ready"
         assert result["checked_at"]
         assert result["cached"] is False
-        assert result["balance"] is None, "A successful request is not a credit balance"
+        assert "balance" not in result, "A successful request is not a credit balance"
         assert result["usage"] == ready_result()["usage"]
         assert all(key not in response.text for key in keys.values())
     assert calls == [(provider, keys[provider], models[provider]) for provider in keys]
@@ -99,7 +99,7 @@ def test_missing_credentials_and_unsupported_provider(client, monkeypatch):
     response = client.post("/api/account-checks/anthropic")
     assert response.status_code == 200
     assert response.json()["state"] == "missing_key"
-    assert response.json()["balance"] is None
+    assert "balance" not in response.json()
     assert len(calls) == 1
 
 
@@ -209,7 +209,7 @@ def test_unexpected_helper_failure_does_not_expose_credentials(client, monkeypat
     response = client.post("/api/account-checks/openai")
     assert response.status_code == 200
     assert response.json()["state"] == "provider_error"
-    assert response.json()["balance"] is None
+    assert "balance" not in response.json()
     assert response.json()["usage"] is None
     assert secret not in response.text
     assert secret not in client.get("/api/status").text
@@ -229,3 +229,12 @@ def test_account_check_rejects_cross_origin_requests_before_probing(client, monk
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert len(calls) == 1
+
+
+def test_a_provider_that_reports_only_some_token_counts_is_still_sent_all_three(client, monkeypatch):
+    set_keys(client, openai="test-openai-secret")
+    monkeypatch.setattr("bardic.app.check_account", lambda *args: {**ready_result(), "usage": {"input_tokens": 8}})
+    fresh = client.post("/api/account-checks/openai").json()
+    assert fresh["usage"] == {"input_tokens": 8, "output_tokens": None, "total_tokens": None}
+    cached = client.post("/api/account-checks/openai").json()
+    assert cached["usage"] == fresh["usage"] and cached["cached"] is True

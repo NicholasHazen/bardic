@@ -13,10 +13,12 @@ from __future__ import annotations
 from typing import Annotated, Literal, Union
 
 from pydantic import Field
+from typing_extensions import TypeAliasType
 
 from .base import Op, View, op
-from .common import Job, PipelineStepConfigView
-from .pipeline import PipelinePlan, PipelineProviderId, PipelineRunOutcome, RunStatus, StepId
+from .enums import AnalysisProvider
+from .common import AnalyzeJob, PipelineJob, PipelineStepConfigView, SeriesJob
+from .pipeline import PipelinePlan, PipelineRunOutcome, RunStatus, StepId
 
 TAG = 'Series'
 
@@ -46,6 +48,7 @@ class SeriesSuppliedVolume(View):
     status: Literal['available', 'archived'] = Field(
         description='`available` for an active book, `archived` for a removed one. Removed books still appear in '
                     '`volumes` (they keep their reading order) although they are omitted from `books`.')
+    kind: Literal['supplied'] = Field(description='Tag of `SeriesVolume`: `supplied`, a volume filled by a book of the library.')
 
 
 class SeriesVolumeSlot(View):
@@ -56,10 +59,15 @@ class SeriesVolumeSlot(View):
     status: Literal['missing', 'planned'] = Field(
         description='`missing`: the volume exists but is not in the library. `planned`: not yet published or '
                     'acquired. Neither contributes knowledge to analysis.')
-    book_id: None = Field(description='Always null: a placeholder has no book.')
+    kind: Literal['placeholder'] = Field(description='Tag of `SeriesVolume`: `placeholder`, a slot for a volume the library does not have.')
 
 
-SeriesVolume = Annotated[Union[SeriesSuppliedVolume, SeriesVolumeSlot], Field(discriminator='status')]
+SeriesVolume = TypeAliasType('SeriesVolume', Annotated[
+    Union[SeriesSuppliedVolume, SeriesVolumeSlot], Field(
+        discriminator='kind',
+        description='One slot of a series in reading order: a volume filled by a supplied book (`kind` `supplied`, with its '
+                    '`status` `available` or `archived`) or a placeholder (`kind` `placeholder`, with its `status` `missing` '
+                    'or `planned`). Select on `kind`; `status` says more about each kind.')])
 
 
 class Series(View):
@@ -74,7 +82,7 @@ class Series(View):
         description='Supplied, non-removed books in reading order (position, then book ID).')
     volumes: list[SeriesVolume] = Field(
         description='Every slot in reading order: supplied books (including removed ones, with status '
-                    '`archived`) and placeholders. The two element shapes differ: select on `status`.')
+                    '`archived`) and placeholders. The two element shapes differ: select on `kind`.')
     character_count: int = Field(description='Number of series-level character identities.')
 
 
@@ -143,12 +151,22 @@ class SeriesCharacterLinkState(View):
     stale: bool = Field(description='True when the book no longer has a character with `character_id` (for example '
                                     'after a merge). A stale link is ignored by series context. Always false in '
                                     'a link response.')
+    kind: Literal['linked'] = Field(description='Tag of `SeriesCharacterLinkResult`: `linked`. Always present, also in '
+                                                'a list of links.')
 
 
 class SeriesCharacterUnlinked(View):
     """Result of removing a book character's series identity link."""
     character_id: str = Field(description='Book-local character ID from the path.')
-    linked: Literal[False] = Field(description='Always false.')
+    kind: Literal['unlinked'] = Field(description='Tag of `SeriesCharacterLinkResult`: `unlinked`. The character has no series identity.')
+
+
+SeriesCharacterLinkResult = TypeAliasType('SeriesCharacterLinkResult', Annotated[
+    Union[SeriesCharacterLinkState, SeriesCharacterUnlinked], Field(
+        discriminator='kind',
+        description='The result of `linkSeriesCharacter`: the confirmed link (`kind` `linked`) or, when the body\'s '
+                    '`series_character_id` is null, the confirmation that the character has none (`kind` `unlinked`). '
+                    'Select on `kind`.')])
 
 
 class BookSeries(View):
@@ -186,7 +204,7 @@ class SeriesContextObservation(View):
     book_id: str = Field(description='Earlier book the evidence comes from.')
     character_id: str = Field(description="Character ID local to that earlier book.")
     chapter_id: str = Field(description='Chapter ID in the earlier book.')
-    segment_id: str | None = Field(description='Passage containing the evidence, or null when none overlapped.')
+    passage_id: str | None = Field(description='Passage containing the evidence, or null when none overlapped.')
     start: int = Field(description='Chapter-local start offset in Unicode code points.')
     end: int = Field(description='Chapter-local exclusive end offset in Unicode code points.')
     quote: str = Field(description='Exact source text at `start`..`end`.')
@@ -292,7 +310,7 @@ class SeriesPlanBook(View):
 
 class SeriesMissingCredential(View):
     """A provider the planned steps would contact that has no API key or server URL configured."""
-    provider: PipelineProviderId = Field(description='Pipeline provider ID.')
+    provider: AnalysisProvider = Field(description='Pipeline provider ID.')
     label: str = Field(description='Display name of the provider.')
     needs: Literal['api_key', 'url'] = Field(description='What to add in Settings: an API key (cloud provider) or a server '
                                                          'URL (self-hosted provider).')
@@ -358,19 +376,44 @@ class SeriesChildRun(View):
     error: str | None = Field(description='Human-readable failure text, or null. Display only.')
 
 
-class SeriesRunChild(Job):
-    """A child job of a series run, with a summary of its book's pipeline run."""
+class SeriesRunPipelineChild(PipelineJob):
+    """A `pipeline` child job of a series run, with a summary of its book's pipeline run.
+
+    A child always has the series fields, which a `pipeline` job started from the book lacks.
+    """
+    series_id: str = Field(description='The series.')
+    series_run_id: str = Field(description='The parent `series` job ID.')
+    position: float = Field(description='The book\'s reading-order position in the series.')
+    title: str = Field(description='The book title when the run was queued.')
+    consent_fingerprint: str | None = Field(
+        description='The `consent_fingerprint` confirmed for that book (`SeriesPlanBook`), or null on a child recorded '
+                    'before the fingerprint existed (the whole plan is compared instead). Before the book starts it is '
+                    'recomputed; the book is not run when it differs. It covers the unit set, providers, models, `fresh` '
+                    'and step versions, but not the earlier-volume context in context-pending prompts.')
+    context_pending: list[str] = Field(
+        description='Step IDs whose prompts read earlier books of this run (see `SeriesPlanBook.context_pending`). '
+                    'Empty when none.')
+    context_sources: list[str] = Field(
+        description='Earlier books of this run whose accepted results this book reads, in no particular order. The series '
+                    'pauses after such a book while it has results waiting for review.')
     run: SeriesChildRun | None = Field(
         None, description='Present once the child has a `run_id`: the run\'s `{id, status, outcomes, error}`, or null '
                           'when that run record no longer exists. Absent while the book has not started, and on '
                           'children that never started.')
 
 
-class SeriesRun(Job):
-    """A series parent job with its child jobs."""
+SeriesRunChild = TypeAliasType('SeriesRunChild', Annotated[
+    Union[SeriesRunPipelineChild, AnalyzeJob], Field(
+        discriminator='kind',
+        description='A child job of a series run: a `pipeline` job with a summary of its book\'s run, or (in runs recorded '
+                    'before contract 0.3.0) an `analyze` job. Select on `kind`.')])
+
+
+class SeriesRun(SeriesJob):
+    """A series parent job (kind `series`) with its child jobs."""
     children: list[SeriesRunChild] = Field(
         description='The child jobs, one per supplied book, in reading order (`pipeline` jobs; `analyze` jobs in runs '
-                    'recorded before contract 0.2.0). They use real book IDs.')
+                    'recorded before contract 0.3.0). They use real book IDs.')
 
 
 class SeriesRuns(View):
@@ -567,16 +610,16 @@ OPS: list[Op] = [
     op('PUT', '/api/books/{book_id}/series/characters/{character_id}', 'linkSeriesCharacter', TAG,
        'Link or unlink a book character to a series identity',
        'With `{"series_character_id": "ID"}`, confirms that the book character is that series identity '
-       '(replacing any previous link for the character) and returns the link. Re-linking the same identity keeps the '
-       'original `confirmed_at`. With `{"series_character_id": null}` (or an empty body `{}`), removes any link and '
-       'returns `{character_id, linked: false}`; unlinking is idempotent and does not check that the character '
-       'exists.\n\n'
+       '(replacing any previous link for the character) and returns the link (`kind` `linked`). Re-linking the same '
+       'identity keeps the original `confirmed_at`. With `{"series_character_id": null}` (or an empty body `{}`), removes '
+       'any link and returns `{kind: "unlinked", character_id}`; unlinking is idempotent and does not '
+       'check that the character exists.\n\n'
        "The book must be in a series, the series must not be removed (for unlinking too: removal retains links "
        'for restoration), and the identity must belong to that series. Narrator and unassigned cannot become series '
        'identities. Only confirmed links carry knowledge across books; names alone never do. Refused while the book '
        "is removed, has an active job or is held by a series run. Each change is recorded in the book's series "
        'provenance.',
-       response=Union[SeriesCharacterLinkState, SeriesCharacterUnlinked],
+       response=SeriesCharacterLinkResult,
        params={'book_id': BOOK_ID, 'character_id': 'Book-local character ID.'},
        errors={400: {'character_not_linkable': 'The character is `narrator` or `unassigned`.',
                      'book_not_in_series': 'Linking: the book is in no series.',
@@ -691,7 +734,7 @@ OPS: list[Op] = [
        'or `interrupted`, with `not_started: true`, and never start later. Validated units are cached per book, so '
        'running a stopped series again reuses paid work. A run record is retained as a `series_run` artifact on each '
        'book.',
-       response=Job,
+       response=SeriesJob,
        response_description='The queued parent series job. Not a result: poll it until it is terminal.',
        params={'series_id': SERIES_ID},
        errors={400: {**STEP_ERRORS,
@@ -720,7 +763,7 @@ OPS: list[Op] = [
        'snapshotted when it was confirmed. The next book is checked against its `consent_fingerprint` before it '
        'starts, and a child cancelled meanwhile never starts (the series then ends `cancelled`). Returns the parent '
        'job with `waiting_for_review: null`. No request body.',
-       response=Job,
+       response=SeriesJob,
        response_description='The parent series job, still running. Poll it until it is terminal.',
        params={'series_id': SERIES_ID, 'job_id': 'The parent `series` job ID.'},
        errors={404: {**NO_SERIES,

@@ -38,7 +38,7 @@ class Container {
   querySelector() { return null; }
   contains() { return false; }
 }
-const book = {id:'book-v', revision:1, chapters:[{id:'c1'}], segments:[{id:'s1', chapter_id:'c1', start:0, end:5, text:'Hello'}], characters:[]};
+const book = {id:'book-v', revision:1, chapters:[{id:'c1'}], passages:[{id:'s1', chapter_id:'c1', start:0, end:5, text:'Hello'}], characters:[]};
 const status = {providers:[{id:'system', available:true}], system_voices:macVoices, tts_models:[]};
 
 test('macVoices keeps the book language, hides novelty voices and never hides the current choice', () => {

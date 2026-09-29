@@ -15,6 +15,7 @@ import math
 import time
 from uuid import uuid4
 
+from . import wire
 from .store import now
 
 _OPERATION = ContextVar('resource_operation', default=None)
@@ -162,9 +163,11 @@ def _aggregate(rows):
         # Token/remote-cost coverage concerns provider requests only. Local work
         # has no model tokens; old requests lacking counts remain unknown.
         eligible = [r for r in rows if field not in {'input_tokens', 'output_tokens', 'cached_input_tokens', 'cache_write_input_tokens'} or r.get('request_count') != 0]
-        values = [r[field] for r in eligible if _number(r.get(field)) is not None]
-        result[field] = round(sum(values), 8) if values else (0 if not eligible else None)
-        result['unknown_' + field + '_operations'] = sum(_number(r.get(field)) is None for r in eligible)
+        # Counts (tokens, bytes) are integers, so their totals are integers on the wire; measurements are numbers.
+        valid = _count if field in _COUNTS else _number
+        values = [r[field] for r in eligible if valid(r.get(field)) is not None]
+        result[field] = (sum(values) if field in _COUNTS else round(sum(values), 8)) if values else (0 if not eligible else None)
+        result['unknown_' + field + '_operations'] = sum(valid(r.get(field)) is None for r in eligible)
     result['reserved_cost_usd'] = round(sum(r.get('estimated_cost_usd') or 0 for r in rows if r.get('cost_basis') == 'reservation'), 8)
     result['unknown_request_count_operations'] = sum(r.get('request_count') is None for r in rows)
     return result
@@ -227,7 +230,8 @@ def resource_summary(store, book_id, *, limit=100, offset=0, run_id=None):
     run_rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
     return {'schema_version': 1, 'book_id': book_id, 'run_id': run_id, 'totals': _aggregate(rows),
             'stages': [{'id': key, **_aggregate(value)} for key, value in stages.items()],
-            'runs': run_rows[:100], 'total_runs': len(run_rows), 'operations': rows[offset:offset + limit],
+            'runs': run_rows[:100], 'total_runs': len(run_rows),
+            'operations': [wire.complete(dict(row), wire.OPERATION_FIELDS) for row in rows[offset:offset + limit]],
             'total_operations': len(rows), 'unmeasured_runs': sum(not r['has_measurements'] for r in run_rows), 'limit': limit, 'offset': offset,
             'price_sources': sorted({r['price_source'] for r in rows if r.get('price_source')}), 'notes': [
                 'Only recorded work is included. Historical work may have no timing or usage; unknown never means free.',

@@ -76,12 +76,12 @@ def voice_named(client, name):
 
 def narrator_take(client, book):
     presented = client.get(f"/api/books/{book['id']}").json()
-    segment = next(s for s in presented["segments"] if s["speaker_id"] == "narrator")
+    segment = next(s for s in presented["passages"] if s["speaker_id"] == "narrator")
     return segment, segment["audio"]
 
 
-def render(client, book, segment_id, provider="breeze"):
-    job = client.post(f"/api/books/{book['id']}/render", json={"provider": provider, "segment_id": segment_id})
+def render(client, book, passage_id, provider="breeze"):
+    job = client.post(f"/api/books/{book['id']}/render", json={"provider": provider, "passage_id": passage_id})
     assert job.status_code == 200, job.text
     finished = wait_job(client, job.json()["id"])
     assert finished["status"] == "completed", finished
@@ -98,6 +98,14 @@ def design_voice(client, book, character_id="narrator", **save):
                         json={"candidate_id": draft["candidates"][0]["id"], "name": "Keeper", **save})
     assert saved.status_code == 200, saved.text
     return draft, saved.json()
+
+
+def test_a_version_without_a_recorded_recipe_still_has_a_recipe_description(client):
+    # The contract requires `recipe.description`. No route makes a recipe-less version, but the library accepts one.
+    client.app.state.runtime.voices.create("gemini", name="Bare", description="", origin="designed",
+                                           version={"provider_voice_id": "voice_0001"})
+    recipe = voice_named(client, "Bare")["versions"][0]["recipe"]
+    assert recipe == {"description": "", "sample_text": None, "model": None, "language_code": None, "gender": None}
 
 
 def test_check_connection_imports_server_voices_and_sets_the_default(client, servers):
@@ -164,7 +172,7 @@ def test_design_with_character_context_saves_the_audited_clip_and_assigns(client
     draft = client.post("/api/voices/drafts", json={"provider": "breeze", "book_id": book["id"], "character_id": "narrator"}).json()
     assert draft["name"] == "Narrator" and draft["context"]["character_id"] == "narrator"
     assert character["direction"] in draft["description"]
-    line = next(s["text"] for s in book["segments"] if s["speaker_id"] == "narrator")
+    line = next(s["text"] for s in book["passages"] if s["speaker_id"] == "narrator")
     assert draft["sample_text"] == line[:len(draft["sample_text"])]
     assert client.post(f"/api/voices/drafts/{draft['id']}/generate", json={"count": 2}).status_code == 200
     draft = client.get("/api/voices").json()["drafts"][0]
@@ -178,7 +186,7 @@ def test_design_with_character_context_saves_the_audited_clip_and_assigns(client
     assert upload["reference_text"].decode() == draft["sample_text"]
     assert upload["id"].decode().startswith("bardic-")
     assert json.loads(upload["labels"]) == {"bardic_voice": saved["voice"]["id"], "bardic_version": "1"}
-    assert "assignment_error" not in saved
+    assert saved["assignment_error"] is None and saved["cleanup_error"] is None
     narrator = next(c for c in saved["book"]["characters"] if c["id"] == "narrator")
     assert narrator["voices"]["breeze"] == {"library": saved["voice"]["id"]}
     assert library(client)["drafts"] == []
@@ -226,12 +234,12 @@ def test_delete_rules_protect_the_default_and_imported_server_voices(client, ser
     assert client.delete(f"/api/voices/{narrator['id']}").status_code == 409  # it is the default
     _, saved = design_voice(client, book, make_default=True)
     removed = client.delete(f"/api/voices/{narrator['id']}").json()
-    assert removed["server_deleted"] == [] and "narrator" in fake_breeze.voices  # imported: Bardic only
+    assert removed["voice_id"] == narrator["id"] and removed["server_deleted"] == [] and "narrator" in fake_breeze.voices  # imported: Bardic only
     client.post("/api/narration/breeze/refresh")
     assert "Narrator" not in [voice["name"] for voice in library(client)["voices"]]  # not re-imported
     other = design_voice(client, book)[1]["voice"]
     gone = client.delete(f"/api/voices/{other['id']}").json()
-    assert gone["server_deleted"] == [other["versions"][0]["provider_voice_id"]]
+    assert gone["voice_id"] == other["id"] and gone["server_deleted"] == [other["versions"][0]["provider_voice_id"]]
     assert other["versions"][0]["provider_voice_id"] in fake_breeze.deleted
     assert [event["kind"] for event in client.app.state.runtime.voices.events(other["id"])] == [
         "created", "server_voice_deleted", "deleted"]
@@ -243,7 +251,7 @@ def test_deleted_or_unresolved_assignments_fail_closed(client, servers):
     keeper = design_voice(client, book, assign={"book_id": book["id"], "character_id": "narrator"})[1]["voice"]
     client.delete(f"/api/voices/{keeper['id']}")
     segment, _ = narrator_take(client, book)
-    blocked = client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "segment_id": segment["id"]})
+    blocked = client.post(f"/api/books/{book['id']}/render", json={"provider": "breeze", "passage_id": segment["id"]})
     assert blocked.status_code == 400 and "was deleted" in blocked.json()["detail"]
     for character in ({"voices": {"gemini": {"library": "vl_0123456789abcdef"}}}, {"voice": "library:vl_0123456789abcdef"}):
         with pytest.raises(AudioError, match="not resolved"):
@@ -257,16 +265,16 @@ def test_simple_listening_accepts_library_voices_and_breeze_default(client, serv
     connect(client)
     book = import_text(client)
     keeper = design_voice(client, book)[1]["voice"]
-    segment = book["segments"][0]
+    segment = book["passages"][0]
     by_library = client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": f"library:{keeper['id']}",
-                                                                       "segment_id": segment["id"]}).json()
+                                                                       "passage_id": segment["id"]}).json()
     assert by_library["session"]["voice"] == keeper["versions"][0]["provider_voice_id"]
     assert wait_job(client, by_library["job"]["id"])["status"] == "completed"
     by_default = client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": None,
-                                                                       "segment_id": segment["id"]}).json()
+                                                                       "passage_id": segment["id"]}).json()
     assert by_default["session"]["voice"] == "narrator"  # the Bardic default, not a server guess
     missing = client.post(f"/api/books/{book['id']}/listen", json={"provider": "breeze", "voice": "library:vl_0000000000000000",
-                                                                    "segment_id": segment["id"]})
+                                                                    "passage_id": segment["id"]})
     assert missing.status_code == 400
 
 
@@ -458,7 +466,7 @@ def test_a_partly_failed_voice_deletion_is_recorded_and_a_retry_finishes_it(clie
     monkeypatch.setattr(breeze, "_transport", httpx.MockTransport(fake_breeze))
     done = client.delete(f"/api/voices/{keeper['id']}")
     assert done.status_code == 200, done.text
-    assert done.json()["server_deleted"] == [first, second]
+    assert done.json()["voice_id"] == keeper["id"] and done.json()["server_deleted"] == [first, second]
     assert fake_breeze.deleted == [first, second]  # the retry did not delete the first again
     assert "Keeper" not in [voice["name"] for voice in library(client)["voices"]]
     kinds = [event["kind"] for event in client.app.state.runtime.voices.events(keeper["id"])]

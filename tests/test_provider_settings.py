@@ -280,7 +280,7 @@ def test_gemini_narration_uses_its_own_key_and_model_with_anthropic_analysis_sel
     })
     assert response.status_code == 200, response.text
     book = import_book(client)
-    response = client.post(f"/api/books/{book['id']}/render", json={"provider": "gemini", "segment_id": book["segments"][0]["id"]})
+    response = client.post(f"/api/books/{book['id']}/render", json={"provider": "gemini", "passage_id": book["passages"][0]["id"]})
     assert response.status_code == 200, response.text
     job = wait_job(client, response.json()["id"])
     assert job["status"] == "completed", job

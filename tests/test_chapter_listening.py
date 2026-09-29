@@ -333,9 +333,9 @@ def wait_job(client, job_id, timeout=15):
     pytest.fail('chapter job did not finish')
 
 
-def chapter_request(book, segment=None, **fields):
-    segment = segment or book['segments'][0]
-    return {'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'segment_id': segment['id'],
+def chapter_request(book, passage=None, **fields):
+    passage = passage or book['passages'][0]
+    return {'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL, 'passage_id': passage['id'],
             'chunking': {'ramp_seconds': [10], 'target_seconds': 30, 'concurrency': 2}, **fields}
 
 
@@ -357,7 +357,7 @@ def test_chapter_job_generates_contiguous_chunks_with_exact_source_and_clip_proj
     assert result['job']['kind'] == 'listen_chapter' and result['joined'] is False
     job = wait_job(client, result['job']['id'])
     assert job['status'] == 'completed', job
-    assert job['progress'] == job['total'] == len([s for s in book['segments'] if s['chapter_id'] == chapter['id']])
+    assert job['progress'] == job['total'] == len([s for s in book['passages'] if s['chapter_id'] == chapter['id']])
     assert len(calls) == len(job['chunks']) == preview['requests_needed']
     assert all(call['pace'] is False and call['timeout'] >= 105 and call['key'] == 'offline-key' for call in calls)
     source = client.app.state.runtime.store.book(book['id'])['chapters'][0]['text']
@@ -377,8 +377,8 @@ def test_chapter_job_generates_contiguous_chunks_with_exact_source_and_clip_proj
         assert client.get(clips[0]['url']).status_code == 200
     # A per-passage request finds the chunk clip locally and starts no work.
     single = client.post(f"/api/books/{book['id']}/listen", json={'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL,
-                                                                 'segment_id': takes[3]['segment_id']}).json()
-    assert single['cached'] is True and single['audio']['chunk_id'] == takes[3]['audio']['chunk_id']
+                                                                 'passage_id': takes[3]['passage_id']}).json()
+    assert single['kind'] == 'cached' and single['audio']['chunk_id'] == takes[3]['audio']['chunk_id']
     assert len(calls) == len(job['chunks'])
     stages = [json.loads(body)['stage'] for (body,) in client.app.state.runtime.store.connect().execute('SELECT body FROM resource_operations')]
     assert stages.count('listen_chunk') == len(calls)
@@ -439,7 +439,7 @@ def test_minute_rate_limit_retries_and_daily_quota_stops_with_saved_work(client,
     assert job['status'] == 'quota_limited', job
     assert 'midnight Pacific' in job['message'] and job['resume_after']
     assert [entry['status'] for entry in job['chunks']][:4] == ['done', 'rate_limited', 'done', 'rate_limited']
-    assert job['chunks'][1]['first_segment_id'] == job['chunks'][2]['first_segment_id'], 'the rejected chunk is retried'
+    assert job['chunks'][1]['first_passage_id'] == job['chunks'][2]['first_passage_id'], 'the rejected chunk is retried'
     takes = client.get(f"/api/books/{book['id']}/listen/takes", params={'session_id': result['session']['id']}).json()['takes']
     assert takes, 'finished chunks stay playable'
 
@@ -469,19 +469,19 @@ def test_join_moves_focus_extends_scope_and_restarts_ramp_but_rejects_other_chap
     calls = []
     monkeypatch.setattr('bardic.chapter_listening.synthesize', fake_chunk_synthesizer(calls, gate=gate))
     book = import_story(client)
-    segments = [s for s in book['segments'] if s['chapter_id'] == book['chapters'][0]['id']]
-    first = start(client, book, segment=segments[10], chunking={'ramp_seconds': [], 'target_seconds': 30, 'concurrency': 1})
-    joined = start(client, book, segment=segments[2], intent='play')
+    passages = [s for s in book['passages'] if s['chapter_id'] == book['chapters'][0]['id']]
+    first = start(client, book, passage=passages[10], chunking={'ramp_seconds': [], 'target_seconds': 30, 'concurrency': 1})
+    joined = start(client, book, passage=passages[2], intent='play')
     assert joined['joined'] is True and joined['job']['id'] == first['job']['id']
-    assert joined['job']['scope_start_segment_id'] == segments[2]['id']
-    assert joined['job']['focus_segment_id'] == segments[2]['id'] and joined['job']['ramp_restart'] == 1
-    other = client.post(f"/api/books/{book['id']}/listen/chapter", json={**chapter_request(book, segment=segments[3]), 'voice': 'Puck'})
+    assert joined['job']['scope_start_passage_id'] == passages[2]['id']
+    assert joined['job']['focus_passage_id'] == passages[2]['id'] and joined['job']['ramp_restart'] == 1
+    other = client.post(f"/api/books/{book['id']}/listen/chapter", json={**chapter_request(book, passage=passages[3]), 'voice': 'Puck'})
     assert other.status_code == 409
     # Book edits are blocked while the chapter job holds the book.
     assert client.post(f"/api/books/{book['id']}/render", json={'provider': 'gemini'}).status_code == 409
     gate.set()
     job = wait_job(client, first['job']['id'])
-    assert job['status'] == 'completed' and job['progress'] == len(segments) - 2
+    assert job['status'] == 'completed' and job['progress'] == len(passages) - 2
 
 
 def test_cancel_retains_in_flight_chunk_and_starts_nothing_more(client, monkeypatch):
@@ -532,7 +532,7 @@ def test_coordinator_waits_for_the_rate_window_instead_of_sending(client, monkey
     repository = ListeningRepository(store)
     session = repository.session(book['id'], 'gemini', 'Kore', DEFAULT_TTS_MODEL)
     job = store.create_job(book['id'], 'listen_chapter')
-    first = book['segments'][0]
+    first = book['passages'][0]
     job = store.update_job(job['id'], session_id=session['id'], chapter_id=first['chapter_id'], provider='gemini',
                            model=DEFAULT_TTS_MODEL, scope_start_segment_id=first['id'], focus_segment_id=first['id'],
                            chunking=chunking.normalize_options({'ramp_seconds': [], 'target_seconds': 30, 'concurrency': 1}),
@@ -583,8 +583,8 @@ def repo_setup(client, paragraphs=4):
     store = client.app.state.runtime.store
     repository = ListeningRepository(store)
     session = repository.session(book['id'], 'gemini', 'Kore', DEFAULT_TTS_MODEL)
-    chapter_id = book['segments'][0]['chapter_id']
-    ids = [s['id'] for s in book['segments'] if s['chapter_id'] == chapter_id]
+    chapter_id = book['passages'][0]['chapter_id']
+    ids = [s['id'] for s in book['passages'] if s['chapter_id'] == chapter_id]
     return book, store, repository, session, chapter_id, ids
 
 
@@ -765,7 +765,7 @@ def test_join_arriving_as_the_job_closes_is_not_lost(client, monkeypatch):
     real_plan = module.plan
     store = client.app.state.runtime.store
     book = import_story(client, 6)
-    segments = [s for s in book['segments'] if s['chapter_id'] == book['chapters'][0]['id']]
+    passages = [s for s in book['passages'] if s['chapter_id'] == book['chapters'][0]['id']]
     injected = {'done': False}
 
     def racing_plan(*args, **kwargs):
@@ -774,14 +774,14 @@ def test_join_arriving_as_the_job_closes_is_not_lost(client, monkeypatch):
             injected['done'] = True
             # A listener joins after this pass read the job, before it closes.
             job = next(j for j in store.jobs(book['id']) if j['kind'] == 'listen_chapter')
-            store.update_job(job['id'], joins=job.get('joins', 0) + 1, scope_start_segment_id=segments[0]['id'],
-                             focus_segment_id=segments[0]['id'])
+            store.update_job(job['id'], joins=job.get('joins', 0) + 1, scope_start_segment_id=passages[0]['id'],
+                             focus_segment_id=passages[0]['id'])
         return result
     monkeypatch.setattr(module, 'plan', racing_plan)
-    job = wait_job(client, start(client, book, segment=segments[4], chunking={'ramp_seconds': [], 'target_seconds': 30, 'concurrency': 1})['job']['id'])
+    job = wait_job(client, start(client, book, passage=passages[4], chunking={'ramp_seconds': [], 'target_seconds': 30, 'concurrency': 1})['job']['id'])
     assert job['status'] == 'completed' and injected['done']
     clips = ListeningRepository(store).chunk_clips(book['id'], job['session_id'])
-    assert all(segment['id'] in clips for segment in segments), 'the late join scope was generated'
+    assert all(passage['id'] in clips for passage in passages), 'the late join scope was generated'
     closing = client.post(f"/api/books/{book['id']}/listen/chapter", json=chapter_request(book))
     assert closing.status_code == 200  # a closed job is not joined; a new job may start
 

@@ -9,7 +9,7 @@ async function settle(times = 80) { for (let i = 0; i < times; i++) await tick()
 class Container { constructor() { this.innerHTML = ''; this.listeners = {}; } addEventListener(name, fn) { this.listeners[name] = fn; } }
 
 function story(count = 12) {
-  return {id:'book-chunks',revision:1,segments:Array.from({length:count+1},(_,i)=>({
+  return {id:'book-chunks',revision:1,passages:Array.from({length:count+1},(_,i)=>({
     id:`p${i}`,chapter_id:i < count ? 'chapter-a' : 'chapter-b',start:i*30,end:i*30+28,text:`Passage ${i} of the harbor story.`,
   }))};
 }
@@ -60,13 +60,13 @@ function environment({book = story(), jobs, takes = () => [], preview, chapterPo
 
 test('estimate: measured ready time, safe pace, catch-up warning and quota blocking', () => {
   const book = story(6);
-  const segments = book.segments.slice(0,6);
+  const segments = book.passages.slice(0,6);
   const ready = new Map([['p0',{duration:30}],['p1',{duration:30}]]);
   const now = 1000;
   const running = {status:'running',chunking:{concurrency:1},speech_limits:{rpm:10},quota:{requests_today:10,rpd:100},
     calibration:{chars_per_second:1,realtime_factor:1},
-    chunks:[{status:'requesting',first_segment_id:'p2',last_segment_id:'p3',started_at:new Date((now-10)*1000).toISOString(),expected_latency:40}],
-    projection:[{first_segment_id:'p4',last_segment_id:'p5',expected_seconds:56}]};
+    chunks:[{status:'requesting',first_passage_id:'p2',last_passage_id:'p3',started_at:new Date((now-10)*1000).toISOString(),expected_latency:40}],
+    projection:[{first_passage_id:'p4',last_passage_id:'p5',expected_seconds:56}]};
   const {estimateChapter} = environment().api;
   const slow = estimateChapter({segments,audioFor:s => ready.get(s.id),job:running,rate:1,now});
   assert.equal(slow.readySeconds,60);
@@ -88,21 +88,21 @@ test('estimate: measured ready time, safe pace, catch-up warning and quota block
 
 test('Gemini Play starts one chapter job, waits for its chunk, and never requests single passages', async () => {
   let delivered = false;
-  const env = environment({takes:() => delivered ? [{segment_id:'p0',audio:clip('p0','chunk-a',0,3.2)},{segment_id:'p1',audio:clip('p1','chunk-a',3.2,7)}] : []});
+  const env = environment({takes:() => delivered ? [{passage_id:'p0',audio:clip('p0','chunk-a',0,3.2)},{passage_id:'p1',audio:clip('p1','chunk-a',3.2,7)}] : []});
   await env.init();
-  const waiting = env.api.prepare(env.book,env.book.segments[0],{playbackRate:1.5});
+  const waiting = env.api.prepare(env.book,env.book.passages[0],{playbackRate:1.5});
   await settle();
   const posts = env.generation();
   assert.equal(posts.length,1);
   assert.equal(posts[0].url,'/api/books/book-chunks/listen/chapter');
-  assert.deepEqual(posts[0].body,{provider:'gemini',voice:'Kore',model:'gemini-3.8-flash-tts',segment_id:'p0',intent:'play'});
+  assert.deepEqual(posts[0].body,{provider:'gemini',voice:'Kore',model:'gemini-3.8-flash-tts',passage_id:'p0',intent:'play'});
   assert.match(env.container.innerHTML,/Stop preparing/);
   env.state.jobs = [{...env.state.jobs[0],chunks:[{status:'done'}]}];
   delivered = true;
   const audio = await waiting;
   assert.equal(audio.clip_end,3.2);
-  assert.equal(env.api.resolve(env.book,env.book.segments[1]).clip_start,3.2);
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:1.5,currentTime:1});
+  assert.equal(env.api.resolve(env.book,env.book.passages[1]).clip_start,3.2);
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:1.5,currentTime:1});
   await settle();
   assert.equal(env.generation().length,1,'the rolling buffer does not add per-passage requests');
   assert.equal(env.calls.filter(call => /\/listen$/.test(call.url)).length,0);
@@ -111,8 +111,8 @@ test('Gemini Play starts one chapter job, waits for its chunk, and never request
 });
 
 test('queue, stop generating and marks; request sizes live in Settings', async () => {
-  const env = environment({takes:() => [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)},{segment_id:'p1',audio:clip('p1','chunk-a',3,6)},
-    {segment_id:'p2',audio:clip('p2','chunk-b',0,4)}]});
+  const env = environment({takes:() => [{passage_id:'p0',audio:clip('p0','chunk-a',0,3)},{passage_id:'p1',audio:clip('p1','chunk-a',3,6)},
+    {passage_id:'p2',audio:clip('p2','chunk-b',0,4)}]});
   await env.init();
   assert.match(env.container.innerHTML,/Prepare rest of chapter · paid/);
   assert.match(env.container.innerHTML,/34 of 100 daily Gemini requests/, 'the local preview reports the library count');
@@ -121,8 +121,8 @@ test('queue, stop generating and marks; request sizes live in Settings', async (
   await settle();
   const queued = env.generation().at(-1);
   assert.equal(queued.body.intent,'queue');
-  env.state.jobs = [{...env.state.jobs[0],chunks:[{status:'done'},{status:'requesting',first_segment_id:'p3',last_segment_id:'p5'}],
-    projection:[{first_segment_id:'p6',last_segment_id:'p8',expected_seconds:20}]}];
+  env.state.jobs = [{...env.state.jobs[0],chunks:[{status:'done'},{status:'requesting',first_passage_id:'p3',last_passage_id:'p5'}],
+    projection:[{first_passage_id:'p6',last_passage_id:'p8',expected_seconds:20}]}];
   await settle(40);
   const marks = env.api.chapterMarks(env.book,'chapter-a');
   assert.deepEqual({...marks.get('p0')},{status:'ready',chunk:0,start:true});
@@ -159,7 +159,7 @@ test('quota-limited job offers resume and explains the reset', async () => {
 test('a chapter job that stops before the selected passage clears the warmup and offers Play again', async () => {
   const env = environment();
   await env.init();
-  const waiting = env.api.prepare(env.book,env.book.segments[5],{playbackRate:1});
+  const waiting = env.api.prepare(env.book,env.book.passages[5],{playbackRate:1});
   await settle();
   assert.match(env.container.innerHTML,/Preparing…/);
   env.state.jobs = [{...env.state.jobs[0],status:'quota_limited',message:'The daily Gemini request quota for this model is used up.'}];
@@ -173,19 +173,19 @@ test('a chapter job that stops before the selected passage clears the warmup and
 test('automatic continuation and stopped jobs never send generation requests', async () => {
   const stoppedJob = {id:'job-s',kind:'listen_chapter',status:'failed',chapter_id:'chapter-a',session_id:'session-g',
     error:'Gemini narration timed out. The request may still have been processed, so it was not resent.',chunks:[],projection:[]};
-  const ready = [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)},{segment_id:'p1',audio:clip('p1','chunk-a',3,6)}];
+  const ready = [{passage_id:'p0',audio:clip('p0','chunk-a',0,3)},{passage_id:'p1',audio:clip('p1','chunk-a',3,6)}];
   // Continuation into an ungenerated passage with no job: no POST.
   const fresh = environment({takes:() => ready});
   await fresh.init();
-  await assert.rejects(fresh.api.prepare(fresh.book,fresh.book.segments[2],{continuation:true}),/is not prepared yet/);
+  await assert.rejects(fresh.api.prepare(fresh.book,fresh.book.passages[2],{continuation:true}),/is not prepared yet/);
   assert.equal(fresh.generation().length,0);
   // A failed (possibly billed) job: continuation and explicit Play both stop; Resume is explicit.
   const failed = environment({jobs:[{...stoppedJob,voice:'Kore',model:'gemini-3.8-flash-tts'}],takes:() => ready});
   await failed.init();
   await settle();
-  await assert.rejects(failed.api.prepare(failed.book,failed.book.segments[2],{continuation:true}),/Resume chapter/);
-  await assert.rejects(failed.api.prepare(failed.book,failed.book.segments[2],{}),/Resume chapter/);
-  const readyAudio = await failed.api.prepare(failed.book,failed.book.segments[0],{});
+  await assert.rejects(failed.api.prepare(failed.book,failed.book.passages[2],{continuation:true}),/Resume chapter/);
+  await assert.rejects(failed.api.prepare(failed.book,failed.book.passages[2],{}),/Resume chapter/);
+  const readyAudio = await failed.api.prepare(failed.book,failed.book.passages[0],{});
   assert.equal(readyAudio.clip_end,3,'saved audio still plays');
   assert.equal(failed.generation().length,0,'no request is resent without Resume');
   assert.doesNotMatch(failed.container.innerHTML,/Preparing…/);
@@ -202,7 +202,7 @@ test('a narrator change during an in-flight Play cancels that job and never bind
   const env = environment({chapterPost:() => new Promise(resolve => { release = () => resolve({session:{id:'session-kore'},joined:false,
     job:{id:'job-kore',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-kore',chunks:[],projection:[]}}); })});
   await env.init();
-  const playing = env.api.prepare(env.book,env.book.segments[0],{});
+  const playing = env.api.prepare(env.book,env.book.passages[0],{});
   await settle(10);
   env.change('voice','Puck');
   release();
@@ -214,10 +214,10 @@ test('a narrator change during an in-flight Play cancels that job and never bind
 test('rejected Play clears the warmup; device voices get no chunk marks; onJob reaches the app', async () => {
   const rejected = environment({chapterPost:() => ({statusCode:409,detail:'A job is already working on this book.'})});
   await rejected.init();
-  await assert.rejects(rejected.api.prepare(rejected.book,rejected.book.segments[0],{}),/already working/);
+  await assert.rejects(rejected.api.prepare(rejected.book,rejected.book.passages[0],{}),/already working/);
   assert.doesNotMatch(rejected.container.innerHTML,/Preparing…/);
   const jobs = [];
-  const shared = environment({takes:() => [{segment_id:'p0',audio:clip('p0','chunk-a',0,3)}]});
+  const shared = environment({takes:() => [{passage_id:'p0',audio:clip('p0','chunk-a',0,3)}]});
   shared.options.onJob = job => jobs.push(job.id);
   await shared.init();
   shared.click('prepare-chapter');
@@ -232,7 +232,7 @@ test('rejected Play clears the warmup; device voices get no chunk marks; onJob r
 test('status polling re-renders only on change, stops on book switch and never overwrites a newer job', async () => {
   let renders = 0, hold = null;
   const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
-    chunks:[{status:'requesting',first_segment_id:'p0',last_segment_id:'p3'}],projection:[],chunking:{concurrency:2},speech_limits:{rpm:10},quota:{requests_today:1,rpd:100}};
+    chunks:[{status:'requesting',first_passage_id:'p0',last_passage_id:'p3'}],projection:[],chunking:{concurrency:2},speech_limits:{rpm:10},quota:{requests_today:1,rpd:100}};
   const env = environment({jobs:[running],
     chapterPost:() => ({session:{id:'session-g'},joined:false,job:{...running,id:'job-2',chunks:[]}}),
     jobsGet:state => {
@@ -250,7 +250,7 @@ test('status polling re-renders only on change, stops on book switch and never o
   await settle(40);
   assert.ok(hold,'a job read is in flight');
   env.state.jobs = [{...running,status:'cancelled'}];
-  await env.api.prepareChapter(env.book,env.book.segments[0]);
+  await env.api.prepareChapter(env.book,env.book.passages[0]);
   assert.equal(env.api.getChapterJob(env.book).id,'job-2');
   env.state.hold = false;
   hold();
@@ -272,24 +272,66 @@ test('status polling re-renders only on change, stops on book switch and never o
 
 test('automatic continuation into a passage outside the running job fails immediately', async () => {
   const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
-    chunks:[{status:'requesting',first_segment_id:'p6',last_segment_id:'p9'}],projection:[]};
+    chunks:[{status:'requesting',first_passage_id:'p6',last_passage_id:'p9'}],projection:[]};
   const env = environment({jobs:[running]});
   await env.init();
   await settle();
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[2],{continuation:true}),/outside the chapter being prepared/);
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[2],{continuation:true}),/outside the chapter being prepared/);
   assert.equal(env.generation().length,0);
+  env.state.jobs = [{...running,status:'completed'}];
+  await settle();
+});
+
+test('a moved chunk or projection range repaints the reader marks even when the job status is unchanged', async () => {
+  const env = environment({takes:() => []});
+  let changes = 0;
+  env.options.onChange = () => { changes++; };
+  await env.init();
+  env.click('prepare-chapter');
+  await settle();
+  const running = (chunkFirst, projectionFirst, projectionLast = 'p8') => [{...env.state.jobs[0],status:'running',
+    chunks:[{status:'requesting',first_passage_id:chunkFirst,last_passage_id:'p5'}],projection:[{first_passage_id:projectionFirst,last_passage_id:projectionLast,expected_seconds:20}]}];
+  env.state.jobs = running('p3','p6');
+  await settle(40);
+  let seen = changes;
+  env.state.jobs = running('p3','p7');
+  await settle(40);
+  assert.ok(changes > seen,'the projection began at a different passage');
+  seen = changes;
+  env.state.jobs = running('p4','p7');
+  await settle(40);
+  assert.ok(changes > seen,'the request in progress began at a different passage');
+  seen = changes;
+  env.state.jobs = running('p4','p7','p9');
+  await settle(40);
+  assert.ok(changes > seen,'the projection ends at a different passage');
+  env.state.jobs = [{...env.state.jobs[0],status:'completed'}];
+  await settle();
+});
+
+test('automatic continuation into a passage inside the running job\'s range waits for it instead of failing', async () => {
+  const running = {id:'job-1',kind:'listen_chapter',status:'running',chapter_id:'chapter-a',session_id:'session-g',
+    chunks:[{status:'requesting',first_passage_id:'p1',last_passage_id:'p3'}],projection:[]};
+  const env = environment({jobs:[running]});
+  await env.init();
+  await settle();
+  const covered = env.api.prepare(env.book,env.book.passages[2],{continuation:true});
+  const outcome = await Promise.race([covered.then(() => 'resolved', error => `rejected: ${error.message}`), settle(10).then(() => 'waiting')]);
+  assert.equal(outcome,'waiting','the chunk range first_passage_id..last_passage_id covers p2');
+  assert.equal(env.generation().length,0);
+  covered.catch(() => {});
   env.state.jobs = [{...running,status:'completed'}];
   await settle();
 });
 
 // Continuous listening: while Play runs, the next chapter is queued ahead of
 // the listener, once per chapter, and never after a quota stop or Stop generating.
-const chapterA = () => Array.from({length:12},(_,i) => ({segment_id:`p${i}`,audio:clip(`p${i}`,'chunk-a',i*3,i*3+3)}));
+const chapterA = () => Array.from({length:12},(_,i) => ({passage_id:`p${i}`,audio:clip(`p${i}`,'chunk-a',i*3,i*3+3)}));
 const nextChapterJob = (status = 'running') => ({id:'job-b',kind:'listen_chapter',status,chapter_id:'chapter-b',session_id:'session-g',chunks:[],projection:[]});
 const startsNext = (call, state) => { state.jobs = [nextChapterJob()]; return {session:{id:'session-g'},job:state.jobs[0],joined:false}; };
 async function playing(env) {
-  await env.api.prepare(env.book,env.book.segments[0],{playbackRate:1});
-  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:1,currentTime:1});
+  await env.api.prepare(env.book,env.book.passages[0],{playbackRate:1});
+  env.api.updatePlayback(env.book,env.book.passages[0],{playbackRate:1,currentTime:1});
   await settle();
 }
 
@@ -299,15 +341,15 @@ test('continuous: playing queues the next chapter once, with full-size chunks', 
   assert.equal(env.generation().length,0,'rendering queues nothing');
   await playing(env);
   assert.equal(env.generation().length,1);
-  assert.equal(env.generation()[0].body.segment_id,'p12','the first passage without audio, in the next chapter');
+  assert.equal(env.generation()[0].body.passage_id,'p12','the first passage without audio, in the next chapter');
   assert.equal(env.generation()[0].body.intent,'queue');
   env.state.jobs = [nextChapterJob('completed')];
   await settle();
-  env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+  env.api.updatePlayback(env.book,env.book.passages[1],{playbackRate:1});
   await settle();
   assert.equal(env.generation().length,1,'one automatic attempt per chapter per Play');
   env.api.stop(env.book);
-  env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+  env.api.updatePlayback(env.book,env.book.passages[1],{playbackRate:1});
   await settle();
   assert.equal(env.generation().length,1,'no queueing after Stop');
 });
@@ -327,8 +369,8 @@ test('continuous: queueing ahead waits for an explicit Resume after a quota stop
   held.state.jobs = [{...held.state.jobs[0],status:'cancelled'}];
   await settle();
   // Play with continuation keeps the hold; only a fresh explicit Play lifts it.
-  await held.api.prepare(held.book,held.book.segments[0],{playbackRate:1,continuation:true});
-  held.api.updatePlayback(held.book,held.book.segments[0],{playbackRate:1});
+  await held.api.prepare(held.book,held.book.passages[0],{playbackRate:1,continuation:true});
+  held.api.updatePlayback(held.book,held.book.passages[0],{playbackRate:1});
   await settle();
   assert.ok(!held.generation().some(call => call.url.endsWith('/listen/chapter')),'Stop generating holds automatic queueing');
 });
@@ -342,7 +384,7 @@ test('continuous: a busy book is retried after a delay, an archived book is not'
     await playing(env);
     assert.equal(attempts(env),1,code);
     env.clock.now = Date.now() + 21000;
-    env.api.updatePlayback(env.book,env.book.segments[1],{playbackRate:1});
+    env.api.updatePlayback(env.book,env.book.passages[1],{playbackRate:1});
     await settle();
     assert.equal(attempts(env),expected,code === 'book_archived' ? 'an archived book is not retried' : 'a busy book is retried');
   }
@@ -352,15 +394,15 @@ test('continuous: playback crossing into an unqueued chapter starts that chapter
   const env = environment({takes:chapterA,chapterPost:startsNext});
   await env.init();
   env.api.setContinuous(env.book,false);
-  await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
-  await assert.rejects(env.api.prepare(env.book,env.book.segments[12],{continuation:true}),/is not prepared yet/);
+  await env.api.prepare(env.book,env.book.passages[11],{playbackRate:1});
+  await assert.rejects(env.api.prepare(env.book,env.book.passages[12],{continuation:true}),/is not prepared yet/);
   assert.equal(env.generation().length,0,'without continuous listening the chapter end stops playback');
   env.api.setContinuous(env.book,true);
-  await env.api.prepare(env.book,env.book.segments[11],{playbackRate:1});
-  const waiting = env.api.prepare(env.book,env.book.segments[12],{continuation:true});
+  await env.api.prepare(env.book,env.book.passages[11],{playbackRate:1});
+  const waiting = env.api.prepare(env.book,env.book.passages[12],{continuation:true});
   await settle();
   assert.equal(env.generation().length,1);
-  assert.equal(env.generation()[0].body.segment_id,'p12');
+  assert.equal(env.generation()[0].body.passage_id,'p12');
   env.api.stop(env.book);
   assert.equal(await waiting,null);
   env.state.jobs = [nextChapterJob('completed')];
@@ -383,7 +425,7 @@ test('continuous: Pause cancels a job it queued automatically, and the next Play
   assert.equal(cancels(env),1,'Pause or Stop cancels the automatic job');
   await settle();
   // The pause-cancelled job does not demand Resume chapter: explicit Play restarts it.
-  const again = env.api.prepare(env.book,env.book.segments[12],{});
+  const again = env.api.prepare(env.book,env.book.passages[12],{});
   await settle();
   assert.equal(chapterPosts(env).length,2);
   env.api.stop(env.book);
@@ -411,7 +453,7 @@ test('continuous: crossing while the lookahead request is in flight waits for it
   const env = environment({takes:chapterA,chapterPost:(call,state) => new Promise(resolve => { release = () => resolve(startsNext(call,state)); })});
   await env.init();
   await playing(env);
-  const crossing = env.api.prepare(env.book,env.book.segments[12],{continuation:true});
+  const crossing = env.api.prepare(env.book,env.book.passages[12],{continuation:true});
   await settle();
   release();
   await settle();
@@ -428,7 +470,7 @@ test('continuous: listening does not run on into back matter', async () => {
   await env.init();
   await playing(env);
   assert.equal(chapterPosts(env).length,0,'notes or an index are not narrated automatically');
-  assert.equal(env.api.allowsAdvance(book,book.segments[11],book.segments[12]),false);
+  assert.equal(env.api.allowsAdvance(book,book.passages[11],book.passages[12]),false);
   env.api.stop(env.book);
 });
 

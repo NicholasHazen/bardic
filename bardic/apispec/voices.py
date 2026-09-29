@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import Op, View, op
+from .enums import VoiceLibraryProvider
 from .books import Book
 from .media import AudioRef
 
@@ -60,25 +61,29 @@ class VoiceCharacterContext(View):
 
 
 class LibraryVoiceRecipe(View):
-    """How a voice version was made. Only keys with a non-null stored value are present."""
-    description: str | None = Field(None, description='The voice description (Breeze design prompt, Gemini '
-                                                      'prompted-voice input, or the clone/import description).')
-    sample_text: str | None = Field(None, description='Breeze: the text the auditioned clip speaks (design '
-                                                      'sample text or clone transcript). Absent for Gemini.')
-    model: str | None = Field(None, description='Gemini design model used, for example `gemini-3.8-flash-tts`. '
-                                                'Gemini only.')
-    language_code: str | None = Field(None, description='Gemini language tag, for example `en-US`. Gemini only.')
-    gender: str | None = Field(None, description='Gemini gender hint (`female`, `male` or `neutral`). Gemini '
-                                                 'only; absent when none was given.')
+    """How a voice version was made. Every field is always present; the ones that do not apply or were not recorded are null."""
+    description: str = Field(description='The voice description (Breeze design prompt, Gemini prompted-voice input, or '
+                                         'the clone/import description); an empty string when none was given.')
+    sample_text: str | None = Field(description='Breeze: the text the auditioned clip speaks (design '
+                                                'sample text or clone transcript). Null for Gemini.')
+    model: str | None = Field(description='Gemini design model used, for example `gemini-3.8-flash-tts`. '
+                                          'Gemini only; null otherwise.')
+    language_code: str | None = Field(description='Gemini language tag, for example `en-US`. Gemini only; null otherwise.')
+    gender: str | None = Field(description='Gemini gender hint (`female`, `male` or `neutral`). Gemini '
+                                           'only; null when none was given and for Breeze.')
 
 
-class LibraryVoiceAudition(AudioRef):
-    """A voice version's audition clip (`GET /api/voices/{voice_id}/versions/{version}/audition`).
+class VoiceAudition(AudioRef):
+    """The audition audio of a voice: a library voice version's clip or a design draft candidate's audio.
 
-    Always present. When Bardic retained the clip (24 kHz mono WAV), `asset_id`, `duration` and `created_at` are
-    set. When it did not, they are null and the URL fetches the Breeze reference clip or Gemini sample from the
-    provider on each request. `voice` is the version's provider voice ID. `model` is the design model for a
-    designed version, and null for a cloned or imported version, whose clip is a recording.
+    A version's clip is served by `GET /api/voices/{voice_id}/versions/{version}/audition` and a candidate's by
+    `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`. It has the common audio core and nothing
+    else. When Bardic retained the audio (24 kHz mono WAV), `asset_id`, `duration` and `created_at` are set. A
+    version without a retained clip has them null, and its URL fetches the Breeze reference clip or the Gemini sample
+    from the provider on each request. `voice` is the version's or candidate's provider voice ID: for a candidate, the
+    Gemini `voice_…` ID, or null for a Breeze preview (which is not a server voice). `model` is the design model for a
+    designed version or candidate (the Breeze model or a Gemini design model), and null for a cloned or imported
+    version, whose clip is a recording.
     """
 
 
@@ -87,7 +92,7 @@ class LibraryVoiceVersion(View):
     version: int = Field(description='Version number, starting at 1. Versions are append-only.')
     provider_voice_id: str = Field(description='The provider voice: a Breeze server voice ID (for example '
                                                '`bardic-1a2b3c4d`) or a Gemini `voice_…` ID.')
-    revision: str | None = Field(description='Breeze: the pinned revision, an opaque 64-hex hash of the '
+    voice_revision: str | None = Field(description='Breeze: the pinned revision, an opaque 64-hex hash of the '
                                              'speech-affecting server state when the version was saved. '
                                              'Narration is refused if the live server voice no longer matches. '
                                              'Null for Gemini.')
@@ -106,7 +111,7 @@ class LibraryVoiceVersion(View):
                     'to compare with (Breeze never checked or checked against another URL; Gemini project voices '
                     'never listed with the current key, or the last listing failed). `other_project`: Gemini only, '
                     'made with a different Google API key than the current one.')
-    audition: LibraryVoiceAudition = Field(description='This version\'s audition clip.')
+    audition: VoiceAudition = Field(description='This version\'s audition clip.')
     recipe: LibraryVoiceRecipe = Field(description='How the version was made.')
 
 
@@ -125,7 +130,7 @@ class LibraryVoiceUsage(View):
 class LibraryVoice(View):
     """A named library voice with its versions ("VoiceView")."""
     id: str = Field(description='Library voice ID, `vl_` followed by 16 hex digits.')
-    provider: Literal['breeze', 'gemini'] = Field(description='The provider every version belongs to.')
+    provider: VoiceLibraryProvider = Field(description='The provider every version belongs to.')
     name: str = Field(description='Display name, 1–100 characters.')
     description: str = Field(description='Free-text description, up to 1,000 characters.')
     origin: Literal['designed', 'cloned', 'imported'] = Field(
@@ -149,15 +154,6 @@ class LibraryVoice(View):
                                             'speech model accepts only built-in voices.')
 
 
-class VoiceDraftCandidateAudio(AudioRef):
-    """Bardic's retained copy of a candidate's audio (24 kHz mono WAV).
-
-    Served by `GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`. `voice` is the Gemini `voice_…`
-    ID, or null for a Breeze preview, which is not a server voice. `model` is the Breeze model or the Gemini
-    design model used.
-    """
-
-
 class VoiceDraftCandidate(View):
     """One generated candidate in a design draft."""
     id: str = Field(description='Candidate ID, unique within the draft: `c1`, `c2`, … in creation order.')
@@ -175,14 +171,14 @@ class VoiceDraftCandidate(View):
                                                '(about 24 hours; irrelevant to saving, which uploads the retained '
                                                'clip) or the Gemini stored voice\'s expiry. Null when not reported.')
     discarded: bool = Field(description='True once discarded (explicitly, or by abandoning the draft).')
-    audio: VoiceDraftCandidateAudio | None = Field(description='The retained audio, or null when none was '
+    audio: VoiceAudition | None = Field(description='The retained audio, or null when none was '
                                                                'retained (a Gemini sample that could not be stored).')
 
 
 class VoiceDraft(View):
     """A voice design draft ("DraftView")."""
     id: str = Field(description='Draft ID, `vd_` followed by 16 hex digits.')
-    provider: Literal['breeze', 'gemini'] = Field(description='The provider candidates are generated with.')
+    provider: VoiceLibraryProvider = Field(description='The provider candidates are generated with.')
     base_voice_id: str | None = Field(description='Library voice this draft iterates on (enables `mode: "version"` '
                                                   'on save), or null.')
     base_voice_name: str | None = Field(description='Current name of the base voice; null when there is none or '
@@ -221,7 +217,7 @@ class VoiceLibraryBreezeServerVoice(View):
                                                '(library voice ID) and `bardic_version`.')
     usable: bool = Field(description='True when the voice can narrate: cloned, with a readable reference clip.')
     reason: str | None = Field(description='Why it is not usable, or null.')
-    revision: str | None = Field(description='Pinned revision (opaque 64-hex hash of speech-affecting state), or '
+    voice_revision: str | None = Field(description='Pinned revision (opaque 64-hex hash of speech-affecting state), or '
                                              'null when not usable.')
     seed: int | None = Field(description='The server voice\'s own seed setting, if it has one.')
 
@@ -316,7 +312,7 @@ class VoiceLibraryOverview(View):
 
 class LibraryVoiceDeleted(View):
     """Result of deleting a library voice."""
-    deleted: str = Field(description='The library voice ID.')
+    voice_id: str = Field(description='The ID of the library voice that was deleted.')
     server_deleted: list[str] = Field(description='Provider voice IDs this deletion removed on the provider, '
                                                   'sorted, including those removed by earlier attempts that failed '
                                                   'part-way. Empty when removed from Bardic only, or when the voice '
@@ -331,25 +327,23 @@ class VoiceLibraryDefaultsResult(View):
 class VoiceDraftSaved(View):
     """Result of saving a draft candidate as a library voice or version."""
     voice: LibraryVoice = Field(description='The new voice, or the base voice with its new current version.')
-    book: Book | None = Field(None, description='The full book document after assignment; present only when '
-                                                '`assign` was given and the assignment succeeded.')
-    assignment_error: str | None = Field(None, description='Present when `assign` was given and failed (for '
-                                                           'example the book is busy or the character is missing). '
-                                                           'The voice is still saved; nothing is rolled back.')
-    cleanup_error: str | None = Field(None, description='Gemini only. Present when an unchosen stored candidate '
-                                                        'could not be deleted (the first failure message), or some '
-                                                        'were made with another Google key and remain in that '
-                                                        'project.')
+    book: Book | None = Field(description='The full book document after assignment; null unless `assign` was '
+                                          'given and the assignment succeeded.')
+    assignment_error: str | None = Field(description='When `assign` was given and failed (for example the book is '
+                                                     'busy or the character is missing): why. The voice is still '
+                                                     'saved; nothing is rolled back. Null otherwise.')
+    cleanup_error: str | None = Field(description='Gemini only. When an unchosen stored candidate could not be '
+                                                  'deleted (the first failure message), or some were made with '
+                                                  'another Google key and remain in that project. Null otherwise.')
 
 
 class BreezeVoiceCloned(View):
     """Result of cloning a Breeze voice from a recording."""
     voice: LibraryVoice = Field(description='The new cloned library voice.')
-    book: Book | None = Field(None, description='The full book document after assignment; present only when '
-                                                '`book_id` and `character_id` were given and the assignment '
-                                                'succeeded.')
-    assignment_error: str | None = Field(None, description='Present when the assignment failed. The voice is still '
-                                                           'created; nothing is rolled back.')
+    book: Book | None = Field(description='The full book document after assignment; null unless `book_id` and '
+                                          '`character_id` were given and the assignment succeeded.')
+    assignment_error: str | None = Field(description='When the assignment failed: why. The voice is still created; '
+                                                     'nothing is rolled back. Null otherwise.')
 
 
 # ------------------------------------------------------------------ operations

@@ -107,8 +107,8 @@ def test_accepted_steps_project_exact_evidence_to_the_cast_endpoint(api):
     assert profiled[0]['profile_description'] == 'Refined Mara.'
     # Directing: every attributed line, anchored to its passage.
     spoken = by_step[('dialogue', 'directing')]
-    segments = {s['id']: s for s in book_of(api, book['id'])['segments']}
-    assert len(spoken) == 3 and all(segments[r['segment_id']]['text'] == r['quote'] for r in spoken)
+    passages = {s['id']: s for s in book_of(api, book['id'])['passages']}
+    assert len(spoken) == 3 and all(passages[r['passage_id']]['text'] == r['quote'] for r in spoken)
     assert {(r['provider'], r['confidence'], r['origin']) for r in spoken} == {('openai', .9, 'run')}
     # Mentions are exact name matches, not presence.
     mentions = by_step[('mention', None)]
@@ -168,12 +168,12 @@ def test_directing_rollback_moves_dialogue_and_manual_speakers_win(api):
     assert {r['character_id'] for r in spoken} == {names['Mara']} and len(spoken) == 3
 
     # A manual speaker choice is what the book shows, so it is what Cast lists.
-    line = next(s for s in book_of(api, book['id'])['segments'] if s['kind'] == 'dialogue')
-    assert api.patch(f"/api/books/{book['id']}/segments/{line['id']}", json={'speaker_id': names['Elio']}).status_code == 200
+    line = next(s for s in book_of(api, book['id'])['passages'] if s['kind'] == 'dialogue')
+    assert api.patch(f"/api/books/{book['id']}/passages/{line['id']}", json={'speaker_id': names['Elio']}).status_code == 200
     # The references route computes the projection from the current book, so it shows the edit at once
     # without recording anything; the stored rows follow at the next write.
     stored = references(api, book['id'])
-    row = next(r for r in references(api, book['id'], names['Elio']) if r['segment_id'] == line['id'] and r['kind'] == 'dialogue')
+    row = next(r for r in references(api, book['id'], names['Elio']) if r['passage_id'] == line['id'] and r['kind'] == 'dialogue')
     assert (row['character_id'], row['provider'], row['origin'], row['step']) == (names['Elio'], 'reviewed', 'manual', None)
     assert references(api, book['id']) == stored
     assert api.post(f"{base}/plan", json={'steps': ['census']}).status_code == 200
@@ -216,7 +216,9 @@ def test_classic_rows_written_over_accepted_evidence_are_replaced_by_the_next_sy
     assert references(api, book['id']) == [legacy]
     # Reads show the rebuilt projection at once and record nothing.
     mara = cast(api, book['id'])['Mara']
-    assert references(api, book['id'], mara) == [r for r in rows if r['character_id'] == mara]
+    # The route presents stored rows on the wire, where a stored segment_id is a passage_id.
+    on_wire = [{('passage_id' if key == 'segment_id' else key): value for key, value in r.items()} for r in rows]
+    assert references(api, book['id'], mara) == [r for r in on_wire if r['character_id'] == mara]
     api.get(f"/api/books/{book['id']}/analysis-pipeline")
     assert references(api, book['id']) == [legacy]
     # The next write syncs. Discovery has an accepted version, so legacy discovery evidence is not carried.
@@ -408,7 +410,7 @@ def test_demo_book_shows_references_after_baseline_capture(api):
     demo = api.post('/api/demo').json()
     assert references(api, demo['id']) == []
     api.get(f"/api/books/{demo['id']}/analysis-pipeline")  # first sync: baseline capture, then projection
-    speaker = next(s['speaker_id'] for s in demo['segments'] if s['kind'] == 'dialogue' and s['speaker_id'] != 'unassigned')
+    speaker = next(s['speaker_id'] for s in demo['passages'] if s['kind'] == 'dialogue' and s['speaker_id'] != 'unassigned')
     rows = references(api, demo['id'], speaker)
     assert {'dialogue', 'mention'} <= {r['kind'] for r in rows}
     assert {r['origin'] for r in rows if r['kind'] == 'dialogue'} == {'baseline'}

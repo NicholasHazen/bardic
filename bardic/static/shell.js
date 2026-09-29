@@ -250,7 +250,7 @@
   function showInReader({bookId, segmentId} = {}) {
     const shell = app(), book = shell?.state?.book;
     if (!book || book.id !== bookId) return false;
-    const segment = (book.segments || []).find(item => item.id === segmentId);
+    const segment = (book.passages || []).find(item => item.id === segmentId);
     if (!segment) return false;
     shell.setTab('read');
     if (segment.chapter_id !== shell.state.chapterId) {

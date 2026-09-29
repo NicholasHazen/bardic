@@ -12,7 +12,7 @@ class Container {
   contains() { return false; }
   querySelector() { return null; }
 }
-const book = {id:'book-q', title:'The Lantern', chapters:[{id:'c1', title:'One', kind:'chapter'}], segments:[{id:'s1', chapter_id:'c1'}]};
+const book = {id:'book-q', title:'The Lantern', chapters:[{id:'c1', title:'One', kind:'chapter'}], passages:[{id:'s1', chapter_id:'c1'}]};
 const source = name => fs.readFileSync(path.join(__dirname, '../bardic/static', name), 'utf8');
 
 async function render(records) {
@@ -30,12 +30,12 @@ async function render(records) {
 test('Gemini content-policy blocks show as their own states, never as plain complete or failed', async () => {
   const progress = extra => ({passages_total:10, passages_ready:10, seconds_ready:60, passages_fallback:0, passages_blocked:0, fallback_provider:null,
     chapters:[{id:'c1', title:'One', passages_total:10, passages_ready:10, passages_fallback:0, passages_blocked:0, blocked_passage_ids:[]}], ...extra});
-  const record = (id, extra) => ({id, name:id, mode:'simple', chapter_ids:['c1'], narrator_label:'Kore · Gemini', job:{id:'j', status:'completed'}, progress:progress(extra)});
+  const record = (id, extra) => ({id, name:id, mode:'simple', chapter_ids:['c1'], narrator_label:'Kore · Gemini', chapters_added:[], job:{id:'j', kind:'performance', status:'completed'}, progress:progress(extra)});
   const html = await render([
     record('pf_plain', {}),
     record('pf_fallback', {passages_fallback:4, fallback_provider:'system'}),
     record('pf_blocked', {passages_ready:7, passages_blocked:3}),
-    {...record('pf_error', {passages_ready:2}), job:{id:'j', status:'failed', error:'Gemini blocked it.', error_code:'content_blocked'}},
+    {...record('pf_error', {passages_ready:2}), job:{id:'j', kind:'performance', status:'failed', error:'Gemini blocked it.', error_code:'content_blocked'}},
   ]);
   const card = id => html.split('<article').find(part => part.includes(`data-performance="${id}"`));
   assert.match(card('pf_plain'), /data-state="complete"/);
@@ -60,8 +60,8 @@ test('a chapter Gemini partly blocked says how each passage ended', () => {
   vm.runInNewContext(source('listen-status.js'), scope);
   const {compute} = scope.BardicListenStatus;
   const base = {mode:'simple', available:true, readyHere:true, aheadSeconds:0, rate:1};
-  const job = (status, extra = {}) => ({id:'job-1', status, chapter_id:'c1', ...extra});
-  const blocked = {content_blocked:{fallback:{provider:'system'}, fallback_passage_ids:['a', 'b'], blocked_passage_ids:['c'], fallback_error:null}};
+  const job = (status, extra = {}) => ({id:'job-1', kind:'listen_chapter', status, chapter_id:'c1', fallback:null, content_blocked:null, ...extra});
+  const blocked = {content_blocked:{fallback:{session_id:'f'.repeat(64), provider:'system', model:'macos-say', voice:''}, fallback_passage_ids:['a', 'b'], blocked_passage_ids:['c'], fallback_error:null}};
   const ready = compute({...base, started:true, remainingSeconds:0, job:job('completed', blocked)});
   assert.equal(ready.state, 'paused');
   assert.match(ready.detail, /2 passages read by a device voice because Gemini blocked them\./);

@@ -107,9 +107,9 @@ def audio(client, book, performance):
     return response.json()['audio']
 
 
-def passages(book, *chapters):
+def passages(book, *chapters, key='passages'):
     wanted = {chapter['id'] for chapter in chapters}
-    return [segment for segment in book['segments'] if segment['chapter_id'] in wanted]
+    return [segment for segment in book[key] if segment['chapter_id'] in wanted]
 
 
 def edit_passage(store, book_id, segment_id, old, new):
@@ -170,7 +170,7 @@ def test_live_listening_takes_with_the_same_narrator_are_reused(client, monkeypa
     first, second = passages(book, one)[:2]
     for segment in (first, second):
         response = client.post(f"/api/books/{book['id']}/listen", json={'provider': 'system', 'voice': 'Samantha',
-                                                                       'segment_id': segment['id']})
+                                                                       'passage_id': segment['id']})
         assert response.status_code == 200, response.text
         wait_job(client, response.json()['job']['id'])
     assert len(calls) == 2
@@ -201,9 +201,9 @@ def test_cancel_keeps_finished_audio_and_a_cancelled_job_never_continues(client,
     ready = audio(client, book, result['performance'])
     assert list(ready) == [calls[0]['segment']['id']]
     resumed = client.post(f"/api/books/{book['id']}/performances/{result['performance']['id']}/prepare").json()
-    assert resumed['job']['total'] == len(book['segments']) - 1
+    assert resumed['job']['total'] == len(book['passages']) - 1
     assert wait_job(client, resumed['job']['id'])['status'] == 'completed'
-    assert len(calls) == len(book['segments'])
+    assert len(calls) == len(book['passages'])
 
 
 @pytest.fixture
@@ -264,14 +264,14 @@ def test_cast_performance_uses_its_snapshot_and_never_touches_studio_takes(clien
     mara = next(c for c in added['characters'] if c['name'] == 'Mara')
     added = client.post(f"/api/books/{book['id']}/characters", json={'name': 'Elio'}).json()
     elio = next(c for c in added['characters'] if c['name'] == 'Elio')
-    come_in = next(s for s in book['segments'] if s['text'] == '“Come in,”')
-    wait = next(s for s in book['segments'] if s['text'] == '“Wait,”')
-    gulls = next(s for s in book['segments'] if s['text'].startswith('The gulls'))
+    come_in = next(s for s in book['passages'] if s['text'] == '“Come in,”')
+    wait = next(s for s in book['passages'] if s['text'] == '“Wait,”')
+    gulls = next(s for s in book['passages'] if s['text'].startswith('The gulls'))
     for segment, speaker in ((come_in, mara), (gulls, elio)):
-        assert client.patch(f"/api/books/{book['id']}/segments/{segment['id']}", json={'speaker_id': speaker['id']}).status_code == 200
+        assert client.patch(f"/api/books/{book['id']}/passages/{segment['id']}", json={'speaker_id': speaker['id']}).status_code == 200
     # One Studio take whose recipe the performance can reuse, read-only.
-    door = next(s for s in book['segments'] if s['text'].startswith('The door'))
-    studio = client.post(f"/api/books/{book['id']}/render", json={'provider': 'system', 'segment_id': door['id']}).json()
+    door = next(s for s in book['passages'] if s['text'].startswith('The door'))
+    studio = client.post(f"/api/books/{book['id']}/render", json={'provider': 'system', 'passage_id': door['id']}).json()
     assert wait_job(client, studio['id'])['status'] == 'completed' and len(calls) == 1
     before = studio_state(client.app.state.runtime.store)
 
@@ -282,7 +282,7 @@ def test_cast_performance_uses_its_snapshot_and_never_touches_studio_takes(clien
     assert any('no identified speaker' in note for note in preview['notes'])
     result = client.post(f"/api/books/{book['id']}/performances", json=body).json()
     assert wait_job(client, result['job']['id'])['status'] == 'completed'
-    selected = passages(client.app.state.runtime.store.book(book['id']), one, two)
+    selected = passages(client.app.state.runtime.store.book(book['id']), one, two, key='segments')
     assert len(calls) == 1 + len(selected) - 1, 'the matching Studio take was reused'
     ready = audio(client, book, result['performance'])
     assert set(ready) == {s['id'] for s in selected}
@@ -291,7 +291,7 @@ def test_cast_performance_uses_its_snapshot_and_never_touches_studio_takes(clien
     for segment in (wait, gulls):
         assert ready[segment['id']]['fallback'] is True and ready[segment['id']]['character_id'] == 'narrator'
     assert ready[door['id']]['asset_id'] == client.app.state.runtime.store.book(book['id'])['segments'][
-        [s['id'] for s in book['segments']].index(door['id'])]['audio']['asset_id']
+        [s['id'] for s in book['passages']].index(door['id'])]['audio']['asset_id']
     assert client.get(ready[come_in['id']]['url']).status_code == 200
     assert studio_state(client.app.state.runtime.store) == before, 'Studio takes are untouched'
     cast = {row['character_id']: row for row in result['performance']['cast']}
@@ -326,7 +326,7 @@ def test_source_change_hides_only_that_passage_and_resume_regenerates_it(client,
     one = book['chapters'][0]
     result = create(client, book, [one])
     wait_job(client, result['job']['id'])
-    lamps = next(s for s in book['segments'] if s['text'].startswith('The lamps'))
+    lamps = next(s for s in book['passages'] if s['text'].startswith('The lamps'))
     store = client.app.state.runtime.store
     edit_passage(store, book['id'], lamps['id'], 'lit', 'dim')
     ready = audio(client, book, result['performance'])
@@ -350,7 +350,7 @@ def test_preview_is_local_and_reports_problems_notes_and_request_estimates(clien
     url = f"/api/books/{book['id']}/performances/preview"
     local = client.post(url, json=request(book, book['chapters'])).json()
     assert local['problems'] == [] and local['quota'] is None
-    assert local['requests_estimate'] == local['passages_to_generate'] == local['passages_total'] == len(book['segments'])
+    assert local['requests_estimate'] == local['passages_to_generate'] == local['passages_total'] == len(book['passages'])
     assert local['expected_seconds'] > 0 and [c['id'] for c in local['chapters']] == [c['id'] for c in book['chapters']]
     cloud = request(book, book['chapters'], provider='gemini', voice='Kore', model=DEFAULT_TTS_MODEL)
     missing_key = client.post(url, json=cloud).json()
@@ -474,27 +474,27 @@ def test_resume_replaces_a_damaged_cast_file(client, monkeypatch):
     result = create(client, book, book['chapters'][:1], mode='cast', provider='system', voice=None)
     assert wait_job(client, result['job']['id'])['status'] == 'completed'
     before = audio(client, book, result['performance'])
-    segment_id, damaged = next(iter(before.items()))
+    passage_id, damaged = next(iter(before.items()))
     client.app.state.runtime.audio_path(book['id'], damaged['asset_id']).write_bytes(b'RIFF-damaged')
     made = len(calls)
     resumed = client.post(f"/api/books/{book['id']}/performances/{result['performance']['id']}/prepare").json()
     assert resumed['job'] is not None, 'resume validates cast audio instead of trusting that a file exists'
     assert wait_job(client, resumed['job']['id'])['status'] == 'completed'
     assert len(calls) == made + 1, 'only the damaged passage is narrated again'
-    assert audio(client, book, result['performance'])[segment_id]['asset_id'] != damaged['asset_id']
+    assert audio(client, book, result['performance'])[passage_id]['asset_id'] != damaged['asset_id']
 
 
 def test_live_listening_does_not_join_a_performance_chapter_job(gemini):
     client = gemini
     store = client.app.state.runtime.store
     book = import_book(client)
-    first = book['segments'][0]
+    first = book['passages'][0]
     parent = store.create_job(book['id'], 'performance', 1)
     child = store.create_job(book['id'], 'listen_chapter', 1)
     store.update_job(child['id'], status='running', parent_id=parent['id'], chapter_id=first['chapter_id'])
     response = client.post(f"/api/books/{book['id']}/listen/chapter",
                            json={'provider': 'gemini', 'voice': 'Kore', 'model': DEFAULT_TTS_MODEL,
-                                 'segment_id': first['id'], 'intent': 'play'})
+                                 'passage_id': first['id'], 'intent': 'play'})
     assert response.status_code == 409
     assert 'saved performance' in response.json()['detail']
     for job in (child, parent):
@@ -532,7 +532,7 @@ def test_adding_chapters_extends_the_same_performance_and_reuses_what_is_saved(c
     assert len(calls) - made == len(passages(book, two, three)), 'only the added chapters are narrated'
     after = audio(client, book, first['performance'])
     assert {key: after[key] for key in before} == before, 'retained audio is never rewritten'
-    assert len(after) == len(book['segments'])
+    assert len(after) == len(book['passages'])
     assert len(client.get(f"/api/books/{book['id']}/performances").json()['performances']) == 1
 
     # Nothing new and nothing missing: no job, and no history entry.
@@ -638,7 +638,7 @@ def test_an_active_listener_never_changes_the_requests_a_performance_makes(gemin
         if listening:
             seen = listen_while_recording(client, book, result['performance'], result['job']['id'])
         assert wait_job(client, result['job']['id'])['status'] == 'completed'
-        assert len(audio(client, book, result['performance'])) == len(book['segments'])
+        assert len(audio(client, book, result['performance'])) == len(book['passages'])
         plans.append(request_plan(store, book['id'], list(sent), known))
     quiet, loud = plans
     assert quiet['requests'], 'the run made provider requests'

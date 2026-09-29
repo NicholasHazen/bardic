@@ -132,7 +132,7 @@ def start(runtime, book_id: str, performance_id: str, request: dict) -> dict:
     store = runtime.store
     job = store.create_job(book_id, 'performance', len(picked))
     job = store.update_job(job['id'], performance_id=performance_id, mode=record['mode'], provider=narrator['provider'],
-                           model=narrator['model'], phase='rerecord', child_job_ids=[], child_job_id=None,
+                           model=narrator['model'], child_job_ids=[], child_job_id=None,
                            fallback=narrator, passage_issues=[],
                            rerecord={'provider': narrator['provider'], 'model': narrator['model'], 'voice': narrator['voice'],
                                      'passages': len(picked), 'chapter_ids': public['chapter_ids'],

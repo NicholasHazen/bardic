@@ -13,7 +13,7 @@ class Container {
   querySelector() { return null; }
 }
 const book = {id:'book-q',title:'The Lantern',chapters:[{id:'front',title:'Title page',kind:'front_matter'},{id:'c1',title:'One',kind:'chapter'},{id:'c2',title:'Two',kind:'chapter'}],
-  segments:[{id:'s0',chapter_id:'front'},{id:'s1',chapter_id:'c1'},{id:'s2',chapter_id:'c2'}]};
+  passages:[{id:'s0',chapter_id:'front'},{id:'s1',chapter_id:'c1'},{id:'s2',chapter_id:'c2'}]};
 const listed = [{id:'pf_1',name:'Evening',mode:'simple',chapter_ids:['c1'],narrator_label:'Samantha · Device',
   job:{id:'job-1',status:'cancelled'},progress:{passages_total:2,passages_ready:1,seconds_ready:4,chapters:[]}}];
 

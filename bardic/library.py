@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 
+from . import wire
 from .store import now
 from .errors import Conflict, Invalid, NotFound
 from .series import SERIES_ARCHIVED
@@ -148,6 +149,7 @@ class LibraryRepository:
             listening = _file_bytes(self.store.root / 'listen-audio' / book_id, boundary=self.store.root)
             previews = _file_bytes(self.store.root / 'voice-previews' / book_id, boundary=self.store.root)
             result = {k: deepcopy(book.get(k)) for k in ('id', 'title', 'author', 'created_at', 'source_name', 'analysis')}
+            wire.analysis_summary(result['analysis'])
             result.update(archived=bool(removed), archived_at=removed[0] if removed else None,
                           section_count=len(chapters), chapter_count=sum(c.get('kind') == 'chapter' for c in chapters)
                           if any(c.get('kind') for c in chapters) else len(chapters),
@@ -293,7 +295,7 @@ class LibraryRepository:
                 raise Invalid('position_taken', 'A supplied book (possibly a removed one) already has this reading order.')
             conn.execute('''INSERT INTO series_volume_slots VALUES (?,?,?,?,?) ON CONFLICT(series_id,position)
                 DO UPDATE SET title=excluded.title,status=excluded.status''', (series_id, position, title, status, now()))
-        return {'series_id': series_id, 'position': position, 'title': title, 'status': status, 'book_id': None}
+        return {'series_id': series_id, 'position': position, 'title': title, 'status': status, 'kind': 'placeholder'}
 
     def remove_volume(self, series_id, position):
         position = _position(position)

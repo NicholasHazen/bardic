@@ -168,8 +168,8 @@ def providers_status() -> dict[str, Any]:
         provider: {
             "id": provider, "label": row["label"], "default_model": row["default_model"],
             "models": list(row["models"]), "default_voice": row["default_voice"], "requires": row["requires"],
-            "capabilities": dict(row["capabilities"]),
-            **({"voices": [{"id": name, "name": name} for name in _VOICE_NAMES]} if provider == "gemini" else {}),
+            "capabilities": {"custom_voice_ids": None, "speakers_per_take": None, **row["capabilities"]},
+            "voices": [{"id": name, "name": name} for name in _VOICE_NAMES] if provider == "gemini" else None,
         }
         for provider, row in PROVIDERS.items()
     }

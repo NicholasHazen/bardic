@@ -6,12 +6,11 @@ from typing import Literal
 from pydantic import Field
 
 from .base import Op, View, op
+from .enums import AnalysisProvider, CloudProvider, NarrationProvider
 from .common import TIME, Job
 from .media import ChapterListenChunking, ChapterListenLimits, ChapterListenQuota
 from .voices import VoiceLibraryBreezeStatus, VoiceLibraryDefaults, VoiceLibrarySystemVoice
 
-CloudProvider = Literal['gemini', 'openai', 'anthropic']
-AnalysisProviderId = Literal['local', 'gemini', 'openai', 'anthropic']
 
 
 # ---------------------------------------------------------------- provider catalogs
@@ -36,7 +35,7 @@ class AnalysisCatalogModel(View):
         description='Published USD price per million input tokens, or null when unknown or not quoted '
                     '(for example a model whose price depends on prompt length).')
     output_usd_per_million: float | None = Field(description='Published USD price per million output tokens, or null.')
-    source_url: str = Field(description='Provider documentation page for the model list.')
+    source_url: str | None = Field(description='Provider documentation page for the model list, or null for a self-hosted server.')
     pricing_source_url: str | None = Field(description='Provider pricing page the prices came from, or null.')
     price_date: str | None = Field(description='Date (YYYY-MM-DD) the prices were recorded, or null.')
     availability: Literal['unverified', 'listed', 'not_listed'] = Field(
@@ -44,10 +43,10 @@ class AnalysisCatalogModel(View):
                     '`listed`: the provider listed it for this key in the last refresh. `not_listed`: a curated model '
                     'the complete listing did not include. Listing proves visibility only, not working generation or credit.')
     price_valid_until: str | None = Field(
-        None, description='Last date (YYYY-MM-DD) the quoted price applies; absent when open-ended. Cost estimates treat '
-                          'the price as unknown after it.')
+        description='Last date (YYYY-MM-DD) the quoted price applies; null when open-ended. Cost estimates treat '
+                    'the price as unknown after it.')
     price_input_token_limit: int | None = Field(
-        None, description='Prompt size in tokens above which the quoted price does not apply; absent when none.')
+        description='Prompt size in tokens above which the quoted price does not apply; null when none.')
 
 
 class AnalysisModelCatalog(View):
@@ -69,17 +68,17 @@ class AnalysisModelCatalog(View):
     models: list[AnalysisCatalogModel] = Field(
         description='Curated models first (in curated order), then models only the listing found, sorted by ID.')
     partial: bool | None = Field(
-        None, description='Present after a successful refresh: true when the listing had more pages than were read, '
-                          'so unlisted curated models stay `unverified`.')
+        description='After a successful refresh: true when the listing had more pages than were read, so unlisted '
+                    'curated models stay `unverified`. Null when there was no successful refresh.')
 
 
 # ---------------------------------------------------------------- account checks
 
 class AccountCheckUsage(View):
-    """Token usage the provider reported for the check request. Absent counts were not reported."""
-    input_tokens: int | None = Field(None, description='Input tokens.')
-    output_tokens: int | None = Field(None, description='Output tokens.')
-    total_tokens: int | None = Field(None, description='Total tokens (computed from input and output when not reported).')
+    """Token usage the provider reported for the check request. A null count was not reported."""
+    input_tokens: int | None = Field(description='Input tokens, or null when not reported.')
+    output_tokens: int | None = Field(description='Output tokens, or null when not reported.')
+    total_tokens: int | None = Field(description='Total tokens (computed from input and output when not reported), or null.')
 
 
 class AccountCheck(View):
@@ -103,8 +102,7 @@ class AccountCheck(View):
     checked_at: str | None = Field(description='When the check finished, or null when never checked. ' + TIME)
     usage: AccountCheckUsage | None = Field(description='Reported usage of the check request, or null.')
     http_status: int | None = Field(description='Provider HTTP status of the check request, or null when none was received.')
-    balance: None = Field(description='Always null: an exact balance is not available through an inference key.')
-    balance_note: str = Field(description='Explains why no balance is shown.')
+    balance_note: str = Field(description='Explains why no balance is shown: an exact balance is not available through an inference key.')
     cached: bool = Field(description='True when an identical check from the last 30 seconds was returned without a new request.')
     billing_url: str = Field(description='Provider billing dashboard URL.')
     usage_url: str = Field(description='Provider usage dashboard URL.')
@@ -114,12 +112,12 @@ class AccountCheck(View):
 
 class StatusNarrationAvailability(View):
     """Whether a narration provider can be used right now."""
-    id: Literal['system', 'gemini', 'breeze'] = Field(description='Narration provider ID: `system` (macOS device voices), `gemini` (cloud) or `breeze` (self-hosted server).')
+    id: NarrationProvider = Field(description='Narration provider ID.')
     label: str = Field(description='Display name.')
     available: bool = Field(
         description='`system`: macOS voices and ffmpeg are installed. `gemini`: a Gemini key is loaded. `breeze`: a '
                     'server URL is configured and the last check found at least one usable voice.')
-    reason: str | None = Field(None, description='`breeze` only: why it is unavailable, or null when available.')
+    reason: str | None = Field(description='`breeze` only: why it is unavailable. Null when it is available and for every other provider.')
 
 
 class NarrationProviderVoice(View):
@@ -137,25 +135,25 @@ class NarrationProviderCapabilities(View):
     seeded_takes: bool = Field(description='A seed makes a take repeatable; a new seed makes a new take (Breeze only).')
     cost: Literal['local', 'cloud', 'self_hosted'] = Field(
         description='`local`: this computer. `cloud`: billed provider requests. `self_hosted`: the owner\'s server, no per-request charge.')
-    custom_voice_ids: bool | None = Field(None, description='Gemini only: accepts voice IDs beyond the prebuilt list.')
-    speakers_per_take: int | None = Field(None, description='Gemini only: speakers in one request.')
+    custom_voice_ids: bool | None = Field(description='Gemini only: accepts voice IDs beyond the prebuilt list. Null for other providers.')
+    speakers_per_take: int | None = Field(description='Gemini only: speakers in one request. Null for other providers.')
 
 
 class NarrationProviderInfo(View):
     """The static contract of one narration provider (availability is reported in `providers`)."""
-    id: Literal['system', 'gemini', 'breeze'] = Field(description='Narration provider ID: `system` (macOS device voices), `gemini` (cloud) or `breeze` (self-hosted server).')
+    id: NarrationProvider = Field(description='Narration provider ID.')
     label: str = Field(description='Display name.')
     default_model: str = Field(description='Speech model used when none is chosen (`macos-say`, a Gemini TTS model, or `breeze-tts-2`).')
     models: list[str] = Field(description='Accepted speech models.')
     default_voice: str | None = Field(description='Voice used when none is chosen (`Kore` for Gemini), or null.')
     requires: Literal['none', 'api_key', 'server'] = Field(description='What must be configured before use.')
     capabilities: NarrationProviderCapabilities
-    voices: list[NarrationProviderVoice] | None = Field(None, description='Gemini only: the prebuilt voices.')
+    voices: list[NarrationProviderVoice] | None = Field(description='Gemini only: the prebuilt voices. Null for other providers.')
 
 
 class AnalysisProviderStatus(View):
     """An analysis provider and whether it is usable."""
-    id: AnalysisProviderId = Field(description='Analysis provider ID: `local` (offline draft analysis, no key) or a cloud provider `gemini`, `openai`, `anthropic`.')
+    id: AnalysisProvider = Field(description='Analysis provider ID. This list has `local` (offline draft analysis, no key) and the cloud providers `gemini`, `openai`, `anthropic`.')
     label: str = Field(description='Display name.')
     available: bool = Field(description='Whether analysis with this provider can start without further configuration. '
                                         '`local` needs no key, so it is always available; a cloud provider is available '
@@ -187,7 +185,7 @@ class LocalServiceUrls(View):
 
 class StepPresetConfigView(View):
     """The step settings a saved set captures (version 1)."""
-    provider: str = Field(description='Provider ID the step runs with (`local` for local steps).')
+    provider: AnalysisProvider = Field(description='Provider ID the step runs with (`local` for local steps).')
     model: str | None = Field(description='Model ID, or null for local and service providers.')
     custom_model: bool = Field(description='True when the model ID was typed by hand rather than chosen from the catalog.')
     gate: Literal['auto', 'review'] = Field(description="`auto` accepts a run's results; `review` holds them for review.")
@@ -213,6 +211,17 @@ class FallbackNarratorChoice(View):
                                    'empty string for the provider\'s default voice.')
 
 
+class ContractInfo(View):
+    """The contract this server implements: the version handshake."""
+    version: str = Field(
+        description='The contract version: equals `info.version` of the OpenAPI document and the `Bardic-Contract-Version` '
+                    'response header. It follows the rules in `contract/CHANGELOG.md`.')
+    sha256: str = Field(
+        description='Lowercase hex SHA-256 of the exact bytes of the OpenAPI document (`contract/openapi.json`, UTF-8) '
+                    'that the server implements: the `contract-sha256` value recorded for `version` in '
+                    '`contract/CHANGELOG.md`. Two servers with the same `sha256` implement the same document.')
+
+
 class Status(View):
     """Runtime status and preferences. Never contains key values and never contacts a provider.
 
@@ -221,7 +230,7 @@ class Status(View):
     """
     # Saved preferences
     tts_model: str = Field(description='Selected Gemini speech model; one of `tts_models`.')
-    analysis_provider: AnalysisProviderId = Field(description='Default provider for model-based analysis steps without saved '
+    analysis_provider: AnalysisProvider = Field(description='Default provider for model-based analysis steps without saved '
                                                               'step settings. `local` means none: the first cloud provider with a key is used.')
     analysis_models_by_provider: dict[CloudProvider, str] = Field(
         description='Selected analysis model per cloud provider (always all three).')
@@ -243,7 +252,7 @@ class Status(View):
                     'is saved: a performance then falls back to the automatic local narrator (a device voice, else Breeze).')
     # Derived
     providers: list[StatusNarrationAvailability] = Field(description='Narration providers in order system, gemini, breeze, with availability.')
-    narration_providers: dict[Literal['system', 'gemini', 'breeze'], NarrationProviderInfo] = Field(
+    narration_providers: dict[NarrationProvider, NarrationProviderInfo] = Field(
         description='Static narration provider contracts keyed by provider ID.')
     breeze: VoiceLibraryBreezeStatus = Field(description='The last Breeze server check, read without contacting the server.')
     analysis_providers: list[AnalysisProviderStatus] = Field(description='Analysis providers in order local, gemini, openai, anthropic.')
@@ -261,7 +270,9 @@ class Status(View):
         description='This library\'s daily Gemini speech request count for the selected speech model: one entry '
                     'keyed by `tts_model`, the same count chapter-listening jobs use. `requests_today` is 0 before '
                     'any usage is recorded.')
-    timing_kind: Literal['segment'] = Field(description='Granularity of read-along timing: per passage (segment).')
+    contract: ContractInfo = Field(
+        description='Which contract the server implements (the version handshake). Compare it with the contract the '
+                    'client was generated from; see "Compatibility rules for clients" in the API introduction.')
 
 
 # ---------------------------------------------------------------- diagnostics
@@ -277,10 +288,11 @@ class DiagnosticRecordResult(View):
     """Whether a diagnostic event was stored. `recorded: false` is not an error; do not retry."""
     recorded: bool = Field(description='True when a new event was stored; false when it was skipped (see `reason`).')
     id: str | None = Field(
-        None, description='The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event.')
+        description='The stored event ID (32 hex). With `reason: duplicate`, the ID of the identical earlier event. '
+                    'Null when nothing was stored for another reason.')
     reason: Literal['duplicate', 'rate_limited', 'unavailable'] | None = Field(
-        None, description='Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` '
-                          '(120 client events in the last minute), `unavailable` (storage failed).')
+        description='Why nothing was stored: `duplicate` (an identical event within 2 seconds), `rate_limited` '
+                    '(120 client events in the last minute), `unavailable` (storage failed). Null when it was stored.')
 
 
 class DiagnosticEvent(View):
@@ -293,7 +305,7 @@ class DiagnosticEvent(View):
                     '`listen_job_failed`, `listen_job_stopped`, `listen_submit_failed`, `voice_preview_failed`, '
                     '`voice_preview_stopped` and `voice_preview_submit_failed`.')
     book_id: str | None = Field(None, description='Book ID.')
-    segment_id: str | None = Field(None, description='Passage ID.')
+    passage_id: str | None = Field(None, description='Passage ID.')
     session_id: str | None = Field(None, description='Listening session ID.')
     job_id: str | None = Field(None, description='Job ID.')
     playback_rate: float | None = Field(None, description='Playback rate (0.1–8).')
@@ -303,7 +315,7 @@ class DiagnosticEvent(View):
                        'submit'] | None = Field(
         None, description='What was happening. `worker` and `submit` are server-only.')
     status: Literal['failed', 'cancelled', 'interrupted'] | None = Field(None, description='Server events: the job outcome.')
-    provider: Literal['gemini', 'system', 'breeze'] | None = Field(None, description='Server events: the narration provider.')
+    provider: NarrationProvider | None = Field(None, description='Server events: the narration provider.')
 
 
 class DiagnosticEvents(View):
@@ -317,7 +329,7 @@ class DiagnosticEvents(View):
 
 _422_DIAGNOSTICS = {'validation_error': (
     'The body failed validation: an unknown or free-form field, a malformed identifier, a number out of range or '
-    'of the wrong JSON type, or `segment_id`, `session_id` or `job_id` without `book_id`. For this operation the '
+    'of the wrong JSON type, or `passage_id`, `session_id` or `job_id` without `book_id`. For this operation the '
     'body is always `{"detail": "Invalid diagnostic event fields.", "code": "validation_error"}` (a string, not a '
     'list): rejected input is never echoed.')}
 
@@ -330,7 +342,9 @@ OPS: list[Op] = [
        'voices, Gemini speech models and live rate-limiter state.\n\n'
        'Read-only and local: it never contacts a provider or the Breeze server, and never writes. Prefer the lists '
        'it returns over assuming fixed model or voice lists; the analysis model choices per provider are in '
-       '`model_catalogs`.',
+       '`model_catalogs`.\n\n'
+       '`contract` is the version handshake: the contract `version` and the `sha256` of its document that this '
+       'server implements. The same version is sent as the `Bardic-Contract-Version` header on every `/api/` response.',
        response=Status),
     op('POST', '/api/settings', 'updateSettings', 'System', 'Update settings and credentials',
        'Applies a partial update and returns the new status (the same object as `GET /api/status`). Omitted '
@@ -418,7 +432,7 @@ OPS: list[Op] = [
        'Stores one best-effort operational event for troubleshooting playback. It sends no model requests. The body '
        'is a strict allowlist: free-form messages, stacks, URLs, source text, credentials and unknown fields are '
        'refused with 422, and the rejected input is never echoed.\n\n'
-       'Use real IDs from API responses; identifiers are format-checked. `segment_id`, `session_id` and `job_id` '
+       'Use real IDs from API responses; identifiers are format-checked. `passage_id`, `session_id` and `job_id` '
        'belong to a book and require `book_id` (422 without it). Numeric fields are strict JSON numbers (no strings '
        'or booleans).\n\n'
        'An identical event within 2 seconds is coalesced (`reason: "duplicate"`, with the earlier `id`). At most 120 '
@@ -446,16 +460,28 @@ OPS: list[Op] = [
     op('GET', '/api/jobs', 'listJobs', 'Jobs', 'List jobs',
        'Returns jobs newest first, as a bare JSON array of full `Job` objects. Read-only.\n\n'
        'Without `active`, at most the 100 most recent jobs are returned (after the `book_id` filter). With '
-       '`active=true`, every `queued` or `running` job is returned, with no bound. There is no paging and no '
-       'single-job GET: select a job from the list by `id` (or use the series runs route for series jobs).\n\n'
-       'Poll this route to follow queued work until the job reaches a terminal status, which is final. Failures, '
-       'cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` calls '
-       '`GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape and '
-       'on `kind` and `status`.',
+       '`active=true`, every `queued` or `running` job is returned, with no bound. There is no paging. To follow one '
+       'job, use `getJob` (`GET /api/jobs/{job_id}`) instead of searching this list; series runs also have their own '
+       'runs route.\n\n'
+       'Poll this route, or `getJob`, to follow queued work until the job reaches a terminal status, which is final. '
+       'Failures, cancellations and allowance stops appear in the job while polling still returns 200. `./bardicctl` '
+       'calls `GET /api/jobs?active=true` before stopping or restarting the server and relies on the bare-array shape '
+       'and on `kind` and `status`.',
        response=list[Job], cost='none',
        params={'book_id': 'Only jobs whose `book_id` equals this value: a book ID, or `series:<series id>` for series '
                           'parent jobs (series child jobs use their own book IDs).',
                'active': 'When true, return every queued or running job with no count limit. Default false.'}),
+    op('GET', '/api/jobs/{job_id}', 'getJob', 'Jobs', 'Get a job',
+       'Returns one job by ID: the same full `Job` object that `listJobs` returns for it and that the job-starting '
+       'operations embed. Read-only: it records nothing.\n\n'
+       'Poll this route to follow a job you started until its `status` is terminal, which is final. Failures, '
+       'cancellations and allowance stops appear in the job while polling still returns 200; only a job ID that does '
+       'not exist returns 404. A finished job stays readable after a server restart; one that was queued or running '
+       'at the restart reads `interrupted`. Job IDs come from a job-starting response, from `listJobs`, or from a '
+       'series run.',
+       response=Job, cost='none',
+       params={'job_id': 'Job ID from a job-starting response or `GET /api/jobs`.'},
+       errors={404: {'job_not_found': 'No job has this ID.'}}),
     op('POST', '/api/jobs/{job_id}/cancel', 'cancelJob', 'Jobs', 'Cancel a job',
        'Requests cancellation and returns the updated job. The body is ignored (send `{}` or nothing).\n\n'
        '- A job that is already terminal is returned unchanged (idempotent).\n'
@@ -543,12 +569,12 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
     },
     'DiagnosticRequest': {
         '__doc__': 'One allowlisted diagnostic event. Unknown fields, including free-form text, are refused (422). '
-                   '`segment_id`, `session_id` and `job_id` each require `book_id` (`dependentRequired`).',
+                   '`passage_id`, `session_id` and `job_id` each require `book_id` (`dependentRequired`).',
         'event': 'Client event code: `listen_request_failed`, `listen_poll_failed`, `listen_job_failed`, '
                  '`buffer_failed`, `cache_read_failed`, `playback_media_error`, `playback_play_rejected`, '
                  '`playback_waiting`, `playback_resumed` or `preview_failed`.',
-        'book_id': 'Book UUID (lowercase hex with hyphens). Required when `segment_id`, `session_id` or `job_id` is sent.',
-        'segment_id': 'Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters. Requires `book_id`.',
+        'book_id': 'Book UUID (lowercase hex with hyphens). Required when `passage_id`, `session_id` or `job_id` is sent.',
+        'passage_id': 'Passage ID: `segment_` or `p_` followed by 12–32 lowercase hex characters. Requires `book_id`.',
         'session_id': 'Listening session ID: 64 lowercase hex characters. Requires `book_id`.',
         'job_id': 'Job ID: 32 lowercase hex characters. Requires `book_id`.',
         'playback_rate': 'Playback rate, a finite JSON number from 0.1 to 8 (strict: no strings or booleans).',

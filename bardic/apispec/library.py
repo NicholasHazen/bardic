@@ -68,7 +68,7 @@ class LibraryBookSummary(View):
     character_count: int = Field(description='Cast members, excluding the two built-in entries `narrator` and `unassigned`. '
                                              'Not a count of text characters (see `text_character_count`).')
     text_character_count: int = Field(description='Length of all section text in Unicode code points.')
-    segment_count: int = Field(description='Number of passages (reader units; "passage" and "segment" name the same unit).')
+    passage_count: int = Field(description='Number of passages (the reader units of the book).')
     scene_count: int = Field(description='Number of scenes.')
     audio_count: int = Field(description='Passages whose selected enhanced (cast) take is current and playable: it still matches '
                                          'the passage\'s text, speaker, resolved voice, scene direction and provider/model, and '

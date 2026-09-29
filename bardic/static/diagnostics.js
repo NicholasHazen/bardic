@@ -10,8 +10,9 @@
     try {
       if (!events.has(event)) return;
       const body = {event};
-      for (const field of ['book_id','segment_id','session_id','job_id']) {
-        const value = details[field];
+      // [name callers use in details, field of the request body]; the body says passage_id.
+      for (const [name, field] of [['book_id','book_id'],['segment_id','passage_id'],['session_id','session_id'],['job_id','job_id']]) {
+        const value = details[name];
         if (typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)) body[field] = value;
       }
       if (operations.has(details.operation)) body.operation = details.operation;

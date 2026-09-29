@@ -7,6 +7,9 @@
   const busy = job => ['queued', 'running'].includes(job?.status);
   const playable = audio => Boolean(audio?.url);
   const idle = () => ({status:'idle', label:'', preview:null, error:'', jobId:null, bookId:null});
+  // [option the caller passes, field of the voice-preview request body]
+  const BODY_FIELDS = [['provider', 'provider'], ['voice', 'voice'], ['model', 'model'], ['segment_id', 'passage_id'],
+    ['character_id', 'character_id'], ['direction', 'direction'], ['segment_direction', 'passage_direction']];
   let hooks = {}, state = idle(), active = null, knownJob = null;
   let serial = Promise.resolve();
 
@@ -137,13 +140,14 @@
     publish({status:'ready', preview, error:''});
     if (!current(task)) return null;
     await hooks.onReady?.(audio, preview);
-    return current(task) ? {audio, preview, cached:result.cached === true} : null;
+    return current(task) ? {audio, preview, cached:result.kind === 'cached'} : null;
   }
 
   function start(book, config = {}, label = '') {
     const body = {};
-    for (const name of ['provider', 'voice', 'model', 'segment_id', 'character_id', 'direction', 'segment_direction']) {
-      if (typeof config[name] === 'string') body[name] = config[name];
+    // Callers keep their own option names; the request body says passage_id and passage_direction.
+    for (const [name, field] of BODY_FIELDS) {
+      if (typeof config[name] === 'string') body[field] = config[name];
     }
     // An unsaved pronunciation to hear in place of the saved one; only its own fields are sent.
     const draft = config.pronunciation;
@@ -174,7 +178,7 @@
           try {
             const bookId = task.observedJob?.bookId || task.bookId;
             window.BardicDiagnostics?.record('preview_failed', {book_id:bookId,
-              segment_id:bookId === task.bookId ? task.body.segment_id : undefined,
+              segment_id:bookId === task.bookId ? task.body.passage_id : undefined,
               job_id:task.observedJob?.id || state.jobId, operation:task.operation || 'request', http_status:error.status});
           } catch { /* Optional operational logging never changes playback. */ }
           publish({status:'error', error:error.message || 'The voice example could not be made.'});

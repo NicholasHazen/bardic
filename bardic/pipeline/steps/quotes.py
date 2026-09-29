@@ -11,8 +11,8 @@ from __future__ import annotations
 from ... import local_services as ls
 from ..contract import ServiceRequest, Step, Unit
 
-CHECK_LABELS = {'agrees': 'Agrees', 'differs': 'Differs', 'suggests': 'Suggests a speaker',
-                'not_in_cast': 'Speaker not in cast', 'narrator': 'First-person narrator', 'no_quote': 'No quotation found'}
+# The results of a comparison with BookNLP's attribution. Result tables send the identifier, never a label.
+CHECK_RESULTS = ('agrees', 'differs', 'suggests', 'not_in_cast', 'narrator', 'no_quote')
 
 
 def compare(entry, speaker_id):
@@ -135,7 +135,7 @@ class QuotesStep(Step):
         names = {c['id']: c['name'] for c in book['characters']}
         segments = {s['id']: s for s in book['segments']}
         order = {s['id']: i for i, s in enumerate(book['segments'])}
-        rows, counts = [], {key: 0 for key in CHECK_LABELS}
+        rows, counts = [], {key: 0 for key in CHECK_RESULTS}
         conflicts = unmatched = uncovered = 0
         for scope, payload in payloads.items():
             unmatched += len(payload.get('unmatched_quotes', []))
@@ -150,20 +150,20 @@ class QuotesStep(Step):
                 counts[result] += 1
                 conflicts += bool(entry.get('tag_conflict'))
                 text = segment['text']
-                rows.append({'id': segment_id, 'scope': scope, 'kind': 'Quotation',
+                rows.append({'id': segment_id, 'scope': scope, 'kind': 'quotation',
                              'text': text if len(text) <= 160 else text[:157] + '…',
                              'booknlp': names.get(entry.get('speaker_id')) or entry.get('speaker') or '',
-                             'current': names.get(segment.get('speaker_id'), segment.get('speaker_id') or ''),
-                             'check': CHECK_LABELS[result], 'tag': (entry.get('tag') or {}).get('text', ''),
+                             'current_speaker': names.get(segment.get('speaker_id'), segment.get('speaker_id') or ''),
+                             'check': result, 'tag': (entry.get('tag') or {}).get('text', ''),
                              'conflict': bool(entry.get('tag_conflict'))})
             for index, character in enumerate(payload.get('characters', [])):
                 pronouns = character.get('pronouns') or {}
-                rows.append({'id': f'{scope}:character:{index}', 'scope': scope, 'kind': 'Character',
+                rows.append({'id': f'{scope}:character:{index}', 'scope': scope, 'kind': 'character',
                              'text': f"{character['name']} · {character['gender']} from pronouns "
                                      f"(he {pronouns.get('he', 0)}, she {pronouns.get('she', 0)})",
-                             'booknlp': character['name'], 'current': names.get(character.get('character_id'), ''),
-                             'check': 'In cast' if character.get('character_id') else 'Not in cast', 'tag': '', 'conflict': False})
-        rows.sort(key=lambda row: (row['kind'] != 'Quotation', order.get(row['id'], len(order)), row['id']))
+                             'booknlp': character['name'], 'current_speaker': names.get(character.get('character_id'), ''),
+                             'check': 'in_cast' if character.get('character_id') else 'not_in_cast', 'tag': '', 'conflict': False})
+        rows.sort(key=lambda row: (row['kind'] != 'quotation', order.get(row['id'], len(order)), row['id']))
         compared = counts['agrees'] + counts['differs']
         return {'stats': {'sections': len(payloads), 'quotations': sum(p.get('quotes', 0) for p in payloads.values()),
                           'agrees': counts['agrees'], 'differs': counts['differs'], 'suggests_speaker': counts['suggests'],
@@ -171,7 +171,7 @@ class QuotesStep(Step):
                           'dialogue_without_quotation': uncovered,
                           'agreement': round(counts['agrees'] / compared, 3) if compared else None},
                 'columns': [{'key': 'kind', 'label': 'Kind'}, {'key': 'text', 'label': 'Passage'},
-                            {'key': 'booknlp', 'label': 'BookNLP'}, {'key': 'current', 'label': 'Current speaker'},
+                            {'key': 'booknlp', 'label': 'BookNLP'}, {'key': 'current_speaker', 'label': 'Current speaker'},
                             {'key': 'check', 'label': 'Check'}, {'key': 'tag', 'label': 'Tag or beat'},
                             {'key': 'conflict', 'label': 'Tag conflict'}],
                 'rows': rows}

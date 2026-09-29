@@ -30,7 +30,8 @@ def _model(provider, model_id, label, tier, input_price, output_price, context, 
             "structured_output": True, "context_tokens": context, "max_output_tokens": output,
             "input_usd_per_million": input_price, "output_usd_per_million": output_price,
             "source_url": SOURCES[provider], "pricing_source_url": PRICE_SOURCES[provider],
-            "price_date": CATALOG_DATE, "availability": "unverified", **extra}
+            "price_date": CATALOG_DATE, "availability": "unverified",
+            "price_valid_until": None, "price_input_token_limit": None, **extra}
 
 
 _CATALOG = {
@@ -73,7 +74,8 @@ def local_llm_catalog(base_url):
             "models": [{"id": LOCAL_LLM_DEFAULT_MODEL, "label": "Qwen3.6 35B-A3B (self-hosted)", "tier": "balanced",
                         "roles": ["preprocess", "analysis"], "structured_output": True, "context_tokens": 262144,
                         "max_output_tokens": 16384, "input_usd_per_million": 0.0, "output_usd_per_million": 0.0,
-                        "availability": "unverified"}]}
+                        "availability": "unverified", "source_url": None, "pricing_source_url": None, "price_date": None,
+                        "price_valid_until": None, "price_input_token_limit": None}]}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 
 
@@ -82,7 +84,7 @@ def catalog(provider):
         raise ValueError("Choose gemini, openai, or anthropic.")
     return {"provider": provider, "state": "curated", "catalog_date": CATALOG_DATE,
             "message": "Documented model choices. Refresh to check which models this key can see.",
-            "checked_at": None, "cached": False, "source_url": SOURCES[provider],
+            "checked_at": None, "cached": False, "source_url": SOURCES[provider], "partial": None,
             "models": deepcopy(_CATALOG[provider])}
 
 
@@ -149,6 +151,7 @@ def _entry(provider, raw):
         "structured_output": capability, "context_tokens": None, "max_output_tokens": None,
         "input_usd_per_million": None, "output_usd_per_million": None, "price_date": None,
         "source_url": SOURCES[provider], "pricing_source_url": None,
+        "price_valid_until": None, "price_input_token_limit": None,
     }
     # Use only normalized local/ID labels, not freeform provider text that could
     # echo credentials or contain arbitrary instructions.

@@ -27,7 +27,7 @@ class CensusStep(Step):
         payload = payloads.get('book') or {}
         rows = [{'id': c['id'], 'scope': 'book', 'name': c['name'], 'priority': c.get('priority', ''),
                  'mentions': c.get('mentions', 0), 'speech_tags': c.get('explicit_speech_tags', 0),
-                 'dialogue_turns': c.get('dialogue_turns', 0), 'chapters': c.get('chapter_count', 0),
+                 'dialogue_turns': c.get('dialogue_turns', 0), 'chapter_count': c.get('chapter_count', 0),
                  'known': 'yes' if c.get('known_character') else 'candidate'}
                 for c in payload.get('characters', [])]
         return {'stats': {'words': payload.get('words', 0), 'eligible_sections': payload.get('eligible_chapters', 0),
@@ -36,5 +36,5 @@ class CensusStep(Step):
                 'columns': [{'key': 'name', 'label': 'Name'}, {'key': 'known', 'label': 'Cast'},
                             {'key': 'priority', 'label': 'Priority'}, {'key': 'mentions', 'label': 'Mentions'},
                             {'key': 'speech_tags', 'label': 'Speech tags'}, {'key': 'dialogue_turns', 'label': 'Dialogue'},
-                            {'key': 'chapters', 'label': 'Chapters'}],
+                            {'key': 'chapter_count', 'label': 'Chapters'}],
                 'rows': rows}

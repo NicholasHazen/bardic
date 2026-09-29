@@ -107,7 +107,7 @@ def current(rows: list[dict], segments: list[dict], key_of, exists) -> dict[str,
 
 def audio_of(row: dict) -> dict:
     """The public audio object for a ``use`` row: a simple-listening take marked as standing in for the passage."""
-    return {**row['audio'], 'substitute': {'reason': row['reason'], 'for_provider': row.get('for_provider') or '',
+    return {**row['audio'], 'substitute': {'reason': row['reason'], 'for_provider': row.get('for_provider'),
                                             'for_model': row.get('for_model') or '', 'override_id': row['id']}}
 
 

@@ -53,11 +53,12 @@ def test_jobs_stored_with_pre_0_2_audio_are_listed_without_internal_fields(clien
               'session_id': 's' * 64, 'segment_id': 'p1', 'created_at': '2026-09-01T00:00:00+00:00',
               'cache_hit': True, 'fingerprint': 'f' * 64, 'recipe': 'r' * 64, 'synthesis_key': 'k',
               'source_anchor': {'schema_version': 1}}
-    store.update_job(job['id'], status='completed', audio=legacy)
+    store.update_job(job['id'], status='completed', audio=legacy, session_id='s' * 64, segment_id='p1', provider='system', model='macos-say', phase='simple_listen')
     listed = next(j for j in client.get('/api/jobs', params={'book_id': 'book-legacy'}).json() if j['id'] == job['id'])
     assert listed['audio']['url'] == legacy['url'] and listed['audio']['asset_id'] == asset
     for name in ('mode', 'available', 'cache_hit', 'fingerprint', 'recipe', 'synthesis_key', 'source_anchor'):
         assert name not in listed['audio']
+    assert listed['audio']['passage_id'] == 'p1' and 'segment_id' not in listed['audio'], 'the wire says passage'
     assert store.job(job['id'])['audio']['fingerprint'] == 'f' * 64  # storage keeps it
 
 
@@ -83,7 +84,7 @@ def test_a_job_cancelled_while_queued_is_not_settled_again_by_its_worker(client,
 def test_a_cancelled_queued_future_during_shutdown_stays_cancelled(client):
     runtime = client.app.state.runtime
     store = runtime.store
-    job = store.create_job('book-without-worker', 'listen_chapter', 1)
+    job = store.create_job('book-without-worker', 'render', 1)  # any kind: the rule is the store's, not a kind's
     client.post(f"/api/jobs/{job['id']}/cancel")
     runtime.stopping.set()
     try:
@@ -96,15 +97,24 @@ def test_a_cancelled_queued_future_during_shutdown_stays_cancelled(client):
 
 # ---------------------------------------------------------------- unambiguous field names
 
+# The fields a job of these kinds always has (its schema requires them); the legacy part is what differs.
+CHAPTER = {'session_id': 's' * 64, 'chapter_id': 'c1', 'provider': 'gemini', 'model': 'gemini-3.8-flash-tts', 'voice': 'Kore',
+           'intent': 'queue', 'scope_start_segment_id': 'p1', 'focus_segment_id': 'p1', 'ramp_restart': 0, 'joins': 0,
+           'phase': 'chapter_listen', 'chunks': [],
+           'chunking': {'ramp_seconds': [], 'target_seconds': 60.0, 'concurrency': 1},
+           'calibration': {'samples': [], 'truncated_chars_per_second': None, 'max_chars': None, 'chars_per_second': 14.0,
+                           'chars_per_second_low': 10.0, 'realtime_factor': 2.0}}
+PERFORMANCE = {'performance_id': 'pf_1', 'provider': 'system', 'model': 'macos-say', 'phase': 'performance'}
+
 LEGACY = [
     ({'kind': 'pipeline', 'mode': 'parallel', 'run_id': 'pr_1', 'steps': ['structure']}, {'scheduling': 'parallel'}, {'mode'}),
     ({'kind': 'series', 'limits': {'max_requests': 5, 'max_input_tokens': 1000, 'max_output_tokens': 1000, 'budget_usd': None},
       'plan_fingerprint': 'f' * 64},
      {'analysis_limits': {'max_requests': 5, 'max_input_tokens': 1000, 'max_output_tokens': 1000, 'budget_usd': None}},
      {'limits', 'plan_fingerprint'}),
-    ({'kind': 'listen_chapter', 'limits': {'rpm': 10, 'tpm': 10000, 'rpd': 100}},
+    ({'kind': 'listen_chapter', **CHAPTER, 'limits': {'rpm': 10, 'tpm': 10000, 'rpd': 100}},
      {'speech_limits': {'rpm': 10, 'tpm': 10000, 'rpd': 100}}, {'limits'}),
-    ({'kind': 'performance', 'mode': 'cast', 'performance_id': 'pf_1'}, {'mode': 'cast'}, set()),
+    ({'kind': 'performance', **PERFORMANCE, 'mode': 'cast'}, {'mode': 'cast', 'child_job_ids': [], 'child_job_id': None}, set()),
 ]
 
 
@@ -192,3 +202,86 @@ def test_pipeline_inspector_lists_full_jobs(client):
     client.post(f"/api/jobs/{job['id']}/cancel")
     listed = client.get(f"/api/books/{book['id']}/pipeline").json()['jobs']
     assert listed == client.get('/api/jobs', params={'book_id': book['id']}).json()
+
+
+# ---------------------------------------------------------------- every kind has its own fields
+
+def test_a_job_document_has_exactly_the_always_sent_fields_of_its_kind(client):
+    from bardic.store import JOB_DEFAULTS, upgrade_job
+    base = {'id': 'a' * 32, 'book_id': 'b', 'status': 'queued', 'progress': 0, 'total': 0, 'message': '', 'error': None,
+            'created_at': 't', 'updated_at': 't', 'cancel_requested': False}
+    # A worker reports these later, and an older version never stored them: reading fills each with "not set yet".
+    assert upgrade_job({**base, 'kind': 'listen'})['audio'] is None
+    assert upgrade_job({**base, 'kind': 'voice_preview'})['audio'] is None
+    chapter = upgrade_job({**base, 'kind': 'listen_chapter'})
+    assert {name: chapter[name] for name in JOB_DEFAULTS['listen_chapter']} == dict.fromkeys(JOB_DEFAULTS['listen_chapter'])
+    assert upgrade_job({**base, 'kind': 'performance'})['child_job_ids'] == []
+    assert upgrade_job({**base, 'kind': 'pipeline'})['run_id'] is None
+    # Nothing is added to a kind that has no such fields, a stored value is kept, and the defaults are not shared.
+    assert upgrade_job({**base, 'kind': 'render'}) == {**base, 'kind': 'render'}
+    assert upgrade_job({**base, 'kind': 'listen', 'audio': {'url': 'u'}})['audio'] == {'url': 'u'}
+    first, second = upgrade_job({**base, 'kind': 'series'}), upgrade_job({**base, 'kind': 'series'})
+    first['book_ids'].append('x')
+    assert second['book_ids'] == []
+    # A series parent's book_id names its series, so an old record without series_id still has one.
+    assert upgrade_job({**base, 'book_id': 'series:series_9', 'kind': 'series'})['series_id'] == 'series_9'
+
+
+def test_a_started_job_has_the_fields_of_its_own_kind_and_no_other(client):
+    """Strict contract validation refuses a field a kind does not declare, so this pins the presence side."""
+    book = import_text(client, 'Chapter One\n\nMara found the lamp.')
+    render = client.post(f"/api/books/{book['id']}/render", json={'provider': 'system'})
+    assert render.status_code == 200
+    job = render.json()
+    assert job['kind'] == 'render'
+    assert set(job) - {'resume_after'} == {'id', 'book_id', 'kind', 'status', 'progress', 'total', 'message', 'error',
+                                          'created_at', 'updated_at', 'cancel_requested'}
+    other = import_text(client, 'Chapter One\n\nTomas lit the second lamp.')  # a book with no render job holding it
+    started = client.post(f"/api/books/{other['id']}/analysis-pipeline/runs", json={'steps': ['structure'], 'limits': {'max_requests': 5}})
+    assert started.status_code == 200, started.text
+    pipeline = started.json()['job']
+    assert pipeline['kind'] == 'pipeline' and pipeline['run_id'] and pipeline['steps'] == ['structure']
+    assert not {'series_id', 'series_run_id', 'audio', 'session_id', 'passage_id'} & set(pipeline)
+
+
+# ---------------------------------------------------------------- what a stopped job says about itself
+
+def test_a_series_child_that_never_started_is_marked_however_it_stopped(client, tmp_path):
+    from bardic.store import Store
+    store = client.app.state.runtime.store
+    queued = store.create_job('book_a', 'pipeline')
+    store.update_job(queued['id'], series_run_id='run_1', series_id='series_1', position=1.0)
+    running = store.create_job('book_b', 'pipeline')
+    store.update_job(running['id'], series_run_id='run_1', series_id='series_1', position=2.0, status='running', run_id='r1')
+    alone = store.create_job('book_c', 'pipeline')  # Not a series child: no marker.
+    # Cancelling a queued child on its own marks it.
+    cancelled = client.post(f"/api/jobs/{queued['id']}/cancel").json()
+    assert cancelled['status'] == 'cancelled' and cancelled['not_started'] is True
+    # A restart interrupts queued children that never started (marked) and running ones (not marked).
+    queued_again = store.create_job('book_d', 'pipeline')
+    store.update_job(queued_again['id'], series_run_id='run_1', series_id='series_1', position=3.0)
+    restored = Store(tmp_path)
+    assert restored.job(queued_again['id'])['status'] == 'interrupted' and restored.job(queued_again['id'])['not_started'] is True
+    assert restored.job(running['id'])['status'] == 'interrupted' and 'not_started' not in restored.job(running['id'])
+    assert restored.job(alone['id'])['status'] == 'interrupted' and 'not_started' not in restored.job(alone['id'])
+
+
+def test_a_chapter_job_interrupted_by_a_restart_is_not_waiting_and_plans_nothing(client, tmp_path):
+    from bardic.store import Store
+    store = client.app.state.runtime.store
+    job = store.create_job('book_a', 'listen_chapter')
+    store.update_job(job['id'], status='running', waiting_seconds=12.5, projection=[{'n': 1}], closing=False)
+    restored = Store(tmp_path).job(job['id'])
+    assert restored['status'] == 'interrupted' and restored['waiting_seconds'] is None and restored['projection'] == []
+
+
+def test_a_series_child_recorded_by_an_intermediate_build_reads_with_the_fields_a_child_always_has(client):
+    from bardic.store import upgrade_job
+    base = {'id': 'a' * 32, 'book_id': 'b', 'kind': 'pipeline', 'status': 'queued', 'progress': 0, 'total': 0, 'message': '',
+            'error': None, 'created_at': 't', 'updated_at': 't', 'cancel_requested': False, 'series_run_id': 'run_1'}
+    child = upgrade_job(dict(base))
+    assert (child['title'], child['consent_fingerprint'], child['context_pending'], child['context_sources']) == ('', None, [], [])
+    # A stored value is kept, and a pipeline job started from the book gets no series fields.
+    assert upgrade_job({**base, 'title': 'Vol 1', 'consent_fingerprint': 'f'})['consent_fingerprint'] == 'f'
+    standalone = upgrade_job({k: v for k, v in base.items() if k != 'series_run_id'})
+    assert 'consent_fingerprint' not in standalone

@@ -20,15 +20,17 @@ book document (``BookTake`` in the Books family).
 """
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Literal, Union
 
-from pydantic import Discriminator, Field, Tag
+from pydantic import Field
+from typing_extensions import TypeAliasType
 
 from .base import Op, View, op
-from .common import Job, JobStatus
-from .media import (AudioRef, Provider, ListeningPassageAudio, ListeningChunkClipAudio, ListeningAudio, ChapterListenChunkPlan,
-                    ChapterListenChunking, ChapterListenCalibration, ChapterListenLimits, ChapterListenQuota, VoicePreview,
-                    VoicePreviewAudio)
+from .enums import NarrationProvider
+from .common import Job, JobStatus, ListenChapterJob, ListenJob, PerformanceJob, RenderJob, VoicePreviewJob
+from .media import (AudioRef, BookBreezeSettings, Provider, ListeningPassageAudio, ListeningChunkClipAudio, ListeningAudio,
+                    ChapterListenChunkPlan, ChapterListenChunking, ChapterListenCalibration, ChapterListenLimits,
+                    ChapterListenQuota, VoicePreview, VoicePreviewAudio)
 
 
 _BOOK_ID = 'Book ID.'
@@ -49,12 +51,12 @@ _NARRATOR = {'narrator_voice_invalid': 'The narrator voice cannot be used: a `li
 _PROVIDER = {'gemini_key_missing': 'Gemini narration with no Gemini API key configured.',
              'device_narration_unavailable': 'Device narration on a server without macOS `say` and `ffmpeg`.',
              'breeze_url_missing': 'Breeze narration with no Breeze server URL configured.'}
-_UNKNOWN_PASSAGE = {'unknown_passage': 'The body names a passage (`segment_id`) that is not in this book.'}
+_UNKNOWN_PASSAGE = {'unknown_passage': 'The body names a passage (`passage_id`) that is not in this book.'}
 _SOURCE = {'passage_source_mismatch': 'The passage text no longer matches its source coordinates.'}
-_RERECORD_400 = {'unknown_passage': 'A passage ID in `segment_ids`, `from_segment_id` or `to_segment_id` is not in this performance.',
+_RERECORD_400 = {'unknown_passage': 'A passage ID in `passage_ids`, `from_passage_id` or `to_passage_id` is not in this performance.',
                  'unknown_chapter': '`chapter_id` is not part of this performance.',
-                 'range_incomplete': 'Only one of `from_segment_id` and `to_segment_id` was sent.',
-                 'range_invalid': '`from_segment_id` comes after `to_segment_id` in reading order.',
+                 'range_incomplete': 'Only one of `from_passage_id` and `to_passage_id` was sent.',
+                 'range_invalid': '`from_passage_id` comes after `to_passage_id` in reading order.',
                  'nothing_to_rerecord': 'The scope matches no passage (with `only: fallback`, none is currently read by a fallback narrator).',
                  'scope_too_large': 'The scope covers more than 1000 passages.'}
 _FALLBACK_400 = {'narrator_voice_invalid': _NARRATOR['narrator_voice_invalid']}
@@ -78,18 +80,18 @@ class ListeningSession(View):
     id: str = Field(description='Session ID: a 64-character hex hash of the narrator configuration.')
     schema_version: int = Field(description='Session format version (1).')
     book_id: str = Field(description='Book the session belongs to.')
-    provider: Provider = Field(description='Narration provider.')
+    provider: NarrationProvider = Field(description='Narration provider.')
     voice: str = Field(description='Resolved provider voice ID. Empty string for the device default voice; '
                                    'Gemini defaults to `Kore`; a `library:` choice is stored as the provider voice it resolved to.')
     model: str = Field(description='Speech model: `macos-say`, `breeze-tts-2`, or a Gemini TTS model.')
     voice_revision: str | None = Field(None, description='Breeze only: the pinned voice revision from the last voice check.')
     seed: int | None = Field(None, description='Breeze only: the pinned generation seed.')
-    settings: dict[str, Any] | None = Field(None, description='Breeze only, when set: pinned speech settings for the voice (provider-defined keys).')
+    settings: BookBreezeSettings | None = Field(None, description='Breeze only, when set: pinned sampling overrides for the voice. Absent when none were set.')
 
 
 class ListeningTake(View):
     """The playable simple audio for one passage."""
-    segment_id: str = Field(description='Passage (segment) ID within the book that this audio narrates.')
+    passage_id: str = Field(description='Passage ID within the book that this audio narrates.')
     audio: ListeningAudio = Field(description='A chunk clip when one applies (preferred), otherwise the newest valid single-passage take.')
 
 
@@ -105,15 +107,22 @@ class ListenCached(View):
     audio: ListeningAudio = Field(description='The retained audio for the passage: a Gemini chapter chunk clip for this session when one '
                                            'covers it, otherwise a single-passage take (possibly reused from an identical recipe '
                                            'elsewhere). Play its `url`.')
-    cached: Literal[True] = Field(description='Always true: served from retained audio. No job was queued and no provider was contacted.')
+    kind: Literal['cached'] = Field(description='Tag of `ListenResult`: `cached`. Served from retained audio: no job was queued and no provider was contacted.')
 
 
 class ListenQueued(View):
     """A passage that needs synthesis: a new or joined `listen` job."""
     session: ListeningSession
-    job: Job = Field(description='The `listen` job (new, or the already active one for this session and passage). '
+    job: ListenJob = Field(description='The `listen` job (new, or the already active one for this session and passage). '
                                  'Poll it; on completion its `audio` holds the take.')
-    cached: Literal[False] = Field(description='Always false: no retained audio matched, so the passage needs synthesis via `job`.')
+    kind: Literal['queued'] = Field(description='Tag of `ListenResult`: `queued`. No retained audio matched, so the passage needs synthesis via `job`.')
+
+
+ListenResult = TypeAliasType('ListenResult', Annotated[
+    Union[ListenCached, ListenQueued], Field(
+        discriminator='kind',
+        description='The result of `listenToPassage`: `cached` (retained audio, nothing queued) or `queued` (a `listen` '
+                    'job to poll). Select on `kind`.')])
 
 
 class ChapterListenPlan(View):
@@ -135,7 +144,7 @@ class ChapterListenPlan(View):
 class ChapterListenStarted(View):
     """A started or joined `listen_chapter` job."""
     session: ListeningSession
-    job: Job = Field(description='The `listen_chapter` job. Poll it for chunk progress; passage audio appears in `/listen/takes`.')
+    job: ListenChapterJob = Field(description='The `listen_chapter` job. Poll it for chunk progress; passage audio appears in `/listen/takes`.')
     joined: bool = Field(description='True when the request joined an already active job for the same session and chapter.')
 
 
@@ -150,7 +159,7 @@ class PerformanceCastAudio(AudioRef):
     asset_id: str | None = Field(description='SHA-256 hex of the WAV (content address), or null for a reused Studio take '
                                              'recorded before content addressing (its URL then names the file by recipe).')
     duration: float | None = Field(description='Audio length in seconds, or null when the retained record lacks it.')
-    provider: str | None = Field(description='Narration provider that produced the take (`system`, `gemini` or `breeze`); '
+    provider: NarrationProvider | None = Field(description='Narration provider that produced the take; '
                                              'null when the retained take metadata does not record it.')
     model: str | None = Field(description='Speech model that produced the take (for example `macos-say`, `breeze-tts-2` or a '
                                           'Gemini TTS model); null when the retained take metadata does not record it.')
@@ -159,18 +168,14 @@ class PerformanceCastAudio(AudioRef):
     speaker_id: str | None = Field(description="The passage's speaker (a character ID, `narrator` or `unassigned`).")
     character_id: str | None = Field(description='Character whose voice was used (`narrator` when falling back).')
     fallback: bool = Field(description='True when the speaker had no usable voice and the narrator voice was used.')
+    kind: Literal['cast'] = Field(description='Tag of `PerformanceAudio`: `cast`, a take of a cast performance.')
 
 
-def _performance_audio_kind(value: Any) -> str:
-    if isinstance(value, dict) and 'chunk_id' in value:
-        return 'clip'
-    return 'cast' if isinstance(value, dict) and 'speaker_id' in value else 'passage'
-
-
-PerformanceAudio = Annotated[Union[Annotated[ListeningPassageAudio, Tag('passage')],
-                                   Annotated[ListeningChunkClipAudio, Tag('clip')],
-                                   Annotated[PerformanceCastAudio, Tag('cast')]],
-                             Discriminator(_performance_audio_kind)]
+PerformanceAudio = TypeAliasType('PerformanceAudio', Annotated[
+    Union[ListeningPassageAudio, ListeningChunkClipAudio, PerformanceCastAudio], Field(
+        discriminator='kind',
+        description='The playable audio of one passage of a performance: a simple performance gives the simple-listening '
+                    'objects (`passage`, or `clip` from chapter listening); a cast performance gives `cast`. Select on `kind`.')])
 
 
 class PerformanceCastMember(View):
@@ -207,14 +212,14 @@ class PerformanceProgress(View):
     passages_fallback: int = Field(description='Of the ready passages, those a fallback narrator read because the main narration could not (Gemini blocked their text, or they kept failing). Nonzero means the performance is not entirely its main narrator\'s audio.')
     passages_rerecorded: int = Field(description='Of the ready passages, those the listener had another narrator re-record. Not counted in `passages_fallback`.')
     passages_blocked: int = Field(description='Passages Gemini blocked that have no audio at all (no fallback narrator was available, or it failed). Counted neither as ready nor as a failure; they are not requested again.')
-    fallback_provider: Provider | None = Field(description='The provider that read the first `passages_fallback` passages found, or null when there are none.')
+    fallback_provider: NarrationProvider | None = Field(description='The provider that read the first `passages_fallback` passages found, or null when there are none.')
     fallback_reasons: dict[Literal['content_blocked', 'failed'], int] = Field(description='`passages_fallback` split by why the fallback narrator read them; both keys are always present.')
     chapters: list[PerformanceChapterProgress] = Field(description='Selected chapters still in the book, in book order.')
 
 
 class PerformanceFallback(View):
     """The narrator that reads passages the main narration cannot."""
-    provider: Provider = Field(description='Narration provider of the fallback narrator.')
+    provider: NarrationProvider = Field(description='Narration provider of the fallback narrator.')
     voice: str = Field(description='Voice as requested: a provider voice ID, `library:<id>`, or empty for the provider\'s default voice.')
     automatic: bool = Field(description='True when none was chosen and the automatic local narrator applies (a device voice, else Breeze).')
     label: str = Field(description='Display label such as `Default voice · Device voices`.')
@@ -235,29 +240,29 @@ class Performance(View):
     mode: Literal['simple', 'cast'] = Field(description='`simple`: one narrator voice for every passage. `cast`: each speaker in their '
                                                         'cast voice, with the narrator as fallback.')
     chapter_ids: list[str] = Field(description='Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped.')
-    provider: Provider = Field(description='Narration provider pinned at creation.')
+    provider: NarrationProvider = Field(description='Narration provider pinned at creation.')
     model: str = Field(description='Speech model pinned at creation.')
     voice: str | None = Field(description='Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null.')
     pronunciation_count: int | None = Field(
-        None, description='Cast performances only: how many book pronunciations were pinned when it was created. Absent '
-                          'when none were (including performances made before pronunciations existed) and for simple '
-                          'performances, which always use the book\'s current pronunciations.')
-    session_id: str | None = Field(None, description='Simple only: the pinned listening session.')
+        description='Cast performances only: how many book pronunciations were pinned when it was created. Null '
+                    'when none were (including performances made before pronunciations existed) and for simple '
+                    'performances, which always use the book\'s current pronunciations.')
+    session_id: str | None = Field(description='Simple only: the pinned listening session. Null for a cast performance.')
     created_at: str = Field(description='ISO 8601 UTC.')
     updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts.')
     archived: bool = Field(description='True when hidden from the default list (listed only with `archived=true`). Its audio is kept.')
     job_id: str | None = Field(description='Latest job ID, or null if no job was ever needed.')
-    cast: list[PerformanceCastMember] | None = Field(None, description='Cast only: the narrator and each speaker in the chosen chapters.')
-    job: Job | None = Field(description='The latest `performance` job (a full `Job`), or null when no job was ever needed.')
+    cast: list[PerformanceCastMember] | None = Field(description='Cast only: the narrator and each speaker in the chosen chapters. Null for a simple performance.')
+    job: PerformanceJob | None = Field(description='The latest `performance` job, or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
     fallback: PerformanceFallback | None = Field(
         description='The fallback narrator this performance pinned (chosen at creation or with `preparePerformance`, else the saved default '
                     'or the automatic local narrator). Null when none is usable. Passages it reads are marked in `progress` and in the audio '
                     '`substitute`.')
-    chapters_added: list[PerformanceChaptersAdded] | None = Field(
-        None, description='Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. '
-                          'Absent when none were added. `chapter_ids` already includes them.')
+    chapters_added: list[PerformanceChaptersAdded] = Field(
+        description='Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. '
+                    'Empty when none were added. `chapter_ids` already includes them.')
 
 
 class PerformanceList(View):
@@ -273,13 +278,13 @@ class PerformanceEnvelope(View):
 class PerformanceStarted(View):
     """A created or resumed performance."""
     performance: Performance
-    job: Job | None = Field(description='The queued `performance` job, or null when every passage is already ready.')
+    job: PerformanceJob | None = Field(description='The queued `performance` job, or null when every passage is already ready.')
 
 
 class PerformanceAudioMap(View):
     """Playable audio of a performance."""
     performance_id: str = Field(description='ID of the performance (`pf_…`).')
-    audio: dict[str, PerformanceAudio] = Field(description='Keyed by passage (segment) ID; only passages ready against their '
+    audio: dict[str, PerformanceAudio] = Field(description='Keyed by passage ID; only passages ready against their '
                                                           'current source. Simple performances give the `/listen/takes` '
                                                           'objects; cast performances give `PerformanceCastAudio`.')
 
@@ -305,7 +310,7 @@ class PerformanceProblem(View):
 class PerformancePlan(View):
     """Local estimate for a performance; nothing is recorded (except the deterministic session row) or sent."""
     mode: Literal['simple', 'cast'] = Field(description='The requested performance mode (see `Performance.mode`).')
-    provider: Provider = Field(description='The requested narration provider.')
+    provider: NarrationProvider = Field(description='The requested narration provider.')
     model: str = Field(description='Resolved speech model.')
     chapter_ids: list[str] = Field(description='Requested chapters in book order.')
     passages_total: int = Field(description='Passages in the requested chapters.')
@@ -325,8 +330,8 @@ class PerformancePlan(View):
     fallback: PerformanceFallback | None = Field(
         description='The fallback narrator the performance would use (see `Performance.fallback`); null when none is usable.')
     added_chapter_ids: list[str] | None = Field(
-        None, description='`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, '
-                          'in book order. Absent from the plan `previewPerformance` returns.')
+        description='`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, '
+                    'in book order (empty when none are new). Null in the plan `previewPerformance` returns.')
 
 
 # ---- status
@@ -338,7 +343,7 @@ ChapterStateName = Literal['done', 'active', 'queued', 'paused', 'stopped', 'blo
 class PerformanceRunIssue(View):
     """A passage this run could not record."""
     chapter_id: str = Field(description='Chapter of the passage.')
-    segment_id: str = Field(description='The passage.')
+    passage_id: str = Field(description='The passage.')
     reason: Literal['content_blocked', 'failed'] = Field(description='Why the main narration did not read it.')
     outcome: Literal['unrecorded'] = Field(description='Always `unrecorded`: no narrator recorded it. Re-record it with another voice or try again.')
     provider: str | None = Field(description='Null for an unrecorded passage.')
@@ -413,7 +418,7 @@ class PerformanceStatusTotals(View):
 class PerformanceStatusNote(View):
     """A passage another narrator reads, and why."""
     chapter_id: str = Field(description='Chapter of the passage.')
-    segment_id: str = Field(description='The passage.')
+    passage_id: str = Field(description='The passage.')
     reason: Literal['content_blocked', 'failed', 'rerecord'] = Field(description='Why another narrator reads it (see `ListeningSubstitute.reason`).')
     provider: str | None = Field(description='Provider of the narrator reading it.')
     model: str | None = Field(description='Speech model of the narrator reading it.')
@@ -446,7 +451,7 @@ class PerformanceRerecordChapter(View):
 class PerformanceRerecordPlan(View):
     """Local estimate for re-recording part of a performance; nothing is stored or sent."""
     performance_id: str = Field(description='The performance.')
-    provider: Provider = Field(description='The chosen narrator\'s provider.')
+    provider: NarrationProvider = Field(description='The chosen narrator\'s provider.')
     model: str = Field(description='Resolved speech model.')
     voice: str = Field(description='The chosen voice as requested (may be empty for the provider default or `library:…`).')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini`.')
@@ -464,7 +469,7 @@ class PerformanceRerecordPlan(View):
 class PerformanceTake(View):
     """One retained choice of audio for a passage of a performance."""
     id: str = Field(description='Take ID; pass it to `restorePerformanceTake` as `take_id`.')
-    segment_id: str = Field(description='The passage.')
+    passage_id: str = Field(description='The passage.')
     chapter_id: str = Field(description='Chapter of the passage.')
     action: Literal['use', 'original'] = Field(description='`use`: another narrator\'s audio (see `audio`). `original`: a choice to return to the performance\'s own audio (no audio of its own).')
     reason: Literal['content_blocked', 'failed', 'rerecord', 'restore'] = Field(description='Why: an automatic fallback (`content_blocked`, `failed`), a re-record (`rerecord`), or a return to the original (`restore`). A restored take keeps the reason of the take it copies.')
@@ -493,14 +498,21 @@ class VoicePreviewCached(View):
     """An audition served from retained audio."""
     preview: VoicePreview
     audio: VoicePreviewAudio
-    cached: Literal[True] = Field(description='Always true: served from a retained audition take. No job was queued and no provider was contacted.')
+    kind: Literal['cached'] = Field(description='Tag of `VoicePreviewResult`: `cached`. Served from a retained audition take: no job was queued and no provider was contacted.')
 
 
 class VoicePreviewQueued(View):
     """An audition that needs synthesis: a new or joined `voice_preview` job."""
     preview: VoicePreview
-    job: Job = Field(description='The `voice_preview` job. On completion its `audio` holds the take.')
-    cached: Literal[False] = Field(description='Always false: no retained take matched, so the audition needs synthesis via `job`.')
+    job: VoicePreviewJob = Field(description='The `voice_preview` job. On completion its `audio` holds the take.')
+    kind: Literal['queued'] = Field(description='Tag of `VoicePreviewResult`: `queued`. No retained take matched, so the audition needs synthesis via `job`.')
+
+
+VoicePreviewResult = TypeAliasType('VoicePreviewResult', Annotated[
+    Union[VoicePreviewCached, VoicePreviewQueued], Field(
+        discriminator='kind',
+        description='The result of `startVoicePreview`: `cached` (a retained audition, nothing queued) or `queued` (a '
+                    '`voice_preview` job to poll). Select on `kind`.')])
 
 
 # ------------------------------------------------------------ operations
@@ -518,7 +530,7 @@ configured Gemini TTS preference; device and Breeze use `macos-say` and `breeze-
 
 Order of checks, all under the store lock:
 
-1. **Cache.** A cache hit returns `{session, audio, cached: true}` immediately, even if the provider key or
+1. **Cache.** A cache hit returns `{kind: "cached", session, audio}` immediately, even if the provider key or
    device is no longer available and even while another job holds the book. Lookup first uses chunk
    clips from Gemini chapter listening for this session, then the exact source/session recipe, then
    equivalent speech inputs (exact text, voice, provider/model and versioned recipe) across retained
@@ -529,9 +541,9 @@ Order of checks, all under the store lock:
    records a cached resource operation (stage `simple_listen`); it may also add the take to the
    equivalent-speech lookup index, a derived cache.
 2. **Join.** If a `listen` job for the same session and passage is queued or running without a cancel
-   request, returns `{session, job, cached: false}` with that job instead of starting another synthesis.
+   request, returns `{kind: "queued", session, job}` with that job instead of starting another synthesis.
 3. **Queue.** Otherwise requires an idle book (409), a server that is not shutting down (503) and an
-   available provider (400), then queues a one-unit `listen` job and returns `{session, job, cached: false}`.
+   available provider (400), then queues a one-unit `listen` job and returns `{kind: "queued", session, job}`.
 
 Poll the job: when completed, its `audio` is the take (a `ListeningPassageAudio`, or a chunk clip when
 chapter listening finished the passage meanwhile). The job worker checks the cache again before
@@ -563,8 +575,8 @@ chunk is retained with estimated per-passage clips, which then appear in `/liste
 `chunking` overrides the saved `listen_chunking` preference field by field.
 
 **Join.** If a non-cancelled `listen_chapter` job is active for the book with the same session and
-chapter, the request joins it and returns `{session, job, joined: true}`: `focus_segment_id` moves to
-the passage, `scope_start_segment_id` extends backwards when needed, `joins` increments, and a `play`
+chapter, the request joins it and returns `{session, job, joined: true}`: `focus_passage_id` moves to
+the passage, `scope_start_passage_id` extends backwards when needed, `joins` increments, and a `play`
 request for a passage with no audio and no request in flight increments `ramp_restart` (the job
 restarts its ramp). Joining never checks the key or quota and never starts a second job.
 
@@ -590,7 +602,7 @@ this library's daily requests before every send, keeps up to `concurrency` reque
 full-size chunk has been measured), retries a per-minute 429 up to 5 consecutive times, re-plans smaller
 after a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It
 reports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last
-passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,
+passage IDs, `passage_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,
 `realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`blocked`/`failed`, `split`, `split_into`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
@@ -629,7 +641,7 @@ simple-listening values (`"library:vl_…"`, a direct ID, or empty for Default; 
 be in the last Breeze check). There is no caller-supplied transcript: the text is always resolved from
 the stored book or the fixed demo.
 
-Text selection: an explicit `segment_id` is used even when auditioning an unsaved speaker assignment.
+Text selection: an explicit `passage_id` is used even when auditioning an unsaved speaker assignment.
 Otherwise a selected `character_id` uses that character's first attributed passage, falling back to
 the demo when none exists; neither selector means demo text. References or name mentions never
 substitute for attributed speech. A passage sample is an exact original prefix of at most 400 Python
@@ -638,14 +650,14 @@ code points, preferably ending at a sentence or word boundary, with a validated 
 passage for the character, then its first passage in the current chapter.)
 
 With a character, the recipe includes its effective direction (or `direction`) plus the saved scene
-tone/direction, the passage direction (or `segment_direction`) and cues. Without a character, the
+tone/direction, the passage direction (or `passage_direction`) and cues. Without a character, the
 sample omits enhanced performance inputs. Requests never modify cast, source, reading position or
 selected simple/enhanced takes.
 
-A cache hit returns `{preview, audio, cached: true}` before provider availability or busy checks.
+A cache hit returns `{kind: "cached", preview, audio}` before provider availability or busy checks.
 Reuse is book-scoped and covers source and the effective performance recipe (a character rename can
 reuse speech); it is independent of the enhanced and simple caches. Otherwise an active non-cancelled
-`voice_preview` job for the same preview is joined (`{preview, job, cached: false}`); otherwise, after
+`voice_preview` job for the same preview is joined (`{kind: "queued", preview, job}`); otherwise, after
 the busy, shutdown and provider checks, a one-unit `voice_preview` job is queued. The job retains its
 `preview` and, when completed, `audio` (a `VoicePreviewAudio`). The worker checks the cache again
 before synthesis. Credentials are snapshotted at queue time and cancellation is checked before
@@ -655,7 +667,7 @@ usage and records an unknown cost as unknown, not zero).
 
 Book pronunciations apply to every example. An optional `pronunciation` object (the entry fields, plus the `id`
 of the entry it edits) auditions an unsaved respelling in place of the saved one; it is never stored in the
-book. With it and no `segment_id`, the first passage containing the word is used, and the sample is that word's
+book. With it and no `passage_id`, the first passage containing the word is used, and the sample is that word's
 whole sentence from the chapter (exact source coordinates in `source_anchor`, at most 400 code points). A word
 the book does not contain is read in a fixed original carrier sentence (`source: "demo"`). When a respelling
 applies, `preview.spoken_text` shows the text sent, and a draft adds `preview.pronunciation: {term, spoken}`.
@@ -713,7 +725,7 @@ OPS: list[Op] = [
        """\
 Queue a `render` job that narrates the selected passages with each passage's cast voice, scene and
 performance metadata, and makes each result the passage's current Studio take. Omitted selectors mean
-the whole book; if both `scene_id` and `segment_id` are given they are intersected. The TTS model comes
+the whole book; if both `scene_id` and `passage_id` are given they are intersected. The TTS model comes
 from settings for Gemini (`breeze-tts-2` for Breeze, `macos-say` for device). Resolved cast voices are
 snapshotted when queued, so a voice change during the job does not mix voices.
 
@@ -727,7 +739,7 @@ word-perfect speech.
 Returns the queued job; poll it. Progress counts passages; the message reports reused passages. For
 Breeze and Gemini every selected speaker must have a usable voice, otherwise 400 before queueing.
 Refused with 503 while the server is shutting down.""",
-       response=Job, response_description='The queued `render` job.',
+       response=RenderJob, response_description='The queued `render` job.',
        errors={400: {'provider_unsupported': '`provider` is not `system`, `gemini` or `breeze`.', **_PROVIDER,
                      **_UNKNOWN_PASSAGE, 'unknown_scene': 'The body names a scene (`scene_id`) that is not in this book.',
                      'no_passages_selected': 'The named passage is not in the named scene.',
@@ -735,7 +747,7 @@ Refused with 503 while the server is shutting down.""",
                                             'names up to five speakers.'},
                404: _BOOK_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
-    op('GET', '/api/audio/{book_id}/{segment_id}', 'getPassageAudio', 'Narration',
+    op('GET', '/api/audio/{book_id}/{passage_id}', 'getPassageAudio', 'Narration',
        "Download a passage's current enhanced take",
        """\
 The WAV of the passage's current Studio (enhanced) take, only while it is valid: its recipe fingerprint
@@ -745,7 +757,7 @@ server ignores. Local read.""",
        media='audio/wav', ranges=True, response_description='Mono 24 kHz 16-bit PCM WAV.',
        errors={404: {**_BOOK_404, 'passage_not_found': 'The book has no passage with this ID.',
                      'audio_not_found': 'The passage has no take, or its take is stale or its file is missing.'}},
-       params={'book_id': _BOOK_ID, 'segment_id': 'Passage (segment) ID.'}),
+       params={'book_id': _BOOK_ID, 'passage_id': 'Passage ID.'}),
     op('GET', '/api/books/{book_id}/audio-assets/{asset_id}', 'getRetainedAudioAsset', 'Narration',
        'Download a retained enhanced audio asset',
        """\
@@ -759,8 +771,8 @@ by recipe fingerprint). The file is served as stored; its integrity is not re-ve
     # -------------------------------------------------------------- Listening
     op('POST', '/api/books/{book_id}/listen', 'listenToPassage', 'Listening',
        'Get or queue simple narration for one passage', _LISTEN_DESCRIPTION,
-       response=Union[ListenCached, ListenQueued],
-       response_description='`cached: true` with `audio`, or `cached: false` with a new or joined `listen` job.',
+       response=ListenResult,
+       response_description='`kind` `cached` with `audio`, or `kind` `queued` with a new or joined `listen` job.',
        errors={400: {**_UNKNOWN_PASSAGE, **_SOURCE, **_NARRATOR,
                      **{code: f'Only when synthesis is needed: {text}' for code, text in _PROVIDER.items()}},
                404: _BOOK_404,
@@ -948,8 +960,8 @@ another narrator reads and why, so a fallback is never silent.""",
        """\
 Local plan for reading chosen passages of a performance with another narrator: the passages the scope covers,
 their size, the request estimate for Gemini, blocking `problems` and advisory `notes`. Nothing is stored, no
-job starts and no provider is contacted. The scope is the first of `segment_ids`, a `from_segment_id`..
-`to_segment_id` range, a `chapter_id`, or the whole performance; `only: fallback` then keeps the passages a
+job starts and no provider is contacted. The scope is the first of `passage_ids`, a `from_passage_id`..
+`to_passage_id` range, a `chapter_id`, or the whole performance; `only: fallback` then keeps the passages a
 fallback narrator currently reads. Allowed while a job runs.""",
        response=PerformanceRerecordPlan,
        errors={400: {**_RERECORD_400, 'model_unsupported': _NARRATOR['model_unsupported'],
@@ -983,11 +995,11 @@ the daily limit and retry a per-minute 429 at most five consecutive times; an un
 Every retained choice of another narrator's audio for the performance's passages (fallback reads, re-records and
 restores), newest first, for passages whose source text is still current, with the one currently deciding what
 plays marked `current`. Use it to hear earlier takes and to pick one for `restorePerformanceTake`. `chapter_id`
-and `segment_id` narrow the list. Local read.""",
+and `passage_id` narrow the list. Local read.""",
        response=PerformanceTakes,
        errors={404: _PERFORMANCE_404},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).',
-               'chapter_id': 'Only takes of passages in this chapter.', 'segment_id': 'Only takes of this passage.'}),
+               'chapter_id': 'Only takes of passages in this chapter.', 'passage_id': 'Only takes of this passage.'}),
     op('POST', '/api/books/{book_id}/performances/{performance_id}/takes/restore', 'restorePerformanceTake', 'Performances',
        'Choose which take plays for passages',
        """\
@@ -1021,12 +1033,12 @@ with updated readiness.""",
     # -------------------------------------------------------------- Voice previews
     op('POST', '/api/books/{book_id}/voice-preview', 'startVoicePreview', 'Voice previews',
        'Get or queue a short voice audition', _VOICE_PREVIEW_DESCRIPTION,
-       response=Union[VoicePreviewCached, VoicePreviewQueued],
-       response_description='`cached: true` with `audio`, or `cached: false` with a new or joined `voice_preview` job.',
+       response=VoicePreviewResult,
+       response_description='`kind` `cached` with `audio`, or `kind` `queued` with a new or joined `voice_preview` job.',
        errors={400: {**_UNKNOWN_PASSAGE, 'unknown_character': 'The body names a character (`character_id`) that is not in this book.',
                      **_SOURCE, **_NARRATOR,
                      'direction_requires_character': '`direction` without `character_id`.',
-                     'segment_direction_requires_passage': '`segment_direction` without both a passage and a character.',
+                     'passage_direction_incomplete': '`passage_direction` without both a passage and a character.',
                      'pronunciation_invalid': 'The `pronunciation` entry is not valid.',
                      **{code: f'Only when synthesis is needed: {text}' for code, text in _PROVIDER.items()}},
                404: _BOOK_404,
@@ -1052,7 +1064,7 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         '__doc__': 'Which passages to narrate with the cast, and how.',
         'provider': 'Narration provider: `system` (default, macOS `say`), `gemini` or `breeze`. Other values give 400.',
         'scene_id': 'Only passages of this scene. Omit for no scene filter.',
-        'segment_id': 'Only this passage. Omit for no passage filter. With `scene_id`, both must match.',
+        'passage_id': 'Only this passage. Omit for no passage filter. With `scene_id`, both must match.',
         'force': 'Generate a new take even when a take with the same recipe exists (older bytes are kept). Default false.',
     },
     'ListenRequest': {
@@ -1061,14 +1073,14 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'voice': 'Narrator voice: ' + _VOICE_VALUES,
         'model': 'Speech model. Omit or null for the configured Gemini TTS model; device narration accepts only '
                  '`macos-say` and Breeze only `breeze-tts-2`. At most 200 characters.',
-        'segment_id': 'Required. The passage (segment) to narrate.',
+        'passage_id': 'Required. The passage to narrate.',
     },
     'ChapterListenRequest': {
         '__doc__': 'Gemini chapter listening from a passage (also the body of the chapter preview).',
         'provider': 'Must be `gemini` (the default). Breeze and device voices use `POST /listen` per passage.',
         'voice': 'Gemini voice: a voice name or custom `voice_…` ID, `"library:vl_…"`, or empty/null for `Kore`. At most 256 characters.',
         'model': 'Gemini TTS model; omit or null for the configured one. At most 200 characters.',
-        'segment_id': 'Required. The passage to start from (the listener position). At most 200 characters.',
+        'passage_id': 'Required. The passage to start from (the listener position). At most 200 characters.',
         'intent': '`play` (a listener is waiting; the first requests follow the short ramp) or `queue` (default; '
                   'full-size chunks unless `chunking.ramp_seconds` is given).',
         'chunking': 'Optional per-request override of the saved `listen_chunking` preference, field by field.',
@@ -1108,15 +1120,15 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'provider': 'Required. `system`, `gemini` or `breeze`.',
         'voice': 'The narrator voice: ' + _VOICE_VALUES,
         'model': 'Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed models and reject any other value.',
-        'chapter_id': 'Re-record every passage of this chapter of the performance. Ignored when `segment_ids` or a range is sent.',
-        'segment_ids': 'Re-record exactly these passages (at most 1000), which must belong to the performance. Takes precedence over a range and `chapter_id`.',
-        'from_segment_id': 'First passage of an inclusive range in reading order; needs `to_segment_id`. Takes precedence over `chapter_id`.',
-        'to_segment_id': 'Last passage of the range; needs `from_segment_id`.',
+        'chapter_id': 'Re-record every passage of this chapter of the performance. Ignored when `passage_ids` or a range is sent.',
+        'passage_ids': 'Re-record exactly these passages (at most 1000), which must belong to the performance. Takes precedence over a range and `chapter_id`.',
+        'from_passage_id': 'First passage of an inclusive range in reading order; needs `to_passage_id`. Takes precedence over `chapter_id`.',
+        'to_passage_id': 'Last passage of the range; needs `from_passage_id`.',
         'only': '`all` (default): every passage in scope. `fallback`: only passages a fallback narrator currently reads because the main narration could not.',
     },
     'PerformanceRestoreRequest': {
         '__doc__': 'Which passages to return to a take.',
-        'segment_ids': 'The passages (1-1000 IDs of this performance).',
+        'passage_ids': 'The passages (1-1000 IDs of this performance).',
         'take_id': 'A take from `listPerformanceTakes` to make current; requires exactly one passage. Omit or null to return the passages to the performance\'s own audio.',
     },
     'PerformanceChapters': {
@@ -1136,14 +1148,14 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'voice': 'Voice to audition: ' + _VOICE_VALUES,
         'model': 'Speech model; omit for the configured Gemini model or the provider\'s fixed model. Device and '
                  'Breeze reject other values. At most 200 characters.',
-        'segment_id': 'Passage to sample (an exact prefix of at most 400 code points). At most 200 characters.',
-        'character_id': 'Character to audition. Without `segment_id`, their first attributed passage is used (demo '
+        'passage_id': 'Passage to sample (an exact prefix of at most 400 code points). At most 200 characters.',
+        'character_id': 'Character to audition. Without `passage_id`, their first attributed passage is used (demo '
                         'text if none). At most 200 characters.',
         'direction': 'Unsaved character direction to use instead of the saved one. Requires `character_id`. At most 3000 characters.',
-        'segment_direction': 'Unsaved passage direction. Requires both a passage and `character_id`. At most 3000 characters.',
+        'passage_direction': 'Unsaved passage direction. Requires both a passage and `character_id`. At most 3000 characters.',
         'pronunciation': 'An unsaved pronunciation entry to audition in place of the saved entry with the same `id` (or '
                          'in addition to the saved ones, without an `id`). Never stored in the book. Without '
-                         '`segment_id`, the sample is the sentence around the word\'s first occurrence, or a fixed '
+                         '`passage_id`, the sample is the sentence around the word\'s first occurrence, or a fixed '
                          'carrier sentence when the book does not contain it.',
     },
 }

@@ -82,7 +82,7 @@
   }
 
   function speakingCharacters(book) {
-    const characters = book?.characters || [], segments = book?.segments || [];
+    const characters = book?.characters || [], segments = book?.passages || [];
     const speakers = new Set(segments.map(segment => segment.speaker_id).filter(Boolean));
     const speaking = characters.filter(character => speakers.has(character.id));
     return speaking.length || segments.length ? speaking : characters;
@@ -103,7 +103,7 @@
   }
 
   function scriptStage(book) {
-    const segments = book?.segments || [];
+    const segments = book?.passages || [];
     const known = new Set((book?.characters || []).map(character => character.id));
     const open = segments.filter(segment => !segment.speaker_id || segment.speaker_id === 'unassigned' || !known.has(segment.speaker_id)).length;
     const assigned = segments.length - open;
@@ -116,7 +116,7 @@
   }
 
   function recordStage(book) {
-    const segments = book?.segments || [];
+    const segments = book?.passages || [];
     const recorded = segments.filter(playable).length;
     const base = {id:'record', label:'Record', tab:'studio', target:'record', uses:['Studio recordings (Export packages these)']};
     const detail = `${recorded} of ${plural(segments.length, 'passage')} ${recorded === 1 ? 'has' : 'have'} a Studio recording.`;

@@ -119,11 +119,11 @@ def test_audio_count_counts_only_current_playable_takes(client, monkeypatch):
     url = f"/api/books/{book['id']}"
     assert wait_job(client, client.post(f'{url}/render', json={'provider': 'gemini'}).json()['id'])['status'] == 'completed'
     store = client.app.state.runtime.store
-    stale = book['segments'][0]
+    stale = book['passages'][0]
     store.save_take(book['id'], stale['id'], {'fingerprint': 'stale-take', 'duration': 1, 'provider': 'gemini', 'model': 'x'})
     presented = client.get(url).json()
-    playable = sum(bool(s['audio']) for s in presented['segments'])
-    assert playable == len(book['segments']) - 1
+    playable = sum(bool(s['audio']) for s in presented['passages'])
+    assert playable == len(book['passages']) - 1
     summary = next(b for b in client.get('/api/books').json() if b['id'] == book['id'])
     assert summary['audio_count'] == playable
 
@@ -271,10 +271,10 @@ def test_guards_use_409_codes_consistently(client):
 
 # Item 7 ---------------------------------------------------------------------------------------
 
-def test_library_summary_has_segment_count_without_alias(client):
+def test_library_summary_has_passage_count_without_the_old_name(client):
     imported(client)
     summary = client.get('/api/books').json()[0]
-    assert summary['segment_count'] >= 1 and 'passage_count' not in summary
+    assert summary['passage_count'] >= 1 and 'segment_count' not in summary
 
 
 # Items 8 and 9 ----------------------------------------------------------------------------------
@@ -341,3 +341,17 @@ def test_invalid_metadata_has_a_code_and_describes_the_condition(client):
         response = client.patch(f"/api/books/{book['id']}/metadata", json=body)
         assert response.status_code == 400 and response.json()['code'] == 'metadata_invalid'
     assert client.patch(f"/api/books/{book['id']}/metadata", json={'title': 'x' * 501}).status_code == 422
+
+
+def test_a_book_stored_without_the_fields_an_old_import_lacked_is_still_presented_whole(client):
+    book = imported(client, 'old.txt')
+    store = client.app.state.runtime.store
+    stored = store.book(book['id'])
+    for name in ('created_at', 'author', 'source_name', 'revision', 'analysis'):
+        stored.pop(name, None)
+    store.save_book(stored)
+    presented = client.get(f"/api/books/{book['id']}")
+    assert presented.status_code == 200, presented.text
+    body = presented.json()
+    assert body['created_at'] is None and body['analysis'] is None
+    assert body['author'] == '' and body['source_name'] == '' and body['revision'] == 0

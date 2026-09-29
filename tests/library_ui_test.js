@@ -25,9 +25,9 @@ function submit(container, kind, id, values) {
 
 (async () => {
   const calls = [];
-  const sample = {books:[{id:'book/1',title:'The <Lantern>',author:'A & B',word_count:4,text_character_count:20,chapter_count:1,section_count:2,segment_count:3,
+  const sample = {books:[{id:'book/1',title:'The <Lantern>',author:'A & B',word_count:4,text_character_count:20,chapter_count:1,section_count:2,passage_count:3,
     cover:{sha256:'cover'},storage:{original_bytes:100,audio_bytes:0,simple_listen_bytes:20,database_payload_bytes:800},archived:false}],
-    series:[{id:'series/1',name:'The <Saga>',archived:false,character_count:0,volumes:[{position:1,title:'First',book_id:null,status:'missing'}]}],
+    series:[{id:'series/1',name:'The <Saga>',archived:false,character_count:0,volumes:[{kind:'placeholder',series_id:'series/1',position:1,title:'First',status:'missing'}]}],
     storage:{data_directory_bytes:4000,shared_database_bytes:3000,note:'Shared database <note>'}};
   let respond = (url, options) => {
     if (options.method === 'POST' && url.endsWith('/archive')) sample.books[0].archived = true;

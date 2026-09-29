@@ -52,7 +52,7 @@
   function childState(child) {
     if (child.not_started || (!child.run_id && ['cancelled','interrupted'].includes(child.status))) return 'not_started';
     const outcomes = Object.values(child.run?.outcomes || {});
-    if (child.status === 'completed' && outcomes.some(o => o.status === 'completed' && o.scopes > 0 && !o.accepted)) return 'needs_review';
+    if (child.status === 'completed' && outcomes.some(o => o.status === 'completed' && o.scope_count > 0 && !o.accepted)) return 'needs_review';
     return child.status;
   }
   /** Consent arguments for a series plan: scope, what is sent where, the estimate and any blocker. */

@@ -28,13 +28,48 @@ LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "a
                      "listen_chapter": {"limits": "speech_limits"}}
 
 
+# Fields the published Job schema of a kind always sends, with the value that means "not set yet" or "none". A worker
+# reports some of them later (`audio` when a take is ready, `projection` at its first report), and a job stored by an
+# earlier version may lack them; the contract says they are always present.
+JOB_DEFAULTS = {
+    "listen": {"audio": None},
+    "voice_preview": {"audio": None},
+    "listen_chapter": {"parent_id": None, "projection": None, "quota": None, "waiting_seconds": None, "closing": None,
+                       "fallback": None, "content_blocked": None},
+    "performance": {"child_job_ids": [], "child_job_id": None},
+    "pipeline": {"run_id": None, "steps": []},
+    "series": {"book_ids": [], "child_job_ids": [], "waiting_for_review": None},
+}
+
+
+NARRATION_KINDS = frozenset({"listen", "listen_chapter", "voice_preview", "performance"})
+
+
 def upgrade_job(job: dict) -> dict:
-    """A stored job document with current field names (the stored row is not rewritten)."""
+    """A stored job document with current field names and its kind's always-sent fields (the stored row is not rewritten)."""
     for old, new in LEGACY_JOB_FIELDS.get(job.get("kind"), {}).items():
         if old in job:
             value = job.pop(old)
             job.setdefault(new, value)
+    if job.get("kind") in NARRATION_KINDS:
+        # Narration jobs carried a fixed `phase` label that repeated their kind; it is stored but not presented.
+        job.pop("phase", None)
+    for name, value in JOB_DEFAULTS.get(job.get("kind"), {}).items():
+        job.setdefault(name, copy_default(value))
+    if job.get("kind") == "pipeline" and job.get("series_run_id"):
+        # A series child recorded by an intermediate build may lack these; empty and unknown mean the same as absent.
+        job.setdefault("title", "")
+        job.setdefault("consent_fingerprint", None)
+        job.setdefault("context_pending", [])
+        job.setdefault("context_sources", [])
+    if job.get("kind") == "series" and isinstance(job.get("book_id"), str):
+        # A series parent's book_id is `series:<series id>`, so its series is known even when an old record lacks it.
+        job.setdefault("series_id", job["book_id"].removeprefix("series:"))
     return job
+
+
+def copy_default(value):
+    return list(value) if isinstance(value, list) else value
 
 
 def public_job(job: dict) -> dict:
@@ -96,6 +131,14 @@ class Store:
                            if job["kind"] in {"analyze", "pipeline", "series"} else
                            "The server restarted before this job finished. Finished audio is saved and reused.")
                 extra = {"waiting_for_review": None} if job.get("waiting_for_review") else {}
+                if job["kind"] == "pipeline" and job.get("series_run_id") and job["status"] == "queued" and not job.get("run_id"):
+                    extra["not_started"] = True  # A series child that never started is marked, as when its series is cancelled.
+                if job["kind"] == "listen_chapter":
+                    # Nothing is waiting and nothing remains planned once the worker is gone (chunks in flight stay as they were).
+                    if job.get("waiting_seconds") is not None:
+                        extra["waiting_seconds"] = None
+                    if job.get("projection"):
+                        extra["projection"] = []
                 self.update_job(job["id"], status="interrupted", message=message, **extra)
 
     def connect(self):
@@ -198,7 +241,7 @@ class Store:
                    created_at=now(), updated_at=now(), cancel_requested=False)
         with self.lock, self.connect() as conn:
             conn.execute("INSERT INTO jobs(id,book_id,body) VALUES (?,?,?)", (job["id"], book_id, json.dumps(job)))
-        return job
+        return upgrade_job(job)
 
     def update_job(self, job_id: str, **fields) -> dict:
         with self.lock:

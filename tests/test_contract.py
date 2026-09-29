@@ -107,3 +107,106 @@ def test_undeclared_fields_are_found_at_any_depth():
     value = Tree.model_validate({'leaves': [{'name': 'a', 'secret': 1}, {'name': 'b'}],
                                  'by_key': {'x': {'name': 'c', 'hidden': True}}, 'top': 0})
     assert extras(value) == ['$.by_key{}.hidden', '$.leaves[].secret', '$.top']
+
+
+# ---------------------------------------------------------------- shapes that generate well (docs/API-WORKFLOW.md)
+
+def _walk(node, path='#'):
+    """Every dict of the document with its path."""
+    if isinstance(node, dict):
+        yield path, node
+        for key, value in node.items():
+            yield from _walk(value, f'{path}/{key}')
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _walk(item, f'{path}/{index}')
+
+
+def _members(schema: dict, union: dict) -> list[dict]:
+    return [schema['components']['schemas'][m['$ref'].rsplit('/', 1)[-1]] if '$ref' in m else m for m in union['oneOf']]
+
+
+def test_every_union_of_objects_is_a_named_tagged_oneof():
+    schema = published()
+    components = schema['components']['schemas']
+    unions = {name: component for name, component in components.items() if 'oneOf' in component}
+    assert unions, 'the contract has tagged unions'
+    for path, node in _walk(schema):
+        if 'oneOf' in node:
+            assert path.startswith('#/components/schemas/') and path.count('/') == 3, f'{path}: a oneOf is a named schema of its own'
+    for name, union in unions.items():
+        tag = union['discriminator']['propertyName']
+        tags = []
+        for member in _members(schema, union):
+            values = member['properties'][tag].get('enum')
+            assert isinstance(values, list) and len(values) == 1 and isinstance(values[0], str), f'{name}: {tag} is a single-value enum'
+            assert tag in member['required'], f'{name}: {tag} is required'
+            tags.append(values[0])
+        assert len(set(tags)) == len(tags), f'{name}: every member has its own tag value'
+        mapping = union['discriminator'].get('mapping')
+        if mapping is not None:
+            assert sorted(mapping) == sorted(tags) and len(set(mapping.values())) == len(mapping), f'{name}: one tag, one member'
+        assert not any(m.get('type') == 'null' for m in union['oneOf']), f'{name}: no catch-all or null member'
+
+
+def test_no_nested_unions_no_object_anyof_and_no_bare_null():
+    schema = published()
+    components = schema['components']['schemas']
+    for path, node in _walk(schema):
+        for key in ('anyOf', 'oneOf'):
+            for member in node.get(key, []):
+                assert 'anyOf' not in member and 'oneOf' not in member, f'{path}: nested {key}'
+        members = [m for m in node.get('anyOf', []) if m.get('type') != 'null']
+        if len(members) > 1:
+            for member in members:
+                target = components[member['$ref'].rsplit('/', 1)[-1]] if '$ref' in member else member
+                assert target.get('type') != 'object' and 'oneOf' not in target, f'{path}: a union of objects is a named oneOf'
+        if node.get('type') == 'null':
+            assert path.rsplit('/', 2)[-2] == 'anyOf', f'{path}: null is only the null of a nullable anyOf'
+
+
+def test_every_integer_says_its_width():
+    unformatted = [path for path, node in _walk(published()) if node.get('type') == 'integer' and 'format' not in node]
+    assert not unformatted, f'integers without format int32/int64: {unformatted[:5]}'
+    formats = {node['format'] for _, node in _walk(published()) if node.get('type') == 'integer'}
+    assert formats <= {'int32', 'int64'}
+
+
+def test_range_capable_operations_declare_the_json_error_for_416():
+    schema = published()
+    ranged = [(path, method, operation) for path, methods in schema['paths'].items() for method, operation in methods.items()
+              if '206' in operation['responses']]
+    assert len(ranged) >= 8
+    for path, method, operation in ranged:
+        response = operation['responses']['416']
+        assert response['content']['application/json']['schema'] == {'$ref': '#/components/schemas/Error'}, f'{method} {path}'
+        assert response['x-bardic-error-codes'] == ['range_not_satisfiable']
+
+
+def test_the_shape_guard_refuses_untagged_nested_and_null_shapes():
+    from bardic.apispec.spec import _check_shapes
+    components = {
+        'A': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['a']}}, 'required': ['kind']},
+        'B': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['b']}}, 'required': ['kind']},
+        'C': {'type': 'object', 'properties': {'kind': {'type': 'string', 'const': 'c'}}, 'required': ['kind']},
+        'D': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['a']}}, 'required': ['kind']},
+    }
+
+    def ref(name):
+        return {'$ref': f'#/components/schemas/{name}'}
+
+    good = {'oneOf': [ref('A'), ref('B')], 'discriminator': {'propertyName': 'kind', 'mapping': {
+        'a': '#/components/schemas/A', 'b': '#/components/schemas/B'}}}
+    _check_shapes({'good': good, 'nullable': {'anyOf': [ref('A'), {'type': 'null'}]}}, components)
+    for bad, why in [
+        ({'oneOf': [ref('A'), ref('B')]}, 'discriminator'),
+        ({'oneOf': [ref('A'), ref('C')], 'discriminator': {'propertyName': 'kind'}}, 'single-value string enum'),
+        ({'oneOf': [ref('A'), ref('D')], 'discriminator': {'propertyName': 'kind'}}, 'share a tag'),
+        ({'oneOf': [ref('A'), ref('B')], 'discriminator': {'propertyName': 'kind', 'mapping': {
+            'a': '#/components/schemas/A', 'x': '#/components/schemas/B'}}}, 'one-to-one'),
+        ({'anyOf': [ref('A'), ref('B')]}, 'named oneOf'),
+        ({'anyOf': [{'anyOf': [{'type': 'string'}, {'type': 'integer'}]}, {'type': 'null'}]}, 'another anyOf'),
+        ({'type': 'null'}, 'bare null'),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            _check_shapes({'bad': bad}, components)

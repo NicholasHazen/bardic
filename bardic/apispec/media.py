@@ -6,13 +6,15 @@ listening, performance and voice-preview responses, so they live below
 """
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Literal, Union
 
-from pydantic import Discriminator, Field, Tag
+from pydantic import Field
+from typing_extensions import TypeAliasType
 
 from .base import View
+from .enums import NarrationProvider
 
-Provider = Literal['system', 'gemini', 'breeze']
+Provider = NarrationProvider  # the name the family modules import
 
 
 class AudioRef(View):
@@ -22,9 +24,15 @@ class AudioRef(View):
     present, with these names and meanings; a kind-specific view may narrow a
     field to non-null when that kind always knows it. Kind-specific fields
     (clip bounds, reuse pointers, provider timing, ...) are added by the
-    subclass. Audio objects carry no constant labels: an object is playable
-    because it is present, and its kind is given by where it appears. Build
-    them with ``bardic.audio_refs.audio_ref`` so the core stays identical.
+    subclass. The audio objects that appear in unions (`ListeningPassageAudio`,
+    `ListeningChunkClipAudio`, `PerformanceCastAudio`, `VoicePreviewAudio`) add a
+    ``kind`` tag; other audio objects have none. Build them with
+    ``bardic.audio_refs.audio_ref`` so the core stays identical.
+
+    The Breeze-related extras (`reuse`, `provider_timing`, `breeze`, `voice_revision`, `voice_library`) repeat on
+    the audio objects that can carry them (`BookTake`, `ListeningPassageAudio`, `VoicePreviewAudio`) instead of
+    sharing a base schema: the objects differ in which extras they can have and in their tags, and inheritance
+    (`allOf`) would generate worse types than the repeated fields.
     """
     url: str = Field(description='Root-relative URL of the audio bytes (WAV unless stated otherwise). Play this; do not '
                                  'build audio URLs from other fields.')
@@ -32,17 +40,25 @@ class AudioRef(View):
                                              'bytes are not content-addressed (takes recorded before content addressing). '
                                              'A different `asset_id` means different audio.')
     duration: float | None = Field(description='Length of this audio in seconds, or null when unknown.')
-    provider: str | None = Field(description='Speech provider that produced the bytes (`system`, `gemini`, `breeze`), or null when unknown.')
+    provider: NarrationProvider | None = Field(description='Speech provider that produced the bytes, or null when unknown.')
     model: str | None = Field(description='Speech model that produced the bytes, or null when unknown.')
     voice: str | None = Field(description='Provider voice actually used, or null when unknown.')
     created_at: str | None = Field(description='ISO 8601 UTC time the audio was retained, or null when it was not recorded.')
+
+class BookBreezeSettings(View):
+    """Optional Breeze sampling overrides of a pinned choice: a character's voice or a listening session. No current API or UI sets them."""
+    temperature: float | None = Field(None, description='Sampling temperature override, 0.05-2.0. Absent or null keeps the Breeze voice\'s own setting.')
+    cfg_scale: float | None = Field(None, description='Classifier-free guidance scale override, 0.5-10.0. Absent or null keeps the voice\'s own setting.')
+    top_p: float | None = Field(None, description='Nucleus sampling probability override, 0.01-1.0. Absent or null keeps the voice\'s own setting.')
+    top_k: int | None = Field(None, description='Top-k sampling override, an integer 1-1024. Absent or null keeps the voice\'s own setting.')
+
 
 class AudioTakeSentenceSpan(View):
     """One provider-reported sentence inside a take."""
     char_start: int = Field(description='Start code-point offset into the text that was sent (not chapter coordinates).')
     char_end: int = Field(description='Exclusive end code-point offset into the text that was sent.')
-    start: float = Field(description='Start time in the take, seconds.')
-    end: float = Field(description='End time in the take, seconds.')
+    start_seconds: float = Field(description='Start time in the take, seconds.')
+    end_seconds: float = Field(description='End time in the take, seconds.')
 
 class AudioTakeSentenceTiming(View):
     """Sentence timing reported by the Breeze server, accepted only when every offset matched the sent text."""
@@ -50,11 +66,11 @@ class AudioTakeSentenceTiming(View):
     kind: Literal['sentence'] = Field(description='Timing granularity.')
     source: Literal['breeze'] = Field(description='Who measured the timing.')
     offsets: Literal['recipe_text_code_points'] = Field(description='What the character offsets index into.')
-    segments: list[AudioTakeSentenceSpan] = Field(description='Sentences in order.')
+    sentences: list[AudioTakeSentenceSpan] = Field(description='Sentences in order.')
 
 class AudioTakeBreezeInfo(View):
     """Breeze request details retained with a take."""
-    request_id: str | None = Field(None, description="The server's `x-request-id`, truncated to 80 characters; null or absent when the server sent none.")
+    request_id: str | None = Field(description="The server's `x-request-id`, truncated to 80 characters; null when the server sent none.")
     timing_accepted: bool = Field(description='Whether the server-reported sentence timing validated against the sent text.')
     vocal_event_markup: list[str] | None = Field(None, description='Lower-cased vocal event tags (for example `[laugh]`) found in the sent text; absent when none.')
 
@@ -69,7 +85,7 @@ class ListeningReuse(View):
     take_id: str = Field(description='ID of the original retained take row.')
     book_id: str = Field(description='Book of the original take (reuse can cross books).')
     session_id: str = Field(description='Listening session ID (64 hex) of the original take; may differ from the current session.')
-    segment_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
+    passage_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
 
 class ListeningSubstitute(View):
     """Marks a take that stands in for a passage another narrator was supposed to read."""
@@ -77,8 +93,7 @@ class ListeningSubstitute(View):
         description='Why this narrator read the passage: `content_blocked` (Gemini\'s content policy blocked the text), `failed` '
                     '(the main narration kept failing on it) or `rerecord` (the listener asked for another voice). The first two '
                     'are automatic fallbacks; `rerecord` is a choice. The set of values is open.')
-    for_provider: str = Field(description='The provider of the narration this audio stands in for (`gemini`, `system` or `breeze`); '
-                                          'empty when the record does not say.')
+    for_provider: NarrationProvider | None = Field(description='The provider of the narration this audio stands in for; null when the record does not say.')
     for_model: str = Field(description='The speech model of the narration this audio stands in for; empty when not recorded.')
     override_id: str | None = Field(
         None, description='A saved performance\'s take that links this audio to the performance (see `listPerformanceTakes`); absent '
@@ -92,17 +107,18 @@ class ListeningPassageAudio(AudioRef):
     url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/listen/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the WAV bytes (content address).')
     duration: float = Field(description='Audio length in seconds.')
-    provider: str = Field(description='Provider that produced the bytes (`system`, `gemini` or `breeze`).')
+    provider: NarrationProvider = Field(description='Provider that produced the bytes.')
     model: str = Field(description='Speech model that produced the bytes.')
     voice: str = Field(description='Provider voice actually used (the device voice name after resolution).')
     created_at: str = Field(description='ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently).')
     session_id: str = Field(description='Listening session the take belongs to. For a `substitute`, the fallback narrator\'s session, not the Gemini session it stands in for.')
-    segment_id: str = Field(description='Passage the take narrates.')
+    passage_id: str = Field(description='Passage the take narrates.')
     substitute: ListeningSubstitute | None = Field(None, description='Present when a different narrator read this passage than the one it stands in for: a fallback narrator (Gemini blocked the text, or the main narration kept failing) or a re-record chosen by the listener. It is a normal immutable take of the reading narrator (`provider`, `voice`), never the original narrator\'s audio. Absent otherwise.')
     reuse: ListeningReuse | None = Field(None, description='Present when the bytes were copied from an equivalent retained take instead of being generated.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null when the server timing did not validate.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision that performed the take.')
+    kind: Literal['passage'] = Field(description='Tag of the audio unions: `passage`, a retained single-passage take that plays whole.')
 
 class ListeningChunkClipAudio(AudioRef):
     """One passage's estimated clip inside a multi-passage chunk WAV (Gemini chapter listening).
@@ -113,11 +129,11 @@ class ListeningChunkClipAudio(AudioRef):
     url: str = Field(description='Root-relative URL of the shared chunk WAV: `/api/books/{book_id}/listen/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the chunk WAV.')
     duration: float = Field(description='Clip length in seconds (`clip_end - clip_start`, rounded to ms).')
-    provider: str = Field(description='Speech provider that produced the chunk, for example `gemini`.')
+    provider: NarrationProvider = Field(description='Speech provider that produced the chunk (`gemini`).')
     model: str = Field(description='Speech model that produced the chunk, for example `gemini-3.8-flash-tts`.')
     voice: str = Field(description='Provider voice actually used for the chunk.')
     created_at: str = Field(description='ISO 8601 UTC time the chunk was retained.')
-    segment_id: str = Field(description='Passage this clip narrates.')
+    passage_id: str = Field(description='Passage this clip narrates.')
     chunk_id: str = Field(description='ID of the retained chunk.')
     clip_start: float = Field(description='Clip start within the chunk WAV, seconds.')
     clip_end: float = Field(description='Clip end within the chunk WAV, seconds.')
@@ -125,19 +141,13 @@ class ListeningChunkClipAudio(AudioRef):
     timing: Literal['estimated'] = Field(description='Clip boundaries are estimated from pauses, not measured.')
     session_id: str = Field(description='Listening session ID (64 hex) the chunk belongs to.')
     flags: list[str] = Field(description='Quality flags of the chunk; currently `weak_alignment` (fewer than 60% of passage boundaries matched a pause).')
-
-def _simple_audio_kind(value: Any) -> str:
-    return 'clip' if isinstance(value, dict) and 'chunk_id' in value else 'passage'
-
-ListeningAudio = Annotated[Union[Annotated[ListeningPassageAudio, Tag('passage')],
-                                 Annotated[ListeningChunkClipAudio, Tag('clip')]],
-                           Discriminator(_simple_audio_kind)]
+    kind: Literal['clip'] = Field(description='Tag of the audio unions: `clip`, one passage\'s clip of a shared chunk WAV (play `url` from `clip_start` to `clip_end`).')
 
 class ChapterListenChunkPlan(View):
     """One planned chunk request, in request order."""
-    first_segment_id: str = Field(description='Passage ID of the first passage in the chunk (chapter reading order).')
-    last_segment_id: str = Field(description='Passage ID of the last passage in the chunk, inclusive; equals `first_segment_id` for a one-passage chunk.')
-    segment_count: int = Field(description='Consecutive passages in the chunk.')
+    first_passage_id: str = Field(description='Passage ID of the first passage in the chunk (chapter reading order).')
+    last_passage_id: str = Field(description='Passage ID of the last passage in the chunk, inclusive; equals `first_passage_id` for a one-passage chunk.')
+    passage_count: int = Field(description='Consecutive passages in the chunk.')
     chars: int = Field(description='Code points of the exact chapter slice sent.')
     target_seconds: float = Field(description='Audio length this step aimed for, seconds.')
     expected_seconds: float = Field(description='Audio length expected from the calibrated speech rate, seconds.')
@@ -181,7 +191,7 @@ class VoicePreviewSourceAnchor(View):
     schema_version: int = Field(description='Anchor format version (1).')
     book_id: str = Field(description='Book ID the sampled passage belongs to.')
     chapter_id: str = Field(description='Chapter ID whose text `start` and `end` index.')
-    segment_id: str = Field(description='Passage (segment) ID the sample was taken from.')
+    passage_id: str = Field(description='Passage ID the sample was taken from.')
     start: int = Field(description='Chapter-local code-point start of the passage.')
     end: int = Field(description='Exclusive chapter-local code-point end of the sample (start + sample length).')
     text_sha256: str = Field(description='SHA-256 hex of the sample text.')
@@ -199,7 +209,7 @@ class VoicePreview(View):
     book_id: str = Field(description='Book ID the audition belongs to.')
     text: str = Field(description='Exact source text sampled, at most 400 code points: a passage prefix; for a pronunciation audition, the sentence around the word; or a fixed demo or carrier sentence. Pronunciations are not applied here (see `spoken_text`).')
     source: Literal['passage', 'demo'] = Field(description='`passage` when the text comes from the book; `demo` when no passage was chosen or found and a fixed demo or pronunciation carrier sentence is used.')
-    segment_id: str | None = Field(description='Passage ID sampled: the requested passage, or else the character\'s first attributed passage. Null for demo text.')
+    passage_id: str | None = Field(description='Passage ID sampled: the requested passage, or else the character\'s first attributed passage. Null for demo text.')
     chapter_id: str | None = Field(description='Chapter ID of the sampled passage, or null for demo text.')
     character_id: str | None = Field(description='Book-local character ID whose voice and direction were auditioned, or null for a narrator audition.')
     character_name: str | None = Field(description='Character name at request time, or null.')
@@ -207,7 +217,7 @@ class VoicePreview(View):
     truncated: bool = Field(description='True when the passage was shortened to the sample.')
     spoken_text: str | None = Field(None, description='The text actually sent to the narrator when a pronunciation changed it; absent otherwise.')
     pronunciation: VoicePreviewPronunciation | None = Field(None, description='The unsaved pronunciation this audition tried; absent otherwise.')
-    provider: Provider = Field(description='Speech provider: `system` (macOS device voice), `gemini` or `breeze` (self-hosted).')
+    provider: NarrationProvider = Field(description='Speech provider.')
     model: str = Field(description='Speech model: `macos-say` for system, `breeze-tts-2` for Breeze, or the Gemini model (default `gemini-3.8-flash-tts`).')
     voice: str = Field(description='Resolved provider voice (Gemini defaults to `Kore`; device default is empty).')
 
@@ -225,7 +235,7 @@ class VoicePreviewAudio(AudioRef):
     url: str = Field(description='Root-relative WAV URL: `/api/books/{book_id}/voice-preview/audio/{asset_id}`.')
     asset_id: str = Field(description='SHA-256 hex of the WAV bytes.')
     duration: float = Field(description='Seconds.')
-    provider: str = Field(description='Provider that produced the bytes: `system`, `gemini` or `breeze`.')
+    provider: NarrationProvider = Field(description='Provider that produced the bytes.')
     model: str = Field(description='Speech model that produced the bytes.')
     voice: str = Field(description='Provider voice actually used.')
     created_at: str = Field(description='ISO 8601 UTC time the take was retained.')
@@ -235,3 +245,12 @@ class VoicePreviewAudio(AudioRef):
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')
     voice_revision: str | None = Field(None, description='Breeze only: voice revision used.')
     voice_library: AudioTakeVoiceLibrary | None = Field(None, description='When the voice was a voice-library voice: which one and which version.')
+    kind: Literal['preview'] = Field(description='Tag of the audio unions: `preview`, a retained voice-audition take.')
+
+
+ListeningAudio = TypeAliasType('ListeningAudio', Annotated[
+    Union[ListeningPassageAudio, ListeningChunkClipAudio], Field(
+        discriminator='kind',
+        description='The playable simple-listening audio of one passage: a whole single-passage take (`kind` `passage`) '
+                    'or one passage\'s clip of a chunk WAV from chapter listening (`kind` `clip`). Select on `kind`.')])
+

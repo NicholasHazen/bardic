@@ -182,7 +182,9 @@ def test_story_map_has_verified_source_anchors_and_typed_edges_without_invented_
     graph = response.json()
     assert graph['schema_version'] == 1
     assert graph['reference_counts'] == {'mention': 1, 'dialogue': 1, 'profile_evidence': 1}
-    assert graph['references'] == refs
+    # The wire names the passage a reference is about `passage_id`; the stored rows say `segment_id`.
+    assert graph['references'] == [{('passage_id' if key == 'segment_id' else key): value for key, value in ref.items()}
+                                   for ref in refs]
     assert 'not verified physical presence' in graph['note']
     nodes = {node['id']: node for node in graph['nodes']}
     source_by_chapter = {chapter['id']: chapter for chapter in book['chapters']}
@@ -263,9 +265,17 @@ def test_pipeline_distinguishes_http_success_validation_and_unfinished_reservati
     assert {'directing', 'voices'} <= set(stages['narration']['dependencies'])
     assert 'progress_percent' not in view
     assert any(event['event'] == 'cache_hit' for event in view['events'])
-    assert view['usage']['attempts'] == 5
+    assert view['usage']['attempt_count'] == 5
     assert store.book(imported['id']) == original
     assert len(store.jobs(imported['id'])) == 1  # Browsing did not create another run.
+
+
+def test_a_sparse_older_attempt_still_names_its_book_and_run(client):
+    # The contract requires `book_id` and `run_id` on every attempt: the ledger cannot store one without them.
+    book = import_book(client)
+    ProcessingStore(client.app.state.runtime.store).save_attempt({'id': 'sparse', 'book_id': book['id'], 'run_id': 'old-run'})
+    attempts = client.get(f"/api/books/{book['id']}/pipeline").json()['attempts']
+    assert [(a['id'], a['book_id'], a['run_id']) for a in attempts] == [('sparse', book['id'], 'old-run')]
 
 
 def test_pipeline_validation_history_is_not_lost_when_latest_event_preview_is_bounded(client):

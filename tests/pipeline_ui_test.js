@@ -55,7 +55,7 @@ const snapshot = {schema_version:1, book_id:book.id, stages:[
   {id:'alignment', label:'Word alignment', status:'planned', completed:null,total:null,unit_label:'words',dependencies:['narration'],artifact_count:0}
 ], artifact_kinds:['discovery','profiles'], capabilities:{word_alignment:false}, notes:['Historical calls may be untracked.'],
   jobs:[{id:'run-1',kind:'analyze',phase:'scan',status:'failed',progress:1,total:3,message:'Saved <one> section',error:'Bad <evidence>',created_at:'2026-09-27T16:00:00Z'}],
-  usage:{attempts:1,estimated_spend_usd:null,unknown_cost_attempts:1},
+  usage:{attempt_count:1,estimated_spend_usd:null,unknown_cost_attempts:1},
   attempts:[{id:'attempt-1',run_id:'run-1',unit_key:'discovery:old',stage:'discovery',provider:'test',model:'fast',
     status:'received',http_status:200,input_tokens:null,output_tokens:null,reserved_input_tokens:4000,reserved_output_tokens:1000,
     charged_estimate_usd:null,validation_state:'unknown',created_at:'2026-09-27T16:00:00Z'},
@@ -127,6 +127,7 @@ function environment(handler = ordinary) {
   assert.ok(container.nodes.artifacts.innerHTML.includes('Saved &lt;output&gt; 0'));
   assert.ok(container.nodes.artifacts.innerHTML.includes('1–30 of 35 saved versions'));
   assert.ok(container.nodes.activity.innerHTML.includes('Response received'));
+  assert.ok(container.nodes.activity.innerHTML.includes('1 tracked request'), 'the count is usage.attempt_count, not the length of the recent list');
   assert.ok(container.nodes.activity.innerHTML.includes('HTTP 200'));
   assert.ok(container.nodes.activity.innerHTML.includes('<td>Not recorded</td>'));
   assert.ok(container.nodes.activity.innerHTML.includes('4,000 reserved / 1,000 reserved'));

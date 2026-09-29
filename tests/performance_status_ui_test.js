@@ -14,7 +14,7 @@ class Container {
   querySelector() { return null; }
 }
 const book = {id:'book-q', title:'The Lantern', chapters:[{id:'c1', title:'One', kind:'chapter'}, {id:'c2', title:'Two', kind:'chapter'}],
-  segments:[{id:'s1', chapter_id:'c1', text:'The lamp went out.'}, {id:'s2', chapter_id:'c2', text:'A door opened.'}]};
+  passages:[{id:'s1', chapter_id:'c1', text:'The lamp went out.'}, {id:'s2', chapter_id:'c2', text:'A door opened.'}]};
 const source = name => fs.readFileSync(path.join(__dirname, '../bardic/static', name), 'utf8');
 const P = '/api/books/book-q/performances';
 
@@ -29,7 +29,7 @@ const eta = extra => ({seconds:null, finishes_at:null, basis:'none', chars_remai
 const status = (extra = {}) => ({performance_id:'pf_1', generated_at:'2026-09-29T10:00:00Z', state:'partial', run:null, eta:eta(),
   totals:{passages_total:4, passages_ready:3, passages_fallback:0, passages_rerecorded:0, passages_blocked:0, passages_remaining:1, chars_total:8400, chars_ready:6300, chars_remaining:2100, seconds_ready:30},
   chapters:[chapter('c1'), chapter('c2', {passages_ready:1, passages_remaining:1, state:'partial'})], notes:[], ...extra});
-const note = (extra = {}) => ({chapter_id:'c1', segment_id:'s1', reason:'content_blocked', provider:'system', model:null, voice:'Samantha', created_at:'2026-09-29T09:00:00Z', excerpt:'The lamp went out.', ...extra});
+const note = (extra = {}) => ({chapter_id:'c1', passage_id:'s1', reason:'content_blocked', provider:'system', model:null, voice:'Samantha', created_at:'2026-09-29T09:00:00Z', excerpt:'The lamp went out.', ...extra});
 
 // `routes` maps "METHOD suffix" (the path after the performance) to a response; unknown routes answer {}.
 // With `hold`, timers of 250 ms or less are kept (not run) so a test can see what is still pending.
@@ -121,9 +121,9 @@ test('the overall bar and every chapter row are labelled, carry a state word, co
 });
 
 test('run issues are listed as an alert and the notes list is a collapsible with per-passage actions', async () => {
-  const issue = {chapter_id:'c2', segment_id:'s2', reason:'failed', outcome:'unrecorded', provider:null, voice:null, at:'2026-09-29T09:30:00Z', message:'Both narrators failed.'};
+  const issue = {chapter_id:'c2', passage_id:'s2', reason:'failed', outcome:'unrecorded', provider:null, voice:null, at:'2026-09-29T09:30:00Z', message:'Both narrators failed.'};
   const env = environment({routes:{'GET /status':status({run:{job_id:'j1', kind:'record', status:'completed', message:'', waiting_seconds:null, issues:[issue]},
-    notes:[note(), note({segment_id:'s2', chapter_id:'c2', reason:'failed', excerpt:'A <door> opened.'})]})}});
+    notes:[note(), note({passage_id:'s2', chapter_id:'c2', reason:'failed', excerpt:'A <door> opened.'})]})}});
   let html = await env.open();
   assert.match(html, /1 passage no narrator could record/);
   assert.match(html, /Both narrators failed\./);
@@ -237,7 +237,7 @@ test('re-recording a chapter previews locally, then starts with the chosen voice
   assert.deepEqual(env.posts('/rerecord').at(-1).body, {provider:'system', voice:'Samantha', model:null, only:'fallback'});
   env.click({performanceAction:'rerecord-note', segment:'s1'});
   await settle();
-  assert.deepEqual(env.posts('/rerecord/preview').at(-1).body.segment_ids, ['s1']);
+  assert.deepEqual(env.posts('/rerecord/preview').at(-1).body.passage_ids, ['s1']);
 });
 
 test('a re-record problem or refusal shows its message with the hint, and the confirm stays disabled', async () => {
@@ -253,9 +253,9 @@ test('a re-record problem or refusal shows its message with the hint, and the co
 });
 
 test('takes list a passage’s versions, and restoring sends the take or, with none, the original', async () => {
-  const take = (id, extra) => ({id, segment_id:'s1', chapter_id:'c1', action:'use', reason:'rerecord', created_at:'2026-09-29T09:00:00Z', restored_from:null, provider:'gemini', model:null, voice:'Kore', voice_label:'Kore · Gemini', error:null, available:true, current:false, audio:{url:`/audio/${id}.wav`}, ...extra});
+  const take = (id, extra) => ({id, passage_id:'s1', chapter_id:'c1', action:'use', reason:'rerecord', created_at:'2026-09-29T09:00:00Z', restored_from:null, provider:'gemini', model:null, voice:'Kore', voice_label:'Kore · Gemini', error:null, available:true, current:false, audio:{url:`/audio/${id}.wav`}, ...extra});
   const env = environment({routes:{'GET /status':status({notes:[note({reason:'rerecord'})]}),
-    'GET /takes?segment_id=s1':{performance_id:'pf_1', takes:[take('t2', {current:true}), take('t1', {reason:'content_blocked', voice_label:'Samantha'})]}}});
+    'GET /takes?passage_id=s1':{performance_id:'pf_1', takes:[take('t2', {current:true}), take('t1', {reason:'content_blocked', voice_label:'Samantha'})]}}});
   await env.open();
   env.click({performanceAction:'takes', segment:'s1'});
   await settle();
@@ -268,14 +268,14 @@ test('takes list a passage’s versions, and restoring sends the take or, with n
   assert.doesNotMatch(html, /data-performance-action="take-use" data-segment="s1" data-take="t2"/, 'the current take is not offered again');
   env.click({performanceAction:'take-use', segment:'s1', take:'t1'});
   await settle();
-  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {segment_ids:['s1'], take_id:'t1'});
+  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {passage_ids:['s1'], take_id:'t1'});
   assert.match(env.container.innerHTML, /That take now plays for this passage\./);
   env.click({performanceAction:'take-original', segment:'s1'});
   await settle();
-  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {segment_ids:['s1']}, 'no take_id returns to the performance’s own audio');
+  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {passage_ids:['s1']}, 'no take_id returns to the performance’s own audio');
   env.click({performanceAction:'restore-original', segment:'s1'});
   await settle();
-  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {segment_ids:['s1']});
+  assert.deepEqual(env.posts('/takes/restore').at(-1).body, {passage_ids:['s1']});
   assert.equal(env.calls.filter(call => call.url.includes('/listen')).length, 0, 'the performance player is not started');
 });
 

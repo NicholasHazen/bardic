@@ -139,7 +139,7 @@ def dialogue(client, book_id):
     book = client.get(f'/api/books/{book_id}').json()
     names = {c['id']: c['name'] for c in book['characters']}
     return [(s['text'], names[s['speaker_id']], s['confidence'], s.get('speaker_check'), s['direction'], s.get('evidence'))
-            for s in book['segments'] if s['kind'] == 'dialogue']
+            for s in book['passages'] if s['kind'] == 'dialogue']
 
 
 def with_cast(client):
@@ -316,20 +316,20 @@ def test_a_run_without_the_server_url_is_refused_before_queueing(client):
 def test_quote_attribution_maps_to_the_cast_writes_nothing_and_is_cached(client):
     configure(client, booknlp='http://nlp.local:8100')
     book = with_cast(client)
-    before = client.get(f"/api/books/{book['id']}").json()['segments']
+    before = client.get(f"/api/books/{book['id']}").json()['passages']
     plan = client.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={'steps': ['quotes']}).json()
     assert plan['service_calls'] == 2 and plan['requests'] == 0 and plan['estimated_cost_usd'] == 0
     job, _ = run(client, book['id'], ['quotes'])
     assert job['status'] == 'completed', job
     assert sorted(client.booknlp.calls[0]['aliases']) == [['Elio'], ['Mara']]
-    assert client.get(f"/api/books/{book['id']}").json()['segments'] == before
+    assert client.get(f"/api/books/{book['id']}").json()['passages'] == before
     version = latest(client, book['id'], 'quotes')
     detail = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/quotes/versions/{version['id']}").json()
-    quotes = [r for r in detail['rows'] if r['kind'] == 'Quotation']
+    quotes = [r for r in detail['rows'] if r['kind'] == 'quotation']
     assert [r['booknlp'] for r in quotes] == ['Mara', 'Elio', 'Mara', 'Elio', 'Mara']
-    assert {r['check'] for r in quotes} == {'Suggests a speaker'}  # nothing attributed yet
+    assert {r['check'] for r in quotes} == {'suggests'}  # nothing attributed yet
     assert detail['stats']['suggests_speaker'] == 5
-    assert any(r['kind'] == 'Character' and 'female from pronouns' in r['text'] for r in detail['rows'])
+    assert any(r['kind'] == 'character' and 'female from pronouns' in r['text'] for r in detail['rows'])
     # The same chapters and cast are reused, not requested again.
     assert client.post(f"/api/books/{book['id']}/analysis-pipeline/plan", json={'steps': ['quotes']}).json()['cached_units'] == 2
     run(client, book['id'], ['quotes'])
@@ -350,7 +350,7 @@ def test_booknlp_check_raises_agreement_and_caps_disagreement(client):
     # BookNLP says Elio: the model's speaker is kept, but only just assigned, and the disagreement is recorded.
     assert (speaker, confidence, check['result']) == ('Mara', .65, 'differs')
     detail = client.get(f"/api/books/{book['id']}/analysis-pipeline/steps/directing/versions/accepted").json()
-    assert detail['stats']['booknlp_differs'] == 2 and any('BookNLP: Elio' in r.get('check', '') for r in detail['rows'])
+    assert detail['stats']['booknlp_differs'] == 2 and any(r['check'] == 'differs' and r['check_speaker'] == 'Elio' for r in detail['rows'])
     # A BookNLP candidate compared with the model's accepted speakers: 3 of 5 lines are Mara's in both.
     run(client, book['id'], ['directing'], configs={'directing': {'provider': 'booknlp'}}, gates={'directing': 'review'})
     candidate = latest(client, book['id'], 'directing')
@@ -391,7 +391,7 @@ def test_analyzer_attributes_directs_and_adds_scene_breaks_from_the_cast_sheet(c
     chapter = after['chapters'][0]['id']
     scenes = [s for s in after['scenes'] if s['chapter_id'] == chapter]
     assert len(scenes) == 2 and scenes[0]['summary'] == 'Setting (unverified): the harbor.'
-    assert all(s['analysis_provider'] == 'novel_analyzer' for s in after['segments'])
+    assert all(s['analysis_provider'] == 'novel_analyzer' for s in after['passages'])
     # The script restates the chapter and is not retained.
     unit = json.dumps(client.get(f"/api/books/{book['id']}/artifacts").json())
     assert '"script"' not in unit
@@ -474,9 +474,9 @@ def test_a_manual_speaker_edit_drops_the_stale_booknlp_check(client):
     run(client, book['id'], ['profiles', 'directing'])
     current = client.get(f"/api/books/{book['id']}").json()
     elio = next(c['id'] for c in current['characters'] if c['name'] == 'Elio')
-    disputed = next(s for s in current['segments'] if (s.get('speaker_check') or {}).get('result') == 'differs')
-    edited = client.patch(f"/api/books/{book['id']}/segments/{disputed['id']}", json={'speaker_id': elio}).json()
-    segment = next(s for s in edited['segments'] if s['id'] == disputed['id'])
+    disputed = next(s for s in current['passages'] if (s.get('speaker_check') or {}).get('result') == 'differs')
+    edited = client.patch(f"/api/books/{book['id']}/passages/{disputed['id']}", json={'speaker_id': elio}).json()
+    segment = next(s for s in edited['passages'] if s['id'] == disputed['id'])
     assert segment['speaker_id'] == elio and 'speaker_check' not in segment
 
 

@@ -40,7 +40,7 @@ def test_edit_voice_renames_locally_and_on_the_breeze_server_without_changing_th
     assert edited.status_code == 200, edited.text
     edited = edited.json()
     assert edited["name"] == "Lighthouse keeper" and edited["description"] == "Low and patient."
-    assert edited["versions"][0]["revision"] == voice["versions"][0]["revision"]
+    assert edited["versions"][0]["voice_revision"] == voice["versions"][0]["voice_revision"]
     assert ("PATCH", f"/v1/voices/{server_id}") in [(method, path) for method, path, _ in fake_breeze.requests]
     # Omitted fields stay; whitespace-only names are refused by the library (400), not by request validation.
     assert client.patch(f"/api/voices/{voice['id']}", json={}).json()["name"] == "Lighthouse keeper"
