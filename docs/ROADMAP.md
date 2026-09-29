@@ -226,13 +226,13 @@ The owner intends to move the server off Python eventually and to build dedicate
 - test-suite validation of every API response against the contract, including its error codes;
 - machine-readable error codes and one meaning per status across operations (contract 0.2.0);
 - the resolution of every known issue found while writing the contract ([issue #17](https://github.com/NicholasHazen/bardic/issues/17), contract 0.2.0): defects fixed, duplicated shapes consolidated, bookkeeping removed from the wire and GET routes made free of record writes;
-- agent rules for keeping it current ([API workflow](API-WORKFLOW.md)).
+- agent rules for keeping it current ([API workflow](API-WORKFLOW.md));
+- a contract-version handshake (`contract` in `GET /api/status`, and the `Bardic-Contract-Version` header on every `/api/` response) and `GET /api/jobs/{job_id}` (contract 0.4.0);
+- a first audit for strongly typed generated clients: always-sent response fields made required where the code guarantees them, three shape cleanups, and the remaining union, shape and presenter questions recorded for the owner in [the contract audit](CLIENT-SERVER-CONTRACT.md#contract-audit-for-generated-clients-contract-040) (contract 0.4.0).
 
-The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). The decisions on the issues found while writing the contract are recorded in [API known issues](API-KNOWN-ISSUES.md). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
+**Direction (2026-09-28):** the replacement server will be written in Rust, and the browser client moves to its own directory and later its own repository; the staged plan is [the Rust server plan](RUST-SERVER-PLAN.md). The design and staging are in [the client/server proposal](CLIENT-SERVER-CONTRACT.md). The decisions on the issues found while writing the contract are recorded in [API known issues](API-KNOWN-ISSUES.md). A development-only check (`npm run contract:codegen`) verifies that openapi-typescript output compiles strictly.
 
 Acceptance criteria for the remaining work:
-- a contract-version handshake in `/api/status`;
-- `GET /api/jobs/{id}`;
 - a single client HTTP module, with Node tests that check requests against the contract;
 - authentication, CORS and a threat model before any client is served from another origin;
 - a black-box HTTP conformance suite, runnable against any base URL, as the acceptance test for a replacement server;
