@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.3.1
+# Bardic 0.3.2
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -113,7 +113,7 @@ reference is `contract/API-REFERENCE.md`.
 - **Inspection** — [`GET /api/books/{book_id}/analysis-export`](#exportbookanalysis), [`GET /api/books/{book_id}/artifacts`](#listbookartifacts), [`GET /api/books/{book_id}/artifacts/{artifact_id}`](#getbookartifact), [`GET /api/books/{book_id}/pipeline`](#getpipelineinspector), [`GET /api/books/{book_id}/resources`](#getbookresourceusage), [`GET /api/books/{book_id}/search`](#searchbookpassages), [`GET /api/books/{book_id}/story-map`](#getstorymap)
 - **Narration** — [`GET /api/audio/{book_id}/{segment_id}`](#getpassageaudio), [`GET /api/books/{book_id}/audio-assets/{asset_id}`](#getretainedaudioasset), [`POST /api/books/{book_id}/render`](#startenhancedrender)
 - **Listening** — [`POST /api/books/{book_id}/listen`](#listentopassage), [`GET /api/books/{book_id}/listen/audio/{asset_id}`](#getlisteningaudio), [`POST /api/books/{book_id}/listen/chapter`](#startchapterlistening), [`POST /api/books/{book_id}/listen/chapter/preview`](#previewchapterlistening), [`GET /api/books/{book_id}/listen/takes`](#listlisteningtakes)
-- **Performances** — [`GET /api/books/{book_id}/performances`](#listperformances), [`POST /api/books/{book_id}/performances`](#createperformance), [`POST /api/books/{book_id}/performances/preview`](#previewperformance), [`GET /api/books/{book_id}/performances/{performance_id}`](#getperformance), [`PATCH /api/books/{book_id}/performances/{performance_id}`](#updateperformance), [`GET /api/books/{book_id}/performances/{performance_id}/audio`](#getperformanceaudio), [`POST /api/books/{book_id}/performances/{performance_id}/prepare`](#prepareperformance)
+- **Performances** — [`GET /api/books/{book_id}/performances`](#listperformances), [`POST /api/books/{book_id}/performances`](#createperformance), [`POST /api/books/{book_id}/performances/preview`](#previewperformance), [`GET /api/books/{book_id}/performances/{performance_id}`](#getperformance), [`PATCH /api/books/{book_id}/performances/{performance_id}`](#updateperformance), [`GET /api/books/{book_id}/performances/{performance_id}/audio`](#getperformanceaudio), [`POST /api/books/{book_id}/performances/{performance_id}/chapters`](#addperformancechapters), [`POST /api/books/{book_id}/performances/{performance_id}/prepare`](#prepareperformance), [`POST /api/books/{book_id}/performances/{performance_id}/preview`](#previewperformanceresume)
 - **Voice previews** — [`POST /api/books/{book_id}/voice-preview`](#startvoicepreview), [`GET /api/books/{book_id}/voice-preview/audio/{asset_id}`](#getvoicepreviewaudio)
 - **Voices** — [`GET /api/voices`](#getvoicelibrary), [`POST /api/voices/breeze/clone`](#clonebreezevoice), [`POST /api/voices/defaults`](#setdefaultlibraryvoice), [`POST /api/voices/drafts`](#createvoicedraft), [`PATCH /api/voices/drafts/{draft_id}`](#updatevoicedraft), [`POST /api/voices/drafts/{draft_id}/abandon`](#abandonvoicedraft), [`GET /api/voices/drafts/{draft_id}/candidates/{candidate_id}/audio`](#getvoicedraftcandidateaudio), [`POST /api/voices/drafts/{draft_id}/candidates/{candidate_id}/discard`](#discardvoicedraftcandidate), [`POST /api/voices/drafts/{draft_id}/generate`](#generatevoicedraftcandidates), [`POST /api/voices/drafts/{draft_id}/save`](#savevoicedraft), [`POST /api/voices/gemini/refresh`](#refreshgeminivoices), [`PATCH /api/voices/{voice_id}`](#updatelibraryvoice), [`DELETE /api/voices/{voice_id}`](#deletelibraryvoice), [`POST /api/voices/{voice_id}/current`](#setlibraryvoicecurrentversion), [`GET /api/voices/{voice_id}/versions/{version}/audition`](#getlibraryvoiceaudition)
 
@@ -2183,6 +2183,58 @@ change; file existence is checked but WAVs are not re-validated.
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
+<a id="addperformancechapters"></a>
+### `POST /api/books/{book_id}/performances/{performance_id}/chapters`
+
+**Add chapters to a performance and record them** · operation `addPerformanceChapters` · cost `may_charge`
+
+Extend the performance's chapter selection and start recording what is missing, without creating a new
+performance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so
+audio already retained is reused and only passages without current audio are narrated (a simple
+performance also counts takes made by live listening with the same narrator). The added chapters are
+saved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never
+rewritten. Returns `{performance, job}`; `job` is null when every passage is already ready. Refused with 409
+while any job is active for the book, including this performance's own: stop it, or wait, first. Blocking
+problems are refused with 400 as for `createPerformance`.
+
+The `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at
+start), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with
+`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is
+checked between passages. Device and Breeze simple performances render one passage at a time
+(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a
+child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) listed in the parent's
+`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each
+chapter's child job settles. A live listener's chapter request is refused
+(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
+error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
+chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+for reuse of another performance's or a Studio take with the identical recipe) and never change the
+Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
+`quota_limited` at the provider's daily quota or
+at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
+times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
+audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+three performances of different books run at once; one job per book still applies, counting every active
+job for the book (including child jobs beyond the 100-job list bound).
+
+| Parameter | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `book_id` | path | string | yes | Book ID. |
+| `performance_id` | path | string | yes | Performance ID (`pf_…`). |
+
+Request body (`application/json`): [PerformanceChapters](#schema-performancechapters)
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | [PerformanceStarted](#schema-performancestarted) | Success. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. - `no_chapters_selected`: `chapter_ids` is empty. - `gemini_key_missing`: Gemini narration with no Gemini API key configured. - `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`. - `breeze_url_missing`: Breeze narration with no Breeze server URL configured. - `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. - `job_active`: A job is queued or running for this book. - `series_run_active`: An active series run reserves this book. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
+| 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
+
 <a id="prepareperformance"></a>
 ### `POST /api/books/{book_id}/performances/{performance_id}/prepare`
 
@@ -2231,6 +2283,34 @@ job for the book (including child jobs beyond the 100-job list bound).
 | 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
 | 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 | 503 | [Error](#schema-error) | - `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider. |
+
+<a id="previewperformanceresume"></a>
+### `POST /api/books/{book_id}/performances/{performance_id}/preview`
+
+**Estimate recording the rest of a performance** · operation `previewPerformanceResume` · cost `none`
+
+Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,
+what a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`
+lists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are
+ignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is
+contacted. Allowed while a job runs.
+
+| Parameter | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `book_id` | path | string | yes | Book ID. |
+| `performance_id` | path | string | yes | Performance ID (`pf_…`). |
+
+Request body (`application/json`): [PerformanceChapters](#schema-performancechapters)
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | [PerformancePlan](#schema-performanceplan) | Success. |
+| 400 | [Error](#schema-error) | - `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book. |
+| 403 | [Error](#schema-error) | - `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security). |
+| 404 | [Error](#schema-error) | - `book_not_found`: No book has this ID. - `performance_not_found`: The book has no performance with this ID. |
+| 409 | [Error](#schema-error) | - `book_archived`: The book is archived: restore it first. |
+| 422 | [Error](#schema-error) | - `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter. |
+| 500 | [Error](#schema-error) | - `internal_error`: An unexpected server defect, such as damaged stored data. |
 
 ## Voice previews
 
@@ -4165,20 +4245,21 @@ never include.
 | `schema_version` | integer | yes | Record format version (1). |
 | `name` | string | yes | Display name, at most 200 characters. Defaults to the narrator label plus the scope, for example `Kore · Gemini · 3 chapters`. |
 | `mode` | `"simple"` \| `"cast"` | yes | `simple`: one narrator voice for every passage. `cast`: each speaker in their cast voice, with the narrator as fallback. |
-| `chapter_ids` | list of string | yes | Selected chapters in book order at creation. Chapters later removed from the book are skipped. |
+| `chapter_ids` | list of string | yes | Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped. |
 | `provider` | `"system"` \| `"gemini"` \| `"breeze"` | yes | Narration provider pinned at creation. |
 | `model` | string | yes | Speech model pinned at creation. |
 | `voice` | string \| null | yes | Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null. |
 | `pronunciation_count` | integer \| null |  | Cast performances only: how many book pronunciations were pinned when it was created. Absent when none were (including performances made before pronunciations existed) and for simple performances, which always use the book's current pronunciations. |
 | `session_id` | string \| null |  | Simple only: the pinned listening session. |
 | `created_at` | string | yes | ISO 8601 UTC. |
-| `updated_at` | string | yes | ISO 8601 UTC; changes on rename, archive and when a job starts. |
+| `updated_at` | string | yes | ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts. |
 | `archived` | boolean | yes | True when hidden from the default list (listed only with `archived=true`). Its audio is kept. |
 | `job_id` | string \| null | yes | Latest job ID, or null if no job was ever needed. |
 | `cast` | list of [PerformanceCastMember](#schema-performancecastmember) \| null |  | Cast only: the narrator and each speaker in the chosen chapters. |
 | `job` | [Job](#schema-job) \| null | yes | The latest `performance` job (a full `Job`), or null when no job was ever needed. |
 | `progress` | [PerformanceProgress](#schema-performanceprogress) | yes |  |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`. |
+| `chapters_added` | list of [PerformanceChaptersAdded](#schema-performancechaptersadded) \| null |  | Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. Absent when none were added. `chapter_ids` already includes them. |
 
 <a id="schema-performanceaudiomap"></a>
 ### PerformanceAudioMap
@@ -4234,6 +4315,25 @@ Readiness of one selected chapter.
 | `passages_total` | integer | yes | Passages in the chapter. |
 | `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
 
+<a id="schema-performancechapters"></a>
+### PerformanceChapters
+
+Chapters to add to an existing performance.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `chapter_ids` | list of string |  | Chapter IDs of this book to add, at most 5000 (each at most 200 characters). Already-selected chapters are ignored. Empty is allowed for `previewPerformanceResume` (plan the performance as it is) and refused by `addPerformanceChapters`. (max items `5000`) |
+
+<a id="schema-performancechaptersadded"></a>
+### PerformanceChaptersAdded
+
+One extension of a performance's chapter selection.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | string | yes | ISO 8601 UTC time the chapters were added. |
+| `chapter_ids` | list of string | yes | The chapters newly added, in book order. Chapters already selected are not repeated. |
+
 <a id="schema-performanceedit"></a>
 ### PerformanceEdit
 
@@ -4283,6 +4383,7 @@ Local estimate for a performance; nothing is recorded (except the deterministic 
 | `notes` | list of string | yes | Advisory notes: voiceless characters, unassigned passages, unanalyzed chapters, reuse, daily request budget, and for a cast performance whether its pinned pronunciations differ from the book's current ones or predate them. |
 | `quota` | [PerformanceQuota](#schema-performancequota) \| null | yes | Gemini only; null otherwise. |
 | `narrator_label` | string | yes | Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name. |
+| `added_chapter_ids` | list of string \| null |  | `previewPerformanceResume` only: the requested chapters that are not yet part of the performance, in book order. Absent from the plan `previewPerformance` returns. |
 
 <a id="schema-performanceproblem"></a>
 ### PerformanceProblem

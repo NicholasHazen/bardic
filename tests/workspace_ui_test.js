@@ -44,7 +44,7 @@ function environment(respond) {
     safeRead:(_key, fallback) => fallback, progressKey:() => 'synthetic-progress', pollJobs:async() => {},
     audio:media, clearListeningPreloads(){}, updateHighlight(){}, exitReader(){},
     coverUrl:book => book?.cover?.url || null,
-    renderReader(){}, renderCast(){}, renderStudio(){}, renderVoices(){}, renderJob(){}, updatePlayer(){},
+    renderReader(){}, renderCast(){}, renderStudio(){}, renderPerformancesHub(){}, renderVoices(){}, renderJob(){}, updatePlayer(){},
     renderProduction(){ node('#progressive-production').rendered = true; },
     toast(message) { node('#toast').textContent = message; },
     clearKeyInputs(){}, fillSettings(){}, renderAccountCheck(){}, updateSettingsControls(){},

@@ -115,3 +115,22 @@ test('the panel Play button plays the performance and never switches to live nar
   assert.equal(env.api.getPerformance(env.book)?.id,'pf_1','still the performance');
   assert.equal(env.posts().length,0);
 });
+
+test('listening while it records only reads: it follows new passages and never sends anything but reads', async () => {
+  const ready = new Set(['p0','p1']), job = {id:'job-p',status:'running',message:'Chapter 2 of 2'};
+  const env = environment({performance:() => record(job),
+    audio:() => Object.fromEntries([...ready].map(id => [id,clip(id)]))});
+  await env.init();
+  // Playing the ready passages, then reaching the frontier, then the recording lands the next one.
+  await env.api.prepare(env.book,env.book.segments[0],{});
+  env.api.updatePlayback(env.book,env.book.segments[0],{playbackRate:1});
+  const waiting = env.api.prepare(env.book,env.book.segments[4],{continuation:true});
+  await settle();
+  assert.match(env.container.innerHTML,/Waiting for “Evening reading” to reach this passage… Everything recorded so far has played\./);
+  assert.match(env.container.innerHTML,/Recording continues while you listen/);
+  ready.add('p4');
+  await env.advance();
+  assert.equal((await waiting).asset_id,'p4');
+  const sent = env.calls.filter(call => !(call.method === 'GET' && /\/performances\/pf_1(\/audio)?$|\/listen\/takes|^\/api\/jobs/.test(call.url)));
+  assert.deepEqual(sent.map(call => `${call.method} ${call.url}`),[],'only reads of the performance, its audio and its job');
+});

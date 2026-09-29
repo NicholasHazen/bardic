@@ -182,6 +182,12 @@ class PerformanceChapterProgress(View):
     passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text.')
 
 
+class PerformanceChaptersAdded(View):
+    """One extension of a performance's chapter selection."""
+    at: str = Field(description='ISO 8601 UTC time the chapters were added.')
+    chapter_ids: list[str] = Field(description='The chapters newly added, in book order. Chapters already selected are not repeated.')
+
+
 class PerformanceProgress(View):
     """Readiness against each passage's current source."""
     passages_total: int = Field(description='Passages in the selected chapters that are still in the book.')
@@ -203,7 +209,7 @@ class Performance(View):
                                    'for example `Kore · Gemini · 3 chapters`.')
     mode: Literal['simple', 'cast'] = Field(description='`simple`: one narrator voice for every passage. `cast`: each speaker in their '
                                                         'cast voice, with the narrator as fallback.')
-    chapter_ids: list[str] = Field(description='Selected chapters in book order at creation. Chapters later removed from the book are skipped.')
+    chapter_ids: list[str] = Field(description='Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped.')
     provider: Provider = Field(description='Narration provider pinned at creation.')
     model: str = Field(description='Speech model pinned at creation.')
     voice: str | None = Field(description='Simple: the voice value as requested (may be `library:…` or empty for Default). Cast: null.')
@@ -213,13 +219,16 @@ class Performance(View):
                           'performances, which always use the book\'s current pronunciations.')
     session_id: str | None = Field(None, description='Simple only: the pinned listening session.')
     created_at: str = Field(description='ISO 8601 UTC.')
-    updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive and when a job starts.')
+    updated_at: str = Field(description='ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts.')
     archived: bool = Field(description='True when hidden from the default list (listed only with `archived=true`). Its audio is kept.')
     job_id: str | None = Field(description='Latest job ID, or null if no job was ever needed.')
     cast: list[PerformanceCastMember] | None = Field(None, description='Cast only: the narrator and each speaker in the chosen chapters.')
     job: Job | None = Field(description='The latest `performance` job (a full `Job`), or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
+    chapters_added: list[PerformanceChaptersAdded] | None = Field(
+        None, description='Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. '
+                          'Absent when none were added. `chapter_ids` already includes them.')
 
 
 class PerformanceList(View):
@@ -284,6 +293,9 @@ class PerformancePlan(View):
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
                                             'prefix of the default name.')
+    added_chapter_ids: list[str] | None = Field(
+        None, description='`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, '
+                          'in book order. Absent from the plan `previewPerformance` returns.')
 
 
 # ------------------------------------------------------------ voice previews
@@ -641,6 +653,37 @@ with `job` null when nothing is missing. Blocking problems are refused with 400 
                404: _PERFORMANCE_404,
                409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/preview', 'previewPerformanceResume', 'Performances',
+       'Estimate recording the rest of a performance',
+       """\
+Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,
+what a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`
+lists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are
+ignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is
+contacted. Allowed while a job runs.""",
+       response=PerformancePlan,
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.'},
+               404: _PERFORMANCE_404, 409: _ARCHIVED},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/chapters', 'addPerformanceChapters', 'Performances',
+       'Add chapters to a performance and record them',
+       f"""\
+Extend the performance's chapter selection and start recording what is missing, without creating a new
+performance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so
+audio already retained is reused and only passages without current audio are narrated (a simple
+performance also counts takes made by live listening with the same narrator). The added chapters are
+saved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never
+rewritten. Returns `{{performance, job}}`; `job` is null when every passage is already ready. Refused with 409
+while any job is active for the book, including this performance's own: stop it, or wait, first. Blocking
+problems are refused with 400 as for `createPerformance`.
+
+{_PERFORMANCE_JOB}""",
+       response=PerformanceStarted,
+       errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
+                     'no_chapters_selected': '`chapter_ids` is empty.',
+                     **_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing']},
+               404: _PERFORMANCE_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
     op('PATCH', '/api/books/{book_id}/performances/{performance_id}', 'updatePerformance', 'Performances',
        'Rename or archive a performance',
        'Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is '
@@ -725,6 +768,12 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'voice': 'Simple mode narrator: ' + _VOICE_VALUES + ' Ignored for `cast`.',
         'model': 'Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed '
                  'models (`macos-say`, `breeze-tts-2`) and reject any other value. At most 200 characters.',
+    },
+    'PerformanceChapters': {
+        '__doc__': 'Chapters to add to an existing performance.',
+        'chapter_ids': 'Chapter IDs of this book to add, at most 5000 (each at most 200 characters). Already-selected chapters '
+                       'are ignored. Empty is allowed for `previewPerformanceResume` (plan the performance as it is) and '
+                       'refused by `addPerformanceChapters`.',
     },
     'PerformanceEdit': {
         '__doc__': 'Label changes. Omitted or null fields are unchanged.',
