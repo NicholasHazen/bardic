@@ -308,18 +308,53 @@ def ready_audio(runtime, record: dict, book: dict | None = None) -> dict[str, di
     return ready
 
 
-def progress(book: dict, record: dict, ready: dict) -> dict:
+def refused_passages(store, record: dict) -> set[str]:
+    """Passages Gemini's content policy refused for this performance's pinned session (final blocks only)."""
+    if record['mode'] != 'simple' or record['provider'] != 'gemini':
+        return set()
+    repository = ListeningRepository(store)
+    if not repository.has_blocks(record['book_id'], record['session_id']):
+        return set()
+    return set(repository.content_blocks(record['book_id'], record['session_id'])['refused'])
+
+
+def progress(book: dict, record: dict, ready: dict, refused: set[str] | frozenset[str] = frozenset()) -> dict:
+    """Readiness per chapter. A passage a fallback narrator reads is ready (it plays) and counted in
+    ``passages_fallback``; a refused passage with no audio is ``passages_blocked``, never plain missing."""
     chapters, passages = selection(book, record['chapter_ids'])
-    rows, total, count, seconds = [], 0, 0, 0.0
+    rows, total, count, seconds, fallback_total, blocked_total, provider = [], 0, 0, 0.0, 0, 0, None
     for chapter in chapters:
         segments = passages[chapter['id']]
         done = [segment for segment in segments if segment['id'] in ready]
+        substituted = [segment for segment in done if ready[segment['id']].get('substitute')]
+        blocked = [segment['id'] for segment in segments if segment['id'] in refused and segment['id'] not in ready]
+        provider = provider or next((ready[segment['id']].get('provider') for segment in substituted), None)
         rows.append({'id': chapter['id'], 'title': chapter.get('title', ''),
-                     'passages_total': len(segments), 'passages_ready': len(done)})
+                     'passages_total': len(segments), 'passages_ready': len(done),
+                     'passages_fallback': len(substituted), 'passages_blocked': len(blocked), 'blocked_passage_ids': blocked})
         total += len(segments)
         count += len(done)
+        fallback_total += len(substituted)
+        blocked_total += len(blocked)
         seconds += sum(float(ready[segment['id']].get('duration') or 0) for segment in done)
-    return {'passages_total': total, 'passages_ready': count, 'seconds_ready': round(seconds, 1), 'chapters': rows}
+    return {'passages_total': total, 'passages_ready': count, 'seconds_ready': round(seconds, 1),
+            'passages_fallback': fallback_total, 'passages_blocked': blocked_total, 'fallback_provider': provider,
+            'chapters': rows}
+
+
+VOICE_PHRASES = {'system': 'a device voice', 'breeze': 'Breeze'}
+
+
+def blocked_note(progress_view: dict) -> str:
+    """The plain-language outcome of Gemini's content policy for a performance ('' when it blocked nothing)."""
+    read, blocked = progress_view['passages_fallback'], progress_view['passages_blocked']
+    voice = VOICE_PHRASES.get(progress_view.get('fallback_provider'), 'the fallback narrator')
+    parts = []
+    if read:
+        parts.append(f'{read} passage{"s" if read != 1 else ""} read by {voice} because Gemini blocked {"them" if read != 1 else "it"}')
+    if blocked:
+        parts.append(f'{blocked} passage{"s" if blocked != 1 else ""} blocked by Gemini’s content policy and left unrecorded')
+    return '. '.join(parts) + '.' if parts else ''
 
 
 def job_summary(store, job_id: str | None) -> dict | None:
@@ -356,7 +391,7 @@ def present(runtime, record: dict, book: dict | None = None, ready: dict | None 
     if record['mode'] == 'cast':
         result['cast'] = cast_summary(runtime, record, book)
     result['job'] = job_summary(runtime.store, record.get('job_id'))
-    result['progress'] = progress(book, record, ready)
+    result['progress'] = progress(book, record, ready, refused_passages(runtime.store, record))
     result['narrator_label'] = narrator_label(runtime, record)
     return result
 
@@ -450,7 +485,19 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
             one = len(unanalyzed) == 1
             notes.append(f'{names(unanalyzed)} {"has" if one else "have"} no speaker assignments '
                          f'and {"uses" if one else "use"} the narrator throughout.')
-    missing = {chapter['id']: [segment for segment in passages[chapter['id']] if segment['id'] not in ready]
+    # Text Gemini already refused is never requested again. A free local narrator can still read it.
+    refused = {segment_id for segment_id in (refused_passages(store, record or {'mode': mode, 'provider': provider,
+                                                                                 'book_id': book_id, 'session_id': session['id']})
+                                             if session else ()) if segment_id in wanted and segment_id not in ready}
+    fallback = runtime.fallback_narrator(book_id) if refused else None
+    if refused:
+        count = f'{len(refused)} passage{"s" if len(refused) != 1 else ""}'
+        notes.append(f'{count} {"were" if len(refused) != 1 else "was"} blocked by Gemini’s content policy earlier and '
+                     f'{"are" if len(refused) != 1 else "is"} not requested again. '
+                     + (f'{VOICE_PHRASES[fallback["provider"]].capitalize()} reads {"them" if len(refused) != 1 else "it"} instead.'
+                        if fallback else 'They stay unrecorded until a device voice or Breeze is available to read them.'))
+    missing = {chapter['id']: [segment for segment in passages[chapter['id']]
+                               if segment['id'] not in ready and (segment['id'] not in refused or fallback)]
                for chapter in chapters}
     to_generate = sum(len(segments) for segments in missing.values())
     requests_estimate = to_generate
@@ -467,10 +514,12 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
                 if not missing[chapter['id']]:
                     continue
                 segments = passages[chapter['id']]
-                first = next(i for i, segment in enumerate(segments) if segment['id'] not in ready)
+                first = next((i for i, segment in enumerate(segments) if segment['id'] not in ready and segment['id'] not in refused), None)
+                if first is None:
+                    continue
                 requests_estimate += len(plan_chunks(
                     segments, chapter['text'], scope_start=first, focus=first,
-                    blocked={s['id'] for s in segments if s['id'] in clips}, covered=set(ready),
+                    blocked={s['id'] for s in segments if s['id'] in clips} | refused, covered=set(ready),
                     options=options, calibration=calibration))
         if LIMITER.daily_block(model) > 0:
             notes.append('The daily Gemini request quota for this model is used up. Generation stops at once and '
@@ -488,7 +537,11 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         'requests_estimate': requests_estimate, 'expected_seconds': round(expected, 1),
         'chapters': [{'id': chapter['id'], 'title': chapter.get('title', ''),
                       'passages_total': len(passages[chapter['id']]),
-                      'passages_ready': len(passages[chapter['id']]) - len(missing[chapter['id']])} for chapter in chapters],
+                      'passages_ready': sum(1 for segment in passages[chapter['id']] if segment['id'] in ready),
+                      'passages_fallback': sum(1 for segment in passages[chapter['id']] if ready.get(segment['id'], {}).get('substitute')),
+                      'passages_blocked': sum(1 for segment in passages[chapter['id']] if segment['id'] in refused),
+                      'blocked_passage_ids': [segment['id'] for segment in passages[chapter['id']] if segment['id'] in refused]}
+                     for chapter in chapters],
         'problems': [{'code': code, 'detail': text} for code, text in problems], 'notes': notes, 'quota': quota,
         'narrator_label': narrator_label(runtime, record or label_record),
     }
@@ -599,10 +652,19 @@ def start(runtime, record: dict, total: int) -> dict:
                            model=record['model'], phase='performance', child_job_ids=[], child_job_id=None,
                            message='Waiting for the performance worker')
     PerformanceRepository(store).update(book_id, record['id'], job_id=job['id'])
-    work = {'simple': _simple_work, 'cast': _cast_work}[record['mode']]
+    # Snapshotted with the key and limits: the free local narrator for passages Gemini blocks, if any.
+    fallback = runtime.fallback_narrator(book_id) if provider == 'gemini' and record['mode'] == 'simple' else None
+    fallback_key = runtime.narration_credentials(fallback['provider']) if fallback else None
+    if record['mode'] == 'simple':
+        def work():
+            _simple_work(runtime, job['id'], record, key, limits, options, fallback, fallback_key)
+    else:
+        def work():
+            _cast_work(runtime, job['id'], record, key, limits, options)
     try:
-        future = runtime.performance_pool.submit(runtime.run, job, lambda: work(runtime, job['id'], record, key, limits, options),
-                                                 runtime.narration_secrets(provider))
+        future = runtime.performance_pool.submit(
+            runtime.run, job, work, (*runtime.narration_secrets(provider), *runtime.narration_secrets(fallback['provider'] if fallback else '')),
+            lambda: _completed_message(runtime, record))
     except RuntimeError:
         store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                          message='No narration was started. Restart Bardic and try again.')
@@ -621,7 +683,17 @@ def _quota_error(message: str, model: str) -> QuotaReached:
     return QuotaReached(message, quota_day()[1].isoformat())
 
 
-def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict):
+def _completed_message(runtime, record: dict) -> str | None:
+    """The completion text when Gemini blocked passages of a simple performance; None for the usual one."""
+    book = runtime.store.book(record['book_id'])
+    view = progress(book, record, ready_audio(runtime, record, book), refused_passages(runtime.store, record))
+    note = blocked_note(view)
+    if not note:
+        return None
+    return f'{"Performance prepared" if view["passages_blocked"] else "Performance ready"}. {note}'
+
+
+def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict, fallback=None, fallback_key=None):
     from .app import Cancelled
     from .processing import BudgetReached
 
@@ -633,7 +705,10 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
     chapters, passages = selection(book, record['chapter_ids'])
     wanted = {segment['id'] for segments in passages.values() for segment in segments}
     ready = simple_ready(store, book_id, session['id'], wanted)
-    missing = {chapter['id']: [s for s in passages[chapter['id']] if s['id'] not in ready] for chapter in chapters}
+    # Refused text is never requested again; it is left to the fallback narrator when there is one.
+    refused = refused_passages(store, record) - set(ready)
+    missing = {chapter['id']: [s for s in passages[chapter['id']] if s['id'] not in ready and (s['id'] not in refused or fallback)]
+               for chapter in chapters}
     total = sum(len(segments) for segments in missing.values())
     store.update_job(job_id, total=total, progress=0)
     pending = [chapter for chapter in chapters if missing[chapter['id']]]
@@ -657,15 +732,18 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
                     model=model, voice=session['voice'], intent='queue',
                     scope_start_segment_id=first['id'], focus_segment_id=first['id'],
                     chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
-                    calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id)
+                    calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id,
+                    fallback=fallback)
                 parent = store.job(job_id)
                 store.update_job(job_id, child_job_id=child['id'],
                                  child_job_ids=[*parent.get('child_job_ids', []), child['id']],
                                  message=f'Chapter {number} of {len(pending)} · {len(missing[chapter["id"]])} passages in chunks')
             child_id = child['id']
             coordinator = ChapterCoordinator(store, child_id, key, runtime.narration_pool,
-                                             cancelled=lambda: runtime.cancelled(child_id) or runtime.cancelled(job_id))
-            runtime.run(child, coordinator.run, (key,))
+                                             cancelled=lambda: runtime.cancelled(child_id) or runtime.cancelled(job_id),
+                                             fallback_credentials=fallback_key)
+            runtime.run(child, coordinator.run, (key, *runtime.narration_secrets(fallback['provider'] if fallback else '')),
+                        coordinator.completed_message)
             settled = store.job(child_id)
             state = settled['status']
             ready = simple_ready(store, book_id, session['id'], wanted)

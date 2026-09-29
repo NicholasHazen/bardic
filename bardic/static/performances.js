@@ -17,7 +17,7 @@
     return `${Math.floor(value / 3600)} h ${Math.round(value % 3600 / 60)} min`;
   }
   // Server details state the condition; the hint says where to fix it.
-  const HINTS = {gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
+  const HINTS = {content_blocked:'Gemini refused this text and does not say which passage. Record with One narrator instead: it retries in halves and has a device voice read what Gemini still refuses.',gemini_key_missing:'Add a Gemini API key in Providers & settings, or choose another narrator.',breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',narrator_voice_missing:'Choose a narrator voice in Cast first.'};
   async function request(url, {method = 'GET', body} = {}) {
     const response = await fetch(url, {method, headers:{Accept:'application/json', ...(body === undefined ? {} : {'Content-Type':'application/json'})},
       ...(body === undefined ? {} : {body:JSON.stringify(body)})});
@@ -103,12 +103,28 @@
     paint(panel);
   }
 
+  // Voices that read passages Gemini blocked, as the sentence "read by ...".
+  const FALLBACK_VOICES = {system:'a Mac voice', breeze:'Breeze'};
+  // Nothing left to record: every passage is ready, or blocked by Gemini (which is not requested again).
+  const settled = progress => progress.passages_total > 0 && progress.passages_ready + (progress.passages_blocked || 0) >= progress.passages_total;
+  // What Gemini's content policy did, in words: '' when it blocked nothing.
+  function blockedNote(progress = {}) {
+    const read = progress.passages_fallback || 0, left = progress.passages_blocked || 0, parts = [];
+    if (read) parts.push(`${plural(read, 'passage')} read by ${FALLBACK_VOICES[progress.fallback_provider] || 'a fallback voice'} because Gemini blocked ${read === 1 ? 'it' : 'them'}`);
+    if (left) parts.push(`${plural(left, 'passage')} blocked by Gemini\u2019s content policy and not recorded`);
+    return parts.join('. ');
+  }
+  // The failure text with the hint for its documented cause, when it has one.
+  const failure = job => `${job.error}${HINTS[job.error_code] ? ` ${HINTS[job.error_code]}` : ''}`;
   // One state per performance: an active job wins, then a complete recording, then how the last job ended.
   function stateOf(record) {
     const job = record.job, progress = record.progress || {};
     const complete = progress.passages_total > 0 && progress.passages_ready >= progress.passages_total;
     if (job?.status === 'running') return {key:'running', label:'Recording'};
     if (job?.status === 'queued') return {key:'queued', label:'Queued'};
+    // Complete is only plain Gemini-complete when no passage was read by another narrator or blocked.
+    if (settled(progress) && progress.passages_blocked) return {key:'blocked', label:`Blocked by Gemini \u00b7 ${progress.passages_blocked}`};
+    if (complete && progress.passages_fallback) return {key:'read_by_fallback', label:'Complete \u00b7 fallback voice'};
     if (complete) return {key:'complete', label:'Complete'};
     const ended = {quota_limited:['quota_limited','Paused · daily limit'], budget_limited:['budget_limited','Paused · spending limit'],
       failed:['failed','Stopped on an error'], cancelled:['cancelled','Stopped by you'], interrupted:['interrupted','Interrupted']}[job?.status];
@@ -124,7 +140,9 @@
     if (job?.status === 'failed') return `Stopped on an error · ${ready}`;
     if (job?.status === 'cancelled') return `Stopped by you · ${ready}`;
     if (job?.status === 'interrupted') return `Interrupted when Bardic stopped · ${ready}`;
-    return progress.passages_total && progress.passages_ready >= progress.passages_total ? `Ready · ${span(progress.seconds_ready)} of listening` : ready;
+    const note = blockedNote(progress);
+    const base = progress.passages_total && progress.passages_ready >= progress.passages_total ? `Ready · ${span(progress.seconds_ready)} of listening` : ready;
+    return note ? `${base} · ${note}` : base;
   }
   // "3 of 5 chapters complete" from the per-chapter coverage.
   function coverage(record) {
@@ -134,7 +152,7 @@
   }
   function cardMarkup(panel, record) {
     const progress = record.progress || {}, job = record.job;
-    const complete = progress.passages_total && progress.passages_ready >= progress.passages_total;
+    const complete = settled(progress);
     const running = ACTIVE.has(job?.status);
     const renaming = panel.renaming === record.id, archiving = panel.archiving === record.id;
     const current = panel.options.listen?.getPerformance?.(panel.book)?.id === record.id;
@@ -146,7 +164,7 @@
         ? `<label class="sr-only" for="rename-${escape(record.id)}">Performance name</label><input id="rename-${escape(record.id)}" data-performance-name value="${escape(record.name)}" maxlength="120"><button type="button" class="button subtle" data-performance-action="save-name">Save</button>`
         : `<div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(coverage(record))}${current ? ' · playing now' : ''}</small></div>${UI.statusBadge(state.key, state.label)}`}</div>
       <progress max="${progress.passages_total || 1}" value="${progress.passages_ready || 0}" aria-label="Passages ready"></progress>
-      <p class="performance-status">${escape(statusLine(record))}${job?.error && !running ? ` <span class="performance-error">${escape(job.error)}</span>` : ''}</p>
+      <p class="performance-status">${escape(statusLine(record))}${job?.error && !running ? ` <span class="performance-error">${escape(failure(job))}</span>` : ''}</p>
       ${archiving ? `<div class="performance-confirm" role="group" aria-label="Remove ${escape(record.name)}"><span>Remove this performance from the list? Its audio is kept.</span><button type="button" class="button subtle" data-performance-action="archive-confirm">Remove</button><button type="button" class="button subtle" data-performance-action="archive-cancel">Cancel</button></div>`
         : `<div class="performance-actions">
         <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : running ? 'Listen now' : 'Play'}</button>
@@ -175,7 +193,8 @@
       const title = escape(chapter.title || 'Untitled chapter');
       if (row) {
         const done = row.passages_total > 0 && row.passages_ready >= row.passages_total;
-        return `<label class="performance-chapter-row" data-included="true"><input type="checkbox" checked disabled aria-label="${title} is in this performance"><span>${title}</span><small>${done ? 'Complete' : `${row.passages_ready}/${row.passages_total} ready`}</small></label>`;
+        const extra = [row.passages_fallback ? `${row.passages_fallback} read by a fallback voice` : '', row.passages_blocked ? `${row.passages_blocked} blocked by Gemini` : ''].filter(Boolean).join(' · ');
+        return `<label class="performance-chapter-row" data-included="true"><input type="checkbox" checked disabled aria-label="${title} is in this performance"><span>${title}</span><small>${escape((done ? 'Complete' : `${row.passages_ready}/${row.passages_total} ready`) + (extra ? ` · ${extra}` : ''))}</small></label>`;
       }
       return `<label class="performance-chapter-row"><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${detail.add.has(chapter.id) ? 'checked' : ''} ${running ? 'disabled' : ''}><span>${title}</span><small>${escape(plural(counts.get(chapter.id) || 0, 'passage'))} · not in this performance</small></label>`;
     }).join('');
@@ -195,7 +214,7 @@
       <div class="performance-detail-head">${back}</div>
       <div class="performance-card-head"><div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(coverage(record))}${current ? ' · playing now' : ''}</small></div>${UI.statusBadge(state.key, state.label)}</div>
       <progress max="${progress.passages_total || 1}" value="${progress.passages_ready || 0}" aria-label="Passages ready"></progress>
-      <p class="performance-status">${escape(statusLine(record))}${progress.seconds_ready ? ` · ${escape(span(progress.seconds_ready))} of listening ready` : ''}${updated && !Number.isNaN(updated.getTime()) ? ` · updated ${escape(updated.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}))}` : ''}${job?.error && !running ? ` <span class="performance-error">${escape(job.error)}</span>` : ''}</p>
+      <p class="performance-status">${escape(statusLine(record))}${progress.seconds_ready ? ` · ${escape(span(progress.seconds_ready))} of listening ready` : ''}${updated && !Number.isNaN(updated.getTime()) ? ` · updated ${escape(updated.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}))}` : ''}${job?.error && !running ? ` <span class="performance-error">${escape(failure(job))}</span>` : ''}</p>
       ${running ? '<p class="field-help">Recording continues while you listen. Playing sends no requests of its own: it plays what is ready, follows new passages as they land, and waits at the frontier for the next one.</p>' : ''}
       <div class="performance-actions">
         <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : running ? 'Listen while it records' : 'Play'}</button>

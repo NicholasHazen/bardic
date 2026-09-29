@@ -170,6 +170,46 @@ def next_chunk(segments: list[dict], chapter_text: str, start: int, blocked: set
             'expected_seconds': round(chars / calibration.chars_per_second, 3)}
 
 
+def chunk_between(segments: list[dict], first: int, last: int, calibration: Calibration,
+                  target_seconds: float = 0.0) -> dict:
+    """The chunk covering ``segments[first..last]`` exactly, shaped like ``next_chunk``'s result."""
+    chars = segments[last]['end'] - segments[first]['start']
+    return {'first_index': first, 'last_index': last,
+            'segment_ids': [segment['id'] for segment in segments[first:last + 1]],
+            'start': segments[first]['start'], 'end': segments[last]['end'], 'chars': chars,
+            'target_seconds': round(target_seconds, 3),
+            'expected_seconds': round(chars / calibration.chars_per_second, 3)}
+
+
+def split_point(segments: list[dict], chapter_text: str, first: int, last: int) -> int | None:
+    """Index of the last passage of the first half when ``segments[first..last]`` is split in two.
+
+    Deterministic, so a resumed job derives the same halves. It prefers the strongest boundary (scene change,
+    then paragraph break, then sentence end) among those near the middle by characters, and otherwise takes
+    the boundary closest to the middle. None for a single passage, which cannot be split.
+    """
+    if last <= first:
+        return None
+    origin, total = segments[first]['start'], segments[last]['end'] - segments[first]['start']
+    middle = total / 2
+    best, best_score = None, None
+    for index in range(first, last):
+        distance = abs(segments[index]['end'] - origin - middle) / max(1, total)
+        score = boundary_strength(segments, index, chapter_text) - 6 * distance - (100 if distance > 0.25 else 0)
+        if best_score is None or score > best_score:
+            best, best_score = index, score
+    return best
+
+
+def split_chunk(segments: list[dict], chapter_text: str, chunk: dict, calibration: Calibration) -> list[dict] | None:
+    """The two halves of a chunk, split at ``split_point``; None when it is a single passage."""
+    point = split_point(segments, chapter_text, chunk['first_index'], chunk['last_index'])
+    if point is None:
+        return None
+    return [chunk_between(segments, chunk['first_index'], point, calibration, chunk['target_seconds']),
+            chunk_between(segments, point + 1, chunk['last_index'], calibration, chunk['target_seconds'])]
+
+
 def work_order(segments: list[dict], scope_start: int, focus: int) -> list[int]:
     """Listener position first, then the rest of the requested scope."""
     focus = min(max(focus, scope_start), len(segments) - 1) if segments else 0
