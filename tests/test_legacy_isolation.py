@@ -1,9 +1,10 @@
 """The legacy phase ("Classic") analysis engine is gone, and nothing depends on it.
 
 Classic removal, stage 3 (docs/CLASSIC-REMOVAL.md) deleted the engine modules,
-their routes and their UI. Stage 4 drops the data they left behind, after
-``ArtifactRepository.backfill`` has retained it; until then an existing
-library's ``analysis_units`` rows must stay readable by that backfill. Run:
+their routes and their UI. Stage 4 dropped the data they left behind, with a
+one-time startup migration (``bardic.migrations``) that retains it as artifacts
+first; that migration is the only code that still names the Classic tables.
+Its behavior is tested in tests/test_classic_data_drop.py. Run:
 
     uv run --frozen pytest -q tests/test_legacy_isolation.py
 """
@@ -12,7 +13,6 @@ import importlib.util
 import json
 from pathlib import Path
 import re
-import sqlite3
 import subprocess
 import sys
 
@@ -90,47 +90,43 @@ def test_the_browser_calls_no_classic_route():
     assert not {name: found for name, found in offenders.items() if found}
 
 
-UNITS_DDL = ('CREATE TABLE analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, '
-             'body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
-
-
 def tables(store):
     with store.connect() as conn:
-        return {name: sql for name, sql in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")}
+        return {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def test_a_new_library_never_creates_the_legacy_unit_table(tmp_path):
+def test_a_new_library_never_creates_the_legacy_tables(tmp_path):
+    from bardic.app import create_app
     from bardic.processing import ProcessingStore
+    from fastapi.testclient import TestClient
     store = Store(tmp_path)
     ProcessingStore(store)
     created = tables(store)
-    assert {'analysis_attempts', 'book_preprocessing', 'pipeline_events'} <= created.keys()
-    assert 'analysis_units' not in created
+    assert {'analysis_attempts', 'book_preprocessing', 'pipeline_events', 'character_references'} <= created
+    assert not {'analysis_units', 'analysis_checkpoints'} & created
+    with TestClient(create_app(tmp_path)):
+        pass
+    assert not {'analysis_units', 'analysis_checkpoints'} & tables(Store(tmp_path))
 
 
-def test_an_existing_library_keeps_its_legacy_units_until_backfill_retains_them(tmp_path):
-    """Stage 4 runs the backfill before dropping the table; the rows must survive until then."""
-    from bardic.artifacts import ArtifactRepository
-    from bardic.importer import parse_book
-    from bardic.processing import ProcessingStore, source_hash
-    store = Store(tmp_path)
-    book = parse_book('story.txt', b'Chapter 1\n\nMara said, "Wait."')
-    store.save_book(book)
-    chapter = book['chapters'][0]
-    unit = {'unit_key': 'discovery:old', 'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0,
-            'end': len(chapter['text']), 'provider': 'anthropic', 'model': 'old-model', 'result': {'characters': []}}
-    # A library written by an earlier version: the table and a unit already exist.
-    with sqlite3.connect(tmp_path / 'library.sqlite3') as conn:
-        conn.execute(UNITS_DDL)
-        conn.execute('CREATE INDEX analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
-        conn.execute('INSERT INTO analysis_units VALUES (?,?,?,?,?)',
-                     (book['id'], 'discovery:old', 'discovery', source_hash(book), json.dumps(unit)))
-    store = Store(tmp_path)
-    ProcessingStore(store)
-    repository = ArtifactRepository(store)
-    repository.backfill(book['id'])
-    retained = repository.get(book['id'], repository.output_head(book['id'], 'analysis_output', 'discovery:old'))
-    assert retained['legacy_provenance'] is True and retained['provider'] == 'anthropic'
-    assert tables(store)['analysis_units'] == UNITS_DDL
-    with store.connect() as conn:
-        assert conn.execute('SELECT COUNT(*) FROM analysis_units').fetchone()[0] == 1
+# Names of the removed Classic storage (not the `analysis_checkpoint` artifact kind that retains it).
+# Only the one-time migration that retains and drops that data may name them.
+CLASSIC_STORAGE = re.compile(r'analysis_units|analysis_checkpoints\b|\.analysis_checkpoint\(|save_analysis_checkpoint|commit_analysis|'
+                             r'delete_analysis_checkpoint|analysis_status|transform_checkpoint_structure|PIPELINE_VERSION')
+MIGRATION = PACKAGE / 'migrations.py'
+
+
+def test_only_the_migration_names_the_classic_storage():
+    offenders = {str(path.relative_to(ROOT)): sorted(set(CLASSIC_STORAGE.findall(path.read_text())))
+                 for path in sorted(PACKAGE.rglob('*.py')) if path != MIGRATION}
+    assert not {name: found for name, found in offenders.items() if found}
+    assert CLASSIC_STORAGE.search(MIGRATION.read_text())
+
+
+def test_the_classic_store_api_is_gone():
+    from bardic import analysis_common, structure
+    for name in ('analysis_checkpoint', 'save_analysis_checkpoint', '_save_analysis_checkpoint', 'commit_analysis',
+                 'delete_analysis_checkpoint', 'analysis_status'):
+        assert not hasattr(Store, name), name
+    assert not hasattr(analysis_common, 'fingerprint') and not hasattr(analysis_common, 'PIPELINE_VERSION')
+    assert not hasattr(structure, 'transform_checkpoint_structure')

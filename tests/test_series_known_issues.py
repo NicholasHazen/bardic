@@ -3,6 +3,7 @@
 Offline: synthetic prose, a fake key and no provider calls. Each test pins one
 formerly defective or inconsistent behavior and the error code clients branch on.
 """
+from classic_fixtures import classic_references
 from test_app import import_text, wait_job
 from test_series_processing import client, collection, preview  # noqa: F401  (client is a fixture)
 
@@ -165,8 +166,7 @@ def test_series_context_does_not_expose_internal_source_hashes(client, monkeypat
                  'start': start, 'end': start + 4, 'quote': 'Mara', 'kind': 'profile_evidence',
                  'profile_description': 'Keeps the lamp', 'profile_direction': 'Quiet',
                  'provider': 'test', 'model': 'test-model', 'confidence': .9}
-    store.save_analysis_checkpoint(books[0]['id'], 'v1', {'status': 'completed', 'references': [reference],
-                                                          'chapters': [], 'units': {}})
+    classic_references(store, books[0]['id'], [reference])
     context = client.get(f"/api/books/{books[1]['id']}/series/context").json()
     [entry] = context['characters']
     assert entry['observations'] and all('source_hash' not in item for item in entry['observations'])

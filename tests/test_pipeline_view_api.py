@@ -12,6 +12,7 @@ from bardic.app import create_app
 from bardic.artifacts import ArtifactRepository, record
 from bardic.processing import ProcessingStore
 from bardic.series import SeriesRepository
+from classic_fixtures import classic_references
 
 
 SOURCE = ('Chapter One\n\nMara remembered Elio beneath the moon 🌙.\n\n'
@@ -69,9 +70,7 @@ def book_with_references(client):
          'kind': 'profile_evidence', 'profile_description': 'Named in an explicit speech tag.',
          'profile_direction': 'No permanent vocal trait established.', 'provider': 'local', 'model': None},
     ]
-    checkpoint = {'status': 'completed', 'provider': 'local', 'model': None, 'stage': 'complete',
-                  'working_book': deepcopy(book), 'units': {}, 'chapters': [], 'references': refs}
-    store.save_analysis_checkpoint(book['id'], 'offline-reference-checkpoint', checkpoint)
+    classic_references(store, book['id'], refs)
     return book, refs
 
 

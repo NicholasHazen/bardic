@@ -7,11 +7,15 @@ Series context (what a later volume's profiles read) comes from each earlier
 volume's **current** ``character_references``: the accepted evidence the step
 pipeline projects there (:mod:`bardic.pipeline.evidence`). Rolling back or
 setting aside a version in volume 1 therefore changes what volume 2 is told.
-The append-only ``character_observations`` table is legacy history written by
-the removed Classic engine; it is no longer read for prompts (it only re-validates
-the source hash of reference rows that engine wrote). History of what was sent lives in
-artifacts: step_output versions and the ``character_observation`` artifacts a
-profile request records for each earlier-volume entry it includes.
+The append-only ``character_observations`` table held history written by the
+removed Classic engine; the one-time Classic data drop (:mod:`bardic.migrations`)
+retained those rows as ``character_observation`` artifacts and deleted them. The
+table stays for :func:`retain_observations` (the switchable history of
+:mod:`bardic.pipeline.evidence`). A reference row that engine wrote is
+re-validated against its retained artifact (:class:`_SourceCheck`). History of
+what was sent lives in artifacts: step_output versions and the
+``character_observation`` artifacts a profile request records for each
+earlier-volume entry it includes.
 """
 from __future__ import annotations
 
@@ -356,7 +360,12 @@ class SeriesRepository:
         return {"character_id": character_id, "linked": False}
 
     def observations(self, book_id, character_id=None):
-        """Return durable historical observations for inspection, including old source versions."""
+        """Rows of the observation history table for inspection, including old source versions.
+
+        Empty for most books: the removed Classic engine's rows are ``character_observation``
+        artifacts since the Classic data drop, and new rows are written only when
+        ``RETAIN_OBSERVATIONS`` is on.
+        """
         with self.store.lock, self.store.connect() as conn:
             _book(conn, book_id)
             query, args = "SELECT body FROM character_observations WHERE book_id=?", (book_id,)
@@ -568,15 +577,18 @@ class _SourceCheck:
       records the chapter hashes the projection was built from, and a chapter whose
       text changed since is excluded until the next rebuild. A state recorded
       before those hashes existed falls back to the exact-slice check.
-    * A row the removed Classic engine wrote: it counts only while the observation that the
-      same checkpoint retained has the current source hash.
+    * A row the removed Classic engine wrote (no ``projection``): it counts only while the
+      observation that the same checkpoint retained has the current source hash. The
+      observation ID is a hash of its content, source hash included, so the row counts
+      when its book has a ``character_observation`` artifact with that ID whose source
+      hash and quotation match. Since the Classic data drop (``bardic.migrations``) that
+      immutable artifact, not the deleted ``character_observations`` row, is the proof.
     """
 
     def __init__(self, conn):
         self.conn = conn
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.has_state = "pipeline_state" in tables
-        self.has_observations = "character_observations" in tables
         self.states = {}
 
     def _sources(self, book_id):
@@ -592,9 +604,14 @@ class _SourceCheck:
         if "projection" in ref:
             recorded = self._sources(book_id)
             return recorded is None or recorded.get(ref["chapter_id"]) == observation["source_hash"]
-        if not self.has_observations:
+        row = self.conn.execute("""SELECT v.payload FROM artifact_heads h JOIN artifact_versions v ON v.id=h.artifact_id
+            WHERE h.book_id=? AND h.kind='character_observation' AND h.logical_key=?""",
+                                (book_id, observation["id"])).fetchone()
+        if not row:
             return False
-        return self.conn.execute("SELECT 1 FROM character_observations WHERE id=?", (observation["id"],)).fetchone() is not None
+        retained = json.loads(row[0])
+        return (isinstance(retained, dict) and retained.get("source_hash") == observation["source_hash"]
+                and retained.get("quote") == observation["quote"] and retained.get("chapter_id") == observation["chapter_id"])
 
 
 def _linked(conn, book, member):

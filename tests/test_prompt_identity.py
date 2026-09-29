@@ -9,7 +9,6 @@ Update a digest only for a deliberate request change, with the step's
 """
 from copy import deepcopy
 
-from bardic.analysis_common import fingerprint
 from bardic.importer import parse_book
 from bardic.pipeline import prompts
 from bardic.pipeline.contract import StepContext
@@ -136,9 +135,3 @@ def test_request_builders_and_pipeline_cache_keys_are_unchanged(tmp_path):
               'pipeline_unit_keys': digest(keys)}
     assert actual == GOLDEN
 
-
-def test_checkpoint_fingerprint_is_unchanged_by_the_move():
-    """Structure repair re-keys saved checkpoints with this value; it moved from staged_analysis."""
-    book = fixture_book()
-    assert fingerprint(book, 'openai', 'gpt-test') == '57ac161f939534f3ce78c596cb9768fa7708dac57b5fa5d8dc761d5e604ada05'
-    assert fingerprint(book, 'gemini', None) == 'c46a4126d80960c3b7f73883256b9e0e192c83b0e302ef9a3fc6bbf9892a72ad'

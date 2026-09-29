@@ -16,8 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
+from bardic.importer import parse_book
 from bardic.processing import ProcessingStore
 from bardic.series import SeriesRepository
+from bardic.store import Store
+from classic_fixtures import add_classic_tables, classic_references
 from test_analysis_pipeline import MODEL, STORY, FakeProvider, run
 
 
@@ -25,7 +28,7 @@ SOURCE = 'Chapter One\n\nMara waited by the gate.\n\n“Stay,” Mara said.\n\nC
 
 # Domain tables a GET must leave untouched. The census cache (book_preprocessing) and the
 # search index (search_books, passage_search) are disposable derived caches and may change.
-DOMAIN_TABLES = ('books', 'jobs', 'takes', 'analysis_checkpoints', 'analysis_units', 'analysis_attempts',
+DOMAIN_TABLES = ('books', 'jobs', 'takes', 'analysis_attempts', 'schema_migrations',
                  'pipeline_events', 'resource_operations', 'artifact_versions', 'artifact_heads',
                  'artifact_dependencies', 'artifact_backfills', 'character_observations', 'character_references',
                  'pipeline_runs', 'pipeline_step_runs', 'pipeline_decisions', 'pipeline_state', 'pipeline_units')
@@ -184,10 +187,11 @@ def analyzed_library(client, monkeypatch):
     series.link_character(early['id'], 'early-mara', linked['id'])
     series.link_character(book['id'], mara['id'], linked['id'])
     chapter = early['chapters'][0]
-    store.save_analysis_checkpoint(early['id'], 'earlier', {'references': [{
+    # A reference the removed Classic engine wrote, as the Classic data drop keeps it.
+    classic_references(store, early['id'], [{
         'id': 'observation', 'character_id': 'early-mara', 'chapter_id': chapter['id'], 'start': 0,
         'end': len(chapter['text']), 'quote': chapter['text'], 'kind': 'profile_evidence',
-        'profile_description': 'Low voice.', 'provider': 'openai', 'model': 'older-model'}]})
+        'profile_description': 'Low voice.', 'provider': 'openai', 'model': 'older-model'}])
     # Outside changes: a speaker the accepted directing version does not explain, and a new cast member
     # (which also makes the cached census stale).
     current = store.book(book['id'])
@@ -229,30 +233,37 @@ def test_inspection_gets_create_no_domain_records(client, monkeypatch):
 
 def test_legacy_data_is_retained_at_startup_once_not_by_gets(tmp_path, monkeypatch):
     offline(monkeypatch)
-    with TestClient(create_app(tmp_path)) as client:
-        book = import_book(client)
-        store = client.app.state.runtime.store
-        legacy = {'stage': 'discovery', 'chapter_id': book['chapters'][0]['id'], 'start': 0, 'end': 5,
-                  'provider': 'openai', 'model': 'older-model', 'unit_key': 'legacy-unit', 'result': {'characters': []}}
+    # A library written by a version before the Classic data drop: its unit cache still has a row.
+    store = Store(tmp_path)
+    book = parse_book('story.txt', SOURCE.encode())
+    store.save_book(book)
+    legacy = {'stage': 'discovery', 'chapter_id': book['chapters'][0]['id'], 'start': 0, 'end': 5,
+              'provider': 'openai', 'model': 'older-model', 'unit_key': 'legacy-unit', 'result': {'characters': []}}
+    with store.lock, store.connect() as conn:
+        add_classic_tables(conn, units=[(book['id'], 'legacy-unit', 'discovery', 'old-source', legacy)])
+
+    def tables(store):
         with store.lock, store.connect() as conn:
-            # A new library never creates the removed Classic unit cache; an older library still has it.
-            conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, '
-                         'source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
-            conn.execute('INSERT INTO analysis_units VALUES (?,?,?,?,?)',
-                         (book['id'], 'legacy-unit', 'discovery', 'old-source', json.dumps(legacy)))
-        before = count(store, 'artifact_versions', book['id'])
-        for route in ('artifacts', 'pipeline', 'story-map', 'analysis-export'):
-            assert client.get(f"/api/books/{book['id']}/{route}").status_code == 200
-        assert count(store, 'artifact_versions', book['id']) == before
+            return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
     with TestClient(create_app(tmp_path)) as client:
+        store = client.app.state.runtime.store
+        # Startup retained the unit, then dropped the table.
         page = client.get(f"/api/books/{book['id']}/artifacts", params={'kind': 'analysis_output'}).json()
         assert [(item['logical_key'], item['legacy_provenance']) for item in page['items']] == [('legacy-unit', True)]
-        after = count(client.app.state.runtime.store, 'artifact_versions', book['id'])
+        assert not {'analysis_units', 'analysis_checkpoints'} & tables(store)
+        before = snapshot(store)
+        for route in ('artifacts', 'pipeline', 'story-map', 'analysis-export'):
+            assert client.get(f"/api/books/{book['id']}/{route}").status_code == 200
+        assert snapshot(store) == before
+        after = count(store, 'artifact_versions', book['id'])
     with TestClient(create_app(tmp_path)) as client:
         store = client.app.state.runtime.store
         assert count(store, 'artifact_versions', book['id']) == after
+        assert not {'analysis_units', 'analysis_checkpoints'} & tables(store)
         with store.lock, store.connect() as conn:
             assert conn.execute('SELECT version FROM artifact_backfills WHERE book_id=?', (book['id'],)).fetchone() == (1,)
+            assert conn.execute("SELECT status FROM schema_migrations WHERE id='classic_removal_v1'").fetchone() == ('completed',)
 
 
 # -------------------------------------------------------- 7. internal fields

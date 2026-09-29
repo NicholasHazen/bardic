@@ -511,8 +511,7 @@ OPS: list[Op] = [
        'Re-parses the saved original EPUB or TXT and replaces only chapter structure metadata (`title`, `kind`, '
        '`title_source`, `source_href`, `logical_sections`, `narrative_order`) and `structure_version`. IDs, '
        'text, offsets, passages, cast and annotations are kept. Automatic scene titles that began with the old '
-       'chapter title are renamed; scene titles edited by hand are not. A saved analysis checkpoint is transformed '
-       'to the new titles in the same transaction. Increments `revision`.\n\n'
+       'chapter title are renamed; scene titles edited by hand are not. Increments `revision`.\n\n'
        'Refused, with existing work preserved, unless the re-parsed original has the same number of chapters with '
        'exactly the same text (400 `structure_mismatch`). Requires a known (404), non-archived and idle (409) book; '
        'these preconditions are checked first and a refused precondition records nothing. Runs locally with no '
@@ -523,8 +522,7 @@ OPS: list[Op] = [
        errors={400: {'original_missing': 'The book has no saved original EPUB or TXT, or the saved file is missing.',
                      'original_too_large': 'The saved original is larger than 30 MiB (the import limit).',
                      'original_unreadable': 'The saved original could not be parsed (for example an unreadable EPUB).',
-                     'structure_mismatch': 'The re-parsed source does not match the saved chapters or the saved '
-                                           'analysis checkpoint.'},
+                     'structure_mismatch': 'The re-parsed source does not match the saved chapters.'},
                404: _BOOK_NOT_FOUND, 409: _BUSY}),
 
     op('PATCH', '/api/books/{book_id}/characters/{character_id}', 'editCharacter', 'Books', 'Edit a character',

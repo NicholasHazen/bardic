@@ -16,17 +16,18 @@ This document describes current storage as of 2026-09-28. Read [architecture](AR
 | Simple listening multi-passage chunks | `listening_chunks` and WAV files | Immutable version-1 records of one request covering an exact chapter slice, with estimated passage clips. Passage audio is projected from chunks whose source still matches. |
 | Saved performances | `performances` | Mutable label records (name, chapters, archive flag, latest job) that point at retained audio; never the audio itself. |
 | Cast performance take history | `performance_takes` and WAV files | Immutable passage takes keyed by performance, passage and source key. Independent of the Studio `takes` selection. |
-| Validated step results for fast reuse | `pipeline_units` | Replaceable cache keyed by exact request identity; outputs retained in artifacts. Older libraries also hold the removed Classic engine's `analysis_units` cache until stage 4. |
-| Analysis progress | `pipeline_runs`, `pipeline_step_runs`, `jobs` (and the legacy `analysis_checkpoints`, kept until stage 4) | Mutable resumable/status state; not the complete historical output store. |
-| Current character references | `character_references` | Current-book projection of accepted discovery, profiles and directing evidence plus cast-name mentions, rebuilt by pipeline sync and decisions ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). Later volumes' series context reads it ([series memory](ANALYSIS-PIPELINE.md#series-memory)). Structure repair of a legacy Classic checkpoint can still replace it until the next sync. The references API computes the same projection from the current book on each read, in a transaction it rolls back. |
-| Validated observations | `character_observations` | Legacy history written only by the removed Classic engine. Append-only by repository convention, deduplicated by content. Not read for prompts since 2026-09-28; series context still uses a row as the proof that the Classic-written reference it was retained with matches its chapter text. |
+| Validated step results for fast reuse | `pipeline_units` | Replaceable cache keyed by exact request identity; outputs retained in artifacts. The removed Classic engine's `analysis_units` cache was retained as artifacts and dropped by migration `classic_removal_v1` ([stage 4](CLASSIC-REMOVAL.md#stage-4-what-was-dropped)). |
+| Analysis progress | `pipeline_runs`, `pipeline_step_runs`, `jobs` | Mutable resumable/status state; not the complete historical output store. |
+| Current character references | `character_references` | Current-book projection of accepted discovery, profiles and directing evidence plus cast-name mentions, rebuilt by pipeline sync and decisions ([evidence projection](ANALYSIS-PIPELINE.md#evidence-projection)). Later volumes' series context reads it ([series memory](ANALYSIS-PIPELINE.md#series-memory)). Rows the removed Classic engine wrote stay for a book with no accepted evidence. The references API computes the same projection from the current book on each read, in a transaction it rolls back. |
+| Validated observations | `character_observations` | Append-only history table, deduplicated by content, written only when `RETAIN_OBSERVATIONS` is on (it is off). The removed Classic engine's rows were retained as `character_observation` artifacts and deleted by migration `classic_removal_v1`; the artifact is now the proof that a Classic-written reference matches its chapter text. |
+| One-time data migrations | `schema_migrations` | One row per migration ID with its status and counts; see [transactions and migrations](#transactions-migrations-and-concurrency). |
 | Output/provenance history | `artifact_versions`, `artifact_dependencies` | Immutable, including when no longer current. |
 | Current artifact selections | `artifact_heads` | Mutable pointers; removable without deleting history. |
 | Spend/usage | `analysis_attempts`, `resource_operations`, events | Durable tracked measurements/reservations, with explicit unknowns. |
 | Search | `passage_search`, `search_books` | Rebuildable derived index. |
 | Operational diagnostics | `diagnostic_events` | Rotating local troubleshooting log; newest 5,000 events, not retained analysis/take provenance. |
 
-No single table replaces the others. In particular, a checkpoint is not an immutable archive, an artifact head is not proof of semantic correctness, and a reported HTTP success is not proof that the returned annotations passed validation.
+No single table replaces the others. In particular, a resumable cache is not an immutable archive, an artifact head is not proof of semantic correctness, and a reported HTTP success is not proof that the returned annotations passed validation.
 
 ## Identifiers and source coordinates
 
@@ -43,7 +44,7 @@ These are not UTF-8 byte positions, EPUB file offsets, or JavaScript UTF-16 indi
 
 Canonical text is extracted reading text after import normalization, including same-width whitespace in place of scene-break ornaments. Saved original bytes remain available for re-extraction and metadata repair. A chapter hash used by observations is SHA-256 of that chapter's UTF-8 text. The processing `source_hash(book)` is a digest of the ordered `(chapter_id, text)` pairs; it is not the chapter hash or the original-file hash.
 
-Book structure repair accepts only an equal chapter count and exact canonical text per chapter. It changes metadata and transforms a saved legacy checkpoint consistently; it does not renumber IDs or migrate source offsets to different prose. There is no general arbitrary-source-edit/rebase mechanism.
+Book structure repair accepts only an equal chapter count and exact canonical text per chapter. It changes metadata only; it does not renumber IDs or migrate source offsets to different prose. There is no general arbitrary-source-edit/rebase mechanism.
 
 ## Current book projection
 
@@ -116,16 +117,14 @@ Definitions are in [store.py](../bardic/store.py), [series.py](../bardic/series.
 | `jobs` | PK `id`; `book_id`, `body` | Durable job status/progress/cancellation fields. Series parent jobs use a synthetic `series:<series_id>` scope and hold child IDs/book reservations. A parent paused for review stays `running` with `waiting_for_review`; its children carry `consent_fingerprint`, `context_pending` and `context_sources`. Once `status` is terminal, `status`, `message`, `error` and `resume_after` are never rewritten (`Store.update_job` drops them). Documents written before contract 0.2.0 use `mode` (pipeline), `limits` (series, listen_chapter), and series parents written by pipeline series runs before contract 0.3.0 use `mode` and `limits`; they are read as `scheduling`, `analysis_limits` and `speech_limits`, and rewritten with the new names on their next update. The series `plan_fingerprint` is stored but not returned by the API. |
 | `settings` | PK `id`; `body` | Saved preferences; excludes API keys and server URLs that come only from the environment (`breeze_url` is the URL saved in Settings, `""` when none). |
 | `takes` | PK `(book_id, segment_id)`; `body` | Currently selected enhanced take metadata. Replacing a selection does not delete archived audio. |
-| `analysis_checkpoints` | PK `book_id`; `fingerprint`, `body` | Legacy: the removed Classic engine's working book, stage/chapter completion and references. Nothing writes a new one; structure repair re-keys an existing one. Dropped in [stage 4](CLASSIC-REMOVAL.md). |
 | `character_references` | PK `(book_id, id)`; `character_id`, `chapter_id`, nullable `segment_id`, `body` | Current references, indexed by book/character and book/chapter. Rows written by the evidence projection carry `step`, `version_id` (the accepted `step_output` artifact), `origin` and `projection`; their ID hashes their content. Each row passes the same exact-span check as observations. The rebuild digest, drop counts and the chapter hashes the rows were validated against (`sources`) live in `pipeline_state.body.evidence`. |
 
-Jobs can be queued, running, completed, failed, cancelled, interrupted, or budget-limited depending on the worker outcome. A restart interrupts active jobs/checkpoints rather than guessing that remote requests were never sent. Historical jobs remain useful status records but are not a substitute for attempt-level billing evidence.
+Jobs can be queued, running, completed, failed, cancelled, interrupted, or budget-limited depending on the worker outcome. A restart interrupts active jobs and pipeline runs rather than guessing that remote requests were never sent. Historical jobs remain useful status records but are not a substitute for attempt-level billing evidence.
 
 ### Analysis processing and measurements
 
 | Table | Key and columns | Contract |
 | --- | --- | --- |
-| `analysis_units` | PK `(book_id, unit_key)`; `stage`, `source_hash`, `body` | Legacy: present only in libraries the removed Classic engine wrote to; nothing creates or writes it now. `ArtifactRepository.backfill` retains its rows as `analysis_output` artifacts; stage 4 drops it after that backfill ([Classic removal](CLASSIC-REMOVAL.md)). Payload includes actual provider/model and source range or character scope. |
 | `analysis_attempts` | PK `id`; `book_id`, `run_id`, `body` | One row reserved before each HTTP attempt, then updated with response/uncertainty, usage, timing, and estimated cost. |
 | `book_preprocessing` | PK `book_id`; `fingerprint`, `body` | Latest matching local census: a disposable derived cache that read-only views may write. Analysis runs and plan previews also retain it as a `census` artifact; prior census artifacts can remain after replacement. |
 | `pipeline_events` | PK `id`; `book_id`, `run_id`, `unit_key`, `stage`, `body` | Append events such as cache reuse/rejection and validation acceptance/rejection; connects validation state to attempts. |
@@ -151,14 +150,14 @@ Identical persisted source/event/body records are suppressed within two seconds.
 | `series_books` | PK `book_id`; `series_id`, REAL `position`; unique `(series_id, position)` | One series per book and one supplied book per numeric position. Finite positions from 0 to 1,000,000; decimals allowed. |
 | `series_characters` | PK `id`; `series_id`, `name`, `created_at` | Explicit series-wide identities. Names need not be unique. |
 | `series_character_links` | PK `(book_id, character_id)`; `series_character_id`, `confirmed_at` | User-confirmed link from a book-local character to a series identity. |
-| `character_observations` | PK `id`; `book_id`, `character_id`, `chapter_id`, `source_hash`, `body` | Retained exact evidence/interpretation records, indexed by book/character. |
+| `character_observations` | PK `id`; `book_id`, `character_id`, `chapter_id`, `source_hash`, `body` | Exact evidence/interpretation records, indexed by book/character. Empty unless `RETAIN_OBSERVATIONS` is on; the Classic engine's rows are `character_observation` artifacts since the Classic data drop. |
 | `library_archives` | PK `(kind, entity_id)`; `archived_at`; kind `book` or `series` | Reversible visibility/processing exclusion, not deletion. |
 | `book_covers` | PK `book_id`; `media_type`, `width`, `height`, `sha256`, BLOB `body` | Current safe thumbnail, at most 240×360 pixels. |
 | `series_volume_slots` | PK `(series_id, position)`; `title`, `status`, `created_at`; status `missing` or `planned` | Explicit absent volume marker; no book, source text, or synthetic observations. |
 
-Observation IDs hash their content, excluding the new recording timestamp. Replaying a checkpoint uses `INSERT OR IGNORE`; a changed interpretation becomes a distinct observation. Retention requires the current committed chapter, character, exact source span, and quote to match. Kinds are `profile_evidence`, `dialogue`, and `mention`.
+Observation IDs hash their content, excluding the new recording timestamp. Writing the same observation again uses `INSERT OR IGNORE`; a changed interpretation becomes a distinct observation. Retention requires the current committed chapter, character, exact source span, and quote to match. Kinds are `profile_evidence`, `dialogue`, and `mention`.
 
-Current references can be replaced or cleared without deleting observations. Since 2026-09-28 series context reads earlier volumes' **current references** (their accepted evidence), not this table, so a rollback in volume 1 changes what volume 2 reads ([series memory](ANALYSIS-PIPELINE.md#series-memory)). The evidence projection writes no observations; the removed Classic engine was the only writer, and only structure repair of a legacy checkpoint replays its rows until stage 4. The table's only remaining read for context is the existence check that proves a Classic-written reference still matches the chapter hash its retained observation recorded. Each earlier-volume entry a profile request sends is retained as a `character_observation` artifact instead. Context uses only confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter source and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every accepted reference indiscriminately. Legacy rows stay until the owner-gated data drop ([stage 4 data rules](CLASSIC-REMOVAL.md#stage-4-data-rules)).
+Current references can be replaced or cleared without deleting observations. Since 2026-09-28 series context reads earlier volumes' **current references** (their accepted evidence), not this table, so a rollback in volume 1 changes what volume 2 reads ([series memory](ANALYSIS-PIPELINE.md#series-memory)). The evidence projection writes no observations (`RETAIN_OBSERVATIONS` is off); the removed Classic engine was the only writer, and its rows were retained as `character_observation` artifacts and deleted by the Classic data drop. A Classic-written reference (no `projection` field) counts in context only while its book has a current `character_observation` artifact with the same observation ID, source hash, quotation and chapter: the proof that it still matches the chapter text it was produced from. Each earlier-volume entry a profile request sends is retained as a `character_observation` artifact instead. Context uses only confirmed identity links, earlier reading positions, active books/series, and a still-matching chapter source and quotation. Mentions are excluded from earlier-volume profile context. Context is bounded and fingerprinted; it does not retrieve every accepted reference indiscriminately. See [stage 4](CLASSIC-REMOVAL.md#stage-4-what-was-dropped) for the drop.
 
 Moving a book to another series clears its current character links, while historical observations/artifacts remain. Assigning an actual book to a missing/planned position removes that placeholder. Archiving a series retains books, membership, links, originals, and audio. Archiving a book hides it from ordinary library results and later-book context. Direct reads can still find removed items for restoration. Removing a placeholder deletes only that placeholder, not an actual book.
 
@@ -188,6 +187,7 @@ Principal artifact kinds are:
 | `census` / `book` | Local preprocessing result. |
 | `analysis_input` / unit key | Effective request recipe plus actual retained upstream artifact dependencies. |
 | `analysis_output` / unit key | Accepted result, linked to the recorded recipe when known. |
+| `analysis_checkpoint` / `book` | A saved checkpoint of the removed Classic engine (status, chapter progress, working copy, references) exactly as stored, retained by the Classic data drop before it dropped the table. Legacy provenance, no dependencies. |
 | `analysis_rejection` / unit key | Rejected structured result, producing attempt ID, and safe validation context, linked to its actual request input. |
 | `character_observation` / observation ID | Exact observation with a source dependency only when hash/span/quote can be verified. Also recorded (in the earlier book) for each earlier-volume entry a profile request sends, carrying its `step`/`version_id`/`origin`; the profile unit depends on it. |
 | `series_context` / `book` | Snapshot of explicit membership and confirmed links, including their removal. |
@@ -197,7 +197,7 @@ Principal artifact kinds are:
 
 Current snapshots and model results are different kinds on purpose. A scene-map snapshot can exist immediately after import without successful semantic directing. Artifact count therefore does not mean a stage is complete. Audio bytes and simple-listening take records also have their own storage; not every application datum is an artifact.
 
-When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, accepted units/checkpoint units, observations, census, and membership. It marks unknown provenance and never reconstructs prompts or outputs that were already lost. Backfill runs once per book at app startup (recorded in `artifact_backfills`), never from a read-only view: GET routes create no artifacts.
+When a scene/chapter/profile/audio selection disappears from the current projection, capture removes the corresponding current head only. Historic versions and dependencies remain. Legacy backfill preserves currently available book projections, takes, census, and membership. The removed Classic engine's units, checkpoint units, whole checkpoints (`analysis_checkpoint`) and observations were retained by migration `classic_removal_v1` before it dropped their tables. It marks unknown provenance and never reconstructs prompts or outputs that were already lost. Backfill runs once per book at app startup (recorded in `artifact_backfills`), never from a read-only view: GET routes create no artifacts.
 
 ### Analysis pipeline
 
@@ -264,7 +264,7 @@ Lineage IDs and effective-input equality answer different questions: two equival
 
 | Change | Current effect |
 | --- | --- |
-| Chapter title/kind repair with unchanged canonical text | Preserves source IDs/spans and existing results; updates structure/checkpoint metadata and may change default eligible section selection. |
+| Chapter title/kind repair with unchanged canonical text | Preserves source IDs/spans and existing results; updates structure metadata and may change default eligible section selection. |
 | Additional discovery evidence or changed profile inputs | Alters affected profile requests/freshness; old outputs remain retained. |
 | Cast/profile/performance change | Can make direction/audio recipes stale; reviewed edits remain authoritative. |
 | Voice/provider/model change | Changes enhanced audio recipe; existing byte-addressed assets remain on disk. |
@@ -286,14 +286,13 @@ Important write boundaries:
 
 - `Store._save_book()` captures missing legacy state before replacement, persists cover data, updates book/current takes, then captures new projections in one transaction.
 - A pipeline decision applies the accepted version to the projection, rebuilds character references and records the decision in one revision-guarded transaction. `PipelineRepository.save_unit()` saves a validated unit and its artifact together, before the version is recorded.
-- `Store.commit_analysis()` saves projection and checkpoint/current references together. Only structure repair of a legacy checkpoint uses it now, until stage 4.
 - `Store.save_take()` preserves previous/new selected take metadata without recapturing every passage for each audio write.
 - Provider requests run outside long SQLite transactions. Reservations are committed before the request.
 - Audio file publication is atomic separately from SQLite. A validated asset can survive without a selected database pointer if a later step fails; there is no filesystem/database distributed transaction or automatic orphan cleanup.
 
 Ordinary worker jobs and series reservations are coordinated by `Runtime` and the series coordinator, which runs one book's pipeline run at a time (`pipeline_runs.series_run_id` names the parent job). Mutation endpoints check active work; the database alone does not enforce these scheduling rules. Cancellation and restart preserve completed units and assets, while uncertain remote work remains visible rather than silently replayed.
 
-Migration currently uses additive table/index/trigger initialization and targeted legacy backfill. Some optional tables are initialized on first repository use. There is no migration-number table, `PRAGMA user_version` protocol, or tested downgrade path. Artifact schema versions and request recipe versions are payload/behavior versioning, not database migration numbers. A maintenance reader must also know that constructing `Store` updates interrupted jobs/checkpoints; use a deliberate read-only SQLite connection for a truly non-mutating inspection.
+Schema changes use additive table/index/trigger initialization and targeted legacy backfill. Some optional tables are initialized on first repository use. One-time data migrations ([migrations.py](../bardic/migrations.py)) run at server start, holding the instance lock, and are recorded in `schema_migrations` (`id`, `status` `completed` or `failed`, `updated_at`, and a JSON `body` with counts). The first, `classic_removal_v1`, retains the removed Classic engine's data as artifacts, verifies it, deletes the `character_observations` rows and drops `analysis_units` and `analysis_checkpoints` ([stage 4](CLASSIC-REMOVAL.md#stage-4-what-was-dropped)); a failed run changes nothing it cannot redo and runs again at the next start. There is no `PRAGMA user_version` protocol or tested downgrade path. Artifact schema versions and request recipe versions are payload/behavior versioning, not database migration numbers. A maintenance reader must also know that constructing `Store` updates interrupted jobs, and starting the app runs pending migrations; use a deliberate read-only SQLite connection for a truly non-mutating inspection.
 
 ## Files, exports, and backups
 

@@ -7,8 +7,10 @@ import pytest
 
 from bardic.artifacts import ArtifactRepository, capture_book, initialize_schema, output_head, record
 from bardic.importer import parse_book
+from bardic.migrations import retain_legacy, unretained
 from bardic.processing import ProcessingStore, source_hash
 from bardic.store import Store
+from classic_fixtures import add_classic_tables, classic_references
 
 
 @pytest.fixture
@@ -31,19 +33,21 @@ def story():
     return parse_book('story.txt', b'Chapter 1\n\nMara said, "Wait."\n\nChapter 2\n\nThe door opened.')
 
 
-def legacy_units_table(store):
-    """The removed Classic engine's unit cache, as existing libraries still have it (dropped in stage 4)."""
-    with store.connect() as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS analysis_units (book_id TEXT, unit_key TEXT, stage TEXT, source_hash TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,unit_key))')
-        conn.execute('CREATE INDEX IF NOT EXISTS analysis_units_stage ON analysis_units(book_id,stage,source_hash)')
-
-
 def legacy_unit(store, book_id, key, source, value):
-    """A row the Classic engine wrote; ArtifactRepository.backfill must retain it before stage 4 drops the table."""
-    legacy_units_table(store)
+    """A row the removed Classic engine wrote, in a library from before the Classic data drop."""
     with store.connect() as conn:
-        conn.execute('INSERT INTO analysis_units VALUES (?,?,?,?,?)',
-                     (book_id, key, value.get('stage', ''), source, json.dumps(value)))
+        add_classic_tables(conn, units=[(book_id, key, value.get('stage', ''), source, value)])
+
+
+def retain(store, book_id):
+    """What the Classic data drop does for one book before deleting anything; returns the versions added."""
+    repository = ArtifactRepository(store)
+    before = repository.counts(book_id)['total']
+    repository.backfill(book_id)
+    with store.lock, store.connect() as conn:
+        retain_legacy(conn, book_id, {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")})
+        assert unretained(conn, book_id, {'analysis_units', 'analysis_checkpoints', 'character_observations'}) == {}
+    return repository.counts(book_id)['total'] - before
 
 
 def test_content_identity_is_canonical_and_ignores_operational_time(repository):
@@ -238,7 +242,6 @@ def test_backfill_is_idempotent_and_does_not_export_settings_or_change_live_head
     store.save_book(book)
     store.save_settings({'api_key': 'must-not-be-exported', 'analysis_model': 'private-preference'})
     ProcessingStore(store)  # the shared census cache table
-    legacy_units_table(store)
     chapter = book['chapters'][0]
     unit = {'unit_key': 'discovery-key', 'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0,
             'end': len(chapter['text']), 'provider': 'anthropic', 'model': 'known-model', 'result': {'characters': []}}
@@ -247,10 +250,10 @@ def test_backfill_is_idempotent_and_does_not_export_settings_or_change_live_head
         conn.execute('INSERT INTO book_preprocessing VALUES (?,?,?)', (book['id'], 'census-key', '{"words":12}'))
     with store.connect() as conn:
         current = record(conn, book['id'], 'character_profile', 'narrator', {'name': 'Preserved live profile'}, stage='profiles')
-    first = repository.backfill(book['id'])
+    first = retain(store, book['id'])
     count = repository.counts(book['id'])['total']
-    second = repository.backfill(book['id'])
-    assert first['added'] > 0 and second['added'] == 0
+    second = retain(store, book['id'])
+    assert first > 0 and second == 0
     assert repository.counts(book['id'])['total'] == count
     assert repository.output_head(book['id'], 'character_profile', 'narrator') == current
     rows = repository.list(book['id'], limit=200)['items']
@@ -268,19 +271,22 @@ def test_backfill_keeps_legacy_checkpoint_units_and_observations_with_verified_s
     store.save_book(book)
     chapter = book['chapters'][0]
     unit = {'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0, 'end': len(chapter['text']), 'result': {'characters': []}}
-    store.save_analysis_checkpoint(book['id'], 'old', {'provider': 'anthropic', 'model': 'old-model', 'working_book': book,
-                                                     'units': {'legacy-unit': unit}, 'chapters': []})
+    checkpoint = {'provider': 'anthropic', 'model': 'old-model', 'working_book': book, 'units': {'legacy-unit': unit},
+                  'chapters': [], 'status': 'failed'}
     from bardic.series import source_hash as text_hash
-    observation = {'id': 'observation', 'chapter_id': chapter['id'], 'start': 0, 'end': 7, 'quote': chapter['text'][:7],
+    observation = {'id': 'observation', 'book_id': book['id'], 'character_id': 'mara', 'chapter_id': chapter['id'],
+                   'start': 0, 'end': 7, 'quote': chapter['text'][:7],
                    'source_hash': text_hash(chapter['text']), 'provider': 'anthropic', 'model': 'old-model'}
     with store.connect() as conn:
-        conn.execute('INSERT INTO character_observations VALUES (?,?,?,?,?,?)',
-                     ('observation', book['id'], 'mara', chapter['id'], text_hash(chapter['text']), json.dumps(observation)))
-    repository.backfill(book['id'])
+        add_classic_tables(conn, checkpoints=[(book['id'], 'old', checkpoint)], observations=[observation])
+    retain(store, book['id'])
     output = repository.get(book['id'], repository.output_head(book['id'], 'analysis_output', 'legacy-unit'))
     recorded = repository.get(book['id'], repository.output_head(book['id'], 'character_observation', 'observation'))
     assert output['provider'] == 'anthropic' and len(output['dependencies']) == 1
     assert recorded['payload']['quote'] == chapter['text'][:7] and len(recorded['dependencies']) == 1
+    # The whole checkpoint is retained as it was stored, without claimed inputs.
+    whole = repository.get(book['id'], repository.output_head(book['id'], 'analysis_checkpoint', 'book'))
+    assert whole['payload'] == checkpoint and whole['dependencies'] == [] and whole['legacy_provenance'] is True
 
 
 def test_backfill_does_not_link_old_source_output_to_changed_current_source(repository):
@@ -290,7 +296,7 @@ def test_backfill_does_not_link_old_source_output_to_changed_current_source(repo
     chapter = book['chapters'][0]
     legacy_unit(store, book['id'], 'older', 'different-source-hash',
         {'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0, 'end': len(chapter['text']), 'result': {'characters': []}})
-    repository.backfill(book['id'])
+    retain(store, book['id'])
     artifact = repository.get(book['id'], repository.output_head(book['id'], 'analysis_output', 'older'))
     assert artifact['dependencies'] == [] and artifact['legacy_provenance'] is True
 
@@ -303,7 +309,7 @@ def test_backfill_recipe_is_separate_from_output_and_history_is_book_scoped(repo
     legacy_unit(repository.store, book['id'], 'with-recipe', source_hash(book),
         {'stage': 'discovery', 'chapter_id': chapter['id'], 'start': 0, 'end': len(chapter['text']),
          'input_recipe': recipe, 'result': {'characters': []}})
-    repository.backfill(book['id'])
+    retain(repository.store, book['id'])
     output = repository.get(book['id'], repository.output_head(book['id'], 'analysis_output', 'with-recipe'))
     input_id = repository.output_head(book['id'], 'analysis_input', 'with-recipe')
     assert input_id in output['dependencies']
@@ -369,7 +375,7 @@ def test_take_hook_preserves_previous_take_and_does_not_reversion_unrelated_proj
     assert repository.list(book['id'], kind='audio_take')['total'] == 2
 
 
-def test_checkpoint_observations_have_exact_source_dependencies_and_survive_checkpoint_deletion(store):
+def test_classic_observations_have_exact_source_dependencies_and_survive_the_row_deletion(store):
     book = story()
     book['characters'].append({'id': 'mara', 'name': 'Mara'})
     store.save_book(book)
@@ -377,12 +383,14 @@ def test_checkpoint_observations_have_exact_source_dependencies_and_survive_chec
     start = chapter['text'].index('Mara')
     reference = {'id': 'mention', 'character_id': 'mara', 'chapter_id': chapter['id'], 'start': start,
                  'end': start + 4, 'quote': 'Mara', 'kind': 'mention', 'provider': 'anthropic', 'model': 'known-model'}
-    store.save_analysis_checkpoint(book['id'], 'checkpoint', {'references': [reference]})
+    # Retained with the row, then the row deleted, as the Classic data drop leaves it; twice changes nothing.
+    classic_references(store, book['id'], [reference])
     repository = ArtifactRepository(store)
     first = repository.list(book['id'], kind='character_observation')['items']
     assert len(first) == 1 and len(first[0]['dependencies']) == 1
-    store.save_analysis_checkpoint(book['id'], 'checkpoint', {'references': [reference]})
-    store.delete_analysis_checkpoint(book['id'])
+    classic_references(store, book['id'], [reference])
+    with store.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM character_observations').fetchone()[0] == 0
     assert repository.list(book['id'], kind='character_observation')['total'] == 1
     artifact = repository.get(book['id'], first[0]['id'])
     source = repository.get(book['id'], artifact['dependencies'][0])

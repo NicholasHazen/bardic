@@ -42,7 +42,7 @@ Treat `character_references` as a **current-book projection** of accepted eviden
 - **Dependencies.** Each profile unit declares the accepted `step_output` versions its earlier-volume entries came from, a `character_observation` artifact for each entry it sends (with its verified source as a dependency) and the `series_context` link snapshots, as before.
 - **Prompt.** An earlier-volume entry in the prompt shows only book title, reading order, chapter title, kind, quote, description and direction. IDs, offsets, hashes and producers stay in the recipe (`prior_observations`) and artifacts, so a new version with the same reading does not become a new paid request. A profile prompt whose context is empty is byte-identical to before (`tests/test_prompt_identity.py` is unchanged).
 - **Unit set.** Profiles in the step pipeline now skip a character with no accepted discovery evidence in its own book, even when earlier volumes have evidence for it (`profile_specs(require_current_evidence=True)`). Earlier volumes then change what a unit says, never which units exist, which section 4 relies on. The phase engine keeps its old rule.
-- **Observations (decided).** `RETAIN_OBSERVATIONS` stays off and nothing reads `character_observations` for prompts. History is the step_output versions and the `character_observation` artifacts recorded when an entry is sent. The legacy table and its rows stay until the owner-gated Stage 4 data drop; nothing deletes them.
+- **Observations (decided).** `RETAIN_OBSERVATIONS` stays off and nothing reads `character_observations` for prompts. History is the step_output versions and the `character_observation` artifacts recorded when an entry is sent. The Classic data drop (Classic removal stage 4, 2026-09-28) retained the legacy rows as `character_observation` artifacts and deleted them; the table stays for `RETAIN_OBSERVATIONS`.
 
 The design:
 
@@ -83,8 +83,8 @@ As built: no new tables and no migration step. The evidence state gains `sources
 
 The design:
 
-- No new tables. `character_references` changes meaning from "last legacy checkpoint" to "accepted pipeline evidence". Rebuild it for every book at migration time from accepted versions. Books with no pipeline history keep an empty set.
-- `character_observations` stays as retained history. As built, section 1 does not write to it; see section 1. Legacy rows can be deleted with the phase-engine data (owner decision D3: "kill it and build fresh").
+- No new tables. `character_references` changes meaning from "last legacy checkpoint" to "accepted pipeline evidence". Rebuild it for every book at migration time from accepted versions. Books with no pipeline history keep an empty set. *(Not done: the stage 4 migration kept each book's rows, so a book with no accepted evidence keeps the rows the Classic engine wrote.)*
+- `character_observations` stays as retained history. As built, section 1 does not write to it; see section 1. Legacy rows can be deleted with the phase-engine data (owner decision D3: "kill it and build fresh"). *(Done in Classic removal stage 4, after retaining them as artifacts.)*
 
 ## Tests (offline)
 

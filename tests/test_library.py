@@ -15,6 +15,7 @@ from bardic.importer import parse_book
 from bardic.library import LibraryRepository
 from bardic.series import SeriesRepository
 from bardic.store import Store
+from classic_fixtures import classic_references
 
 
 def illustrated_epub(*, cover_path='images/cover.png', cover_type='image/png', raster=None, epub2=False, cover_page=False):
@@ -173,8 +174,8 @@ def test_archived_earlier_books_are_excluded_from_series_context_until_restored(
         series.link_character(book['id'], 'mara', identity['id'])
     chapter = early['chapters'][0]
     start = chapter['text'].index('Mara')
-    store.save_analysis_checkpoint(early['id'], 'one', {'references': [{'id': 'evidence', 'character_id': 'mara',
-        'chapter_id': chapter['id'], 'start': start, 'end': start + 4, 'quote': 'Mara', 'kind': 'profile_evidence'}]})
+    classic_references(store, early['id'], [{'id': 'evidence', 'character_id': 'mara',
+        'chapter_id': chapter['id'], 'start': start, 'end': start + 4, 'quote': 'Mara', 'kind': 'profile_evidence'}])
     assert series.context_for_book(later['id'])['included_observations'] == 1
     repository.archive_book(early['id'])
     assert series.context_for_book(later['id'])['included_observations'] == 0

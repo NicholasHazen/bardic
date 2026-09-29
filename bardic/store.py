@@ -59,6 +59,7 @@ class Store:
         from .series import initialize_schema
         from .artifacts import initialize_schema as initialize_artifacts
         from .library import initialize_schema as initialize_library
+        from .migrations import initialize_schema as initialize_migrations
         from .pipeline.repository import initialize_schema as initialize_pipeline
         from .processing import initialize_schema as initialize_processing
 
@@ -72,7 +73,6 @@ class Store:
             conn.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, body TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS takes (book_id TEXT, segment_id TEXT, body TEXT NOT NULL, PRIMARY KEY(book_id,segment_id))")
-            conn.execute("CREATE TABLE IF NOT EXISTS analysis_checkpoints (book_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL)")
             conn.execute("""CREATE TABLE IF NOT EXISTS character_references (
                 book_id TEXT NOT NULL, id TEXT NOT NULL, character_id TEXT NOT NULL,
                 chapter_id TEXT NOT NULL, segment_id TEXT, body TEXT NOT NULL,
@@ -84,6 +84,9 @@ class Store:
             initialize_schema(conn)
             initialize_pipeline(conn)
             initialize_processing(conn)
+            initialize_migrations(conn)
+        # Runtime acquires InstanceLock before constructing Store, so a second
+        # server cannot mistake another worker's in-flight job for a restart.
         for job in self.jobs(limit=None):
             if job["status"] in {"running", "queued"}:
                 # Describe the condition; validated work is kept and a new run reuses it.
@@ -92,20 +95,6 @@ class Store:
                            "The server restarted before this job finished. Finished audio is saved and reused.")
                 extra = {"waiting_for_review": None} if job.get("waiting_for_review") else {}
                 self.update_job(job["id"], status="interrupted", message=message, **extra)
-        # Runtime acquires InstanceLock before constructing Store, so a second
-        # server cannot mistake another worker's in-flight analysis for a restart.
-        with self.lock, self.connect() as conn:
-            for book_id, body in conn.execute("SELECT book_id,body FROM analysis_checkpoints").fetchall():
-                checkpoint = json.loads(body)
-                if checkpoint.get("status") not in {"running", "queued"}:
-                    continue
-                checkpoint.update(status="interrupted", updated_at=now(),
-                                  error="Server restarted. Analyze story again to resume from saved chapter analysis.")
-                for chapter in checkpoint.get("chapters", []):
-                    if chapter.get("status") == "running":
-                        chapter["status"] = "interrupted"
-                conn.execute("UPDATE analysis_checkpoints SET body=? WHERE book_id=?",
-                             (json.dumps(checkpoint, ensure_ascii=False), book_id))
 
     def connect(self):
         conn = sqlite3.connect(self.db, timeout=30)
@@ -162,60 +151,6 @@ class Store:
         conn.execute("DELETE FROM takes WHERE book_id=?", (book["id"],))
         conn.executemany("INSERT INTO takes(book_id,segment_id,body) VALUES (?,?,?)", [(book["id"], s["id"], json.dumps(s["audio"])) for s in book["segments"] if s.get("audio")])
         capture_book(conn, book)
-
-    def analysis_checkpoint(self, book_id: str, fingerprint: str) -> dict | None:
-        """Return saved work only when its input, provider and model still match."""
-        with self.lock, self.connect() as conn:
-            row = conn.execute("SELECT body FROM analysis_checkpoints WHERE book_id=? AND fingerprint=?",
-                               (book_id, fingerprint)).fetchone()
-            return json.loads(row[0]) if row else None
-
-    def _save_analysis_checkpoint(self, conn, book_id: str, fingerprint: str, checkpoint: dict) -> dict:
-        from .series import retain_observations
-
-        checkpoint = dict(checkpoint, fingerprint=fingerprint, updated_at=now())
-        conn.execute("INSERT OR REPLACE INTO analysis_checkpoints(book_id,fingerprint,body) VALUES (?,?,?)",
-                     (book_id, fingerprint, json.dumps(checkpoint, ensure_ascii=False)))
-        conn.execute("DELETE FROM character_references WHERE book_id=?", (book_id,))
-        conn.executemany("""INSERT INTO character_references
-            (book_id,id,character_id,chapter_id,segment_id,body) VALUES (?,?,?,?,?,?)""",
-            [(book_id, ref["id"], ref["character_id"], ref["chapter_id"], ref.get("segment_id"),
-              json.dumps(ref, ensure_ascii=False)) for ref in checkpoint.get("references", [])])
-        retain_observations(conn, book_id, checkpoint.get("references", []))
-        return checkpoint
-
-    def save_analysis_checkpoint(self, book_id: str, fingerprint: str, checkpoint: dict) -> dict:
-        """Save validated progress and its references without changing the book."""
-        with self.lock, self.connect() as conn:
-            return self._save_analysis_checkpoint(conn, book_id, fingerprint, checkpoint)
-
-    def commit_analysis(self, book: dict, fingerprint: str, checkpoint: dict) -> dict:
-        """Publish a book snapshot and its corresponding progress atomically."""
-        with self.lock, self.connect() as conn:
-            self._save_book(conn, book)
-            self._save_analysis_checkpoint(conn, book["id"], fingerprint, checkpoint)
-        return book
-
-    def delete_analysis_checkpoint(self, book_id: str):
-        with self.lock, self.connect() as conn:
-            conn.execute("DELETE FROM analysis_checkpoints WHERE book_id=?", (book_id,))
-            conn.execute("DELETE FROM character_references WHERE book_id=?", (book_id,))
-
-    def analysis_status(self, book_id: str) -> dict | None:
-        """Progress suitable for the UI, without source text or model responses."""
-        with self.lock, self.connect() as conn:
-            row = conn.execute("SELECT body FROM analysis_checkpoints WHERE book_id=?", (book_id,)).fetchone()
-        if not row:
-            return None
-        checkpoint = json.loads(row[0])
-        fields = ("fingerprint", "provider", "model", "status", "completed_units", "total_units",
-                  "stage", "phase", "scan_model", "current_chapter_id", "scope_chapter_id", "error", "updated_at")
-        summary = {field: checkpoint[field] for field in fields if field in checkpoint}
-        chapter_fields = ("id", "title", "stage", "status", "completed_units", "total_units", "error",
-                          "discovery_complete", "directing_complete")
-        summary["chapters"] = [{field: chapter[field] for field in chapter_fields if field in chapter}
-                               for chapter in checkpoint.get("chapters", [])]
-        return summary
 
     def character_references(self, book_id: str, character_id: str | None = None) -> list[dict]:
         with self.lock, self.connect() as conn:

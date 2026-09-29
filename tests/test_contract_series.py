@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bardic.app import create_app
+from classic_fixtures import classic_references
 
 
 TEXT = 'Mira lit the lamp and spoke softly.'
@@ -50,8 +51,7 @@ def linked_series(client):
                  'start': 0, 'end': len(TEXT), 'quote': TEXT, 'kind': 'profile_evidence',
                  'profile_description': 'A soft voice', 'profile_direction': 'Softly',
                  'provider': 'test', 'model': 'test-model', 'confidence': .9}
-    store.save_analysis_checkpoint('one', 'v1', {'status': 'completed', 'references': [reference],
-                                                 'chapters': [], 'units': {}})
+    classic_references(store, 'one', [reference])
     return series, identity
 
 

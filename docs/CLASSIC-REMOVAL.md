@@ -1,8 +1,8 @@
 # Removing the legacy phase ("Classic") analysis engine
 
-Status: stages 1–3 are done (2026-09-28). Stage 4 is pending. The owner approved the four stages, and stage 4 needs the owner's go before it runs on a real library.
+Status: all four stages are done (2026-09-28). The owner approved the four stages, and approved stage 4 as a one-time migration that runs when the server starts.
 
-"Classic" is the analysis engine that came before the step pipeline. It covered the progressive phase runner (`progressive.py`), the older chapter-checkpoint runner (`staged_analysis.py`), their unit cache and coverage reader (`legacy_phase.py`), the `analysis_checkpoints` record in [store.py](../bardic/store.py), and the book routes `POST /analyze`, `GET /preprocessing`, `POST /analysis-plan` and `GET /analysis`. `GET /pipeline` read its state too. The UI stopped offering the engine in UX phase 2, and stage 3 deleted its code and routes. The step pipeline ([pipeline/](../bardic/pipeline/), [the analysis pipeline](ANALYSIS-PIPELINE.md)) replaces it. Series runs already use the step pipeline ([decision](DECISIONS.md)).
+"Classic" is the analysis engine that came before the step pipeline. It covered the progressive phase runner (`progressive.py`), the older chapter-checkpoint runner (`staged_analysis.py`), their unit cache and coverage reader (`legacy_phase.py`), the `analysis_checkpoints` record in `store.py`, and the book routes `POST /analyze`, `GET /preprocessing`, `POST /analysis-plan` and `GET /analysis`. `GET /pipeline` read its state too. The UI stopped offering the engine in UX phase 2, stage 3 deleted its code and routes, and stage 4 dropped its tables after retaining their data as artifacts. The step pipeline ([pipeline/](../bardic/pipeline/), [the analysis pipeline](ANALYSIS-PIPELINE.md)) replaces it. Series runs already use the step pipeline ([decision](DECISIONS.md)).
 
 ## The four stages
 
@@ -13,7 +13,7 @@ Each stage is its own pull request.
 | 1. Untangle (**done**) | Live code stops importing the engine. Shared code moves out of it. | None. Prompts and cache keys are byte-identical. | Full suite; [prompt identity test](../tests/test_prompt_identity.py); [isolation test](../tests/test_legacy_isolation.py) |
 | 2. Evidence projection (**done**) | Accepted step evidence becomes `character_references`. The checkpoint stops being their only writer. Series memory (contract 0.3.0) then made series context read those rows. | Cast references and series context come from accepted pipeline versions. | [Series memory plan](SERIES-MEMORY-PLAN.md) |
 | 3. Delete code paths (**done**) | Delete the engine files, their routes and their tests. Rebuild the Details explorer from the step pipeline. | The Classic routes are no longer served. Existing data is still readable where noted below. | Stage 2 merged; contract 0.3.0 |
-| 4. Drop data | A migration drops the legacy tables and legacy rows, after a verified backup and backfill. | Legacy rows are gone. Everything listed under "keep" is intact. | **Owner go**; [operations](OPERATIONS.md) backup |
+| 4. Drop data (**done**) | A one-time startup migration retains the legacy data as artifacts, verifies it, then drops the legacy tables and deletes the legacy observation rows. | Legacy rows are gone. Everything listed under "keep" is intact. | Owner go (given); [operations](OPERATIONS.md#upgrading-past-the-classic-data-drop) backup before upgrading |
 
 ## Stage 1: what moved
 
@@ -84,16 +84,16 @@ Rewritten to drive the pipeline:
 | `listen_job_poll_test.js`, `pipeline_ui_test.js` | Polling no longer requests `/analysis`. The cards render the out-of-date and waiting counts. |
 | `tools/contract-codegen-check.mjs` | The smoke body uses `startBookAnalysisPipelineRun`. |
 
-### What still references Classic data (stage 4)
+### What still referenced Classic data after stage 3
 
-A grep for `progressive`, `staged_analysis`, `legacy_phase`, `analysis_units` and `/analyze` in `bardic/` finds only these:
+This was the state before stage 4; see [stage 4](#stage-4-what-was-dropped) for what changed. A grep for `progressive`, `staged_analysis`, `legacy_phase`, `analysis_units` and `/analyze` in `bardic/` finds only these:
 
 - `artifacts.backfill` reads `analysis_units` and `analysis_checkpoints` if they exist. Since the merge with `main`, it runs once per book at server start (`backfill_library`, recorded in `artifact_backfills`), not from a GET.
 - `library._payload_bytes` lists `analysis_units` and `analysis_checkpoints`.
 - `/v1/analyze` (in `local_services.py` and `pipeline/runner.py`) is the self-hosted service path and is unrelated.
 - "progressive-disclosure" in `style.css` names a UI pattern and is unrelated.
 
-The same grep, re-run after merging series memory, finds the same list. Legacy `character_observations` rows have their own readers; see the [data rules](#stage-4-data-rules).
+The same grep, re-run after merging series memory, found the same list. Legacy `character_observations` rows had their own readers; see the [data rules](#stage-4-data-rules).
 
 ## Fixes from main after removal
 
@@ -118,9 +118,64 @@ The same grep, re-run after merging series memory, finds the same list. Legacy `
 | `processing.initialize_schema` at startup | `processing.py` | **Adapted** | Main's one-time schema setup is kept, without `analysis_units`: a new library still never creates the Classic table. `test_legacy_isolation.py` covers it. |
 | Removed schema field `SeriesBookAnalysisPlan.limits` | Classic series plan | **Dropped** | The whole schema is removed; a series book's `plan` is a `PipelinePlan`. |
 
+## Stage 4: what was dropped
+
+Stage 4 landed on 2026-09-28. The owner approved it as a one-time migration that runs at server start, instead of the separate maintenance step the inventory below first proposed. Take a full backup before upgrading past this version ([operations](OPERATIONS.md#upgrading-past-the-classic-data-drop)).
+
+### The migration
+
+[migrations.py](../bardic/migrations.py) holds migration `classic_removal_v1`. `Runtime.__init__` runs it at every start, holding the instance lock, before `backfill_library`. It records itself in a new table, `schema_migrations(id, status, updated_at, body)`, and is skipped once it is recorded `completed` and no Classic table exists. A Classic table that reappears (copied in by hand) is migrated again.
+
+1. **Retain.** For every book with Classic data (units, a checkpoint or observation rows), archived books included, it runs `ArtifactRepository.backfill`, then `migrations.retain_legacy`, then `migrations.unretained` as a check. Two short transactions per book (the backfill, then the legacy reader with its check).
+   - `analysis_units` rows become `analysis_output` artifacts, with an `analysis_input` artifact when a recipe was saved. Only a verified current source span becomes a dependency.
+   - Checkpoint units become `analysis_output` artifacts, as before.
+   - The whole checkpoint (status, per-chapter progress, working copy, references) becomes one `analysis_checkpoint` artifact: logical key `book`, `legacy_provenance`, and no dependencies, because its inputs are unknown. This is new in stage 4, so that nothing in the dropped table is lost.
+   - Each `character_observations` row becomes a `character_observation` artifact.
+   - Rows of a book that is no longer in `books` are retained under its ID, without source dependencies.
+   - The check requires, for every unit and checkpoint unit, an `analysis_output` version with the same content (timestamps aside); for the checkpoint, an `analysis_checkpoint` version with the same content; and for every observation, a current `character_observation` artifact whose located reading (the fields its ID hashes) matches the row.
+
+   If any book fails, or a Classic row has no usable book ID (it cannot be retained under a book), the migration logs it at ERROR ("Classic removal postponed: …"), records `failed` with the reasons, deletes and drops nothing, and runs again at the next start.
+2. **Delete and drop, in one transaction.** It walks every Classic table itself (not the census) and checks again that every row's content is retained, then deletes the `character_observations` rows (the table stays; see the [data rules](#stage-4-data-rules)), drops `analysis_units` (its index goes with it) and `analysis_checkpoints`, and records `completed`. Any failure or interruption rolls all of it back.
+3. **Count.** After the commit it counts the Classic-written reference rows and adds them to the record. This is a statistic: if it fails, the counts are `null` and the drop stands.
+
+The record's body has per-book counts (`analysis_units`, `analysis_checkpoints`, `checkpoint_units`, `character_observations`, `artifacts_added`, `classic_references`, `classic_references_in_series_context`), the totals, `dropped_tables` and `deleted_observations`. If the migration runs again (a Classic table reappeared, for example after running an older build), the earlier completed record is kept under `earlier_runs`. The same numbers are logged; the lines are quoted in [operations](OPERATIONS.md#upgrading-past-the-classic-data-drop).
+
+**Interruption and idempotence.** Artifacts are content-addressed, and a row whose content a retained artifact already holds is skipped, so a rerun archives nothing twice. A unit whose key already has a different current result (for example an `analysis_units` row and a checkpoint unit that disagree) is retained beside it, unselected, so both copies are kept and no current selection changes. The deletes, the drops and the record commit together, after every row is checked. An interrupted run redoes only what it had not finished. A new index, `artifact_versions_scope (book_id, kind, logical_key)`, keeps the content checks fast on books with many units.
+
+It never touches `analysis_attempts`, the `pipeline_*` tables, existing artifacts, `book_preprocessing` or `character_references`.
+
+### Classic-written references in series context (data rule 5)
+
+Stage 4 took the second option: **check against the artifact.** `series._SourceCheck` checks a reference row without a `projection` field against its retained `character_observation` artifact: the book's current head for the observation ID, whose `source_hash`, `quote` and `chapter_id` must match. Before, it looked for the table row with that ID. The observation ID hashes its content, including the chapter's source hash, so the proof is the same.
+
+Why not "sync every book first": checking the artifact keeps series context exactly as it was, writes no pipeline versions at startup, and fabricates no provenance. A row whose observation was never retained stays out of series context, as before.
+
+### Deleted code
+
+- `Store`: the `analysis_checkpoints` DDL, the checkpoint restart-recovery loop (with its "Analyze story again" message), and `analysis_checkpoint`, `save_analysis_checkpoint`, `_save_analysis_checkpoint`, `commit_analysis`, `delete_analysis_checkpoint` and `analysis_status`.
+- The checkpoint branch of `repairBookStructure`, `structure.transform_checkpoint_structure`, and `analysis_common.fingerprint` and `PIPELINE_VERSION`. Structure repair now only saves the book.
+- The `analysis_units`, `analysis_checkpoints` and `character_observations` branches of `ArtifactRepository.backfill`. They moved into `migrations.retain_legacy`, which reads only tables that exist, so it retains nothing once they are gone.
+- The two table names in `library._payload_bytes`.
+- `test_prompt_identity.py`'s checkpoint fingerprint test.
+
+API contract 0.3.1 is documentation only: `repairBookStructure` no longer mentions a checkpoint, `analysis_checkpoint` is a listed artifact kind, and `observations.json` in the export is empty for Classic-era books ([contract changelog](../contract/CHANGELOG.md)).
+
+### Kept
+
+- **Checkpoint-written `character_references` rows.** They are the current projection of a book with no accepted pipeline evidence.
+- **Stage 2's carry-over of legacy `profile_evidence` rows** in [pipeline/evidence.py](../bardic/pipeline/evidence.py). The inventory made its removal conditional on the migration rebuilding `character_references` from accepted versions. This migration does not, so removing the carry-over would drop those rows from Cast references and series context for books with accepted profiles or directing but no accepted discovery.
+- The `character_observations` table, now empty for Classic-era books. `evidence.retain_history` still writes it when `RETAIN_OBSERVATIONS` is on.
+- Everything in the [keep](#keep) table.
+
+### Tests
+
+- [test_classic_data_drop.py](../tests/test_classic_data_drop.py) starts the app on a synthetic library with Classic tables and rows: two linked volumes, an archived book and an orphaned unit. It checks the artifacts, the drop, the kept tables, the record and log lines, Cast references and series context. It also covers a second start (a no-op), a failed retention (nothing dropped; the next start completes), an unreadable legacy row (the server still starts; nothing dropped), two disagreeing copies of one unit (both retained, the selection unchanged), a drop interrupted inside its transaction (resumes without archiving twice), a library like the owner's (empty Classic tables, many attempts) and a new library.
+- [classic_fixtures.py](../tests/classic_fixtures.py) replaces the checkpoint fixtures in the other test files. `classic_references` writes Classic reference rows as the migration leaves them (rows plus `character_observation` artifacts, no observation rows); `add_classic_tables` builds the pre-drop tables.
+- [test_legacy_isolation.py](../tests/test_legacy_isolation.py) now also checks that only `bardic/migrations.py` names the Classic tables and checkpoint methods, that the `Store` checkpoint API is gone, and that a new library never has either table.
+
 ## Stage 4 inventory: code
 
-Delete these in the same pull request as the data migration, after it runs:
+The plan as written before stage 4, kept as a record. Everything was done as listed except the `profile_evidence` carry-over, which stays (see [kept](#kept)).
 
 | Item | Why it waited |
 | --- | --- |
@@ -135,7 +190,7 @@ Delete these in the same pull request as the data migration, after it runs:
 
 ## Stage 4 inventory: data
 
-Run this as a one-time maintenance migration with the owner's go. It is not part of routine startup.
+The plan as written before stage 4, kept as a record. It proposed a separate maintenance step; the owner approved a one-time startup migration instead ([above](#the-migration)), which performs steps 2 and 3 itself. Step 1, the backup, is the owner's, before upgrading.
 
 ### Before dropping anything
 
@@ -154,7 +209,7 @@ Run this as a one-time maintenance migration with the owner's go. It is not part
 
 ### Stage 4 data rules
 
-Re-checked against the code after series memory and stage 3 (both in contract 0.3.0), 2026-09-28.
+Re-checked against the code after series memory and stage 3 (both in contract 0.3.0), 2026-09-28. **Applied by stage 4.** Rule 5 took the second option (check against the artifact). Of rule 2's readers, `_SourceCheck` now reads the artifact instead of the table, `SeriesRepository.observations` and `series.initialize_schema` still read the table, and the backfill branch and the `_payload_bytes` entry are gone ([deleted code](#deleted-code)).
 
 1. **Series context sources its entries from `character_references`, not from observations.** `SeriesRepository.context_for_book` (used by the Profiles step and `getBookSeriesContext`) reads each earlier volume's current `character_references` rows. Stage 3 wrote "series context still reads observations"; that is no longer true as a source.
 2. **The observation rows are still read, though.** A grep of `bardic/` for `character_observations` finds these readers:
@@ -194,3 +249,4 @@ Re-checked against the code after series memory and stage 3 (both in contract 0.
 1. **`GET /pipeline` and the Details explorer.** Keep it, and rebuild the stage cards from step-pipeline state. Done in stage 3.
 2. **The in-memory cloud path** (`analysis._cloud`). Delete it. Done in stage 3.
 3. **Classic-era artifacts in stage 4.** Keep them as immutable history. "Discard the phase engine and its data" means the live tables, not the retained provenance.
+4. **How stage 4 runs.** As a one-time migration at server start, recorded in `schema_migrations`, with a full backup taken by the owner before upgrading. Done in stage 4.

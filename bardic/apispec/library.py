@@ -41,7 +41,7 @@ class LibraryBookStorage(View):
     file_bytes: int = Field(description='Sum of the four file sizes above.')
     database_payload_bytes: int = Field(
         description='Exact byte length of this book\'s rows\' bodies in the shared SQLite database (book JSON, takes, '
-                    'analysis checkpoints, artifacts, cover, resource records, listening and preview records, ...). '
+                    'character references, artifacts, cover, resource records, listening and preview records, ...). '
                     'It is not a disk allocation: it excludes shared pages, indexes, free space and compression.')
     note: str = Field(description='Human-readable caveat about these measurements. Display only.')
 

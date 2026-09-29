@@ -2,12 +2,16 @@
 
 ## Unreleased
 
+- **The Classic engine's data is dropped** (Classic removal, stage 4). **Take a full backup of the data directory before upgrading past this version** ([how](docs/OPERATIONS.md#upgrading-past-the-classic-data-drop)).
+  - The first start runs a one-time migration, `classic_removal_v1`. It first retains every book's Classic data as immutable artifacts (unit-cache rows, checkpoint units, each whole checkpoint as a new `analysis_checkpoint` artifact, and each legacy observation) and checks that every row has one. Then, in one transaction, it deletes the `character_observations` rows (the table stays) and drops `analysis_units` and `analysis_checkpoints`. It records the result with per-book counts in the new `schema_migrations` table and in the log. If anything cannot be retained, it drops nothing and runs again at the next start.
+  - Kept: analysis attempts and events, pipeline tables, all artifacts, the census cache, current character references (including rows the Classic engine wrote) and historical jobs. Cast references and series context work as before: a Classic-written reference is now checked against its retained observation artifact instead of the deleted row.
+  - Removed: the Store's checkpoint methods and restart recovery, the checkpoint branch of structure repair, and the checkpoint fingerprint. API contract 0.3.1 updates the affected descriptions only. See [Classic removal](docs/CLASSIC-REMOVAL.md#stage-4-what-was-dropped).
 - **The Classic analysis engine is removed** (Classic removal, stage 3). The step pipeline in **Analyze** is the only way to analyze a book.
   - Deleted the phase runner, the chapter-checkpoint runner and their unit-cache module, the unloaded Classic panel (`production.js`, `production.css`), and the in-memory whole-book cloud path. The demo still uses the free local draft.
   - Removed routes: `POST /api/books/{id}/analyze`, `GET …/preprocessing`, `POST …/analysis-plan` and `GET …/analysis`. They are no longer served (GET returns 404 and POST 405, as for any unknown path). API contract 0.4.0 (breaking) records this; see [the contract changelog](contract/CHANGELOG.md).
   - The **Details** explorer keeps its stage cards, now built from the step pipeline: one card per step with accepted, out-of-date and waiting results, the same numbers as **Analyze**. The artifact browser, source search and analysis export are unchanged.
   - The browser no longer polls `/analysis` while jobs run.
-  - Existing data is untouched: Classic-era artifacts stay as retained history, historical `analyze` jobs still display, and the legacy tables stay until the stage 4 migration. See [Classic removal](docs/CLASSIC-REMOVAL.md).
+  - Existing data is untouched: Classic-era artifacts stay as retained history, historical `analyze` jobs still display, and the legacy tables stayed until the stage 4 migration (above). See [Classic removal](docs/CLASSIC-REMOVAL.md).
 - **Script & record at book scale (UI phase 3b).**
   - The script shows one chapter at a time, with **Previous**/**Next** beside the chapter menu.
   - **Needs a look** chips filter the chapter: Unassigned speaker, Low confidence (65% or less, as in Analyze), BookNLP disagrees (when the book has BookNLP checks), Your edits and Not recorded. Each shows its count in the chapter; a line gives the whole book's counts, the chapter menu marks chapters with matches, and a link jumps to the next one. A passage you fix stays in view until you change the chips.
