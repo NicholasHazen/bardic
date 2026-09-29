@@ -28,6 +28,8 @@ from .audio import (BREEZE_MODEL, SYSTEM_MODEL, TTS_MODELS, AudioError, RateLimi
 from .chapter_listening import ChapterCoordinator, QuotaReached
 from .chunking import Calibration, normalize_options, plan as plan_chunks
 from .listening import ListeningRepository, require_active_book
+from .performance_overrides import (AUTOMATIC, ERROR_SENTENCES, NarrationStopped, OverrideRepository, audio_of,
+                                    current as current_overrides, failure_reason, narrator_view, read_passage)
 from .resources import ResourceLedger
 from .store import now, public_job
 from .take_archive import produce_take
@@ -244,6 +246,37 @@ def provider_problems(runtime, provider: str) -> list[tuple[str, str]]:
     return []
 
 
+def pinned_fallback(runtime, request: dict, record: dict | None) -> dict | None:
+    """The fallback narrator choice ``{provider, voice}`` a performance uses, or None for the automatic local narrator.
+
+    An existing performance keeps what it pinned. A new one takes the request's choice (invalid: 400), else the saved
+    default, which is dropped silently when it no longer works (its voice was removed, say).
+    """
+    if record is not None:
+        return record.get('fallback')
+    if request.get('fallback'):
+        return runtime.fallback_choice(request['fallback'])
+    try:
+        return runtime.fallback_choice()
+    except Invalid:
+        return None
+
+
+def fallback_view(runtime, choice: dict | None) -> dict | None:
+    """What a performance's fallback narrator is, without resolving or creating a session (a preview stays a local read)."""
+    if choice:
+        provider, voice, automatic = choice['provider'], choice.get('voice') or '', False
+    elif shutil.which('say') and shutil.which('ffmpeg'):
+        provider, voice, automatic = 'system', '', True
+    elif runtime.breeze_url():
+        provider, voice, automatic = 'breeze', '', True
+    else:
+        return None
+    return {'provider': provider, 'voice': voice, 'automatic': automatic,
+            'label': f'{voice_label(runtime, provider, voice)} · {PROVIDER_LABELS[provider]}',
+            'available': not provider_problems(runtime, provider)}
+
+
 def refuse(problems: list[tuple[str, str]]) -> Invalid:
     """One 400 for blocking problems: the first problem's code, every problem's sentence."""
     return Invalid(problems[0][0], ' '.join(text for _, text in problems))
@@ -297,6 +330,35 @@ def cast_ready(runtime, record: dict, segments: list[dict], rows=None, *, valida
     return ready
 
 
+def override_rows(runtime, record: dict, segments: list[dict]) -> dict[str, dict]:
+    """The row deciding each passage another narrator reads (or returns to the performance's own audio)."""
+    rows = OverrideRepository(runtime.store).rows(record['book_id'], record['id'])
+    if not rows:
+        return {}
+    listening = ListeningRepository(runtime.store)
+    return current_overrides(rows, segments, source_key,
+                             lambda asset_id: listening.asset_path(record['book_id'], asset_id).is_file())
+
+
+def with_overrides(runtime, record: dict, segments: list[dict], ready: dict[str, dict]) -> dict[str, dict]:
+    """``ready`` with each passage an override row decides replaced by that row's audio, marked as a stand-in."""
+    if not record.get('id'):
+        return ready
+    chosen = override_rows(runtime, record, segments)
+    merged = dict(ready)
+    for segment_id, row in chosen.items():
+        if row['action'] == 'use':
+            merged[segment_id] = audio_of(row)
+    return merged
+
+
+def own_ready(runtime, record: dict, segments: list[dict]) -> dict[str, dict]:
+    """Audio the performance itself made for the passages (no fallback or re-record rows applied)."""
+    if record['mode'] == 'simple':
+        return simple_ready(runtime.store, record['book_id'], record['session_id'], {s['id'] for s in segments})
+    return cast_ready(runtime, record, segments)
+
+
 def ready_audio(runtime, record: dict, book: dict | None = None) -> dict[str, dict]:
     book = book or runtime.store.book(record['book_id'])
     _, passages = selection(book, record['chapter_ids'])
@@ -305,7 +367,7 @@ def ready_audio(runtime, record: dict, book: dict | None = None) -> dict[str, di
         ready = simple_ready(runtime.store, record['book_id'], record['session_id'], {s['id'] for s in segments})
     else:
         ready = cast_ready(runtime, record, segments)
-    return ready
+    return with_overrides(runtime, record, segments, ready)
 
 
 def refused_passages(store, record: dict) -> set[str]:
@@ -319,41 +381,62 @@ def refused_passages(store, record: dict) -> set[str]:
 
 
 def progress(book: dict, record: dict, ready: dict, refused: set[str] | frozenset[str] = frozenset()) -> dict:
-    """Readiness per chapter. A passage a fallback narrator reads is ready (it plays) and counted in
-    ``passages_fallback``; a refused passage with no audio is ``passages_blocked``, never plain missing."""
+    """Readiness per chapter. A passage another narrator reads because the main narration could not (Gemini blocked
+    its text, or it kept failing) is ready (it plays) and counted in ``passages_fallback``; one the listener asked
+    another narrator to re-record is ``passages_rerecorded``. A refused passage with no audio is
+    ``passages_blocked``, never plain missing."""
     chapters, passages = selection(book, record['chapter_ids'])
-    rows, total, count, seconds, fallback_total, blocked_total, provider = [], 0, 0, 0.0, 0, 0, None
+    rows, total, count, seconds, fallback_total, blocked_total, rerecorded_total, provider = [], 0, 0, 0.0, 0, 0, 0, None
+    reasons = {'content_blocked': 0, 'failed': 0}
     for chapter in chapters:
         segments = passages[chapter['id']]
         done = [segment for segment in segments if segment['id'] in ready]
-        substituted = [segment for segment in done if ready[segment['id']].get('substitute')]
+        marks = {segment['id']: (ready[segment['id']].get('substitute') or {}).get('reason') for segment in done}
+        substituted = [segment for segment in done if marks[segment['id']] in AUTOMATIC]
+        rerecorded = [segment for segment in done if marks[segment['id']] == 'rerecord']
+        for segment in substituted:
+            reasons[marks[segment['id']]] += 1
         blocked = [segment['id'] for segment in segments if segment['id'] in refused and segment['id'] not in ready]
         provider = provider or next((ready[segment['id']].get('provider') for segment in substituted), None)
         rows.append({'id': chapter['id'], 'title': chapter.get('title', ''),
                      'passages_total': len(segments), 'passages_ready': len(done),
-                     'passages_fallback': len(substituted), 'passages_blocked': len(blocked), 'blocked_passage_ids': blocked})
+                     'passages_fallback': len(substituted), 'passages_rerecorded': len(rerecorded),
+                     'passages_blocked': len(blocked), 'blocked_passage_ids': blocked})
         total += len(segments)
         count += len(done)
         fallback_total += len(substituted)
+        rerecorded_total += len(rerecorded)
         blocked_total += len(blocked)
         seconds += sum(float(ready[segment['id']].get('duration') or 0) for segment in done)
     return {'passages_total': total, 'passages_ready': count, 'seconds_ready': round(seconds, 1),
-            'passages_fallback': fallback_total, 'passages_blocked': blocked_total, 'fallback_provider': provider,
+            'passages_fallback': fallback_total, 'passages_rerecorded': rerecorded_total,
+            'passages_blocked': blocked_total, 'fallback_provider': provider, 'fallback_reasons': reasons,
             'chapters': rows}
 
 
-VOICE_PHRASES = {'system': 'a device voice', 'breeze': 'Breeze'}
+VOICE_PHRASES = {'system': 'a device voice', 'breeze': 'Breeze', 'gemini': 'Gemini'}
 
 
-def blocked_note(progress_view: dict) -> str:
-    """The plain-language outcome of Gemini's content policy for a performance ('' when it blocked nothing)."""
-    read, blocked = progress_view['passages_fallback'], progress_view['passages_blocked']
+def blocked_note(progress_view: dict, unrecorded: int = 0) -> str:
+    """The plain-language outcome when the main narration could not read passages ('' when nothing went wrong).
+
+    ``unrecorded`` counts passages that failed and that no fallback narrator could read either."""
     voice = VOICE_PHRASES.get(progress_view.get('fallback_provider'), 'the fallback narrator')
+    reasons = progress_view.get('fallback_reasons') or {}
+    blocked_read, failed_read = reasons.get('content_blocked', 0), reasons.get('failed', 0)
+    blocked = progress_view['passages_blocked']
+
+    def plural(count):
+        return f'{count} passage{"s" if count != 1 else ""}'
     parts = []
-    if read:
-        parts.append(f'{read} passage{"s" if read != 1 else ""} read by {voice} because Gemini blocked {"them" if read != 1 else "it"}')
+    if blocked_read:
+        parts.append(f'{plural(blocked_read)} read by {voice} because Gemini blocked {"them" if blocked_read != 1 else "it"}')
+    if failed_read:
+        parts.append(f'{plural(failed_read)} read by {voice} because the narrator could not produce {"them" if failed_read != 1 else "it"}')
     if blocked:
-        parts.append(f'{blocked} passage{"s" if blocked != 1 else ""} blocked by Gemini’s content policy and left unrecorded')
+        parts.append(f'{plural(blocked)} blocked by Gemini’s content policy and left unrecorded')
+    if unrecorded:
+        parts.append(f'{plural(unrecorded)} could not be recorded by any narrator')
     return '. '.join(parts) + '.' if parts else ''
 
 
@@ -393,6 +476,7 @@ def present(runtime, record: dict, book: dict | None = None, ready: dict | None 
     result['job'] = job_summary(runtime.store, record.get('job_id'))
     result['progress'] = progress(book, record, ready, refused_passages(runtime.store, record))
     result['narrator_label'] = narrator_label(runtime, record)
+    result['fallback'] = fallback_view(runtime, record.get('fallback'))
     return result
 
 
@@ -485,11 +569,21 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
             one = len(unanalyzed) == 1
             notes.append(f'{names(unanalyzed)} {"has" if one else "have"} no speaker assignments '
                          f'and {"uses" if one else "use"} the narrator throughout.')
+    if record:
+        # Passages another narrator already reads (fallback or re-record) need no new narration.
+        ready = with_overrides(runtime, record, [s for segs in passages.values() for s in segs], ready)
+    choice = pinned_fallback(runtime, request, record)
+    fallback_info = fallback_view(runtime, choice)
+    if fallback_info and not fallback_info['available']:
+        notes.append(f'The fallback narrator ({fallback_info["label"]}) is not available now, so passages the main narrator '
+                     'cannot read stay unrecorded until it is.')
     # Text Gemini already refused is never requested again. A free local narrator can still read it.
     refused = {segment_id for segment_id in (refused_passages(store, record or {'mode': mode, 'provider': provider,
                                                                                  'book_id': book_id, 'session_id': session['id']})
                                              if session else ()) if segment_id in wanted and segment_id not in ready}
-    fallback = runtime.fallback_narrator(book_id) if refused else None
+    fallback = runtime.fallback_narrator(book_id, choice) if refused else None
+    if fallback and fallback['provider'] == 'gemini':
+        fallback = None  # Gemini would block the same text again
     if refused:
         count = f'{len(refused)} passage{"s" if len(refused) != 1 else ""}'
         notes.append(f'{count} {"were" if len(refused) != 1 else "was"} blocked by Gemini’s content policy earlier and '
@@ -538,12 +632,15 @@ def plan(runtime, book_id: str, request: dict, record: dict | None = None, *, va
         'chapters': [{'id': chapter['id'], 'title': chapter.get('title', ''),
                       'passages_total': len(passages[chapter['id']]),
                       'passages_ready': sum(1 for segment in passages[chapter['id']] if segment['id'] in ready),
-                      'passages_fallback': sum(1 for segment in passages[chapter['id']] if ready.get(segment['id'], {}).get('substitute')),
+                      'passages_fallback': sum(1 for segment in passages[chapter['id']]
+                                               if (ready.get(segment['id'], {}).get('substitute') or {}).get('reason') in AUTOMATIC),
+                      'passages_rerecorded': sum(1 for segment in passages[chapter['id']]
+                                                 if (ready.get(segment['id'], {}).get('substitute') or {}).get('reason') == 'rerecord'),
                       'passages_blocked': sum(1 for segment in passages[chapter['id']] if segment['id'] in refused),
                       'blocked_passage_ids': [segment['id'] for segment in passages[chapter['id']] if segment['id'] in refused]}
                      for chapter in chapters],
         'problems': [{'code': code, 'detail': text} for code, text in problems], 'notes': notes, 'quota': quota,
-        'narrator_label': narrator_label(runtime, record or label_record),
+        'narrator_label': narrator_label(runtime, record or label_record), 'fallback': fallback_info,
     }
     return {'public': public, 'problems': problems, 'book': book, 'session': session, 'snapshot': snapshot,
             'model': model, 'chapters': chapters, 'to_generate': to_generate}
@@ -567,6 +664,7 @@ def create(runtime, book_id: str, request: dict) -> dict:
               'name': name[:200], 'mode': public['mode'], 'chapter_ids': public['chapter_ids'],
               'provider': public['provider'], 'model': planned['model'],
               'voice': (request.get('voice') or '') if public['mode'] == 'simple' else None,
+              'fallback': pinned_fallback(runtime, request, None),
               'created_at': stamp, 'updated_at': stamp, 'archived': False, 'job_id': None}
     if public['mode'] == 'simple':
         record['session_id'] = planned['session']['id']
@@ -612,15 +710,19 @@ def preview_resume(runtime, book_id: str, performance_id: str, added=None) -> di
     return public
 
 
-def prepare(runtime, book_id: str, performance_id: str, added=None) -> dict:
+def prepare(runtime, book_id: str, performance_id: str, added=None, fallback=None) -> dict:
     """Resume missing work with the same narrator session or cast snapshot, first adding ``added`` chapters
-    when given. Call under the store lock."""
+    when given. ``fallback`` (``{provider, voice}``) changes the fallback narrator the performance pins from now on;
+    audio already read by another narrator is kept. Call under the store lock."""
     repository = PerformanceRepository(runtime.store)
     book = runtime.store.book(book_id)
     record = repository.get(book_id, performance_id)
     if added is not None and not added:
         raise Invalid('no_chapters_selected', 'Choose at least one chapter to add.')
     grown, new = extended(book, record, added)
+    choice = runtime.fallback_choice(fallback) if fallback else None
+    if choice:
+        grown['fallback'] = choice
     require_active_book(runtime.store, book_id)
     runtime.require_idle(book_id)
     if runtime.stopping.is_set():
@@ -635,6 +737,8 @@ def prepare(runtime, book_id: str, performance_id: str, added=None) -> dict:
         # Retained history: the chapters a performance grew by, and when. Audio records are untouched.
         record = repository.update(book_id, performance_id, chapter_ids=grown['chapter_ids'],
                                    chapters_added=[*record.get('chapters_added', []), {'at': now(), 'chapter_ids': new}])
+    if choice and choice != record.get('fallback'):
+        record = repository.update(book_id, performance_id, fallback=choice)
     job = start(runtime, record, planned['to_generate']) if planned['to_generate'] else None
     record = repository.get(book_id, performance_id)
     return {'performance': present(runtime, record, planned['book']), 'job': job}
@@ -652,19 +756,19 @@ def start(runtime, record: dict, total: int) -> dict:
                            model=record['model'], phase='performance', child_job_ids=[], child_job_id=None,
                            message='Waiting for the performance worker')
     PerformanceRepository(store).update(book_id, record['id'], job_id=job['id'])
-    # Snapshotted with the key and limits: the free local narrator for passages Gemini blocks, if any.
-    fallback = runtime.fallback_narrator(book_id) if provider == 'gemini' and record['mode'] == 'simple' else None
-    fallback_key = runtime.narration_credentials(fallback['provider']) if fallback else None
+    # Snapshotted with the key and limits: the narrator that reads passages the main narration cannot, if any.
+    fb = Fallback.snapshot(runtime, record)
+    store.update_job(job['id'], fallback=fb.narrator, passage_issues=[])
     if record['mode'] == 'simple':
         def work():
-            _simple_work(runtime, job['id'], record, key, limits, options, fallback, fallback_key)
+            _simple_work(runtime, job['id'], record, key, limits, options, fb)
     else:
         def work():
-            _cast_work(runtime, job['id'], record, key, limits, options)
+            _cast_work(runtime, job['id'], record, key, limits, options, fb)
     try:
         future = runtime.performance_pool.submit(
-            runtime.run, job, work, (*runtime.narration_secrets(provider), *runtime.narration_secrets(fallback['provider'] if fallback else '')),
-            lambda: _completed_message(runtime, record))
+            runtime.run, job, work, (*runtime.narration_secrets(provider), *fb.secrets(runtime)),
+            lambda: _completed_message(runtime, record, job['id']))
     except RuntimeError:
         store.update_job(job['id'], status='failed', error='The local narration worker could not accept this request.',
                          message='No narration was started. Restart Bardic and try again.')
@@ -675,7 +779,7 @@ def start(runtime, record: dict, total: int) -> dict:
             store.update_job(job['id'], status='interrupted' if runtime.stopping.is_set() else 'cancelled',
                              cancel_requested=True, message='Stopped before any passage was prepared.')
     future.add_done_callback(settle_cancelled)
-    return job
+    return public_job(store.job(job['id']))
 
 
 def _quota_error(message: str, model: str) -> QuotaReached:
@@ -683,17 +787,135 @@ def _quota_error(message: str, model: str) -> QuotaReached:
     return QuotaReached(message, quota_day()[1].isoformat())
 
 
-def _completed_message(runtime, record: dict) -> str | None:
-    """The completion text when Gemini blocked passages of a simple performance; None for the usual one."""
+MAX_ISSUES = 200  # per job: a bound on retained bookkeeping, not on the work
+
+
+class Fallback:
+    """The fallback narrator a performance job snapshotted at queue time, with its credentials and speech limits.
+
+    ``narrator`` is ``{session_id, provider, model, voice}`` or None when no fallback is usable. Only the
+    credentials (never stored) live here.
+    """
+
+    def __init__(self, narrator: dict | None, credentials=None, limits: dict | None = None):
+        self.narrator, self.credentials, self.limits = narrator, credentials, limits
+        self.failed_streak = 0
+
+    @classmethod
+    def snapshot(cls, runtime, record: dict):
+        narrator = runtime.fallback_narrator(record['book_id'], record.get('fallback'))
+        if not narrator:
+            return cls(None)
+        limits = (dict(runtime.preferences['tts_limits'].get(narrator['model'], DEFAULT_LIMITS))
+                  if narrator['provider'] == 'gemini' else None)
+        return cls(narrator, runtime.narration_credentials(narrator['provider']), limits)
+
+    def secrets(self, runtime) -> tuple:
+        return runtime.narration_secrets(self.narrator['provider']) if self.narrator else ()
+
+    MAX_FAILED_STREAK = 5
+
+    def succeeded(self):
+        """The main narrator produced a passage: any run of failures is over."""
+        self.failed_streak = 0
+
+    def reads(self, reason: str) -> bool:
+        """Whether this narrator can read a passage for ``reason``: Gemini would block the same text again."""
+        return bool(self.narrator) and not (reason == 'content_blocked' and self.narrator['provider'] == 'gemini')
+
+    @property
+    def coordinator_narrator(self) -> dict | None:
+        """The narrator the chapter coordinator hands text Gemini blocked to (never Gemini itself)."""
+        return self.narrator if self.reads('content_blocked') else None
+
+
+def note_issue(store, job_id: str, chapter_id: str, segment_id: str, reason: str, outcome: str, narrator: dict | None = None):
+    """Retain on the job that a passage was not read by the main narration: ``outcome`` is ``fallback`` or ``unrecorded``."""
+    with store.lock:
+        issues = list(store.job(job_id).get('passage_issues') or [])
+        if len(issues) < MAX_ISSUES:
+            issues.append({'chapter_id': chapter_id, 'segment_id': segment_id, 'reason': reason, 'outcome': outcome,
+                           'provider': (narrator or {}).get('provider'), 'voice': (narrator or {}).get('voice'), 'at': now()})
+            store.update_job(job_id, passage_issues=issues)
+
+
+def read_by_fallback(runtime, job_id: str, record: dict, chapter_id: str, segment: dict, reason: str, fb: Fallback, *,
+                     count_streak: bool = True) -> bool:
+    """Have the fallback narrator read a passage the main narration could not, and link the take to the performance.
+
+    True when it was read. A passage the fallback cannot read either stays unrecorded (False) and is noted on the job;
+    a pause (daily quota, repeated rate limits) or a stop propagates, so a passage is never swapped for a transient
+    condition.
+    """
+    from .app import Cancelled  # imported here: app imports this module
+    if reason == 'failed' and count_streak:
+        # Text is not what fails several passages in a row: the narrator is unreachable or misconfigured.
+        # Stop instead of quietly swapping the whole book to another voice; what was read stays noted.
+        fb.failed_streak += 1
+        if fb.failed_streak > Fallback.MAX_FAILED_STREAK:
+            raise RuntimeError(f'The main narrator failed on {Fallback.MAX_FAILED_STREAK + 1} passages in a row, so it looks '
+                               'unavailable rather than the text being the problem. Passages already read by the fallback '
+                               'narrator are kept and marked; check the narrator, then resume.')
+    if not fb.reads(reason):
+        note_issue(runtime.store, job_id, chapter_id, segment['id'], reason, 'unrecorded')
+        return False
+    try:
+        audio = read_passage(runtime, job_id, record['book_id'], chapter_id, segment['id'], fb.narrator, fb.credentials,
+                             fb.limits, synthesizer=synthesize, check_cancel=lambda: runtime.check_cancel(job_id))
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - classified below; pauses and stops propagate
+        if failure_reason(error) is None:
+            raise
+        note_issue(runtime.store, job_id, chapter_id, segment['id'], reason, 'unrecorded')
+        return False
+    OverrideRepository(runtime.store).add(
+        record['book_id'], record['id'], segment['id'], source_key(segment), action='use', reason=reason,
+        audio={key: value for key, value in audio.items() if key != 'substitute'}, narrator=narrator_view(fb.narrator),
+        error=ERROR_SENTENCES[reason], run=job_id, original={'provider': record['provider'], 'model': record['model']})
+    note_issue(runtime.store, job_id, chapter_id, segment['id'], reason, 'fallback', fb.narrator)
+    return True
+
+
+def _completed_message(runtime, record: dict, job_id: str | None = None) -> str | None:
+    """The completion text when the main narration could not read some passages; None for the usual one."""
     book = runtime.store.book(record['book_id'])
     view = progress(book, record, ready_audio(runtime, record, book), refused_passages(runtime.store, record))
-    note = blocked_note(view)
+    unrecorded = 0
+    if job_id:
+        ready = ready_audio(runtime, record, book)
+        unrecorded = len({issue['segment_id'] for issue in runtime.store.job(job_id).get('passage_issues') or []
+                          if issue['outcome'] == 'unrecorded' and issue['segment_id'] not in ready})
+    note = blocked_note(view, unrecorded)
     if not note:
         return None
-    return f'{"Performance prepared" if view["passages_blocked"] else "Performance ready"}. {note}'
+    return f'{"Performance prepared" if view["passages_blocked"] or unrecorded else "Performance ready"}. {note}'
 
 
-def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict, fallback=None, fallback_key=None):
+MAX_ISOLATIONS = 5  # chunks per chapter whose passages a fallback narrator may take over after the chunk kept failing
+
+
+def failed_chunk(settled: dict, segments: list[dict], ready: dict) -> tuple[dict | None, list[dict]]:
+    """The last chunk a chapter job gave up on (failed, or truncated past its bound) and its unrecorded passages.
+
+    A chunk stopped by a rate limit, the daily quota, a cancel or a block is not such a chunk: those are the
+    provider's or the listener's conditions, never the passage's."""
+    error = str(settled.get('error') or '')
+    # Only a chunk whose own error is the job's error caused it: a rate-limit stop or an unrelated earlier
+    # truncation must not send innocent passages to the fallback.
+    entries = [entry for entry in settled.get('chunks') or [] if entry.get('status') in ('failed', 'truncated')
+               and entry.get('error') and error.startswith(str(entry['error'])[:300])]
+    if not entries:
+        return None, []
+    last = entries[-1]
+    ids = [segment['id'] for segment in segments]
+    if last['first_segment_id'] not in ids or last['last_segment_id'] not in ids:
+        return None, []
+    span = segments[ids.index(last['first_segment_id']):ids.index(last['last_segment_id']) + 1]
+    return last, [segment for segment in span if segment['id'] not in ready]
+
+
+def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict, fb: Fallback):
     from .app import Cancelled
     from .processing import BudgetReached
 
@@ -703,14 +925,18 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
     session = stored_session(repository, book_id, record['session_id'])
     book = store.book(book_id)
     chapters, passages = selection(book, record['chapter_ids'])
-    wanted = {segment['id'] for segments in passages.values() for segment in segments}
-    ready = simple_ready(store, book_id, session['id'], wanted)
+    everything = [segment for chapter in chapters for segment in passages[chapter['id']]]
+    wanted = {segment['id'] for segment in everything}
+    # Passages another narrator already reads (an earlier fallback or a re-record) need no narration either.
+    ready = with_overrides(runtime, record, everything, simple_ready(store, book_id, session['id'], wanted))
     # Refused text is never requested again; it is left to the fallback narrator when there is one.
     refused = refused_passages(store, record) - set(ready)
-    missing = {chapter['id']: [s for s in passages[chapter['id']] if s['id'] not in ready and (s['id'] not in refused or fallback)]
+    blocked_reader = fb.coordinator_narrator
+    missing = {chapter['id']: [s for s in passages[chapter['id']] if s['id'] not in ready and (s['id'] not in refused or blocked_reader)]
                for chapter in chapters}
     total = sum(len(segments) for segments in missing.values())
-    store.update_job(job_id, total=total, progress=0)
+    store.update_job(job_id, total=total, progress=0, work_started_at=now(),
+                     work_chars=sum(len(s['text']) for segments in missing.values() for s in segments))
     pending = [chapter for chapter in chapters if missing[chapter['id']]]
     done = 0
     if provider == 'gemini':
@@ -720,44 +946,75 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
                                'resume after midnight Pacific time.', quota_day()[1].isoformat())
         for number, chapter in enumerate(pending, 1):
             segments = passages[chapter['id']]
-            first = missing[chapter['id']][0]
-            # Checked and created under the lock the cancel route holds, so a
-            # cancelled performance never starts another chapter job.
-            with store.lock:
-                runtime.check_cancel(job_id)
-                position = next(i for i, segment in enumerate(segments) if segment['id'] == first['id'])
-                child = store.create_job(book_id, 'listen_chapter', len(segments) - position)
-                child = store.update_job(
-                    child['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
-                    model=model, voice=session['voice'], intent='queue',
-                    scope_start_segment_id=first['id'], focus_segment_id=first['id'],
-                    chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
-                    calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id,
-                    fallback=fallback)
-                parent = store.job(job_id)
-                store.update_job(job_id, child_job_id=child['id'],
-                                 child_job_ids=[*parent.get('child_job_ids', []), child['id']],
-                                 message=f'Chapter {number} of {len(pending)} · {len(missing[chapter["id"]])} passages in chunks')
-            child_id = child['id']
-            coordinator = ChapterCoordinator(store, child_id, key, runtime.narration_pool,
-                                             cancelled=lambda: runtime.cancelled(child_id) or runtime.cancelled(job_id),
-                                             fallback_credentials=fallback_key)
-            runtime.run(child, coordinator.run, (key, *runtime.narration_secrets(fallback['provider'] if fallback else '')),
-                        coordinator.completed_message)
-            settled = store.job(child_id)
-            state = settled['status']
-            ready = simple_ready(store, book_id, session['id'], wanted)
+            # Passages a fallback narrator took over after their chunk kept failing: never planned again this run.
+            skip: set[str] = set()
+            retried: set[tuple[str, str]] = set()
+            isolations = 0
+            while True:
+                todo = [s for s in missing[chapter['id']] if s['id'] not in ready and s['id'] not in skip]
+                if not todo:
+                    break
+                first = todo[0]
+                # Checked and created under the lock the cancel route holds, so a
+                # cancelled performance never starts another chapter job.
+                with store.lock:
+                    runtime.check_cancel(job_id)
+                    position = next(i for i, segment in enumerate(segments) if segment['id'] == first['id'])
+                    child = store.create_job(book_id, 'listen_chapter', len(segments) - position)
+                    child = store.update_job(
+                        child['id'], session_id=session['id'], chapter_id=chapter['id'], provider='gemini',
+                        model=model, voice=session['voice'], intent='queue',
+                        scope_start_segment_id=first['id'], focus_segment_id=first['id'],
+                        chunking=options, speech_limits=limits, ramp_restart=0, joins=0, phase='chapter_listen', chunks=[],
+                        calibration=previous_calibration(store, book_id, session['id']).view(), parent_id=job_id,
+                        fallback=blocked_reader, skip_segment_ids=sorted(skip))
+                    parent = store.job(job_id)
+                    store.update_job(job_id, child_job_id=child['id'], current_chapter_id=chapter['id'],
+                                     child_job_ids=[*parent.get('child_job_ids', []), child['id']],
+                                     message=f'Chapter {number} of {len(pending)} · {len(todo)} passages in chunks')
+                child_id = child['id']
+                coordinator = ChapterCoordinator(store, child_id, key, runtime.narration_pool,
+                                                 cancelled=lambda: runtime.cancelled(child_id) or runtime.cancelled(job_id),
+                                                 fallback_credentials=fb.credentials if blocked_reader else None)
+                runtime.run(child, coordinator.run, (key, *(fb.secrets(runtime) if blocked_reader else ())),
+                            coordinator.completed_message)
+                settled = store.job(child_id)
+                state = settled['status']
+                ready = with_overrides(runtime, record, everything, simple_ready(store, book_id, session['id'], wanted))
+                if state == 'failed':
+                    entry, bad = failed_chunk(settled, segments, ready)
+                    span = (entry['first_segment_id'], entry['last_segment_id']) if entry else None
+                    if bad and not entry.get('uncertain') and span not in retried:
+                        # An error response is certain not to have been processed: the chunk is requested once more
+                        # (reserved and paced like any request) before anyone else reads it. An uncertain request
+                        # (a timeout) is never resent.
+                        retried.add(span)
+                        store.update_job(job_id, message=f'Chapter {number} of {len(pending)} · retrying a chunk that failed')
+                        continue
+                    if bad and fb.narrator and isolations < MAX_ISOLATIONS:
+                        # A chunk the provider kept failing: its passages go to the fallback narrator and the rest of
+                        # the chapter carries on. Bounded per chapter; a rate limit or quota never reaches this branch.
+                        isolations += 1
+                        for segment in bad:
+                            store.update_job(job_id, message=f'Chapter {number} of {len(pending)} · reading a failed chunk with the fallback narrator')
+                            read_by_fallback(runtime, job_id, record, chapter['id'], segment, 'failed', fb, count_streak=False)
+                            skip.add(segment['id'])
+                        ready = with_overrides(runtime, record, everything, simple_ready(store, book_id, session['id'], wanted))
+                        continue
+                done_here = sum(1 for segment in missing[chapter['id']] if segment['id'] in ready)
+                store.update_job(job_id, progress=done + done_here, child_job_id=None)
+                if state == 'quota_limited':
+                    raise QuotaReached(settled.get('message') or 'The daily Gemini request quota is used up.',
+                                       settled.get('resume_after') or quota_day()[1].isoformat())
+                if state == 'budget_limited':
+                    raise BudgetReached(settled.get('message') or 'A request limit was reached.')
+                if state in ('cancelled', 'interrupted'):
+                    raise Cancelled()
+                if state == 'failed':
+                    raise RuntimeError(settled.get('error') or 'Chapter preparation failed. Finished audio is saved.')
+                break
             done += sum(1 for segment in missing[chapter['id']] if segment['id'] in ready)
             store.update_job(job_id, progress=done, child_job_id=None)
-            if state == 'quota_limited':
-                raise QuotaReached(settled.get('message') or 'The daily Gemini request quota is used up.',
-                                   settled.get('resume_after') or quota_day()[1].isoformat())
-            if state == 'budget_limited':
-                raise BudgetReached(settled.get('message') or 'A request limit was reached.')
-            if state in ('cancelled', 'interrupted'):
-                raise Cancelled()
-            if state == 'failed':
-                raise RuntimeError(settled.get('error') or 'Chapter preparation failed. Finished audio is saved.')
             runtime.check_cancel(job_id)
         return
     for number, chapter in enumerate(pending, 1):
@@ -765,18 +1022,27 @@ def _simple_work(runtime, job_id: str, record: dict, key, limits: dict, options:
         for segment in missing[chapter['id']]:
             runtime.check_cancel(job_id)
             index = next(i for i, s in enumerate(segments) if s['id'] == segment['id'])
-            store.update_job(job_id, message=f'Chapter {number} of {len(pending)} · passage {index + 1} of {len(segments)}')
-            with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job_id, unit_key=segment['id'],
-                                                 chapter_id=chapter['id'], provider=provider, model=session['model'],
-                                                 kind='narration') as metrics:
-                audio = repository.cached(book_id, session['id'], segment['id'])
-                if audio is not None:
-                    metrics['cached'] = True
-                else:
-                    audio = repository.generate_passage(book_id, session['id'], segment['id'], key, synthesizer=synthesize,
-                                                        check_cancel=lambda: runtime.check_cancel(job_id))
-                metrics.update(audio_seconds=audio['duration'],
-                               output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
+            store.update_job(job_id, current_chapter_id=chapter['id'],
+                             message=f'Chapter {number} of {len(pending)} · passage {index + 1} of {len(segments)}')
+            try:
+                with ResourceLedger(store).operation(book_id, 'simple_listen', run_id=job_id, unit_key=segment['id'],
+                                                     chapter_id=chapter['id'], provider=provider, model=session['model'],
+                                                     kind='narration') as metrics:
+                    audio = repository.cached(book_id, session['id'], segment['id'])
+                    if audio is not None:
+                        metrics['cached'] = True
+                    else:
+                        audio = repository.generate_passage(book_id, session['id'], segment['id'], key, synthesizer=synthesize,
+                                                            check_cancel=lambda: runtime.check_cancel(job_id))
+                    metrics.update(audio_seconds=audio['duration'],
+                                   output_bytes=repository.asset_path(book_id, audio['asset_id']).stat().st_size)
+            except Exception as error:  # noqa: BLE001 - a pause or stop propagates below
+                reason = failure_reason(error) if fb.narrator else None
+                if reason is None:
+                    raise
+                read_by_fallback(runtime, job_id, record, chapter['id'], segment, reason, fb)
+            else:
+                fb.succeeded()
             done += 1
             store.update_job(job_id, progress=done)
 
@@ -810,7 +1076,7 @@ def _valid_file(runtime, book_id: str, asset_id: str) -> float | None:
         return None
 
 
-def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict):
+def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: dict, fb: Fallback):
     store = runtime.store
     book_id, provider, model, performance_id = record['book_id'], record['provider'], record['model'], record['id']
     repository = PerformanceRepository(store)
@@ -825,15 +1091,20 @@ def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: d
         if pid == performance_id:
             own.setdefault((segment_id, source), []).append(body)
         by_fingerprint.setdefault(body.get('fingerprint'), []).append(body)
+    # Passages another narrator already reads (an earlier fallback or a re-record) need no narration.
+    taken = {segment_id for segment_id, row in override_rows(
+        runtime, record, [segment for chapter in chapters for segment in passages[chapter['id']]]).items() if row['action'] == 'use'}
     work = []
     for number, chapter in enumerate(chapters, 1):
         segments = passages[chapter['id']]
         for index, segment in enumerate(segments):
             source = source_key(segment)
-            if any(_valid_file(runtime, book_id, body['asset_id']) for body in own.get((segment['id'], source), [])):
+            if segment['id'] in taken or any(_valid_file(runtime, book_id, body['asset_id'])
+                                            for body in own.get((segment['id'], source), [])):
                 continue
             work.append((number, chapter, index, len(segments), segment, source))
-    store.update_job(job_id, total=len(work), progress=0)
+    store.update_job(job_id, total=len(work), progress=0, work_started_at=now(),
+                     work_chars=sum(len(item[4]['text']) for item in work))
     for done, (number, chapter, index, count, segment, source) in enumerate(work):
         runtime.check_cancel(job_id)
         used_id, character, fallback = cast_voice(snapshot, segment['speaker_id'], provider, model)
@@ -841,7 +1112,8 @@ def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: d
         # Records made before pronunciations existed have no snapshot and keep their original recipes.
         rendered = pronunciation.with_lexicon(segment, record.get('pronunciation_snapshot'))
         fingerprint = render_fingerprint(rendered, character, scene, provider, model)
-        store.update_job(job_id, message=f'Chapter {number} of {len(chapters)} · passage {index + 1} of {count}')
+        store.update_job(job_id, current_chapter_id=chapter['id'],
+                         message=f'Chapter {number} of {len(chapters)} · passage {index + 1} of {count}')
         metadata, reuse = None, None
         for body in by_fingerprint.get(fingerprint, []):
             duration = _valid_file(runtime, book_id, body['asset_id'])
@@ -873,8 +1145,17 @@ def _cast_work(runtime, job_id: str, record: dict, key, limits: dict, options: d
                 from .app import Cancelled  # imported here: app imports this module
                 if isinstance(error, Cancelled):
                     raise
+                reason = failure_reason(error) if fb.narrator else None
+                if reason is not None:
+                    # The passage itself could not be narrated (blocked text, or it kept failing after the bounded
+                    # retries): another narrator reads it, the take is noted, and the performance carries on.
+                    store.update_job(job_id, message=f'Chapter {number} of {len(chapters)} · passage {index + 1} of {count} · fallback narrator')
+                    read_by_fallback(runtime, job_id, record, chapter['id'], segment, reason, fb)
+                    store.update_job(job_id, progress=done + 1)
+                    continue
                 title = chapter.get('title') or f'chapter {number}'
                 raise RuntimeError(f'Passage {index + 1} of “{title}” could not be narrated: {error}') from error
+        fb.succeeded()
         body = {**metadata, 'performance_id': performance_id, 'segment_id': segment['id'],
                 'speaker_id': segment['speaker_id'], 'character_id': used_id, 'fallback': fallback,
                 'source': {'chapter_id': segment['chapter_id'], 'start': segment.get('start'), 'end': segment.get('end')},

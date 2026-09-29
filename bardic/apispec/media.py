@@ -72,10 +72,17 @@ class ListeningReuse(View):
     segment_id: str = Field(description='Passage ID the original take narrated, in the original take\'s book; may differ from this passage when equivalent text was reused.')
 
 class ListeningSubstitute(View):
-    """Marks a take that stands in for a passage Gemini's content policy blocked."""
-    reason: Literal['content_blocked'] = Field(description='Why Gemini did not narrate the passage: its content policy blocked the text.')
-    for_provider: str = Field(description='The provider of the session this audio stands in for (`gemini`).')
-    for_model: str = Field(description='The speech model of the session this audio stands in for.')
+    """Marks a take that stands in for a passage another narrator was supposed to read."""
+    reason: Literal['content_blocked', 'failed', 'rerecord'] = Field(
+        description='Why this narrator read the passage: `content_blocked` (Gemini\'s content policy blocked the text), `failed` '
+                    '(the main narration kept failing on it) or `rerecord` (the listener asked for another voice). The first two '
+                    'are automatic fallbacks; `rerecord` is a choice. The set of values is open.')
+    for_provider: str = Field(description='The provider of the narration this audio stands in for (`gemini`, `system` or `breeze`); '
+                                          'empty when the record does not say.')
+    for_model: str = Field(description='The speech model of the narration this audio stands in for; empty when not recorded.')
+    override_id: str | None = Field(
+        None, description='A saved performance\'s take that links this audio to the performance (see `listPerformanceTakes`); absent '
+                          'for stand-ins made by a chapter job for blocked text, which belong to the narrator session.')
 
 class ListeningPassageAudio(AudioRef):
     """A retained single-passage simple-listening take, ready to play.
@@ -91,7 +98,7 @@ class ListeningPassageAudio(AudioRef):
     created_at: str = Field(description='ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently).')
     session_id: str = Field(description='Listening session the take belongs to. For a `substitute`, the fallback narrator\'s session, not the Gemini session it stands in for.')
     segment_id: str = Field(description='Passage the take narrates.')
-    substitute: ListeningSubstitute | None = Field(None, description='Present when a fallback narrator (`provider` is not `gemini`) read this passage because Gemini blocked its text. It is a normal immutable take of the fallback narrator, never Gemini audio. Absent otherwise.')
+    substitute: ListeningSubstitute | None = Field(None, description='Present when a different narrator read this passage than the one it stands in for: a fallback narrator (Gemini blocked the text, or the main narration kept failing) or a re-record chosen by the listener. It is a normal immutable take of the reading narrator (`provider`, `voice`), never the original narrator\'s audio. Absent otherwise.')
     reuse: ListeningReuse | None = Field(None, description='Present when the bytes were copied from an equivalent retained take instead of being generated.')
     provider_timing: AudioTakeSentenceTiming | None = Field(None, description='Breeze only: validated sentence timing, or null when the server timing did not validate.')
     breeze: AudioTakeBreezeInfo | None = Field(None, description='Breeze only: request details.')

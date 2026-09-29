@@ -436,17 +436,142 @@ def test_a_performance_without_a_fallback_narrator_keeps_the_blocked_passages_di
     assert len(gemini.texts) == sent
 
 
-def test_a_blocked_cast_passage_fails_with_a_code_and_the_fixed_sentence(client, monkeypatch):
+def cast_request(book, monkeypatch, client):
+    runtime = client.app.state.runtime
+    voices = {'narrator': {'id': 'narrator', 'name': 'Narrator', 'voices': {'gemini': {'id': 'Kore'}}}}
+    monkeypatch.setattr(runtime, 'resolved_cast', lambda _book: voices)
+    return {'mode': 'cast', 'provider': 'gemini', 'chapter_ids': [book['chapters'][0]['id']]}
+
+
+def test_a_blocked_cast_passage_without_a_fallback_narrator_fails_with_a_code_and_the_fixed_sentence(client, monkeypatch):
+    monkeypatch.setattr(shutil, 'which', lambda name: None)
     book = import_story(client, 4)
     monkeypatch.setattr(audio.httpx, 'post', lambda *a, **k: httpx.Response(400, json={'error': {'code': 'content_blocked', 'message': ECHO}}))
     monkeypatch.setattr('bardic.performances.synthesize', audio.synthesize)
-    runtime = client.app.state.runtime
-    request = {'mode': 'cast', 'provider': 'gemini', 'chapter_ids': [book['chapters'][0]['id']]}
-    voices = {'narrator': {'id': 'narrator', 'name': 'Narrator', 'voices': {'gemini': {'id': 'Kore'}}}}
-    monkeypatch.setattr(runtime, 'resolved_cast', lambda _book: voices)
-    created = client.post(f"/api/books/{book['id']}/performances", json=request)
+    created = client.post(f"/api/books/{book['id']}/performances", json=cast_request(book, monkeypatch, client))
     assert created.status_code == 200, created.text
     record = wait_performance(client, book, created.json()['performance']['id'])
     assert record['job']['status'] == 'failed' and record['job']['error_code'] == 'content_blocked'
     assert 'could not be narrated' in record['job']['error'] and audio.GEMINI_CONTENT_BLOCKED_MESSAGE in record['job']['error']
     assert ECHO not in record['job']['error']
+
+
+def test_a_blocked_cast_passage_is_read_by_the_fallback_narrator_and_noted(client, monkeypatch):
+    book = import_story(client, 4)
+    monkeypatch.setattr(audio.httpx, 'post', lambda *a, **k: httpx.Response(400, json={'error': {'code': 'content_blocked', 'message': ECHO}}))
+    base, spoken = fake_chunk_synthesizer([]), []
+
+    def routed(segment, character, scene, provider, model, key, path, **kwargs):
+        if provider == 'gemini':
+            return audio.synthesize(segment, character, scene, provider, model, key, path, **kwargs)
+        spoken.append(segment['id'])
+        return base(segment, character, scene, provider, model, key, path, **kwargs)
+
+    monkeypatch.setattr('bardic.performances.synthesize', routed)
+    created = client.post(f"/api/books/{book['id']}/performances", json=cast_request(book, monkeypatch, client))
+    assert created.status_code == 200, created.text
+    record = wait_performance(client, book, created.json()['performance']['id'])
+    progress = record['progress']
+    assert record['job']['status'] == 'completed', record['job']
+    assert progress['passages_ready'] == progress['passages_total'] and progress['passages_fallback'] == progress['passages_total']
+    assert progress['fallback_reasons'] == {'content_blocked': progress['passages_total'], 'failed': 0}
+    assert 'Gemini blocked' in record['job']['message'] and record['fallback']['provider'] == 'system'
+    audio_map = client.get(f"/api/books/{book['id']}/performances/{record['id']}/audio").json()['audio']
+    assert all(item['substitute']['reason'] == 'content_blocked' for item in audio_map.values()) and spoken, 'equal text shares one retained take'
+    assert ECHO not in json.dumps(record)
+
+
+def audio_module_synthesize():
+    import bardic.chapter_listening
+    return bardic.chapter_listening.synthesize
+
+
+class Flaky(Gemini):
+    """Gemini that answers HTTP 500 to a request whose text holds the marker: always, or for the first ``failures`` requests."""
+
+    def __init__(self, monkeypatch, marker, failures=None):
+        super().__init__(monkeypatch, lambda text, n: False)
+        self.marker, self.failures, self.failed = marker, failures, 0
+        # A performance's own fallback readings go through the same fake engine.
+        monkeypatch.setattr('bardic.performances.synthesize', audio_module_synthesize())
+
+    def post(self, url, **kwargs):
+        text = kwargs['json']['input'][0]['content'][0]['text']
+        if self.marker in text and (self.failures is None or self.failed < self.failures):
+            self.failed += 1
+            self.texts.append(text)
+            return httpx.Response(500, json={'error': {'code': 500, 'message': ECHO}})
+        return super().post(url, **kwargs)
+
+
+def test_a_gemini_chunk_that_keeps_failing_is_read_by_the_fallback_and_the_rest_continues(client, monkeypatch):
+    book = import_story(client)
+    marker, poison = poison_marker(book)
+    gemini = Flaky(monkeypatch, marker)
+    created = client.post(f"/api/books/{book['id']}/performances", json={**perf_request(book), 'fallback': {'provider': 'system', 'voice': ''}})
+    assert created.status_code == 200, created.text
+    record = wait_performance(client, book, created.json()['performance']['id'])
+    progress = record['progress']
+    assert record['job']['status'] == 'completed', record['job']
+    assert progress['passages_ready'] == progress['passages_total'] == len(book['segments'])
+    assert progress['passages_fallback'] > 0 and progress['fallback_reasons']['failed'] == progress['passages_fallback']
+    assert progress['fallback_reasons']['content_blocked'] == 0 and progress['fallback_provider'] == 'system'
+    assert 'because the narrator could not produce' in record['job']['message']
+    ready = client.get(f"/api/books/{book['id']}/performances/{record['id']}/audio").json()['audio']
+    noted = {key for key, item in ready.items() if (item.get('substitute') or {}).get('reason') == 'failed'}
+    assert poison['id'] in noted and len(noted) == progress['passages_fallback']
+    assert all(ready[key]['provider'] == 'gemini' for key in ready if key not in noted), 'the rest is still Gemini audio'
+    assert ECHO not in json.dumps(record)
+    # The failing text was requested twice (the original and one retry); the fallback then read it and resuming asks for nothing.
+    assert sum(marker in text for text in gemini.texts) == 2
+    sent = len(gemini.texts)
+    resumed = client.post(f"/api/books/{book['id']}/performances/{record['id']}/prepare")
+    assert resumed.status_code == 200 and resumed.json()['job'] is None and len(gemini.texts) == sent
+    # Status notes exactly those passages.
+    notes = client.get(f"/api/books/{book['id']}/performances/{record['id']}/status").json()['notes']
+    assert {note['segment_id'] for note in notes} == noted and {note['reason'] for note in notes} == {'failed'}
+
+
+def test_a_transient_gemini_error_is_retried_once_and_needs_no_fallback(client, monkeypatch):
+    book = import_story(client)
+    marker, _ = poison_marker(book)
+    gemini = Flaky(monkeypatch, marker, failures=1)
+    created = client.post(f"/api/books/{book['id']}/performances", json={**perf_request(book), 'fallback': {'provider': 'system', 'voice': ''}})
+    record = wait_performance(client, book, created.json()['performance']['id'])
+    progress = record['progress']
+    assert record['job']['status'] == 'completed' and progress['passages_ready'] == progress['passages_total']
+    assert progress['passages_fallback'] == 0 and gemini.fallback == [], 'the retry succeeded: nobody else read anything'
+    assert sum(marker in text for text in gemini.texts) == 2
+
+
+def test_an_uncertain_gemini_request_is_never_retried_and_goes_straight_to_the_fallback(client, monkeypatch):
+    book = import_story(client)
+    marker, poison = poison_marker(book)
+    gemini = Gemini(monkeypatch, lambda text, n: False)
+    monkeypatch.setattr('bardic.performances.synthesize', audio_module_synthesize())
+    real = gemini.post
+
+    def dropped(url, **kwargs):
+        text = kwargs['json']['input'][0]['content'][0]['text']
+        if marker in text:
+            gemini.texts.append(text)
+            raise httpx.ReadTimeout('timed out')
+        return real(url, **kwargs)
+
+    monkeypatch.setattr(audio.httpx, 'post', dropped)
+    created = client.post(f"/api/books/{book['id']}/performances", json={**perf_request(book), 'fallback': {'provider': 'system', 'voice': ''}})
+    record = wait_performance(client, book, created.json()['performance']['id'])
+    assert record['job']['status'] == 'completed' and record['progress']['passages_fallback'] > 0
+    assert sum(marker in text for text in gemini.texts) == 1, 'a request that may have been billed is not resent'
+    ready = client.get(f"/api/books/{book['id']}/performances/{record['id']}/audio").json()['audio']
+    assert ready[poison['id']]['substitute']['reason'] == 'failed'
+
+
+def test_a_gemini_fallback_is_never_asked_to_read_text_gemini_blocked():
+    from bardic.performances import Fallback
+    narrator = {'session_id': 's', 'provider': 'gemini', 'model': 'm', 'voice': 'Kore'}
+    assert Fallback(narrator).reads('content_blocked') is False and Fallback(narrator).reads('failed') is True
+    assert Fallback(narrator).coordinator_narrator is None
+    assert Fallback(None).reads('failed') is False
+    local = {**narrator, 'provider': 'system'}
+    assert Fallback(local).reads('content_blocked') is True and Fallback(local).coordinator_narrator == local

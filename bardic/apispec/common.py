@@ -49,6 +49,11 @@ class JobChapterChunk(View):
     split_into: int | None = Field(
         None, description='`blocked` only: the number of halves the chunk was split into (2), or absent when it was '
                           'not split (a one-passage chunk or a half, whose passages go to the fallback narrator).')
+    uncertain: bool | None = Field(
+        None, description='`failed` only: true when the request may have been processed and billed (a timeout or dropped '
+                          'connection), so it is never resent. Absent when the provider answered with an error, and on jobs '
+                          'recorded before contract 0.3.4. A saved performance retries a chunk that failed with an error '
+                          'response once before its fallback narrator reads it; it never retries an uncertain one.')
     started_at: str = Field(description='When the request was sent: ' + TIME)
     finished_at: str | None = Field(None, description='When the request finished; absent while `requesting`. ' + TIME)
     error: str | None = Field(None, description='Human-readable reason for `rate_limited`, `truncated`, `blocked` or `failed` '
@@ -64,10 +69,10 @@ class JobChapterChunk(View):
 
 
 class JobFallbackNarrator(View):
-    """The free local narrator a job snapshotted for passages Gemini blocks."""
+    """The fallback narrator a job snapshotted for passages the main narration cannot read."""
     session_id: str = Field(description='The narrator session (64 hex) whose takes read the blocked passages.')
-    provider: Literal['system', 'breeze'] = Field(description='`system` (a device voice) or `breeze`.')
-    model: str = Field(description='Speech model of the fallback narrator (`macos-say` or the Breeze model).')
+    provider: Literal['system', 'gemini', 'breeze'] = Field(description='`system` (a device voice), `gemini` or `breeze`.')
+    model: str = Field(description='Speech model of the fallback narrator (`macos-say`, the Breeze model or a Gemini TTS model).')
     voice: str = Field(description='Voice choice of the fallback session; empty for the default device voice.')
 
 
@@ -152,7 +157,7 @@ class Job(View):
     | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
     | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`, `fallback`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing`; once Gemini blocked text: `content_blocked` |
     | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
-    | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |
+    | `performance` | saved performance preparation, or a re-record of some of its passages (`phase: rerecord`) | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id`, `fallback` |
 
     `resume_after` appears on any job that ended `quota_limited`.
 
@@ -194,10 +199,10 @@ class Job(View):
     scan_model: str | None = Field(
         None, description='Preprocessing (scan) model for `analyze` (and `series` runs recorded before contract 0.3.0); '
                           'null for local analysis.')
-    phase: Literal['scan', 'profiles', 'direct', 'full', 'simple_listen', 'chapter_listen', 'voice_preview', 'performance'] | None = Field(
+    phase: Literal['scan', 'profiles', 'direct', 'full', 'simple_listen', 'chapter_listen', 'voice_preview', 'performance', 'rerecord'] | None = Field(
         None, description='`analyze` (historical) and `series` runs recorded before contract 0.3.0: the Classic analysis '
                           'phase. Narration kinds carry a fixed label: `simple_listen`, `chapter_listen`, '
-                          '`voice_preview`, `performance`.')
+                          '`voice_preview`, `performance`; `rerecord` marks a `performance` job that re-records passages with another narrator.')
     mode: Literal['simple', 'cast'] | None = Field(
         None, description='`performance` only: `simple` (one narrator) or `cast` (character voices).')
     chapter_id: str | None = Field(
@@ -327,8 +332,10 @@ class Job(View):
         None, description='`listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 '
                           'until the job ends.')
     fallback: JobFallbackNarrator | None = Field(
-        None, description='`listen_chapter`: the free local narrator snapshotted when the job was queued for passages '
-                          'Gemini blocks, or null when none was available. Absent on jobs queued before contract 0.3.3.')
+        None, description='`listen_chapter`: the narrator snapshotted when the job was queued for passages Gemini blocks '
+                          '(never Gemini itself), or null when none was available. `performance`: the fallback narrator '
+                          'for passages the main narration cannot read (blocked or failing), or the narrator of a '
+                          '`rerecord` job; null when none was usable. Absent on jobs queued before contract 0.3.3.')
     content_blocked: JobContentBlocked | None = Field(
         None, description='`listen_chapter`: present once Gemini blocked text of this chapter, with how each blocked '
                           'passage ended. Absent when nothing was blocked.')

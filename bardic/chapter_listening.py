@@ -21,7 +21,7 @@ import concurrent.futures
 import time
 from functools import partial
 
-from .audio import AudioError, ContentBlocked, RateLimited, synthesize
+from .audio import AudioError, ContentBlocked, RateLimited, UncertainRequest, synthesize
 from .chunking import HARD_MAX_SECONDS, Calibration, chunk_between, plan, split_chunk
 from .listening import ListeningRepository, TruncatedChunk
 from .resources import ResourceLedger
@@ -141,6 +141,8 @@ class ChapterCoordinator:
         blocked = {segment['id'] for segment in segments if segment['id'] in clips}
         takes = self.repository.takes(job['book_id'], session_id)['takes']
         covered = {take['segment_id'] for take in takes if take['segment_id'] in position}
+        # Passages a performance's fallback narrator took over after their chunk kept failing: never requested here.
+        covered.update(segment_id for segment_id in job.get('skip_segment_ids') or [] if segment_id in position)
         options, limits, model = job['chunking'], job['speech_limits'], job['model']
         self.model = model
         # Learned speech rate and truncation ceilings carry over from earlier jobs.
@@ -279,7 +281,7 @@ class ChapterCoordinator:
                             failure = error
                             stopping = True
                     except Exception as error:  # noqa: BLE001 - reported through Runtime.run
-                        entry.update(status='failed', error=str(error)[:300])
+                        entry.update(status='failed', error=str(error)[:300], uncertain=isinstance(error, UncertainRequest))
                         failure, stopping = error, True
                     else:
                         rate_limited = 0
