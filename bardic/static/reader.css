@@ -44,7 +44,7 @@ body.reader-mode .reader-text {
   font-family:var(--reader-font); font-size:var(--reader-size); line-height:var(--reader-leading); color:var(--reader-ink);
   -webkit-text-size-adjust:100%; hyphens:auto; -webkit-hyphens:auto;
 }
-body.reader-mode .passage { transition:background .25s; scroll-margin-top:90px; }
+body.reader-mode .passage { transition:background .25s; scroll-margin-top:calc(90px + env(safe-area-inset-top)); }
 body.reader-mode .passage.active { background:var(--reader-highlight); box-shadow:3px 0 0 var(--reader-highlight),-3px 0 0 var(--reader-highlight); color:var(--reader-ink); }
 body.reader-mode .passage:hover { background:none; }
 body.reader-mode .passage.active:hover { background:var(--reader-highlight); }
@@ -55,16 +55,14 @@ body.reader-mode :focus-visible:not(dialog, dialog *) { outline-color:var(--read
 body.reader-mode .chapter-navigation { border-top-color:var(--reader-line); }
 body.reader-mode .chapter-navigation .button { color:var(--reader-accent); min-height:44px; font-size:14px; }
 
-/* Reader bar: exit, title and chapter, appearance and narrator. */
+/* Reader bar: sticky and always shown, so the tools are one tap away at any scroll position. Exit, title and chapter, appearance and narrator. */
 .reader-bar {
   position:fixed; z-index:30; top:0; left:0; right:0;
   display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:6px;
   padding:calc(8px + env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
   background:var(--reader-chrome); color:var(--reader-ink); border-bottom:1px solid var(--reader-line);
   -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
-  transition:transform .25s ease;
 }
-body.reader-chrome-hidden .reader-bar { transform:translateY(-100%); }
 .reader-bar-button {
   display:inline-flex; align-items:center; justify-content:center; gap:4px; min-width:44px; min-height:44px; padding:0 10px;
   border:0; border-radius:10px; background:none; color:inherit; font-size:14px;
@@ -180,7 +178,7 @@ body.reader-mode .toast { bottom:calc(180px + env(safe-area-inset-bottom)); }
   animation:listen-spin .9s linear infinite;
 }
 @keyframes listen-spin { to { transform:rotate(360deg); } }
-@media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } .reader-bar { transition:none; } }
+@media (prefers-reduced-motion:reduce) { .listen-spinner { animation:none; border-top-color:var(--green-light); border-right-color:var(--green); } }
 /* Phones: a bottom sheet. The actions stay in view while the choices scroll. */
 @media (max-width:620px) {
   .listen-sheet[open] { width:100%; max-width:100%; margin:auto 0 0; max-height:88dvh; border-radius:var(--radius-2xl) var(--radius-2xl) 0 0; border-bottom:0; padding:16px 16px 0; }

@@ -696,7 +696,6 @@ function enterReader() {
   state.readerMode = true; state.manualScrollAt = 0;
   safeWrite('bardic:readerMode', true);
   document.body.classList.add('reader-mode');
-  document.body.classList.remove('reader-chrome-hidden');
   $('#reader-bar').hidden = false;
   applyReaderPrefs(); renderReaderBar(); updatePlayer();
   if (!document.querySelector('dialog[open]')) $('#exit-reader').focus({preventScroll:true});
@@ -706,7 +705,7 @@ function exitReader() {
   if (!state.readerMode) return;
   state.readerMode = false;
   safeWrite('bardic:readerMode', false);
-  document.body.classList.remove('reader-mode', 'reader-chrome-hidden');
+  document.body.classList.remove('reader-mode');
   $('#reader-bar').hidden = true; $('#reader-follow').hidden = true;
   toggleReaderAppearance(false);
   applyReaderPrefs(); keepAwake(false); updatePlayer();
@@ -719,7 +718,9 @@ const MANUAL_SCROLL_MS = 12000;
 function activePassage() { return $$('.passage').find(el => el.dataset.segment === state.segmentId); }
 function readingBand() {
   const bar = $('#player').getBoundingClientRect();
-  return {top:state.readerMode ? 70 : 80, bottom:Math.min(window.innerHeight, bar.height ? bar.top : window.innerHeight) - 20};
+  // The sticky reader bar covers the top of the screen, so the band starts below it.
+  const chrome = state.readerMode ? $('#reader-bar').getBoundingClientRect().bottom : 0;
+  return {top:state.readerMode ? Math.max(70, chrome + 10) : 80, bottom:Math.min(window.innerHeight, bar.height ? bar.top : window.innerHeight) - 20};
 }
 // A passage taller than the screen counts as in view while it spans it.
 function passageInView(element) {
@@ -2323,13 +2324,9 @@ document.addEventListener('click', event => {
 for (const name of ['touchmove','wheel']) window.addEventListener(name, event => {
   if (state.readerMode && !event.target.closest?.('#player,#reader-bar,#reader-appearance,dialog')) state.manualScrollAt = Date.now();
 }, {passive:true});
-let lastScrollY = window.scrollY;
 window.addEventListener('scroll', () => {
   if (!state.readerMode) return;
-  const y = window.scrollY, delta = y - lastScrollY;
-  lastScrollY = y;
-  // Hide the reader bar while reading down; show it again on the way up.
-  if (Math.abs(delta) > 6 && $('#reader-appearance').hidden) document.body.classList.toggle('reader-chrome-hidden', delta > 0 && y > 80);
+  // The reader bar is sticky and always shown, so scrolling only affects the follow button.
   updateFollowButton();
 }, {passive:true});
 // The sheet's radio groups (listen to, service, speed) are BardicUI choices: one tab
