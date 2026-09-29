@@ -528,11 +528,46 @@ def create(runtime, book_id: str, request: dict) -> dict:
     return {'performance': present(runtime, record, book), 'job': job}
 
 
-def prepare(runtime, book_id: str, performance_id: str) -> dict:
-    """Resume missing work with the same narrator session or cast snapshot. Call under the store lock."""
+def extended(book: dict, record: dict, added) -> tuple[dict, list[str]]:
+    """The record with more chapters, and the ones actually new. Chapters keep book order; ones the
+    book no longer has stay recorded after them. Adding never changes the pinned narrator or cast."""
+    added = list(dict.fromkeys(added or []))
+    known = {chapter['id'] for chapter in book['chapters']}
+    if any(chapter_id not in known for chapter_id in added):
+        raise Invalid('unknown_chapter', 'A chapter ID is not in this book.')
+    have = set(record['chapter_ids'])
+    new = [chapter_id for chapter_id in added if chapter_id not in have]
+    wanted = have | set(new)
+    ordered = [chapter['id'] for chapter in book['chapters'] if chapter['id'] in wanted]
+    ordered += [chapter_id for chapter_id in record['chapter_ids'] if chapter_id not in known]
+    new = [chapter['id'] for chapter in book['chapters'] if chapter['id'] in new]
+    return {**record, 'chapter_ids': ordered}, new
+
+
+def preview_resume(runtime, book_id: str, performance_id: str, added=None) -> dict:
+    """Local plan for recording what a performance lacks, optionally with more chapters. Nothing is stored."""
     repository = PerformanceRepository(runtime.store)
-    runtime.store.book(book_id)
+    book = runtime.store.book(book_id)
     record = repository.get(book_id, performance_id)
+    grown, new = extended(book, record, added)
+    planned = plan(runtime, book_id, grown, record=grown)
+    public = planned['public']
+    if new and record['mode'] == 'cast':
+        public['notes'].append('Added chapters use the cast pinned when this performance was created; voices '
+                               'changed since then are not applied. Create a new performance to use them.')
+    public['added_chapter_ids'] = new
+    return public
+
+
+def prepare(runtime, book_id: str, performance_id: str, added=None) -> dict:
+    """Resume missing work with the same narrator session or cast snapshot, first adding ``added`` chapters
+    when given. Call under the store lock."""
+    repository = PerformanceRepository(runtime.store)
+    book = runtime.store.book(book_id)
+    record = repository.get(book_id, performance_id)
+    if added is not None and not added:
+        raise Invalid('no_chapters_selected', 'Choose at least one chapter to add.')
+    grown, new = extended(book, record, added)
     require_active_book(runtime.store, book_id)
     runtime.require_idle(book_id)
     if runtime.stopping.is_set():
@@ -540,9 +575,13 @@ def prepare(runtime, book_id: str, performance_id: str) -> dict:
     problems = provider_problems(runtime, record['provider'])
     if problems:
         raise refuse(problems)
-    planned = plan(runtime, book_id, record, record=record, validate=True)
+    planned = plan(runtime, book_id, grown, record=grown, validate=True)
     if planned['problems']:
         raise refuse(planned['problems'])
+    if new:
+        # Retained history: the chapters a performance grew by, and when. Audio records are untouched.
+        record = repository.update(book_id, performance_id, chapter_ids=grown['chapter_ids'],
+                                   chapters_added=[*record.get('chapters_added', []), {'at': now(), 'chapter_ids': new}])
     job = start(runtime, record, planned['to_generate']) if planned['to_generate'] else None
     record = repository.get(book_id, performance_id)
     return {'performance': present(runtime, record, planned['book']), 'job': job}

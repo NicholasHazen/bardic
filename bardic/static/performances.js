@@ -53,6 +53,7 @@
 
   async function refresh(panel) {
     const book = panel.book;
+    panel.refreshing = true;
     try {
       const result = await request(base(book));
       if (panel.book !== book) return;
@@ -60,7 +61,9 @@
       panel.error = '';
       for (const record of panel.list) if (ACTIVE.has(record.job?.status)) panel.options.onJob?.({...record.job, book_id:book.id, kind:'performance'});
     } catch (error) { panel.error = error.message; }
+    finally { panel.refreshing = false; }
     paint(panel);
+    if (panel.view === 'detail') void previewDetail(panel);
     schedule(panel);
   }
   // Poll only while something is processing and the panel is on screen.
@@ -84,10 +87,38 @@
     }, 250);
   }
 
+  // What recording the rest would do, with any chapters chosen to add. Local: nothing is stored or sent.
+  // Re-checked when the chosen chapters, the job or the ready count change, so it follows a running job.
+  async function previewDetail(panel) {
+    const detail = panel.detail, record = panel.list?.find(item => item.id === detail?.id);
+    if (!detail || !record) return;
+    const chapter_ids = panel.book.chapters.filter(chapter => detail.add.has(chapter.id)).map(chapter => chapter.id);
+    const key = JSON.stringify([record.id, chapter_ids, record.progress?.passages_ready, record.progress?.passages_total, record.job?.status]);
+    if (detail.previewKey === key) return;
+    detail.previewKey = key;
+    try {
+      const result = await request(`${base(panel.book)}/${encode(record.id)}/preview`, {method:'POST', body:{chapter_ids}});
+      if (detail.previewKey === key) { detail.preview = result; detail.error = ''; }
+    } catch (error) { if (detail.previewKey === key) { detail.preview = null; detail.error = error.message; } }
+    paint(panel);
+  }
+
+  // One state per performance: an active job wins, then a complete recording, then how the last job ended.
+  function stateOf(record) {
+    const job = record.job, progress = record.progress || {};
+    const complete = progress.passages_total > 0 && progress.passages_ready >= progress.passages_total;
+    if (job?.status === 'running') return {key:'running', label:'Recording'};
+    if (job?.status === 'queued') return {key:'queued', label:'Queued'};
+    if (complete) return {key:'complete', label:'Complete'};
+    const ended = {quota_limited:['quota_limited','Paused · daily limit'], budget_limited:['budget_limited','Paused · spending limit'],
+      failed:['failed','Stopped on an error'], cancelled:['cancelled','Stopped by you'], interrupted:['interrupted','Interrupted']}[job?.status];
+    if (ended) return {key:ended[0], label:ended[1]};
+    return progress.passages_ready ? {key:'partial', label:'Partly recorded'} : {key:'not_started', label:'Not recorded yet'};
+  }
   function statusLine(record) {
     const job = record.job, progress = record.progress || {};
     const ready = `${progress.passages_ready ?? 0} of ${progress.passages_total ?? 0} passages ready`;
-    if (ACTIVE.has(job?.status)) return `Recording · ${job.message || ready}`;
+    if (ACTIVE.has(job?.status)) return `${ready}${job.message ? ` · ${job.message}` : ''}`;
     if (job?.status === 'quota_limited') return `Paused at the daily request limit · ${ready}`;
     if (job?.status === 'budget_limited') return `Paused at the spending limit · ${ready}`;
     if (job?.status === 'failed') return `Stopped on an error · ${ready}`;
@@ -95,35 +126,98 @@
     if (job?.status === 'interrupted') return `Interrupted when Bardic stopped · ${ready}`;
     return progress.passages_total && progress.passages_ready >= progress.passages_total ? `Ready · ${span(progress.seconds_ready)} of listening` : ready;
   }
+  // "3 of 5 chapters complete" from the per-chapter coverage.
+  function coverage(record) {
+    const rows = record.progress?.chapters || [];
+    const done = rows.filter(row => row.passages_total > 0 && row.passages_ready >= row.passages_total).length;
+    return rows.length ? `${done} of ${plural(rows.length, 'chapter')} complete` : plural((record.chapter_ids || []).length, 'chapter');
+  }
   function cardMarkup(panel, record) {
     const progress = record.progress || {}, job = record.job;
     const complete = progress.passages_total && progress.passages_ready >= progress.passages_total;
     const running = ACTIVE.has(job?.status);
-    const chapters = (record.chapter_ids || []).length;
     const renaming = panel.renaming === record.id, archiving = panel.archiving === record.id;
     const current = panel.options.listen?.getPerformance?.(panel.book)?.id === record.id;
-    return `<article class="performance-card${current ? ' is-current' : ''}" data-performance="${escape(record.id)}">
+    const state = stateOf(record);
+    // Resuming a paid performance shows its request estimate first, in the detail view.
+    const resume = record.provider === 'gemini' ? 'open' : 'resume';
+    return `<article class="performance-card${current ? ' is-current' : ''}" data-performance="${escape(record.id)}" data-state="${state.key}">
       <div class="performance-card-head">${renaming
         ? `<label class="sr-only" for="rename-${escape(record.id)}">Performance name</label><input id="rename-${escape(record.id)}" data-performance-name value="${escape(record.name)}" maxlength="120"><button type="button" class="button subtle" data-performance-action="save-name">Save</button>`
-        : `<div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(plural(chapters, 'chapter'))}${current ? ' · playing now' : ''}</small></div>`}</div>
+        : `<div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(coverage(record))}${current ? ' · playing now' : ''}</small></div>${UI.statusBadge(state.key, state.label)}`}</div>
       <progress max="${progress.passages_total || 1}" value="${progress.passages_ready || 0}" aria-label="Passages ready"></progress>
       <p class="performance-status">${escape(statusLine(record))}${job?.error && !running ? ` <span class="performance-error">${escape(job.error)}</span>` : ''}</p>
       ${archiving ? `<div class="performance-confirm" role="group" aria-label="Remove ${escape(record.name)}"><span>Remove this performance from the list? Its audio is kept.</span><button type="button" class="button subtle" data-performance-action="archive-confirm">Remove</button><button type="button" class="button subtle" data-performance-action="archive-cancel">Cancel</button></div>`
         : `<div class="performance-actions">
-        <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : 'Play'}</button>
+        <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : running ? 'Listen now' : 'Play'}</button>
+        <button type="button" class="button subtle" data-performance-action="open">Open</button>
         ${running ? '<button type="button" class="button subtle" data-performance-action="stop">Stop recording</button>'
-          : complete ? '' : '<button type="button" class="button subtle" data-performance-action="resume">Resume recording</button>'}
+          : complete ? '' : `<button type="button" class="button subtle" data-performance-action="${resume}">Resume recording</button>`}
         <button type="button" class="button text-button" data-performance-action="rename">Rename</button>
         <button type="button" class="button text-button" data-performance-action="archive">Remove</button>
       </div>`}
     </article>`;
   }
+  // One performance, opened: status, what each chapter has, and what recording more would do.
+  function detailMarkup(panel) {
+    const detail = panel.detail, book = panel.book;
+    const record = panel.list?.find(item => item.id === detail?.id);
+    const back = '<button type="button" class="button text-button" data-performance-action="back">← All performances</button>';
+    if (!record) return `<div class="performance-detail">${back}<p class="performance-empty">${panel.list ? 'This performance is no longer in the list.' : 'Loading performance…'}</p></div>`;
+    const progress = record.progress || {}, job = record.job, running = ACTIVE.has(job?.status);
+    const state = stateOf(record), result = detail.preview;
+    const current = panel.options.listen?.getPerformance?.(book)?.id === record.id;
+    const inside = new Map((progress.chapters || []).map(row => [row.id, row]));
+    const counts = book.segments.reduce((map, segment) => map.set(segment.chapter_id, (map.get(segment.chapter_id) || 0) + 1), new Map());
+    const chosen = detail.add.size;
+    const rows = book.chapters.map(chapter => {
+      const row = inside.get(chapter.id);
+      const title = escape(chapter.title || 'Untitled chapter');
+      if (row) {
+        const done = row.passages_total > 0 && row.passages_ready >= row.passages_total;
+        return `<label class="performance-chapter-row" data-included="true"><input type="checkbox" checked disabled aria-label="${title} is in this performance"><span>${title}</span><small>${done ? 'Complete' : `${row.passages_ready}/${row.passages_total} ready`}</small></label>`;
+      }
+      return `<label class="performance-chapter-row"><input type="checkbox" data-performance-chapter="${escape(chapter.id)}" ${detail.add.has(chapter.id) ? 'checked' : ''} ${running ? 'disabled' : ''}><span>${title}</span><small>${escape(plural(counts.get(chapter.id) || 0, 'passage'))} · not in this performance</small></label>`;
+    }).join('');
+    const remaining = book.chapters.some(chapter => !inside.has(chapter.id));
+    const toRecord = result?.passages_to_generate ?? 0;
+    const requests = result ? plural(result.requests_estimate, 'request') : '';
+    const summary = running ? 'Recording is in progress. To add chapters, wait for it to finish or stop it first.'
+      : !result ? 'Checking what is already saved…'
+      : chosen ? `${plural(chosen, 'chapter')} to add · ${plural(toRecord, 'passage')} to record${toRecord ? ` · about ${requests}` : ''}`
+      : toRecord ? `${plural(toRecord, 'passage')} left to record · about ${requests}` : 'Every passage of this performance is recorded.';
+    const cost = record.provider === 'gemini' && toRecord ? ` · about ${plural(result.requests_estimate, 'paid request')} · cost unknown` : '';
+    const label = chosen ? `Add ${plural(chosen, 'chapter')} and record` : toRecord ? `Record the remaining ${plural(toRecord, 'passage')}` : 'Everything is recorded';
+    const disabled = running || !result || result.problems?.length || (!chosen && !toRecord) || panel.recording;
+    const cast = (record.cast || []).map(member => `<li><strong>${escape(member.name)}</strong> <small>${escape(member.voice_label)}${member.fallback ? ' · uses the narrator' : ''}</small></li>`).join('');
+    const updated = record.updated_at ? new Date(record.updated_at) : null;
+    return `<div class="performance-detail" data-performance="${escape(record.id)}" data-state="${state.key}">
+      <div class="performance-detail-head">${back}</div>
+      <div class="performance-card-head"><div><strong>${escape(record.name)}</strong><small>${escape(record.narrator_label || '')} · ${escape(coverage(record))}${current ? ' · playing now' : ''}</small></div>${UI.statusBadge(state.key, state.label)}</div>
+      <progress max="${progress.passages_total || 1}" value="${progress.passages_ready || 0}" aria-label="Passages ready"></progress>
+      <p class="performance-status">${escape(statusLine(record))}${progress.seconds_ready ? ` · ${escape(span(progress.seconds_ready))} of listening ready` : ''}${updated && !Number.isNaN(updated.getTime()) ? ` · updated ${escape(updated.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}))}` : ''}${job?.error && !running ? ` <span class="performance-error">${escape(job.error)}</span>` : ''}</p>
+      ${running ? '<p class="field-help">Recording continues while you listen. Playing sends no requests of its own: it plays what is ready, follows new passages as they land, and waits at the frontier for the next one.</p>' : ''}
+      <div class="performance-actions">
+        <button type="button" class="button primary" data-performance-action="play" ${progress.passages_ready ? '' : 'disabled'}>${current ? 'Continue' : running ? 'Listen while it records' : 'Play'}</button>
+        ${running ? '<button type="button" class="button subtle" data-performance-action="stop">Stop recording</button>' : ''}
+      </div>
+      <div class="performance-chapters-head"><span class="field-label" id="performance-detail-chapters">Chapters</span><span>${remaining && !running ? '<button type="button" class="button text-button" data-performance-action="add-rest">Add every remaining chapter</button>' : ''}${chosen && !running ? '<button type="button" class="button text-button" data-performance-action="add-none">Clear</button>' : ''}</span></div>
+      <div class="performance-chapters" role="group" aria-labelledby="performance-detail-chapters">${rows}</div>
+      ${cast ? `<details class="performance-cast"><summary>Cast for this performance</summary><ul>${cast}</ul></details>` : ''}
+      <p class="performance-summary" role="status">${escape(summary)}</p>
+      ${(result?.notes || []).map(note => `<p class="field-help">${escape(note)}</p>`).join('')}
+      ${(result?.problems || []).map(problem => `<p class="inline-error">${escape(problem.detail)}${HINTS[problem.code] ? ` ${escape(HINTS[problem.code])}` : ''}</p>`).join('')}
+      ${detail.error ? `<p class="inline-error" role="alert">${escape(detail.error)}</p>` : ''}
+      <div class="performance-form-actions"><button type="button" class="button primary" data-performance-action="record-more" ${disabled ? 'disabled' : ''}>${escape(panel.recording ? 'Starting…' : label + cost)}</button></div>
+    </div>`;
+  }
   function listMarkup(panel) {
+    if (panel.view === 'detail') return detailMarkup(panel);
     const list = panel.list;
     const body = list === null ? '<p class="field-help">Loading performances…</p>'
       : list.length ? list.map(record => cardMarkup(panel, record)).join('')
       : '<p class="performance-empty">No performances yet. Record chosen chapters ahead of time, with one narrator or the full cast, and listen later with no waiting.</p>';
-    return `<div class="performance-list-head"><p>Recorded ahead of time. Playing one never makes new requests.</p><button type="button" class="button primary" data-performance-action="new">Create performance</button></div>
+    return `<div class="performance-list-head"><p>Recorded ahead of time. Playing one sends no requests, even while it is still recording.</p><button type="button" class="button primary" data-performance-action="new">Create performance</button></div>
       ${panel.error ? `<p class="inline-error" role="alert">${escape(panel.error)}</p>` : ''}
       <div class="performance-list">${body}</div>`;
   }
@@ -196,7 +290,16 @@
       if (action === 'cancel-new') { panel.view = 'list'; paint(panel); return; }
       if (action === 'all') { panel.form.chapters = new Set(book.chapters.map(chapter => chapter.id)); paint(panel); void preview(panel); return; }
       if (action === 'none') { panel.form.chapters = new Set(); paint(panel); void preview(panel); return; }
+      if (action === 'back') { panel.view = 'list'; panel.detail = null; paint(panel); return; }
+      if (action === 'add-rest' && panel.detail) {
+        const inside = new Set(panel.list?.find(item => item.id === panel.detail.id)?.chapter_ids || []);
+        panel.detail.add = new Set(book.chapters.filter(chapter => !inside.has(chapter.id) && !['front_matter','back_matter'].includes(chapter.kind)).map(chapter => chapter.id));
+        paint(panel); void previewDetail(panel); return;
+      }
+      if (action === 'add-none' && panel.detail) { panel.detail.add = new Set(); paint(panel); void previewDetail(panel); return; }
+      if (action === 'record-more' && panel.detail) { await recordMore(panel); return; }
       if (!record) return;
+      if (action === 'open') { panel.view = 'detail'; panel.detail = {id:record.id, add:new Set(), preview:null, previewKey:null, error:''}; paint(panel); void previewDetail(panel); return; }
       if (action === 'play') { await panel.options.onPlay?.(record); return; }
       if (action === 'rename') { panel.renaming = record.id; paint(panel); panel.container.querySelector('[data-performance-name]')?.focus(); return; }
       if (action === 'archive') { panel.archiving = record.id; paint(panel); return; }
@@ -220,6 +323,23 @@
       if (['resume','stop'].includes(action) && panel.options.listen?.getPerformance?.(book)?.id === record.id) void panel.options.listen.refreshPerformance(book).catch(() => {});
       await refresh(panel);
     } catch (error) { panel.error = error.message; paint(panel); }
+  }
+  // Record what is missing, first adding the chosen chapters to this same performance.
+  async function recordMore(panel) {
+    const detail = panel.detail, book = panel.book;
+    if (panel.recording || !detail) return;
+    const chapter_ids = book.chapters.filter(chapter => detail.add.has(chapter.id)).map(chapter => chapter.id);
+    panel.recording = true; detail.error = ''; paint(panel);
+    try {
+      const url = `${base(book)}/${encode(detail.id)}`;
+      const result = chapter_ids.length ? await request(`${url}/chapters`, {method:'POST', body:{chapter_ids}}) : await request(`${url}/prepare`, {method:'POST', body:{}});
+      if (result.job) panel.options.onJob?.({...result.job, book_id:book.id, kind:'performance'});
+      detail.add = new Set(); detail.previewKey = null;
+      // A player following this performance learns its new chapters and that its job is running.
+      if (panel.options.listen?.getPerformance?.(book)?.id === detail.id) void panel.options.listen.refreshPerformance(book).catch(() => {});
+      await refresh(panel);
+    } catch (error) { detail.error = error.message; }
+    finally { panel.recording = false; paint(panel); }
   }
   async function create(panel) {
     if (panel.creating) return;
@@ -253,6 +373,11 @@
       });
       container.addEventListener('change', event => {
         const {form} = panel;
+        if (panel.view === 'detail' && panel.detail && event.target.dataset.performanceChapter) {
+          const id = event.target.dataset.performanceChapter;
+          if (event.target.checked) panel.detail.add.add(id); else panel.detail.add.delete(id);
+          paint(panel); void previewDetail(panel); return;
+        }
         if (!form) return;
         const chapter = event.target.dataset.performanceChapter;
         if (chapter) { if (event.target.checked) form.chapters.add(chapter); else form.chapters.delete(chapter); }
@@ -267,9 +392,10 @@
     const changedBook = panel.book?.id !== book?.id;
     panel.book = book; panel.options = options;
     if (!book) { clearTimeout(panel.timer); container.innerHTML = ''; panel.html = ''; return; }
-    if (changedBook) { panel.list = null; panel.view = 'list'; panel.form = null; panel.html = ''; }
+    if (changedBook) { panel.list = null; panel.view = 'list'; panel.form = null; panel.detail = null; panel.html = ''; }
     paint(panel);
-    void refresh(panel);
+    // Several places render the same panel in one turn; one read serves them all.
+    if (!panel.refreshing) void refresh(panel);
   }
   window.BardicPerformances = {render};
 })();

@@ -22,6 +22,17 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.2 — 2026-09-29
+<!-- contract-sha256: 5adb59cbd70e985aea8dbe5e49e4d23a7ff722b246b31a267da142b2356dc40c -->
+
+Additive: a performance can be extended with more chapters without recreating it.
+
+- New operation `previewPerformanceResume` (`POST /api/books/{book_id}/performances/{performance_id}/preview`): the local plan (readiness, passages to record, request estimate, `problems`, `notes`) for recording the rest of an existing performance, optionally with more chapters. Stores nothing and sends nothing; allowed while a job runs.
+- New operation `addPerformanceChapters` (`POST /api/books/{book_id}/performances/{performance_id}/chapters`, `may_charge`): adds chapters to the performance and starts recording what is missing, reusing retained audio and keeping the pinned narrator session or cast snapshot. Refused with 409 `job_active` while a job is active for the book. Codes: `unknown_chapter`, `no_chapters_selected`, the provider problem codes and `narrator_voice_missing` (400); `book_archived`, `job_active`, `series_run_active` (409); `shutting_down` (503).
+- New request schema `PerformanceChapters` (`chapter_ids`).
+- New response schema `PerformanceChaptersAdded`; new optional `Performance.chapters_added` (history of chapters added after creation, absent when none) and optional `PerformancePlan.added_chapter_ids` (only from `previewPerformanceResume`).
+- `Performance.chapter_ids` now includes chapters added later; `updated_at` also changes when chapters are added. `preparePerformance` is unchanged and still records only what the selection lacks.
+
 ## 0.3.1 — 2026-09-28
 <!-- contract-sha256: f73d1d60f6928bb4abde88034d9a50acfa90dc7124bce5e182fae80664ca41be -->
 

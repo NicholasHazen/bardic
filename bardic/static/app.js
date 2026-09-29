@@ -793,23 +793,39 @@ function renderPerformances() {
     onPlay:playPerformance,
   });
 }
-// Play a saved performance from where you are, if that is inside it, or
-// from the start of its first chapter.
-async function playPerformance(record) {
+// Play a saved performance from where you are, if that passage is ready, or else from the first
+// passage that is. While the performance is still recording, an unready passage would only wait, so
+// starting from what is ready lets you listen at once; playback then follows new passages as they land.
+async function playPerformance(record, {fromHub = false} = {}) {
   const listen = window.BardicListen;
   if (!state.book || !listen) return;
   stopAudio();
-  try { if (!await listen.usePerformance(state.book, record)) throw new Error('The performance could not be opened. Try again.'); }
+  let loaded;
+  try { loaded = await listen.usePerformance(state.book, record); if (!loaded) throw new Error('The performance could not be opened. Try again.'); }
   catch (error) { state.listenError = error.message; setSheetTab('live'); renderListenSheet(); return; }
-  const chapters = record.chapter_ids || [];
-  if (!chapters.includes(segmentById(state.segmentId)?.chapter_id)) {
-    state.chapterId = chapters[0];
-    state.segmentId = chapterSegments()[0]?.id;
+  const at = performanceStart(loaded, segmentById(state.segmentId));
+  if (at && at.id !== state.segmentId) {
+    state.chapterId = at.chapter_id;
+    state.segmentId = at.id;
     state.pendingOffset = 0;
     renderReader(); renderStudio(); saveProgress();
   }
+  if (fromHub) setTab('read');
   setSheetTab('live');
   await startListening();
+}
+// The passage a performance should start from: the current one if it has audio, otherwise the next
+// ready one after it, otherwise the first ready one. With nothing ready, the current one inside the
+// performance (it will wait for the job), otherwise its first passage.
+function performanceStart(loaded, current) {
+  const chapters = new Set(loaded.record.chapter_ids || []);
+  const inside = state.book.segments.filter(segment => chapters.has(segment.chapter_id));
+  const ready = segment => loaded.audio.has(segment.id);
+  if (current && chapters.has(current.chapter_id) && ready(current)) return current;
+  const index = current ? inside.findIndex(segment => segment.id === current.id) : -1;
+  const next = (index >= 0 ? inside.slice(index + 1).find(ready) : null) || inside.find(ready);
+  if (next) return next;
+  return current && chapters.has(current.chapter_id) ? current : inside[0];
 }
 function renderListenSheet() {
   const body = $('#listen-sheet-body'), listen = window.BardicListen, ui = window.BardicUI;
@@ -1389,9 +1405,22 @@ function renderProduction() {
     onJobStarted: async job => { if (!job || job.book_id !== state.book?.id) return; if (!state.jobs.some(j => j.id === job.id)) state.jobs.unshift(job); renderJob(); await pollJobs(true); },
     onBookChanged: async () => { const id = state.book?.id; if (!id) return; const book = await request(`/api/books/${encodeURIComponent(id)}`); if (state.book?.id !== id) return; state.referenceCache.clear(); state.referenceVersion++; applyBook(book); $$('[data-character-references][open]').forEach(node => loadCharacterReferences(node.dataset.characterReferences)); await refreshLibrary(); void loadVoiceLibrary(); } });
 }
+// The Performances hub in Script & record: every performance of this book with its status, opened
+// to add chapters or record the rest. It shares BardicPerformances with the listen sheet's tab.
+function renderPerformancesHub() {
+  const listen = window.BardicListen;
+  window.BardicPerformances?.render($('#performances-hub'), state.book, {
+    listen, castProvider:state.castProvider,
+    visible:() => state.tab === 'studio' && !$('#studio-view').hidden,
+    onJob:trackJob,
+    onLeave:() => listen?.leavePerformance(state.book),
+    onPlay:record => playPerformance(record, {fromHub:true}),
+  });
+}
 function renderStudio() {
   // The script (one chapter, Needs a look, saves on change, bulk speaker) is script.js's.
   window.BardicScript?.render();
+  if (state.tab === 'studio') renderPerformancesHub();
   updateBusyControls();
   renderProduction();
   paintRenderConfirm();
@@ -1419,6 +1448,7 @@ function setTab(tab, {reveal = true, focus = false} = {}) {
   if (focus && state.tab === 'voices') $('#voices-heading')?.focus?.();
   // Leaving Voices stops any audition playing there.
   if (state.tab !== 'voices') window.BardicVoices?.stop?.();
+  if (state.tab === 'studio' && state.book) renderPerformancesHub();
 }
 function syncWorkspaceNavigation() {
   const voices = state.tab === 'voices' && !state.libraryView;

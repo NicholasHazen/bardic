@@ -131,6 +131,10 @@ class PerformanceRequest(StrictModel):
     model: str | None = Field(default=None, max_length=200)
 
 
+class PerformanceChapters(StrictModel):
+    chapter_ids: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=5000)
+
+
 class PerformanceEdit(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     archived: bool | None = None
@@ -2249,6 +2253,20 @@ def create_app(data_dir: Path | None = None):
         runtime = rt(request)
         with runtime.store.lock:
             return performances.prepare(runtime, book_id, performance_id)
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/preview')
+    def preview_performance_resume(book_id: str, performance_id: str, body: PerformanceChapters, request: Request):
+        from . import performances
+        runtime = rt(request)
+        require_active_book(runtime.store, book_id)
+        return performances.preview_resume(runtime, book_id, performance_id, body.chapter_ids)
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/chapters')
+    def add_performance_chapters(book_id: str, performance_id: str, body: PerformanceChapters, request: Request):
+        from . import performances
+        runtime = rt(request)
+        with runtime.store.lock:
+            return performances.prepare(runtime, book_id, performance_id, body.chapter_ids)
 
     @app.patch('/api/books/{book_id}/performances/{performance_id}')
     def edit_performance(book_id: str, performance_id: str, body: PerformanceEdit, request: Request):

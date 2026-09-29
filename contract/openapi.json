@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. There is no CORS support.\n- Every `/api/` response carries `Cache-Control: no-store`, except a\n  successful cover image (`getBookCover`), which sets its own caching\n  headers: a strong `ETag`, and `immutable` at its content-addressed `?v=`\n  URL.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- \"Passage\" and \"segment\" name the same reader unit.\n- GET requests never start paid generation and never create or change\n  library records (books, jobs, runs, artifacts, decisions or resource\n  measurements). A few write a disposable derived cache, such as the\n  analysis census cache or the passage search index, which can be deleted\n  without loss; those operations say so. `x-bardic-cost` on each operation\n  says whether it can reach a provider: `none`, `network` (contacts a\n  provider or self-hosted server without billed generation) or\n  `may_charge`.\n- Out-of-range paging parameters are clamped to the allowed range; the\n  response reports the values used.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs` until the job reaches a\n  terminal status. Failures, cancellations and allowance stops appear in the\n  job, while polling itself still returns 200. A terminal status is final.\n- Statuses mean the same thing on every operation:\n  - 400: the request is well-formed but cannot be carried out as asked,\n    because of its content or the library's data. Examples are an unknown\n    ID inside a request body, an empty selection, a missing original file,\n    or a name or position already taken. An operation that deliberately\n    ignores an unknown body ID says so.\n  - 404: a resource named in the path, or a session named in the query,\n    does not exist.\n  - 409: a conflict with current state that waiting, restoring or\n    previewing again resolves: an active job or series run, a stale\n    previewed plan, or an archived book or series.\n  - 413: the body is too large.\n  - 429: a request or quota limit applies.\n  - 502: a provider or self-hosted server failed or refused the work.\n    Operations whose purpose is to report a provider's state (account\n    checks, model refresh, Breeze refresh) return 200 with the classified\n    state instead.\n  - 503: the server is shutting down; nothing was queued.\n  - Archiving or restoring something already in that state succeeds\n    without change.\n- Errors are JSON `{\"detail\": ..., \"code\": ...}`. `detail` is an English\n  sentence, or a list of issues for 422 request validation. Display it; do\n  not parse it. `code` is a stable snake_case identifier: branch on it.\n  Each operation lists its codes per status (`x-bardic-error-codes`). Any\n  operation can also return these global codes:\n  - `validation_error` (422): the request failed validation.\n  - `cross_origin_write` (403): the write guard rejected a browser write.\n  - `internal_error` (500): an unexpected server defect.\n  - `route_not_found` (404, 405): no route matches the method and path.\n\n## Compatibility rules for clients\n\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  handle an unknown value gracefully.\n  Configure code generators to accept unknown enum values (for example\n  openapi-generator's `enumUnknownDefaultCase=true`).\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid any field marked `x-bardic-internal`: bookkeeping that a later\n  version may remove. This version has none.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
@@ -4057,6 +4057,160 @@
         "x-bardic-cost": "none"
       }
     },
+    "/api/books/{book_id}/performances/{performance_id}/chapters": {
+      "post": {
+        "summary": "Add chapters to a performance and record them",
+        "operationId": "addPerformanceChapters",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceChapters"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.\n- `no_chapters_selected`: `chapter_ids` is empty.\n- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "unknown_chapter",
+              "no_chapters_selected",
+              "gemini_key_missing",
+              "device_narration_unavailable",
+              "breeze_url_missing",
+              "narrator_voice_missing"
+            ]
+          },
+          "403": {
+            "description": "- `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "cross_origin_write"
+            ]
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.\n- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "job_active",
+              "series_run_active"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          },
+          "503": {
+            "description": "- `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "shutting_down"
+            ]
+          }
+        },
+        "description": "Extend the performance's chapter selection and start recording what is missing, without creating a new\nperformance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so\naudio already retained is reused and only passages without current audio are narrated (a simple\nperformance also counts takes made by live listening with the same narrator). The added chapters are\nsaved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never\nrewritten. Returns `{performance, job}`; `job` is null when every passage is already ready. Refused with 409\nwhile any job is active for the book, including this performance's own: stop it, or wait, first. Blocking\nproblems are refused with 400 as for `createPerformance`.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage. There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "may_charge"
+      }
+    },
     "/api/books/{book_id}/performances/{performance_id}/prepare": {
       "post": {
         "summary": "Resume preparing a performance",
@@ -4197,6 +4351,140 @@
           "Performances"
         ],
         "x-bardic-cost": "may_charge"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/preview": {
+      "post": {
+        "summary": "Estimate recording the rest of a performance",
+        "operationId": "previewPerformanceResume",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceChapters"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformancePlan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "unknown_chapter"
+            ]
+          },
+          "403": {
+            "description": "- `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "cross_origin_write"
+            ]
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "description": "Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,\nwhat a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`\nlists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are\nignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is\ncontacted. Allowed while a job runs.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "none"
       }
     },
     "/api/books/{book_id}/pipeline": {
@@ -16554,7 +16842,7 @@
             "type": "string"
           },
           "chapter_ids": {
-            "description": "Selected chapters in book order at creation. Chapters later removed from the book are skipped.",
+            "description": "Selected chapters in book order: those chosen at creation plus any added later (see `chapters_added`). Chapters later removed from the book are skipped.",
             "items": {
               "type": "string"
             },
@@ -16611,7 +16899,7 @@
             "type": "string"
           },
           "updated_at": {
-            "description": "ISO 8601 UTC; changes on rename, archive and when a job starts.",
+            "description": "ISO 8601 UTC; changes on rename, archive, when chapters are added and when a job starts.",
             "type": "string"
           },
           "archived": {
@@ -16660,6 +16948,20 @@
           "narrator_label": {
             "description": "Display label such as `Kore · Gemini` or `Full cast · Device voices`.",
             "type": "string"
+          },
+          "chapters_added": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PerformanceChaptersAdded"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. Absent when none were added. `chapter_ids` already includes them."
           }
         },
         "required": [
@@ -16888,6 +17190,45 @@
         "title": "PerformanceChapterProgress",
         "type": "object"
       },
+      "PerformanceChapters": {
+        "properties": {
+          "chapter_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "description": "Chapter IDs of this book to add, at most 5000 (each at most 200 characters). Already-selected chapters are ignored. Empty is allowed for `previewPerformanceResume` (plan the performance as it is) and refused by `addPerformanceChapters`."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PerformanceChapters",
+        "description": "Chapters to add to an existing performance."
+      },
+      "PerformanceChaptersAdded": {
+        "description": "One extension of a performance's chapter selection.",
+        "properties": {
+          "at": {
+            "description": "ISO 8601 UTC time the chapters were added.",
+            "type": "string"
+          },
+          "chapter_ids": {
+            "description": "The chapters newly added, in book order. Chapters already selected are not repeated.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "at",
+          "chapter_ids"
+        ],
+        "title": "PerformanceChaptersAdded",
+        "type": "object"
+      },
       "PerformanceEdit": {
         "properties": {
           "name": {
@@ -17036,6 +17377,20 @@
           "narrator_label": {
             "description": "Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name.",
             "type": "string"
+          },
+          "added_chapter_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, in book order. Absent from the plan `previewPerformance` returns."
           }
         },
         "required": [

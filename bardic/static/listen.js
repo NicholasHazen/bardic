@@ -671,7 +671,7 @@
           : job?.status === 'failed' ? `“${name}” stopped on an error before this passage. Resume it to finish.`
           : `This passage of “${name}” has not been processed. Resume the performance to finish it.`);
       }
-      state.message = `Waiting for “${name}” to reach this passage…`;
+      state.message = `Waiting for “${name}” to reach this passage… Everything recorded so far has played.`;
       paint(state.panel);
       await wait(2500);
       if (!current(state,version) || state.intent !== intent) return null;
@@ -1351,13 +1351,14 @@
     const playing = panel.options.playing, preparing = panel.options.preparing || state.intent?.phase === 'warmup';
     const progress = record?.progress;
     const job = record?.job;
-    const status = !record ? 'Loading…' : PERFORMANCE_ACTIVE.has(job?.status) ? `Recording · ${job.message || ''}`
-      : `${progress?.passages_ready ?? 0} of ${progress?.passages_total ?? 0} passages ready`;
+    const ready = `${progress?.passages_ready ?? 0} of ${progress?.passages_total ?? 0} passages ready`;
+    const recording = PERFORMANCE_ACTIVE.has(job?.status);
+    const status = !record ? 'Loading…' : recording ? `Recording · ${ready}${job.message ? ` · ${job.message}` : ''}` : ready;
     const html = `<section class="simple-listen" aria-label="More listening options">
       <div class="simple-listen-heading">
         <div><h3>Performance</h3><p>${escape(record?.name || 'Performance')}${record?.narrator_label ? ` · ${escape(record.narrator_label)}` : ''}</p></div>
       </div>
-      <p class="simple-listen-note">${escape(status)}. Plays only audio this performance already has; nothing new is requested while you listen.</p>
+      <p class="simple-listen-note">${escape(status)}. ${recording ? 'Recording continues while you listen: playback follows new passages as they land and waits at the end of what is ready. Listening never changes what is requested.' : 'Plays only audio this performance already has; nothing new is requested while you listen.'}</p>
       <div class="simple-listen-actions">
         <button type="button" class="button primary" data-listen-action="start" aria-label="${preparing ? 'Stop preparing narration' : playing ? 'Pause performance' : 'Play performance'}">${preparing ? 'Preparing…' : playing ? 'Pause' : 'Play'}</button>
         <button type="button" class="button subtle" data-listen-action="stop">Stop</button>
