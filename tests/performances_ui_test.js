@@ -17,8 +17,8 @@ const book = {id:'book-q',title:'The Lantern',chapters:[{id:'front',title:'Title
 const listed = [{id:'pf_1',name:'Evening',mode:'simple',chapter_ids:['c1'],narrator_label:'Samantha · Device',
   job:{id:'job-1',status:'cancelled'},progress:{passages_total:2,passages_ready:1,seconds_ready:4,chapters:[]}}];
 
-function environment(preview = {}) {
-  const calls = [], container = new Container(), played = [], jobs = [];
+function environment(preview = {}, container = new Container()) {
+  const calls = [], played = [], jobs = [];
   const scope = {window:{},document:{activeElement:null},CSS:{escape:value => value},setTimeout:fn => setImmediate(fn),clearTimeout:() => {},
     fetch:async (url, options = {}) => {
       const call = {url,method:options.method || 'GET',body:options.body ? JSON.parse(options.body) : null};
@@ -97,4 +97,42 @@ test('a preview problem shows its detail and the hint keyed on its code, and blo
   assert.match(env.container.innerHTML,/<p class="inline-error">A condition without a hint\.<\/p>/);
   assert.doesNotMatch(env.container.innerHTML,/\[object Object\]/);
   assert.match(env.container.innerHTML,/<button type="submit" class="button primary" disabled/);
+});
+
+// Models what a browser does: replacing innerHTML makes a fresh chapter list at scrollTop 0 and
+// clamps the sheet that scrolls the panel while the content is briefly empty.
+class ScrollingContainer extends Container {
+  constructor() {
+    super();
+    this.html = ''; this.scrollTop = 0; this.list = null;
+    this.parentElement = {scrollTop:0, parentElement:{scrollTop:0, parentElement:null}};
+  }
+  get innerHTML() { return this.html; }
+  set innerHTML(value) {
+    this.html = value; this.list = /performance-chapters"/.test(value) ? {scrollTop:0} : null;
+    for (let node = this.parentElement; node; node = node.parentElement) node.scrollTop = 0;
+  }
+  querySelector(selector) { return selector === '.performance-chapters' ? this.list : null; }
+}
+
+test('scroll offsets of the chapter list and its scrolling ancestors survive a check and a preview repaint', async () => {
+  const many = {...book, chapters:Array.from({length:40}, (_, i) => ({id:`c${i}`,title:`Chapter ${i}`,kind:'chapter'})),
+    segments:Array.from({length:40}, (_, i) => ({id:`s${i}`,chapter_id:`c${i}`}))};
+  const container = new ScrollingContainer();
+  const env = environment({}, container);
+  env.api.render(container, many, env.options);
+  await settle();
+  env.click({performanceAction:'new'});
+  await settle();
+  container.list.scrollTop = 620; container.parentElement.scrollTop = 140; container.parentElement.parentElement.scrollTop = 33;
+  const before = container.html;
+  container.listeners.change({target:{dataset:{performanceChapter:'c30'},checked:false}});
+  assert.notEqual(container.html, before, 'the check repainted the form');
+  assert.equal(container.list.scrollTop, 620, 'chapter list offset kept on a check');
+  assert.equal(container.parentElement.scrollTop, 140, 'sheet offset kept on a check');
+  assert.equal(container.parentElement.parentElement.scrollTop, 33);
+  await settle();
+  assert.equal(env.calls.filter(call => call.url.endsWith('/preview')).length, 2, 'the debounced preview ran');
+  assert.equal(container.list.scrollTop, 620, 'chapter list offset kept when the preview lands');
+  assert.equal(container.parentElement.scrollTop, 140, 'sheet offset kept when the preview lands');
 });

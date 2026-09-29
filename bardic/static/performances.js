@@ -174,8 +174,17 @@
       : ['performanceAction','performanceMode','performanceProvider','performanceChapter'].map(key => focused.dataset[key] !== undefined
         ? `[data-${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}="${CSS.escape(focused.dataset[key])}"]` : null).find(Boolean);
     const card = focused?.closest?.('[data-performance]')?.dataset.performance;
+    // Replacing the markup drops every scroll offset inside it and can clamp the ones around it
+    // (the sheet or page that scrolls the panel), so read them first and put them back.
+    const scrolls = [];
+    for (let node = panel.container; node; node = node.parentElement) scrolls.push([node, node.scrollTop || 0]);
+    const chapters = panel.container.querySelector?.('.performance-chapters');
+    const listScroll = chapters ? chapters.scrollTop || 0 : 0;
     panel.html = html;
     panel.container.innerHTML = html;
+    for (const [node, top] of scrolls) if (top && node.scrollTop !== top) node.scrollTop = top;
+    const fresh = listScroll && panel.container.querySelector?.('.performance-chapters');
+    if (fresh) fresh.scrollTop = listScroll;
     const scope = card ? panel.container.querySelector(`[data-performance="${CSS.escape(card)}"]`) || panel.container : panel.container;
     if (selector) scope.querySelector(selector)?.focus({preventScroll:true});
   }
