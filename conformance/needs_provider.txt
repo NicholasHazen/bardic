@@ -13,6 +13,8 @@ startEnhancedRender         # queues a `render` job (cast narration)
 startVoicePreview           # queues a `voice_preview` job
 createPerformance           # creates a saved performance and queues narration
 preparePerformance          # queues narration for a saved performance
+previewPerformanceResume    # plans the rest of a saved performance, which needs createPerformance
+addPerformanceChapters      # adds chapters to a saved performance and queues narration
 updatePerformance           # needs a saved performance, which needs createPerformance
 getPerformance              # needs a saved performance
 getPerformanceAudio         # needs performance audio

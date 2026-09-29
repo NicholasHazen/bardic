@@ -129,6 +129,15 @@ def test_performance_plan_errors(api, txt_book):
                     expect=404).code == 'performance_not_found'
     assert api.call('getPerformanceAudio', path={**path, 'performance_id': 'no-such-performance'},
                     expect=404).code == 'performance_not_found'
+    # Extending a performance needs one; without it these are refused, and a malformed body is a 422.
+    missing = {**path, 'performance_id': 'no-such-performance'}
+    for operation in ('previewPerformanceResume', 'addPerformanceChapters'):
+        assert api.call(operation, path=missing, json={'chapter_ids': [txt_book['chapters'][0]['id']]},
+                        expect=404).code == 'performance_not_found', operation
+        assert api.call(operation, path={'book_id': 'no-such-book', 'performance_id': 'x'}, json={'chapter_ids': []},
+                        expect=404).code == 'book_not_found', operation
+        for bad in ({'chapter_ids': 'one'}, {'chapter_ids': [1]}, {'chapter_ids': [], 'unknown': True}):
+            api.call(operation, path=missing, json=bad, negative=True, expect=422)
 
 
 # ---------------------------------------------------------------- refusals queue nothing

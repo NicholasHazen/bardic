@@ -78,6 +78,17 @@ export const volumeTitle = (volume: Schemas['SeriesVolume']): string =>
   volume.kind === 'supplied' ? volume.author : volume.title;
 export const rowStep = (row: Schemas['PipelineVersionRow']): string => (row.step === 'quotes' ? row.kind : row.step);
 
+// What Gemini blocked is reported by the chapter job that met it, and only there; a fallback narrator is a narration provider.
+export const blockedPassages = (job: Schemas['Job']): string[] =>
+  job.kind === 'listen_chapter' && job.content_blocked ? job.content_blocked.blocked_passage_ids : [];
+export const fallbackNarrator = (job: Schemas['ListenChapterJob']): Schemas['NarrationProvider'] | null => job.fallback?.provider ?? null;
+// @ts-expect-error content_blocked belongs to listen_chapter jobs, not to every Job
+export const blockedOfAnyJob = (job: Schemas['Job']) => job.content_blocked;
+export const failedForContent = (job: Schemas['Job']): boolean => job.error_code === 'content_blocked';
+// A performance always says how much of it a fallback narrator read and which chapters were added later.
+export const performanceNotes = (record: Schemas['Performance']): number =>
+  record.progress.passages_fallback + record.progress.passages_blocked + record.chapters_added.length;
+
 // The wire says passage, once. The retired name is not a field.
 export const listen: Schemas['ListenRequest'] = { passage_id: 'p' };
 // @ts-expect-error segment_id was renamed passage_id
