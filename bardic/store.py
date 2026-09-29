@@ -16,7 +16,7 @@ def now() -> str:
 
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
 # Written once, when a job reaches its terminal status; never changed afterwards.
-JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "resume_after"})
+JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "error_code", "resume_after"})
 # Stored bookkeeping that is not part of the published Job (the series plan
 # fingerprint stays in storage and in the `series_run` artifact).
 INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint"})

@@ -1,6 +1,6 @@
 <!-- Generated from contract/openapi.json by `uv run --frozen python -m bardic.apispec`. Do not edit. -->
 
-# Bardic 0.3.2
+# Bardic 0.3.3
 
 The local HTTP interface of Bardic, an ebook analysis, audiobook production
 and read-along application. This document is the contract that clients are
@@ -1852,6 +1852,11 @@ cancellation are job outcomes; audio finished during a Stop is still retained an
 `/listen/takes`. There is no narration budget or dollar cap. Do not automatically repeat this POST
 after an uncertain network response; retry only read-only polling.
 
+If Gemini's content policy blocks the passage (HTTP 400 `content_blocked`), the job fails with
+`error_code: "content_blocked"` and a fixed error sentence, and the passage is remembered as blocked: a
+later request for it fails at once without a Gemini request. A fallback take made by chapter listening
+(`substitute`) is returned as a cache hit.
+
 This endpoint prepares only the requested passage; there is no streaming endpoint. Breeze and device
 voices always use it (Gemini chapters use `POST /listen/chapter`). The browser coordinates device
 warmup (about 10 listening seconds, at most three passages), lookahead (about 45 seconds, at most 12
@@ -1941,13 +1946,37 @@ full-size chunk has been measured), retries a per-minute 429 up to 5 consecutive
 after a truncated response (at most 2 truncation rounds), and never resends an uncertain request. It
 reports `progress`/`total` in passages of its scope, `chunks` (one entry per request: `n`, first/last
 passage IDs, `segment_count`, `chars`, `target_seconds`, `expected_seconds`, `expected_latency`,
-`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`failed`,
+`realtime_factor`, `epoch`, `status` `requesting`/`done`/`rate_limited`/`truncated`/`blocked`/`failed`, `split`, `split_into`,
 `started_at`/`finished_at`, `error`, and for finished chunks `chunk_id`, `duration`, `latency`, `flags`,
 `matched`/`boundaries`), `projection` (remaining planned chunks in request order), `calibration`,
 `speech_limits`, `quota` (`requests_today`, `rpd`, `resets_at`, `scope: "this library"`), `waiting_seconds` and
 the selected `chunking`. Terminal statuses include `quota_limited` with `resume_after` (for example when
 other traffic uses up the daily count while the job runs). Finished chunks are kept on every outcome;
 start the chapter again to resume.
+
+**Text Gemini blocks.** Gemini can refuse text under its content policy with HTTP 400 and the error code
+`content_blocked`; it does not say which passage, and this is not a model, voice or length problem. The
+provider's error text is never kept. The job handles a block with a fixed budget of requests:
+
+1. The blocked chunk (`status: "blocked"`) is retained as a block for this session, chapter, exact text
+   and recipe, and is never sent again.
+2. A chunk of two or more passages is split once, at a passage boundary near its middle (preferring a
+   scene change, then a paragraph break, then a sentence end), into two halves (`split: true`). Each half
+   is requested like any chunk: reserved against the daily count and the per-minute limiter before it is
+   sent, and counted in `quota`.
+3. A half that is blocked again is not split further, and a blocked one-passage chunk is not split.
+   Those passages are read one by one by the free local **fallback narrator** snapshotted in `fallback`
+   (a device voice when `say` and ffmpeg are available, otherwise Breeze when configured), with no Gemini
+   request. That audio is an ordinary immutable take of the fallback session, marked `substitute`, and plays
+   with the rest. When no fallback narrator is available, or it fails, the passages stay unrecorded.
+
+One blocked chunk therefore costs at most three Gemini requests: the original and its two halves. A block
+is remembered durably, so starting the chapter again (or resuming a performance) never resends text
+Gemini already blocked; a changed source text, voice, model or pronunciation invalidates that memory and
+the text is requested again. Successful halves are kept as normal chunks. A block never fails the job: it
+ends `completed`, `content_blocked` lists the passages read by the fallback narrator and the ones left
+unrecorded, and `message` says so. Blocked passages are not counted in `progress` unless a fallback
+narrator read them.
 
 | Parameter | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
@@ -2002,7 +2031,10 @@ Request body (`application/json`): [ChapterListenRequest](#schema-chapterlistenr
 **List a listening session's playable audio** · operation `listListeningTakes` · cost `none`
 
 Saved simple audio for the session, one entry per passage in book order: a chunk clip when one
-applies, otherwise the newest single-passage take whose source recipe still matches the passage.
+applies, otherwise the newest single-passage take whose source recipe still matches the passage. For a
+Gemini session, a passage Gemini's content policy blocked that has no Gemini audio is listed with the
+fallback narrator's take, whose `substitute` marks it (see `startChapterListening`); a blocked passage with no
+fallback take is omitted.
 Passages whose source no longer matches, and takes whose file is missing, are omitted. To stay fast on
 long books this does not re-read WAV samples; a chunk whose file is known to be damaged is excluded.
 No generation and no stored change. Works for archived books.
@@ -2063,13 +2095,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound).
 
@@ -2207,13 +2243,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound).
 
@@ -2258,13 +2298,17 @@ child `listen_chapter` job (`parent_id`, `intent: "queue"`, full-size chunks) li
 chapter's child job settles. A live listener's chapter request is refused
 (409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an
 error ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished
-chunks kept. Cast performances render passage by passage (resource stage `narration`, `cached: true`
+chunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still
+completes, its message names how many passages a fallback narrator read or were left unrecorded, and
+`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`
 for reuse of another performance's or a Studio take with the identical recipe) and never change the
 Studio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
+performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
+or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound).
 
@@ -3707,7 +3751,7 @@ cancelled or passed over never starts later.
 | `pipeline` | analysis pipeline run, or a series run (one child per book) | from the book: `run_id`, `steps`, `scheduling`; series child: `run_id` (null until its book starts), `steps`, `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |
 | `series` | series processing (parent) | `series_id`, `steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits` (PipelineRunLimits), `book_ids`, `child_job_ids`, `estimated_cost_usd`, `requests`, `context_pending_books`, `finished_at`, and `waiting_for_review` once it has paused. A run recorded before contract 0.3.0 has `phase`, `provider`, `model`, `scan_model`, `concurrency`, `analysis_limits` (SeriesJobLimits), `book_ids`, `child_job_ids` and `finished_at`, with `analyze` children |
 | `listen` | simple passage listening | `session_id`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
-| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing` |
+| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_segment_id`, `focus_segment_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `phase`, `chunks`, `calibration`, `fallback`; once the worker reports: `projection`, `quota`, `waiting_seconds`, `closing`; once Gemini blocked text: `content_blocked` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `segment_id`, `provider`, `model`, `phase`, and `audio` once ready |
 | `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `phase`, `child_job_ids`, `child_job_id` |
 
@@ -3744,6 +3788,7 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
 | `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `error_code` | `"content_blocked"` \| null |  | `failed` only, when `error` has a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent otherwise. The set of values is open. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
 | `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
@@ -3786,6 +3831,8 @@ analyzer work units for `analyze` and `pipeline`; books for `series`.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
 | `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
 | `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null |  | `listen_chapter`: the free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when none was available. Absent on jobs queued before contract 0.3.3. |
+| `content_blocked` | [JobContentBlocked](#schema-jobcontentblocked) \| null |  | `listen_chapter`: present once Gemini blocked text of this chapter, with how each blocked passage ended. Absent when nothing was blocked. |
 
 <a id="schema-jobchapterchunk"></a>
 ### JobChapterChunk
@@ -3804,16 +3851,46 @@ One chunk request a ``listen_chapter`` job has sent (or is sending), in send ord
 | `expected_latency` | number | yes | Expected seconds until the response, from calibration. |
 | `realtime_factor` | number | yes | Calibration realtime factor (audio seconds per waiting second) at send time. |
 | `epoch` | integer | yes | Planning generation; increases after a truncation forces smaller re-planning. |
-| `status` | `"requesting"` \| `"done"` \| `"rate_limited"` \| `"truncated"` \| `"failed"` | yes | `requesting` while in flight; `done` when its audio was retained; `rate_limited` when the provider refused it with HTTP 429 (nothing generated; its passages are planned again); `truncated` when the audio was cut short or far too short and was discarded; `failed` on any other error (the job then stops). |
+| `status` | `"requesting"` \| `"done"` \| `"rate_limited"` \| `"truncated"` \| `"blocked"` \| `"failed"` | yes | `requesting` while in flight; `done` when its audio was retained; `rate_limited` when the provider refused it with HTTP 429 (nothing generated; its passages are planned again); `truncated` when the audio was cut short or far too short and was discarded; `blocked` when Gemini refused the text under its content policy (HTTP 400 `content_blocked`; the block is retained and this text is never sent again; the job continues, see `Job.content_blocked`); `failed` on any other error (the job then stops). |
+| `split` | boolean \| null |  | True for a half of a chunk Gemini blocked. A half is requested once and never split again. Absent otherwise. |
+| `split_into` | integer \| null |  | `blocked` only: the number of halves the chunk was split into (2), or absent when it was not split (a one-passage chunk or a half, whose passages go to the fallback narrator). |
 | `started_at` | string | yes | When the request was sent: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
 | `finished_at` | string \| null |  | When the request finished; absent while `requesting`. ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
-| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated` or `failed` (at most 300 characters for `failed`). |
+| `error` | string \| null |  | Human-readable reason for `rate_limited`, `truncated`, `blocked` or `failed` (at most 300 characters for `failed`). |
 | `duration` | number \| null |  | Seconds of audio received (`done`, `truncated`). |
 | `chunk_id` | string \| null |  | ID of the retained chunk audio (`done`). |
 | `latency` | number \| null |  | Measured seconds from send to response (`done`). |
 | `flags` | list of `"weak_alignment"` \| null |  | Quality flags (`done`). `weak_alignment`: fewer than 60% of passage boundaries matched, so passage clip times are rough. |
 | `matched` | integer \| null |  | Passage boundaries the aligner matched in the audio (`done`). |
 | `boundaries` | integer \| null |  | Passage boundaries the aligner tried to match (`done`). |
+
+<a id="schema-jobcontentblocked"></a>
+### JobContentBlocked
+
+What Gemini's content policy did to a job's text, and how each blocked passage ended.
+
+Present once Gemini blocked any text of the job's chapter. The job itself still ends `completed`: the rest of
+the chapter was prepared, and its `message` says how many passages were read by the fallback narrator or left
+unrecorded. A saved performance reports the same outcome per chapter in `Performance.progress`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null | yes | The fallback narrator that reads blocked passages, or null when none is available (a device voice needs macOS `say` and ffmpeg; Breeze needs a configured server with a usable default voice). |
+| `fallback_passage_ids` | list of string | yes | Blocked passages the fallback narrator read, in reading order. Their audio plays with the rest, is marked `substitute` and is not Gemini audio. |
+| `blocked_passage_ids` | list of string | yes | Blocked passages with no audio at all (no fallback narrator, or it failed), in reading order. They are not requested from Gemini again. |
+| `fallback_error` | string \| null | yes | Why the fallback narrator could not read a passage (at most 300 characters), or null. |
+
+<a id="schema-jobfallbacknarrator"></a>
+### JobFallbackNarrator
+
+The free local narrator a job snapshotted for passages Gemini blocks.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `session_id` | string | yes | The narrator session (64 hex) whose takes read the blocked passages. |
+| `provider` | `"system"` \| `"breeze"` | yes | `system` (a device voice) or `breeze`. |
+| `model` | string | yes | Speech model of the fallback narrator (`macos-say` or the Breeze model). |
+| `voice` | string | yes | Voice choice of the fallback session; empty for the default device voice. |
 
 <a id="schema-librarybookcover"></a>
 ### LibraryBookCover
@@ -4085,8 +4162,9 @@ Like every audio object, it has the common audio core, always present: `url`, `a
 | `model` | string | yes | Speech model that produced the bytes. |
 | `voice` | string | yes | Provider voice actually used (the device voice name after resolution). |
 | `created_at` | string | yes | ISO 8601 UTC time the take was retained (the first retention if it was saved concurrently). |
-| `session_id` | string | yes | Listening session the take belongs to. |
+| `session_id` | string | yes | Listening session the take belongs to. For a `substitute`, the fallback narrator's session, not the Gemini session it stands in for. |
 | `segment_id` | string | yes | Passage the take narrates. |
+| `substitute` | [ListeningSubstitute](#schema-listeningsubstitute) \| null |  | Present when a fallback narrator (`provider` is not `gemini`) read this passage because Gemini blocked its text. It is a normal immutable take of the fallback narrator, never Gemini audio. Absent otherwise. |
 | `reuse` | [ListeningReuse](#schema-listeningreuse) \| null |  | Present when the bytes were copied from an equivalent retained take instead of being generated. |
 | `provider_timing` | [AudioTakeSentenceTiming](#schema-audiotakesentencetiming) \| null |  | Breeze only: validated sentence timing, or null when the server timing did not validate. |
 | `breeze` | [AudioTakeBreezeInfo](#schema-audiotakebreezeinfo) \| null |  | Breeze only: request details. |
@@ -4125,6 +4203,17 @@ changed on the server (new revision) starts a new session and keeps old takes.
 | `voice_revision` | string \| null |  | Breeze only: the pinned voice revision from the last voice check. |
 | `seed` | integer \| null |  | Breeze only: the pinned generation seed. |
 | `settings` | object \| null |  | Breeze only, when set: pinned speech settings for the voice (provider-defined keys). |
+
+<a id="schema-listeningsubstitute"></a>
+### ListeningSubstitute
+
+Marks a take that stands in for a passage Gemini's content policy blocked.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reason` | `"content_blocked"` | yes | Why Gemini did not narrate the passage: its content policy blocked the text. |
+| `for_provider` | string | yes | The provider of the session this audio stands in for (`gemini`). |
+| `for_model` | string | yes | The speech model of the session this audio stands in for. |
 
 <a id="schema-listeningtake"></a>
 ### ListeningTake
@@ -4313,7 +4402,10 @@ Readiness of one selected chapter.
 | `id` | string | yes | Chapter ID. |
 | `title` | string | yes | Chapter title; empty string when the chapter has none. |
 | `passages_total` | integer | yes | Passages in the chapter. |
-| `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
+| `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. Includes passages a fallback narrator read. |
+| `passages_fallback` | integer | yes | Of the ready passages, those read by a fallback narrator because Gemini blocked their text (audio marked `substitute`). |
+| `passages_blocked` | integer | yes | Passages Gemini blocked that have no audio at all, so they are not ready. They are not requested from Gemini again; they are not a failure. |
+| `blocked_passage_ids` | list of string | yes | The passages counted in `passages_blocked`, in reading order. |
 
 <a id="schema-performancechapters"></a>
 ### PerformanceChapters
@@ -4405,6 +4497,9 @@ Readiness against each passage's current source.
 | `passages_total` | integer | yes | Passages in the selected chapters that are still in the book. |
 | `passages_ready` | integer | yes | Of those, passages with playable audio that matches their current source text. |
 | `seconds_ready` | number | yes | Audio seconds ready. |
+| `passages_fallback` | integer | yes | Of the ready passages, those read by a fallback narrator because Gemini blocked their text. Nonzero means the performance is not entirely Gemini audio. |
+| `passages_blocked` | integer | yes | Passages Gemini blocked that have no audio at all (no fallback narrator was available, or it failed). Counted neither as ready nor as a failure; they are not requested again. |
+| `fallback_provider` | `"system"` \| `"breeze"` \| null | yes | The provider that read the `passages_fallback` passages, or null when there are none. |
 | `chapters` | list of [PerformanceChapterProgress](#schema-performancechapterprogress) | yes | Selected chapters still in the book, in book order. |
 
 <a id="schema-performancequota"></a>
@@ -5892,6 +5987,7 @@ A series parent job with its child jobs.
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
 | `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `error_code` | `"content_blocked"` \| null |  | `failed` only, when `error` has a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent otherwise. The set of values is open. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
 | `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
@@ -5934,6 +6030,8 @@ A series parent job with its child jobs.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
 | `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
 | `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null |  | `listen_chapter`: the free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when none was available. Absent on jobs queued before contract 0.3.3. |
+| `content_blocked` | [JobContentBlocked](#schema-jobcontentblocked) \| null |  | `listen_chapter`: present once Gemini blocked text of this chapter, with how each blocked passage ended. Absent when nothing was blocked. |
 | `children` | list of [SeriesRunChild](#schema-seriesrunchild) | yes | The child jobs, one per supplied book, in reading order (`pipeline` jobs; `analyze` jobs in runs recorded before contract 0.2.0). They use real book IDs. |
 
 <a id="schema-seriesrunchild"></a>
@@ -5964,6 +6062,7 @@ A child job of a series run, with a summary of its book's pipeline run.
 | `session_id` | string \| null |  | `listen`, `listen_chapter`: the narrator session (64 hex). |
 | `audio` | [ListeningPassageAudio](#schema-listeningpassageaudio) \| [ListeningChunkClipAudio](#schema-listeningchunkclipaudio) \| [VoicePreviewAudio](#schema-voicepreviewaudio) \| null |  | The finished audio, set just before a `listen` job (a passage take or chunk clip) or a `voice_preview` job (VoicePreviewAudio) completes. Absent until then and after a failure. |
 | `resume_after` | string \| null |  | `quota_limited` only: when the daily quota resets (next midnight Pacific time), as ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`. |
+| `error_code` | `"content_blocked"` \| null |  | `failed` only, when `error` has a documented cause the UI can explain: `content_blocked` is Gemini's content policy (HTTP 400 with error code `content_blocked`) refusing text that has no fallback path (a full-cast performance passage or a single-passage `listen` job). The provider's own error text is never kept: `error` is a fixed sentence. Absent otherwise. The set of values is open. |
 | `run_id` | string \| null |  | `pipeline`: the pipeline run this job executes. A series child carries null until the series worker starts its book, and keeps null if the book never starts. |
 | `steps` | list of string \| null |  | `pipeline` and `series`: the requested step IDs with their required upstream steps, deduplicated, in pipeline order. |
 | `scheduling` | `"serial"` \| `"parallel"` \| null |  | `pipeline` and `series` (inside each book's run): `serial` (one step at a time) or `parallel` (independent steps together), as requested by the run's `scheduling` field. |
@@ -6006,6 +6105,8 @@ A child job of a series run, with a summary of its book's pipeline run.
 | `quota` | [ChapterListenQuota](#schema-chapterlistenquota) \| null |  | `listen_chapter`: daily quota use at the last report. |
 | `waiting_seconds` | number \| null |  | `listen_chapter`: seconds the next send waits for the per-minute rate limit, or null when not waiting. |
 | `closing` | boolean \| null |  | `listen_chapter`: true once the worker decided to finish; a new chapter request then gets 409 until the job ends. |
+| `fallback` | [JobFallbackNarrator](#schema-jobfallbacknarrator) \| null |  | `listen_chapter`: the free local narrator snapshotted when the job was queued for passages Gemini blocks, or null when none was available. Absent on jobs queued before contract 0.3.3. |
+| `content_blocked` | [JobContentBlocked](#schema-jobcontentblocked) \| null |  | `listen_chapter`: present once Gemini blocked text of this chapter, with how each blocked passage ended. Absent when nothing was blocked. |
 | `run` | [SeriesChildRun](#schema-serieschildrun) \| null |  | Present once the child has a `run_id`: the run's `{id, status, outcomes, error}`, or null when that run record no longer exists. Absent while the book has not started, and on children that never started. |
 
 <a id="schema-seriesrunrequest"></a>

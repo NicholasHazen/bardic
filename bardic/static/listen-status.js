@@ -28,6 +28,16 @@
     const date = iso ? new Date(iso) : null;
     return date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '';
   };
+  // What Gemini's content policy did to this chapter, in words: '' when it blocked nothing.
+  const FALLBACK_VOICES = {system:'a device voice', breeze:'Breeze'};
+  function blockedNote(job) {
+    const view = job?.content_blocked;
+    if (!view) return '';
+    const read = view.fallback_passage_ids?.length || 0, left = view.blocked_passage_ids?.length || 0, parts = [];
+    if (read) parts.push(`${read} passage${read === 1 ? '' : 's'} read by ${FALLBACK_VOICES[view.fallback?.provider] || 'a fallback voice'} because Gemini blocked ${read === 1 ? 'it' : 'them'}`);
+    if (left) parts.push(`${left} passage${left === 1 ? '' : 's'} blocked by Gemini\u2019s content policy and not recorded`);
+    return parts.length ? `${parts.join('. ')}.` : '';
+  }
   const result = (state, label, detail = '', action = null, extra = {}) =>
     ({state, label, tone:extra.tone || TONES[state], detail, action, aheadSeconds:extra.aheadSeconds ?? null});
 
@@ -67,14 +77,14 @@
       const aheadText = remaining === 0 ? 'Ready to the end of the chapter' : ahead === null ? '' : `${span(ahead)} ready ahead`;
       const detail = warn ? `At ${rate}× you reach unprepared audio${Number.isFinite(estimate.catchUpSeconds) ? ` in about ${span(estimate.catchUpSeconds)}` : ''}; playback pauses there until it is ready.`
         : aheadText ? `${aheadText}.` : '';
-      return result('playing', 'Playing', detail, null, {aheadSeconds:ahead, tone:warn ? 'warn' : undefined});
+      return result('playing', 'Playing', [detail, blockedNote(job)].filter(Boolean).join(' '), null, {aheadSeconds:ahead, tone:warn ? 'warn' : undefined});
     }
     if (input.preparing || input.buffering) {
       if (waiting) return result('waiting-for-rate-limit', 'Waiting for the request limit', waitDetail());
       const first = input.estimate?.firstAudioSeconds;
       return result('preparing', 'Preparing audio', Number.isFinite(first) && first > 0 ? `First audio in about ${span(first)}.` : 'Getting the next passages ready.');
     }
-    if (input.ended) return result('finished', 'Finished', input.ended === 'book' ? 'The end of the book.' : 'The end of this chapter.');
+    if (input.ended) return result('finished', 'Finished', `${input.ended === 'book' ? 'The end of the book.' : 'The end of this chapter.'}${blockedNote(job) ? ` ${blockedNote(job)}` : ''}`);
     // A job that ended before this chapter was fully prepared. Once nothing is
     // left to prepare, how preparation ended no longer matters to the listener.
     const unfinished = remaining === null || remaining > 0;
@@ -83,7 +93,8 @@
       if (status === 'quota_limited') return result('limit-reached', 'Daily limit reached', `Finished audio still plays. Preparation can resume after the daily reset${reset ? ` at ${reset}` : ''}.`, {id:'resume', label:'Resume'});
       if (status === 'budget_limited') return result('limit-reached', 'Spending limit reached', 'Finished audio still plays. Resume asks for more.', {id:'resume', label:'Resume'});
       if (status === 'cancelled') return result('stopped-by-you', 'Preparation stopped', 'You stopped preparing this chapter. Finished audio is saved.', {id:'resume', label:'Resume'});
-      if (status === 'failed') return result('failed', 'Could not prepare audio', `${reason || 'Preparation failed.'} Finished audio is saved.`, {id:'resume', label:'Try again'});
+      const hint = job.error_code === 'content_blocked' ? ' Try another narrator for this chapter.' : '';
+      if (status === 'failed') return result('failed', 'Could not prepare audio', `${reason || 'Preparation failed.'}${hint} Finished audio is saved.`, {id:'resume', label:'Try again'});
       if (status === 'interrupted') return result('interrupted', 'Preparation interrupted', 'Bardic stopped while preparing this chapter. Finished audio is saved.', {id:'resume', label:'Resume'});
     }
     if (input.error) return result('failed', 'Could not prepare audio', input.error, {id:'retry', label:'Try again'});
@@ -100,8 +111,9 @@
         : input.unavailableReason || 'This narrator cannot make new audio yet.';
       return result('needs-narrator', 'Choose a narrator', detail, {id:'narrator', label:'Choose narrator'});
     }
+    const note = blockedNote(job);
     const detail = input.sleepEnded ? 'The sleep timer paused playback.' : input.jobCancelledByPause ? 'Preparing ahead was stopped, so nothing more is requested.'
-      : remaining === 0 ? 'This chapter is ready.' : '';
+      : remaining === 0 ? `This chapter is ready.${note ? ` ${note}` : ''}` : note;
     return result('paused', input.started ? 'Paused' : 'Ready to listen', detail);
   }
 

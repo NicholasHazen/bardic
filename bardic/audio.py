@@ -95,6 +95,33 @@ class UncertainRequest(AudioError):
     """The request may have been processed and billed; never resend it automatically."""
 
 
+class ContentBlocked(AudioError):
+    """Gemini refused this exact text under its content policy (HTTP 400, error code ``content_blocked``).
+
+    Resending the same text is certain to fail and spends a request. The message is a fixed sentence:
+    the provider's own error text can echo request data and is never kept.
+    """
+
+    code = "content_blocked"
+
+
+# Structured Gemini error codes recognised on an HTTP 400, each with the fixed sentence kept in place of
+# the provider's own text. Any other body keeps the generic model/voice/length hint.
+GEMINI_CONTENT_BLOCKED_MESSAGE = (
+    "Gemini's content policy blocked this text (HTTP 400, content_blocked). Google does not say which "
+    "passage. This is not a model, voice or length problem.")
+_GEMINI_ERROR_CODES = {"content_blocked": (ContentBlocked, GEMINI_CONTENT_BLOCKED_MESSAGE)}
+
+
+def _gemini_error_code(response) -> str | None:
+    """The recognised structured ``error.code`` of an error reply, else None. Reads nothing else from the body."""
+    try:
+        code = (response.json().get("error") or {}).get("code")
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return code if isinstance(code, str) and code in _GEMINI_ERROR_CODES else None
+
+
 def _run(command: list[str], *, timeout: float, label: str) -> subprocess.CompletedProcess:
     """Never include input text, process stderr, or a credential in errors."""
     try:
@@ -419,6 +446,11 @@ def _generate_gemini(recipe: dict, api_key: str | None, *, timeout: float | None
         detail = ("The daily request quota for this model is used up; it resets at midnight Pacific time."
                   if scope == 'day' else "The project reached its quota or rate limit; retry later.")
         raise RateLimited(f"Gemini returned HTTP 429. {detail}", scope, retry_after)
+    if response.status_code == 400:
+        known = _gemini_error_code(response)
+        if known:
+            error, message = _GEMINI_ERROR_CODES[known]
+            raise error(message)
     if response.status_code >= 400:
         hints = {
             400: "Check the model, voice, and passage length.",

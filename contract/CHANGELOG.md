@@ -22,6 +22,18 @@ From 1.0, which comes with the first dedicated client release, additive changes 
 
 The generator records the version but does not classify the change: the author and the reviewer do. If two branches claim the same version, the changelog conflicts. Resolve it by giving the later change the next version: update `VERSION`, delete that entry's `contract-sha256` line, and regenerate.
 
+## 0.3.3 — 2026-09-29
+<!-- contract-sha256: f24c55e562d710342a317f527eef7eda5a8c1ca4d59723fafc42d867b8e2c986 -->
+
+Additive: text Gemini blocks under its content policy is recognised, retained, split once, and read by a fallback narrator, instead of failing a chapter or performance with a generic "check the model, voice and passage length" error.
+
+- New optional `Job.error_code` (`content_blocked`): set on a `failed` job whose cause is Gemini's content policy refusing text (HTTP 400, error code `content_blocked`) where no fallback path exists (a cast performance passage, a single-passage `listen` job). `error` is a fixed sentence; the provider's error text is never kept. Clients can add a hint keyed on the code.
+- `Job` of kind `listen_chapter`: new optional `fallback` (`JobFallbackNarrator`: `session_id`, `provider` `system`/`breeze`, `model`, `voice`; the free local narrator snapshotted at queue time, or null) and `content_blocked` (`JobContentBlocked`: `fallback`, `fallback_passage_ids`, `blocked_passage_ids`, `fallback_error`; present once Gemini blocked text of the chapter). A chapter with blocked text still ends `completed`; its `message` says how many passages a fallback narrator read or were left unrecorded.
+- `JobChapterChunk.status` gains `blocked`; new optional `split` (a half of a blocked chunk) and `split_into`. A blocked chunk of two or more passages is split once into halves; a blocked half or one-passage chunk is not split again, and its passages go to the fallback narrator. At most three Gemini requests per blocked chunk (the original and two halves), each reserved against the per-minute limiter and the daily count. Blocks are retained per session, exact text and recipe, so no later job resends them.
+- New optional `ListeningPassageAudio.substitute` (`ListeningSubstitute`: `reason` `content_blocked`, `for_provider`, `for_model`): marks a take of the fallback narrator standing in for a blocked passage. It is returned by `listListeningTakes`, `POST /listen` cache hits and the performance audio map like any passage take; for such a take `session_id` is the fallback narrator's session.
+- `PerformanceProgress` gains `passages_fallback`, `passages_blocked` and `fallback_provider`; `PerformanceChapterProgress` gains `passages_fallback`, `passages_blocked` and `blocked_passage_ids`. `passages_ready` includes passages a fallback narrator read (they play). A blocked passage with no audio is counted in `passages_blocked`, not as a failure. `PerformancePlan` `notes` mention blocked passages, and blocked passages without an available fallback narrator are excluded from `passages_to_generate` and `requests_estimate`.
+- Descriptions of `startChapterListening`, `startListening`, `listListeningTakes` and the performance job say how blocks are handled.
+
 ## 0.3.2 — 2026-09-29
 <!-- contract-sha256: 5adb59cbd70e985aea8dbe5e49e4d23a7ff722b246b31a267da142b2356dc40c -->
 

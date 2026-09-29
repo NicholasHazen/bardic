@@ -61,7 +61,7 @@
     good:['accepted', 'current', 'complete', 'completed', 'ready', 'done', 'succeeded', 'success', 'finished', 'in_use', 'playing', 'saved'],
     info:['running', 'queued', 'preparing', 'in_progress', 'active', 'loading', 'buffering'],
     warn:['stale', 'partial', 'budget_limited', 'quota_limited', 'uncertain', 'provisional', 'interrupted_unknown', 'interrupted', 'blocked',
-      'limit_reached', 'rate_limited', 'waiting_rate_limit', 'needs_review', 'out_of_date', 'unmeasured'],
+      'limit_reached', 'rate_limited', 'waiting_rate_limit', 'needs_review', 'out_of_date', 'unmeasured', 'read_by_fallback'],
     bad:['failed', 'rejected', 'error'],
     accent:['candidate', 'partly_accepted', 'proposed', 'draft'],
     neutral:['superseded', 'empty', 'idle', 'cancelled', 'canceled', 'stopped', 'stopped_by_you', 'paused', 'pending',
