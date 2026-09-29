@@ -817,11 +817,15 @@ textarea {
 }
 .modal {
   color:var(--ink);
-  width:510px;
-  max-width:calc(100vw - 30px);
+  width:min(var(--modal-width, var(--modal-w-md)), calc(100vw - var(--space-6)));
+  max-width:none;
   max-height:90vh;
   overflow:auto;
 }
+.import-modal { --modal-width:var(--modal-w-sm); }
+.settings-modal { --modal-width:var(--modal-w-lg); }
+.library-dialog { --modal-width:var(--modal-w-xl); }
+.listen-sheet { --modal-width:var(--modal-w-md); }
 .modal::backdrop {
   background:#29273066;
   backdrop-filter:blur(4px);
@@ -830,6 +834,7 @@ textarea {
   display:flex;
   align-items:center;
   justify-content:space-between;
+  align-items:flex-start;
   gap:20px;
 }
 .modal-header h2 {
@@ -1556,11 +1561,10 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .voice-preview-panel { background:var(--white); border-color:var(--line); }
 .voice-preview-panel small { font-size:12px; }
 .toast { bottom:130px; background:var(--ink); }
-.modal { border:1px solid var(--line); border-radius:12px; box-shadow:0 24px 90px #29273030; padding:28px; background:var(--paper); }
+.modal { border:1px solid var(--line); border-radius:12px; box-shadow:0 24px 90px #29273030; padding:var(--modal-pad); background:var(--paper); }
 .modal-header h2 { font-size:30px; }
 .modal-header .icon-button { margin:0; width:40px; }
 .modal-lead { font-size:13px; line-height:1.7; }
-.settings-modal { width:720px; }
 .settings-key-help { font-size:12px; }
 .provider-settings { background:var(--white); border:1px solid var(--line); padding:18px; border-radius:8px; }
 .provider-settings > summary { display:list-item; position:relative; padding-right:95px; }
@@ -1578,7 +1582,6 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .drop-zone { background:var(--green-light); border-color:#b7a6c0; border-radius:8px; padding:34px 18px; }
 .drop-zone > span:last-of-type,.drop-zone input { font-size:12px; }
 .upload-circle { color:var(--green); background:var(--white); }
-.library-dialog { width:1100px; }
 .library-cover-fallback { background:var(--green); border:0; color:var(--paper); }
 .production-pipeline,.pipeline-explorer,.resources-panel,.series-panel { border-radius:8px; background:var(--white); }
 
@@ -1712,7 +1715,8 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .player-options select { font-size:12px; padding:5px; }
   .voice-preview-panel { bottom:144px; left:0; max-height:240px; padding:16px 20px; }
   .toast { bottom:160px; }
-  .modal { padding:22px; max-width:calc(100vw - 24px); max-height:92dvh; }
+  .modal { --modal-pad:var(--space-5); max-height:92dvh; }
+  .provider-settings { padding:var(--space-3) var(--space-4); }
   .modal-footer { flex-wrap:wrap; gap:12px; }
   .modal-footer .field-help { font-size:12px; max-width:none; }
   .settings-footer { bottom:-22px; }
@@ -1945,3 +1949,21 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .segment-toolbar select { flex:1 1 0; width:0; min-width:0; max-width:none; }
   .segment-toolbar input { order:3; flex-basis:100%; }
 }
+
+/* Modal form layout: one padding scale (--modal-pad) and widths from the --modal-w-* scale, so nested cards, rows and the sticky footer line up on the dialog's content edge. */
+.modal-header .icon-button { flex:none; }
+.modal-footer .field-help { flex:1 1 12rem; max-width:none; margin:0; }
+.settings-footer { bottom:calc(-1 * var(--modal-pad)); padding:var(--space-4) 0; margin-bottom:0; }
+.provider-settings > summary { display:flex; align-items:center; gap:var(--space-3); padding-right:0; cursor:pointer; }
+.provider-settings > summary::before { content:""; flex:none; width:7px; height:7px; margin:0 var(--space-1); border:solid var(--color-text-muted); border-width:0 2px 2px 0; transform:rotate(-45deg); }
+.provider-settings[open] > summary::before { transform:rotate(45deg); }
+.provider-settings > summary > div { display:block; flex:1 1 auto; min-width:0; }
+.provider-heading .key-status { position:static; flex:none; margin-left:auto; }
+.library-dialog .library-manager { padding:var(--space-3) 0 var(--space-6); }
+.library-dialog .library-manager-heading h2 { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.library-dialog .library-manager-heading { align-items:center; }
+.modal-footer > .button { margin-left:auto; }
+.settings-models { grid-template-columns:minmax(0,1fr); gap:0; margin-top:var(--space-3); }
+.provider-settings .field-help + .model-picker { margin-top:var(--space-3); }
+.narration-limits .limit-grid { align-items:end; }
+.provider-settings > select { width:100%; }

@@ -58,6 +58,7 @@
   --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px;
 
   /* Shape. The listen sheet uses md for buttons, xl for option cards, pill for chips. */
+  --modal-w-sm:520px; --modal-w-md:640px; --modal-w-lg:780px; --modal-w-xl:1100px; --modal-pad:28px;
   --radius-sm:4px; --radius-md:6px; --radius-lg:8px; --radius-xl:10px; --radius-2xl:14px; --radius-pill:999px;
   --shadow-1:0 1px 3px rgb(41 39 48 / .08);
   --shadow-2:0 7px 25px rgb(41 39 48 / .14);
