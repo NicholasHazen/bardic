@@ -318,3 +318,23 @@ From `AGENTS.md`, `UI-GUIDE.md` and the listening docs. These are not preference
 5. A FigJam or diagram page for the state models in section 4.
 
 **Tool status:** the Figma design tools (`use_figma`, `generate_figma_design`, `create_new_file`, `generate_diagram`) are not exposed in this session. Only shader, plugin and Weave tools are. Step 10 is blocked until they are, or until you give me an existing file to work in through another route.
+
+---
+
+## 11. Decisions log (2026-09-30)
+
+| # | Decision | Choice |
+| --- | --- | --- |
+| 1 | Book structure | Audiobook-app model (candidate C) |
+| 2 | Platform priority | Phone and iPad first-class; desktop adapts |
+| 3 | Look | **Open for redesign** (three directions drawn on the canvas) |
+| 4 | Reading position and progress | Server-held (contract change needed) |
+| 5 | Library navigation | No sidebar book list; the shelf is the list |
+| 6 | Shelf grouping | By series, missing volumes inline |
+| 7 | Book management | A Manage page or sheet plus the book's "…" menu |
+| 8 | Listening status | Playback leads; preparation as a second line when it needs attention |
+| 9 | Performances | Listed on the book page under "Ways to listen" |
+| 10 | Settings | Full page |
+| 11 | Next step | Revise boards, then tablet layouts and the reader appearance panel |
+
+Decision 3 supersedes the "keep the existing tokens" assumption in section 7 and the Figma plan in section 10. Accessibility floors (4.5:1 text, 3:1 controls and focus, 44 px targets) and the consent rules still apply to any new look.
