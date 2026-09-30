@@ -1,0 +1,13 @@
+{
+  "name": "bardic-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bardic web client",
+  "scripts": {
+    "contract:sync": "sh scripts/sync-contract.sh",
+    "contract:types": "openapi-typescript contract/openapi.yaml -o src/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.0.0"
+  }
+}

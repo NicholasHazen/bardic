@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+coverage/
+*.log
+.env
+.DS_Store
+src/api/schema.d.ts

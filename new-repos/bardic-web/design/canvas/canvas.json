@@ -1,0 +1,772 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-09-30T19:53:53Z"
+ },
+ "title": "Bardic v2 UX",
+ "launch": {
+  "view": "canvas"
+ },
+ "pages": [],
+ "boards": {
+  "Overview.dc.html": {
+   "x": 540,
+   "y": 300,
+   "w": 1280,
+   "h": 930,
+   "title": "Bardic v2 · overview"
+  },
+  "Vocab.dc.html": {
+   "x": 1900,
+   "y": 300,
+   "w": 1280,
+   "h": 840,
+   "title": "Words and promises"
+  },
+  "Main.dc.html": {
+   "x": 3260,
+   "y": 300,
+   "w": 1280,
+   "h": 1180,
+   "title": "Foundations"
+  },
+  "Components.dc.html": {
+   "x": 4620,
+   "y": 300,
+   "w": 1280,
+   "h": 1120,
+   "title": "Base components"
+  },
+  "B1Palette.dc.html": {
+   "x": 5980,
+   "y": 300,
+   "w": 1280,
+   "h": 720,
+   "title": "Palette from the cover"
+  },
+  "FirstListener.dc.html": {
+   "x": 540,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Welcome · first listener"
+  },
+  "PickerFirstRun.dc.html": {
+   "x": 1010,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Who is listening · choose"
+  },
+  "SwitchListener.dc.html": {
+   "x": 1480,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Switch listener · phone"
+  },
+  "PickerManage.dc.html": {
+   "x": 1950,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Settings · Listeners"
+  },
+  "PickerAdd.dc.html": {
+   "x": 2420,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Add a listener"
+  },
+  "PickerNameTaken.dc.html": {
+   "x": 2890,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Edit · name taken"
+  },
+  "PickerDelete.dc.html": {
+   "x": 3360,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Delete a listener"
+  },
+  "PickerOnlyOne.dc.html": {
+   "x": 3830,
+   "y": 1820,
+   "w": 390,
+   "h": 844,
+   "title": "Edit · only listener"
+  },
+  "SwitchTablet.dc.html": {
+   "x": 4300,
+   "y": 1820,
+   "w": 1194,
+   "h": 834,
+   "title": "Switch listener · tablet landscape"
+  },
+  "HomeEmpty.dc.html": {
+   "x": 540,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Home · first run"
+  },
+  "Home.dc.html": {
+   "x": 1010,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Home · phone"
+  },
+  "HomeOffline.dc.html": {
+   "x": 1480,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Home · away from home"
+  },
+  "HomeTablet.dc.html": {
+   "x": 1950,
+   "y": 3060,
+   "w": 1194,
+   "h": 834,
+   "title": "Home · tablet landscape"
+  },
+  "Library.dc.html": {
+   "x": 3224,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Library · phone"
+  },
+  "LibraryDuplicate.dc.html": {
+   "x": 3694,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Already in your library"
+  },
+  "LibraryTablet.dc.html": {
+   "x": 4164,
+   "y": 3060,
+   "w": 1194,
+   "h": 834,
+   "title": "Library · tablet landscape"
+  },
+  "Import.dc.html": {
+   "x": 5438,
+   "y": 3060,
+   "w": 1780,
+   "h": 700,
+   "title": "Add a book · states"
+  },
+  "Manage.dc.html": {
+   "x": 7298,
+   "y": 3060,
+   "w": 390,
+   "h": 844,
+   "title": "Edit books · phone"
+  },
+  "BookTop.dc.html": {
+   "x": 540,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Book page · phone"
+  },
+  "BookChapters.dc.html": {
+   "x": 1010,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Book page, scrolled · phone"
+  },
+  "BookRunning.dc.html": {
+   "x": 1480,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Book page · making ready"
+  },
+  "BookTablet.dc.html": {
+   "x": 1950,
+   "y": 4300,
+   "w": 1194,
+   "h": 834,
+   "title": "Book page · tablet landscape"
+  },
+  "VoiceFree.dc.html": {
+   "x": 3224,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Choose a voice · free"
+  },
+  "VoicePremium.dc.html": {
+   "x": 3694,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Choose a voice · premium"
+  },
+  "VoiceNoAccount.dc.html": {
+   "x": 4164,
+   "y": 4300,
+   "w": 390,
+   "h": 844,
+   "title": "Premium · no account yet"
+  },
+  "PlanFree.dc.html": {
+   "x": 540,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Make it ready · free"
+  },
+  "PlanPremium.dc.html": {
+   "x": 1010,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Make it ready · premium plan"
+  },
+  "PlanPaused.dc.html": {
+   "x": 1480,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Making ready · paused at a limit"
+  },
+  "DownloadSheet.dc.html": {
+   "x": 1950,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Download to this device"
+  },
+  "Downloads.dc.html": {
+   "x": 2420,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Downloads"
+  },
+  "ServerOffline.dc.html": {
+   "x": 2890,
+   "y": 5540,
+   "w": 390,
+   "h": 844,
+   "title": "Away from home · server unreachable"
+  },
+  "B1Listen.dc.html": {
+   "x": 540,
+   "y": 6780,
+   "w": 390,
+   "h": 844,
+   "title": "Now playing, Listen · phone"
+  },
+  "B1Read.dc.html": {
+   "x": 1010,
+   "y": 6780,
+   "w": 390,
+   "h": 844,
+   "title": "Now playing, Read · phone"
+  },
+  "B1ReadControls.dc.html": {
+   "x": 1480,
+   "y": 6780,
+   "w": 390,
+   "h": 844,
+   "title": "Read, controls revealed · phone"
+  },
+  "BarExpanded.dc.html": {
+   "x": 1950,
+   "y": 6780,
+   "w": 390,
+   "h": 844,
+   "title": "Now playing bar, expanded · phone"
+  },
+  "B1Tablet.dc.html": {
+   "x": 2420,
+   "y": 6780,
+   "w": 1194,
+   "h": 834,
+   "title": "Now playing · tablet landscape"
+  },
+  "B1TabletListen.dc.html": {
+   "x": 3694,
+   "y": 6780,
+   "w": 834,
+   "h": 1194,
+   "title": "Now playing, Listen · tablet portrait"
+  },
+  "B1TabletRead.dc.html": {
+   "x": 4608,
+   "y": 6780,
+   "w": 834,
+   "h": 1194,
+   "title": "Now playing, Read · tablet portrait"
+  },
+  "Status.dc.html": {
+   "x": 5522,
+   "y": 6780,
+   "w": 1280,
+   "h": 680,
+   "title": "Listening states"
+  },
+  "ReaderAppearance.dc.html": {
+   "x": 540,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Reader appearance · phone"
+  },
+  "SleepTimer.dc.html": {
+   "x": 1010,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Sleep timer · phone"
+  },
+  "ChaptersSheet.dc.html": {
+   "x": 1480,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Chapters · phone"
+  },
+  "SpeedSheet.dc.html": {
+   "x": 1950,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Playback speed · phone"
+  },
+  "BookSearch.dc.html": {
+   "x": 2420,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Find in book"
+  },
+  "ReadAway.dc.html": {
+   "x": 2890,
+   "y": 8300,
+   "w": 390,
+   "h": 844,
+   "title": "Read · scrolled away"
+  },
+  "ReaderAppearanceTablet.dc.html": {
+   "x": 3360,
+   "y": 8300,
+   "w": 1194,
+   "h": 834,
+   "title": "Reader appearance · tablet landscape"
+  },
+  "Settings.dc.html": {
+   "x": 540,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Settings · phone"
+  },
+  "VoiceSources.dc.html": {
+   "x": 1010,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Voices"
+  },
+  "PremiumAccount.dc.html": {
+   "x": 1480,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Premium voices · account"
+  },
+  "Allowance.dc.html": {
+   "x": 1950,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Allowance · no limit"
+  },
+  "AllowanceLimit.dc.html": {
+   "x": 2420,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Allowance · with a limit"
+  },
+  "BreezeServer.dc.html": {
+   "x": 2890,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "Breeze server"
+  },
+  "ServerName.dc.html": {
+   "x": 3360,
+   "y": 9540,
+   "w": 390,
+   "h": 844,
+   "title": "About this Bardic"
+  },
+  "FirstPlay.dc.html": {
+   "x": 540,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "First play · getting ready"
+  },
+  "NoVoice.dc.html": {
+   "x": 1010,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "First play · no voice set up"
+  },
+  "BookMenu.dc.html": {
+   "x": 1480,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Book menu"
+  },
+  "DownloadProgress.dc.html": {
+   "x": 1950,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Downloading · failed · out of date"
+  },
+  "PlanBlocked.dc.html": {
+   "x": 2420,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Plan would pass the Allowance"
+  },
+  "KeyProblem.dc.html": {
+   "x": 2890,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Premium key rejected"
+  },
+  "PlaceConflict.dc.html": {
+   "x": 3360,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Two places · choose one"
+  },
+  "UpdateAudio.dc.html": {
+   "x": 3830,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Newer audio · what changed"
+  },
+  "VoiceDefault.dc.html": {
+   "x": 4300,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Settings · default voice"
+  },
+  "EstimateExplained.dc.html": {
+   "x": 4770,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "How an estimate works"
+  },
+  "SetupVoice.dc.html": {
+   "x": 5240,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "First time · set up a voice"
+  },
+  "DeleteConfirm.dc.html": {
+   "x": 5710,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Delete permanently"
+  },
+  "DeleteUndo.dc.html": {
+   "x": 6180,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Deleting · undo for 60 s"
+  },
+  "EndOfBook.dc.html": {
+   "x": 6650,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "End of book"
+  },
+  "FreeSpace.dc.html": {
+   "x": 7120,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Free up space"
+  },
+  "SearchEmpty.dc.html": {
+   "x": 7590,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Search · no results"
+  },
+  "ReadDownloading.dc.html": {
+   "x": 8060,
+   "y": 10780,
+   "w": 390,
+   "h": 844,
+   "title": "Read · downloading in the background"
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "Overview.dc.html",
+  "Vocab.dc.html",
+  "Components.dc.html",
+  "B1Palette.dc.html",
+  "FirstListener.dc.html",
+  "PickerFirstRun.dc.html",
+  "SwitchListener.dc.html",
+  "PickerManage.dc.html",
+  "PickerAdd.dc.html",
+  "PickerNameTaken.dc.html",
+  "PickerDelete.dc.html",
+  "PickerOnlyOne.dc.html",
+  "SwitchTablet.dc.html",
+  "HomeEmpty.dc.html",
+  "Home.dc.html",
+  "HomeOffline.dc.html",
+  "HomeTablet.dc.html",
+  "Library.dc.html",
+  "LibraryDuplicate.dc.html",
+  "LibraryTablet.dc.html",
+  "Import.dc.html",
+  "Manage.dc.html",
+  "BookTop.dc.html",
+  "BookChapters.dc.html",
+  "BookRunning.dc.html",
+  "BookTablet.dc.html",
+  "VoiceFree.dc.html",
+  "VoicePremium.dc.html",
+  "VoiceNoAccount.dc.html",
+  "PlanFree.dc.html",
+  "PlanPremium.dc.html",
+  "PlanPaused.dc.html",
+  "DownloadSheet.dc.html",
+  "Downloads.dc.html",
+  "ServerOffline.dc.html",
+  "B1Listen.dc.html",
+  "B1Read.dc.html",
+  "B1ReadControls.dc.html",
+  "BarExpanded.dc.html",
+  "B1Tablet.dc.html",
+  "B1TabletListen.dc.html",
+  "B1TabletRead.dc.html",
+  "Status.dc.html",
+  "ReaderAppearance.dc.html",
+  "SleepTimer.dc.html",
+  "ChaptersSheet.dc.html",
+  "SpeedSheet.dc.html",
+  "BookSearch.dc.html",
+  "ReadAway.dc.html",
+  "ReaderAppearanceTablet.dc.html",
+  "Settings.dc.html",
+  "VoiceSources.dc.html",
+  "PremiumAccount.dc.html",
+  "Allowance.dc.html",
+  "AllowanceLimit.dc.html",
+  "BreezeServer.dc.html",
+  "ServerName.dc.html",
+  "FirstPlay.dc.html",
+  "NoVoice.dc.html",
+  "BookMenu.dc.html",
+  "DownloadProgress.dc.html",
+  "PlanBlocked.dc.html",
+  "KeyProblem.dc.html",
+  "PlaceConflict.dc.html",
+  "UpdateAudio.dc.html",
+  "VoiceDefault.dc.html",
+  "EstimateExplained.dc.html",
+  "SetupVoice.dc.html",
+  "DeleteConfirm.dc.html",
+  "DeleteUndo.dc.html",
+  "EndOfBook.dc.html",
+  "FreeSpace.dc.html",
+  "SearchEmpty.dc.html",
+  "ReadDownloading.dc.html"
+ ],
+ "notes": {
+  "t0": {
+   "kind": "title1",
+   "text": "Overview and foundations",
+   "x": 540,
+   "y": 40,
+   "maxW": 6720,
+   "w": 240
+  },
+  "s0": {
+   "x": 0,
+   "y": 300,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "blue",
+   "text": "Bardic v2\nThree tabs: Home, Library, Settings. A book has audiobooks (one voice each). Play works at once with a free voice; everything else is opt-in."
+  },
+  "t1": {
+   "kind": "title1",
+   "text": "Listeners",
+   "x": 540,
+   "y": 1560,
+   "maxW": 4954,
+   "w": 240
+  },
+  "s1": {
+   "x": 0,
+   "y": 1820,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "green",
+   "text": "Listeners\nA dropdown, no password. Places and finished marks are per listener; everything else is shared."
+  },
+  "t2": {
+   "kind": "title1",
+   "text": "Home and Library",
+   "x": 540,
+   "y": 2800,
+   "maxW": 7148,
+   "w": 240
+  },
+  "s2": {
+   "x": 0,
+   "y": 3060,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "orange",
+   "text": "Home and Library\nHome is Continue, on this device and recent. Library is every book. A download badge marks books on this device."
+  },
+  "t3": {
+   "kind": "title1",
+   "text": "Book and audiobooks",
+   "x": 540,
+   "y": 4040,
+   "maxW": 4014,
+   "w": 240
+  },
+  "s3": {
+   "x": 0,
+   "y": 4300,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "purple",
+   "text": "Book page\nThe audiobook card is the centre: which voice, how much is ready, how much is on this device. Make ready and Download are its two verbs."
+  },
+  "t4": {
+   "kind": "title1",
+   "text": "Make it ready and offline",
+   "x": 540,
+   "y": 5280,
+   "maxW": 2740,
+   "w": 240
+  },
+  "s4": {
+   "x": 0,
+   "y": 5540,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "blue",
+   "text": "Plans and offline\nPaid work is one plan with a limit you approve. Downloads are per device; away from home, downloaded chapters still play."
+  },
+  "t5": {
+   "kind": "title1",
+   "text": "Listen and read",
+   "x": 540,
+   "y": 6520,
+   "maxW": 6262,
+   "w": 240
+  },
+  "s5": {
+   "x": 0,
+   "y": 6780,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "purple",
+   "text": "Listen and read\nUnchanged from v1 in structure. Status is reduced to four words."
+  },
+  "t6": {
+   "kind": "title1",
+   "text": "Reader sheets",
+   "x": 540,
+   "y": 8040,
+   "maxW": 4014,
+   "w": 240
+  },
+  "s6": {
+   "x": 0,
+   "y": 8300,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "green",
+   "text": "Reader sheets\nUnchanged from v1 apart from vocabulary: Ready, Making, Not yet."
+  },
+  "t7": {
+   "kind": "title1",
+   "text": "Settings",
+   "x": 540,
+   "y": 9280,
+   "maxW": 3210,
+   "w": 240
+  },
+  "s7": {
+   "x": 0,
+   "y": 9540,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "orange",
+   "text": "Settings\nVoices (free, premium, your own server), Allowance, Downloads. Keys and limits live one level down."
+  },
+  "t8": {
+   "kind": "title1",
+   "text": "Edge states and recovery",
+   "x": 540,
+   "y": 10520,
+   "maxW": 7910,
+   "w": 240
+  },
+  "s8": {
+   "x": 0,
+   "y": 10780,
+   "w": 440,
+   "maxH": 560,
+   "size": 24,
+   "fill": "red",
+   "text": "Edge states\nWhat happens when it goes wrong: no voice, a rejected key, an Allowance that is too low, a failed or out-of-date download. Each says what is kept."
+  }
+ },
+ "designSystems": []
+}
