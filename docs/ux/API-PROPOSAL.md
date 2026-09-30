@@ -109,7 +109,7 @@ ListenSource  (named oneOf, discriminator `kind`; open enumeration)
   { kind: "performance", performance_id: string }
 ```
 
-`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. `session_id` is opaque and browser-minted; the server stores it verbatim and does not validate it (open question 3).
+`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. `session_id` is opaque and browser-minted; the server stores it verbatim and does not validate it (open question 2).
 
 ### Operations
 
@@ -165,7 +165,7 @@ The Continue row is `checkpoint != null && !checkpoint.finished`, sorted by `che
 
 - `book_checkpoints(profile_id TEXT NOT NULL, book_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(profile_id, book_id))`, with `checkpoint_version: 1` in the body. Created idempotently; writes are short Store-lock transactions, never held across requests.
 - Archiving a book keeps checkpoints (restore resumes). Excluded from the analysis export.
-- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone, the response resolves to the first passage of the nearest earlier surviving chapter (open question 4).
+- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone, the response resolves to the first passage of the nearest earlier surviving chapter (open question 3).
 
 ### Client behaviour
 
@@ -302,12 +302,12 @@ ChapterAudioStatus {
 
 - `state` is `complete` when every passage is ready, `stale` when nothing is ready but some passages have stale takes, `partial` when some are ready, `none` otherwise. Stale audio stays a separate count (AGENTS.md: rejected, cached, stale and unknown states remain distinct) and is never counted as ready.
 - `seconds_total` is null rather than 0 when durations for the missing passages are unknown (unknown is not zero). The design shows "n of m chapters saved" from the passage counts, never from a guessed total.
-- Errors: 404 `book_not_found`; 404 `listening_source_not_found` when the source ID does not exist for the book (for `performance`) — sessions cannot be checked (open question 3), so an unknown session ID returns a valid, all-`none` status; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
+- Errors: 404 `book_not_found`; 404 `listening_source_not_found` when the source ID does not exist for the book (for `performance`) — sessions cannot be checked (open question 2), so an unknown session ID returns a valid, all-`none` status; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
 - Cost: none, no provider. Each call resolves currency by checking take metadata against current passages, so it costs about as much as `listListeningTakes`; document that, and cache nothing server-side in the first version.
 
 ### Optional follow-up: `listBookAudioSources`
 
-`GET /api/books/{book_id}/audio-sources` would return each source that has any saved audio (with its voice snapshot and counts), feeding "Ways to listen" and the narrator sheet's "already recorded" hints without the client remembering session IDs. It depends on making listening sessions a server-held resource, which is a larger change (open question 3), so it is **not** part of this proposal's patch series.
+`GET /api/books/{book_id}/audio-sources` would return each source that has any saved audio (with its voice snapshot and counts), feeding "Ways to listen" and the narrator sheet's "already recorded" hints without the client remembering session IDs. It depends on making listening sessions a server-held resource, which is a larger change (open question 2), so it is **not** part of this proposal's patch series.
 
 ### Tests
 
