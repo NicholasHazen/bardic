@@ -5,7 +5,7 @@ info:
   summary: Contract between the Bardic server and its clients (draft).
   description: |
     Normative, language-neutral contract for Bardic v2. It is derived from
-    `docs/ux/PRODUCT-SPEC-V2.md`, not from the prototype. Clients are generated
+    `docs/PRODUCT-SPEC.md`, not from the prototype. Clients are generated
     from this file; the server must satisfy it. Read `README.md` in this folder
     first: it explains identity headers, errors, money, events, long-running
     work and the place-sync protocol once, so each operation does not repeat them.
