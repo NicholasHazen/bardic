@@ -427,10 +427,15 @@ def parse_book(filename: str, data: bytes) -> dict:
                 continue
             scene = {"id": _id("scene"), "chapter_id": chapter["id"], "title": f"{heading} · Scene {sum(s['chapter_id'] == chapter['id'] for s in book['scenes']) + 1}", "summary": "", "tone": "Unreviewed", "direction": "", "segment_ids": [], "character_ids": []}
             book["scenes"].append(scene)
+            speakers = set()
             for start, end, kind in _passages(text, a, b):
                 segment = {"id": _id("segment"), "chapter_id": chapter["id"], "scene_id": scene["id"], "start": start, "end": end, "text": text[start:end], "kind": kind, "speaker_id": "unassigned" if kind == "dialogue" else "narrator", "confidence": 0.0 if kind == "dialogue" else 1.0, "direction": "", "cues": [], "audio": None}
                 book["segments"].append(segment)
                 scene["segment_ids"].append(segment["id"])
+                speakers.add(segment["speaker_id"])
+            # A scene lists the speakers of its passages, which every later edit and analysis recomputes
+            # (sorted, as an edit does). Straight from import that is `narrator` and/or `unassigned`.
+            scene["character_ids"] = sorted(speakers)
     if not book["segments"]:
         raise ValueError("No readable text was found in this book.")
     if cover_data:

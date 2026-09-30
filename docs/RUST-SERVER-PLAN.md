@@ -111,7 +111,7 @@ The contract is settled when a Rust server and a generated client can be written
 
 - **Authentication:** none for now, since the app has no users. **CORS:** an extremely permissive policy is available but opt-in, through `BARDIC_CORS_ORIGINS` (`*` or a list of origins), off by default (contract 0.4.1). With `*`, any web page in a browser that can reach the server can read and change the library and start paid work; the server prints a warning at startup. The Host check stays, and dev and conformance servers blank the setting. Chromium's private-network rules for public pages calling loopback are not handled (no `Access-Control-Allow-Private-Network`) and are unverified.
 - **Shapes:** one deliberate breaking change, contract 0.5.0, made before any client is generated (below).
-- **Python bugs found by the harness** stay as strict expected failures in `conformance/` and are fixed during the port.
+- **Python bugs found by the harness** stayed as strict expected failures in `conformance/` at first. On 2026-09-30 the owner decided to fix the two known ones in Python before the Rust server implements books; the conformance suite has no expected failures now (below).
 
 **Done in contract 0.4.0:** the handshake (`Status.contract` and the `Bardic-Contract-Version` header on every `/api` response), `getJob`, and 12 always-sent fields made required. Three changes were breaking: `Job.analysis_limits` lost its indistinguishable second shape, `ResourceAggregate` totals became integers, and `ListeningSession.settings` is typed.
 
@@ -155,12 +155,12 @@ The contract is settled when a Rust server and a generated client can be written
 
 **Status (2026-09-28).** The harness (`conformance/`, see [development](DEVELOPMENT.md#conformance-suite-and-contract-pin)) runs against any base URL or spawns a server command, validates every response against `contract/openapi.json` with closed objects, and reports operation coverage: 72 of 99 operations have a 2xx, 27 need a fake provider and are listed with reasons, and 185 of 700 documented error-code triples are exercised. Its 107 self-tests show the checker fails on each kind of violation, and three seeded faults in Python (a UTF-16 offset, an extra status field, a wrong 404 code) were all caught. Still to build: fake providers with provider endpoint overrides, text vectors, and per-domain seeded-fault checks.
 
-**Found by the harness in the Python server (contract 0.4.0), left unfixed:**
+**Found by the harness in the Python server (contract 0.4.0), fixed before the port reached books:**
 
-- After a TXT or EPUB import, `scenes[].character_ids` is empty, though the contract says it lists the passages' speakers, `narrator` and `unassigned` included. The demo book and an edit fill it.
-- `editPassage` with only `direction` on a narration passage returns `manual_fields: ["direction", "speaker_id"]`, locking a field that was not sent. The contract says an edit locks only the fields whose values it changes.
+- After a TXT or EPUB import, `scenes[].character_ids` was empty, though the contract says it lists the passages' speakers, `narrator` and `unassigned` included. The importer now fills it (sorted, as an edit does). Books imported earlier keep the stored empty lists until an edit of that book, or an accepted analysis version that changes its scene breaks or speakers, recomputes them; stored data is not rewritten.
+- `editPassage` with only `direction` on a narration passage returned `manual_fields: ["direction", "speaker_id"]`, listing a field that was not sent. Cause: `reviewed_speaker` read `edited` with confidence 1.0 as a speaker confirmation, the marker of a confirmation saved before contract 0.2.0, but narration is created at confidence 1.0, so any edit of a narration passage matched. That marker now counts on dialogue only. The edit route already recorded only the fields whose values changed, and the analysis lock (`locked`) never included the speaker; the extra field appeared in `manual_fields` (and in the pipeline UI's "your speaker" test, which reads it).
 
-Both fail in `conformance/` today, on purpose. Per the plan's policy, they are fixed in Python as their own versioned changes, then the tests pass.
+Neither fix changes the contract. The strict expected-failure markers on the two conformance tests are gone, and the suite passes with no expected failures.
 
 **Exit, per domain:** each of its operations receives a 2xx response; the error codes a client branches on are covered; each invariant above that it touches has a test. Seeded faults in Python (wrong offset, missing reservation, a resend after an uncertain outcome) are caught, which shows the tests can fail.
 

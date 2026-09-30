@@ -100,6 +100,30 @@ def test_epub_hr_preserves_inline_words_and_starts_scene():
     assert_full_prose_coverage(book)
 
 
+def assert_scenes_list_their_speakers(book, expected):
+    """Every scene's `character_ids` is the sorted set of its passages' speakers; `expected` names them per scene."""
+    passages = {s["id"]: s for s in book["segments"]}
+    assert [scene["character_ids"] for scene in book["scenes"]] == expected
+    for scene in book["scenes"]:
+        assert scene["character_ids"] == sorted({passages[i]["speaker_id"] for i in scene["segment_ids"]})
+        assert scene["character_ids"], "a scene has passages, so it has at least one speaker"
+
+
+def test_txt_scenes_list_the_speakers_of_their_passages():
+    # Scene 1 mixes narration and dialogue, scene 2 is narration only, scene 3 is dialogue only.
+    raw = 'Chapter One\n\nMara held the lamp. “Stay,” she said.\n\n***\n\nNight fell over the quiet harbor.\n\n***\n\n“No.”\n'
+    book = parse_book("story.txt", raw.encode())
+    assert_scenes_list_their_speakers(book, [["narrator", "unassigned"], ["narrator"], ["unassigned"]])
+
+
+def test_epub_scenes_list_the_speakers_of_their_passages():
+    chapters = {"one": "<h1>One</h1><p>The tide turned. “Come in,” said the keeper.</p><hr/><p>Silence held the room.</p>",
+                "two": "<h1>Two</h1><p>“Not yet.”</p>"}
+    book = parse_book("scenes.epub", epub_file(chapters=chapters))
+    # The last scene is the second chapter: its heading is a narration passage before the quoted line.
+    assert_scenes_list_their_speakers(book, [["narrator", "unassigned"], ["narrator"], ["narrator", "unassigned"]])
+
+
 def test_epub_rejects_zip_traversal_and_xml_entities():
     with pytest.raises(ValueError, match="unsafe file path"):
         parse_book("bad.epub", epub_file(extras={"../escape": "data"}))

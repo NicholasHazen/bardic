@@ -332,10 +332,20 @@ def reviewed_speaker(segment):
 
     The speaker is edit-locked (:func:`locked`). Before per-field locks recorded
     confirmations, confirming an unchanged speaker set only ``edited`` and
-    confidence 1.0; that older marker still counts.
+    confidence 1.0; that older marker still counts, on dialogue.
+
+    On narration it counts for nothing: a narration passage is created (and
+    analysed) at confidence 1.0 with the narrator as its speaker, so ``edited``
+    there only says that some other field (direction, cues, seed) was changed.
+    Reading it as a speaker review would report a field the person never touched
+    as a manual choice. A person's change to a narration passage's speaker is in
+    ``edited_fields``, or in the whole-item lock of a passage edited before
+    per-field tracking, which :func:`locked` reports.
     """
     if locked(segment, 'speaker_id'):
         return True
+    if segment.get('kind') == 'narration':
+        return False
     confidence = segment.get('confidence')
     return bool(segment.get('edited')) and isinstance(confidence, (int, float)) and confidence >= 1.0
 
