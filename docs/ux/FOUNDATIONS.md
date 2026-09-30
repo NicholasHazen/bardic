@@ -346,3 +346,9 @@ Later decisions (2026-09-30):
 - **Top bar stays** in Read mode.
 - **Cover colour.** The palette is derived from a colour sample of the cover, so a sample must be stored with the cover (a small backend addition).
 - The canvas keeps only the B1 look; the earlier A, B, C, B2 and B3 explorations were removed at the owner's request.
+
+Studio and review (2026-09-30):
+
+- The Studio (Analyze, Cast, Script, Record, Performances) is drawn for phone and tablet landscape, with a flow map. Every paid or off-device action goes through an estimate and a confirm that names the cost; unknown cost stays unknown.
+- Boards were rendered and reviewed twice by independent reviewers. Fixes applied: 44px minimum targets, one radius scale with concentric nesting, content-height sheets with one header pattern, stronger scrims, muted text lifted for contrast over the glow, and one status vocabulary (Ready, Needs setup, Done, In progress).
+- Open items the reviews raised that are not resolved: tablet portrait Listen is still a stretched phone player; Studio has no dedicated stale-recordings state after a voice change.
