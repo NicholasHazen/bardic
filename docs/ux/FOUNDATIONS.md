@@ -327,7 +327,7 @@ From `AGENTS.md`, `UI-GUIDE.md` and the listening docs. These are not preference
 | --- | --- | --- |
 | 1 | Book structure | Audiobook-app model (candidate C) |
 | 2 | Platform priority | Phone and iPad first-class; desktop adapts |
-| 3 | Look | **Open for redesign** (three directions drawn on the canvas) |
+| 3 | Look | **B1 "Aurora glass"**: dark base and glows derived from the cover, frosted glass, one accent lifted for contrast |
 | 4 | Reading position and progress | Server-held (contract change needed) |
 | 5 | Library navigation | No sidebar book list; the shelf is the list |
 | 6 | Shelf grouping | By series, missing volumes inline |
@@ -338,3 +338,11 @@ From `AGENTS.md`, `UI-GUIDE.md` and the listening docs. These are not preference
 | 11 | Next step | Revise boards, then tablet layouts and the reader appearance panel |
 
 Decision 3 supersedes the "keep the existing tokens" assumption in section 7 and the Figma plan in section 10. Accessibility floors (4.5:1 text, 3:1 controls and focus, 44 px targets) and the consent rules still apply to any new look.
+
+Later decisions (2026-09-30):
+
+- **Now Playing has two modes.** *Listen*: cover, title and transport with speed, sleep, chapters and narrator; no passage text. *Read*: the text fills the screen and the controls are one floating capsule that opens a drawer; the capsule and cover never grow on any device.
+- **Orientation.** Phones are portrait-only. Tablets support portrait (mode switch) and landscape (Listen on the left with all controls, Read on the right with none).
+- **Top bar stays** in Read mode.
+- **Cover colour.** The palette is derived from a colour sample of the cover, so a sample must be stored with the cover (a small backend addition).
+- The canvas keeps only the B1 look; the earlier A, B, C, B2 and B3 explorations were removed at the owner's request.
