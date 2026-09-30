@@ -75,7 +75,7 @@ CRUD and the validation errors; default fallback with no header; unknown header 
 
 ### Model: coarse on the server, granular on the client
 
-A **checkpoint** answers "where was this profile in this book, last time, on any device, and is the book finished". It is a *current projection* per profile and book (AGENTS.md: not history, not a cache, not an artifact). Moving it never touches canonical text, takes or performances. Only the current checkpoint is kept, no trail of past ones.
+A **checkpoint** answers "where was this profile in this book, last time, on any device, and is the book finished". It is a *current projection* per profile and book (AGENTS.md: not history, not a cache, not an artifact). Moving it never touches canonical text, takes or performances. The current checkpoint is the truth; a short bounded history of earlier ones is kept for undo (below).
 
 The split:
 
@@ -109,7 +109,7 @@ ListenSource  (named oneOf, discriminator `kind`; open enumeration)
   { kind: "performance", performance_id: string }
 ```
 
-`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. `session_id` is opaque and browser-minted; the server stores it verbatim and does not validate it (open question 2).
+`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. `session_id` is opaque and browser-minted; the server stores it verbatim and does not validate it (open question 1).
 
 ### Operations
 
@@ -120,6 +120,7 @@ All are profile-scoped through the `X-Bardic-Profile` header.
 | `getBookCheckpoint` | `GET /api/books/{book_id}/checkpoint` | Current checkpoint. |
 | `setBookCheckpoint` | `PUT /api/books/{book_id}/checkpoint` | Replace the position (idempotent). |
 | `setBookFinished` | `PUT /api/books/{book_id}/checkpoint/finished` | Mark finished or reopen. |
+| `listBookCheckpointHistory` | `GET /api/books/{book_id}/checkpoint/history` | Earlier places, newest first. |
 | `clearBookCheckpoint` | `DELETE /api/books/{book_id}/checkpoint` | "Mark as not started". |
 
 `getBookCheckpoint` returns 200, or 404 `checkpoint_not_found` when this profile never opened the book (the typed form of "no checkpoint"; lists use the nullable field below).
@@ -133,11 +134,12 @@ All are profile-scoped through the `X-Bardic-Profile` header.
 
 - The server converts `passage_id` + `passage_fraction` to `char_offset`, validating that the passage belongs to `chapter_id` and this book, and returns 200 with the stored `BookCheckpoint`.
 - **Last write wins per profile and book.** `updated_at` is set by the server; a client-supplied time is not accepted, so a wrong device clock cannot pin the place. `device_id` is informational.
+- **`updated_at` moves only when the checkpoint actually changes.** A write that stores the same `char_offset`, `mode` and `source` as the current checkpoint changes nothing and returns it as is. So a client heartbeat while paused on the same word does not restart the finish clock or reorder Continue.
 - Errors: 404 `book_not_found`, `profile_not_found`; 409 `book_archived`; 400 `checkpoint_invalid` (chapter not in book, passage not in chapter, fraction outside `[0, 1)`), 400 `invalid_request`.
 
 `setBookFinished` request `{finished: boolean}`:
 - `true`: marks the book finished with `finished_reason: "marked"`, keeps the current place, or when there is no checkpoint creates one at the end of the last narrative chapter.
-- `false`: reopens it (`finished: false`, place kept). Also clears the auto-finish clock (below) and restarts it if the place is still at or past 98%.
+- `false`: reopens it (`finished: false`, place kept). This is a change, so it bumps `updated_at` and restarts the auto-finish clock if the place is still at or past 98%.
 
 `clearBookCheckpoint` returns 204 and is idempotent. It removes only this profile's current checkpoint for the book.
 
@@ -145,11 +147,22 @@ All are profile-scoped through the `X-Bardic-Profile` header.
 
 A book is finished for a profile when **either**:
 1. **Marked** by that profile with `setBookFinished(true)`, immediately; or
-2. **Reached the end and stayed there**: its `progress` has been at or above **0.98 continuously for more than 24 hours** (`finished_reason: "reached_end"`, `finished_at` is the moment the 24 hours elapsed).
+2. **Left at the end**: `progress >= 0.98` and the checkpoint has not changed for more than **24 hours** (`finished_reason: "reached_end"`, `finished_at` = `updated_at` + 24 hours).
 
-Rule 2 needs one stored field, `threshold_at` (not on the wire): set by the first checkpoint write with `progress >= 0.98`, kept by later writes that stay at or above 0.98 (finishing the last chapter, then replaying part of it, does not restart the day), and cleared by any write below 0.98. `finished` is evaluated **at read time** (`now - threshold_at > 24 h`), so there is no background job, and it is always consistent with the stored rows. Moving the checkpoint below 0.98 after a book auto-finished reopens it; a *marked* finish is only undone by `setBookFinished(false)` or `clearBookCheckpoint`.
+**Any change resets the clock.** A change is any write that alters the stored `char_offset`, `mode` or `source`, `setBookFinished(false)`, or a mark. Rule 2 therefore needs no extra stored state: `finished` is computed at read time from `progress` and `updated_at`, so there is no background job and no clock to drift. A replay of the last chapter restarts the day, and so does moving below 98%.
+
+A *marked* finish is also undone by any change of place: listening again means the book is not finished. It is otherwise cleared by `setBookFinished(false)` or `clearBookCheckpoint`.
 
 Consequence for the design: a book at 98 to 100% stays in Continue for a day so the last chapter can be finished, replayed or marked done. The UI can show "Almost done" from `progress >= 0.98 && !finished`. The "Done" status and Finished shelf use `finished`. Player states such as "The end of the book" remain a player concern and do not change library status by themselves.
+
+### Checkpoint history
+
+For "undo a mis-tap" and "where was I yesterday". The server keeps at most **10 earlier checkpoints per profile and book**, dropping the oldest.
+
+- When a write changes the checkpoint, the *previous* checkpoint is pushed to history if it was **at least 30 minutes old** (a new sitting) or the new place is a **jump of 2% progress or more** in either direction (a seek or a chapter jump). Ordinary listening therefore does not flood the list, and a mis-tap seek is always recoverable.
+- `listBookCheckpointHistory` returns `{items: [BookCheckpoint]}`, newest first, excluding the current one. `finished` is not evaluated for history items (always false, `finished_at` null) because they are past places.
+- There is no restore operation: the client restores by sending an item's `chapter_id`, `passage_id` and `passage_fraction` to `setBookCheckpoint`, which is itself a recorded move, so a restore can be undone too.
+- `clearBookCheckpoint` removes history as well. Errors: 404 `book_not_found`, `profile_not_found`; an empty list is 200.
 
 ### Library integration
 
@@ -163,9 +176,9 @@ The Continue row is `checkpoint != null && !checkpoint.finished`, sorted by `che
 
 ### Storage and lifecycle
 
-- `book_checkpoints(profile_id TEXT NOT NULL, book_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(profile_id, book_id))`, with `checkpoint_version: 1` in the body. Created idempotently; writes are short Store-lock transactions, never held across requests.
+- `book_checkpoints(profile_id TEXT NOT NULL, book_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(profile_id, book_id))`, with `checkpoint_version: 1` in the body; the body holds the current checkpoint and its bounded history list. Created idempotently; writes are short Store-lock transactions, never held across requests.
 - Archiving a book keeps checkpoints (restore resumes). Excluded from the analysis export.
-- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone, the response resolves to the first passage of the nearest earlier surviving chapter (open question 3).
+- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone, the response resolves to the first passage of the nearest earlier surviving chapter (open question 2).
 
 ### Client behaviour
 
@@ -176,7 +189,7 @@ The Continue row is `checkpoint != null && !checkpoint.finished`, sorted by `che
 
 ### Tests
 
-Contract test receiving a 2xx from every operation, and `LibraryBookSummary.checkpoint` both populated and null. Unit tests: offset round-trip through a passage split; invalid passage or chapter; archived book 409; two profiles with independent checkpoints for one book; finish by marking; auto-finish exactly at the 24 h boundary using an injected clock (not finished at 23 h 59 m, finished after 24 h, clock survives writes at 0.99, resets when a write falls below 0.98); `setBookFinished(false)` reopens; `clear` idempotent; structure repair keeps the offset; concurrent PUTs serialize.
+Contract test receiving a 2xx from every operation, and `LibraryBookSummary.checkpoint` both populated and null. Unit tests: offset round-trip through a passage split; invalid passage or chapter; archived book 409; two profiles with independent checkpoints for one book; finish by marking; auto-finish exactly at the 24 h boundary using an injected clock (not finished at 23 h 59 m, finished after 24 h; an identical write does not reset it; a write that changes the offset, even at 0.99, does; a write below 0.98 does); a marked finish is cleared by moving; `setBookFinished(false)` reopens and restarts the clock; history keeps 10, applies the 30-minute and 2% rules, and restores as a recorded move; `clear` idempotent; structure repair keeps the offset; concurrent PUTs serialize.
 
 ---
 
@@ -302,12 +315,12 @@ ChapterAudioStatus {
 
 - `state` is `complete` when every passage is ready, `stale` when nothing is ready but some passages have stale takes, `partial` when some are ready, `none` otherwise. Stale audio stays a separate count (AGENTS.md: rejected, cached, stale and unknown states remain distinct) and is never counted as ready.
 - `seconds_total` is null rather than 0 when durations for the missing passages are unknown (unknown is not zero). The design shows "n of m chapters saved" from the passage counts, never from a guessed total.
-- Errors: 404 `book_not_found`; 404 `listening_source_not_found` when the source ID does not exist for the book (for `performance`) — sessions cannot be checked (open question 2), so an unknown session ID returns a valid, all-`none` status; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
+- Errors: 404 `book_not_found`; 404 `listening_source_not_found` when the source ID does not exist for the book (for `performance`) — sessions cannot be checked (open question 1), so an unknown session ID returns a valid, all-`none` status; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
 - Cost: none, no provider. Each call resolves currency by checking take metadata against current passages, so it costs about as much as `listListeningTakes`; document that, and cache nothing server-side in the first version.
 
 ### Optional follow-up: `listBookAudioSources`
 
-`GET /api/books/{book_id}/audio-sources` would return each source that has any saved audio (with its voice snapshot and counts), feeding "Ways to listen" and the narrator sheet's "already recorded" hints without the client remembering session IDs. It depends on making listening sessions a server-held resource, which is a larger change (open question 2), so it is **not** part of this proposal's patch series.
+`GET /api/books/{book_id}/audio-sources` would return each source that has any saved audio (with its voice snapshot and counts), feeding "Ways to listen" and the narrator sheet's "already recorded" hints without the client remembering session IDs. It depends on making listening sessions a server-held resource, which is a larger change (open question 1), so it is **not** part of this proposal's patch series.
 
 ### Tests
 
@@ -325,7 +338,7 @@ Complete/partial/stale/none chapters from constructed takes; a text edit turns r
 | Reader appearance (size, theme, width) | device | Phone and iPad want different values. |
 | Paid-run consent | `sessionStorage` | Deliberately not persisted (cost rules). |
 | Narrator/session choice | `BookCheckpoint.source` (A) | The one server-held slice worth sharing across devices. |
-| Draft listening sessions `bardic:listen:<id>` | device, until open question 2 | See below. |
+| Draft listening sessions `bardic:listen:<id>` | device, until open question 1 | See below. |
 
 If per-profile preferences (speed, appearance) are wanted later, add one `getPreferences`/`setPreferences` pair under the profile scope, not more per-feature routes.
 
@@ -333,16 +346,15 @@ If per-profile preferences (speed, appearance) are wanted later, add one `getPre
 
 1. Profiles exist, picked from a dropdown, with no authentication (part P).
 2. The server keeps coarse listening checkpoints; the client keeps granular playback data (part A).
-3. A book is finished when marked, or when progress has been at least 98% for more than 24 hours (part A, "Finished").
+3. A book is finished when marked, or when progress is at least 98% and the checkpoint has not changed for more than 24 hours; any change resets that clock (part A, "Finished").
+4. Spending limits stay universal across profiles; profiles do not separate cost (part P).
+5. Checkpoint history is kept, bounded to 10 per profile and book (part A).
 
 ## Open questions
 
-1. **Shared spending.** Profiles do not separate cost. Any profile can start a paid run, against the same allowance. Confirm that is intended, or say which actions (analysis, narration, recording) should later need a "who is paying" surface.
-2. **Server-held listening sessions.** `session_id` is minted in the browser and unknown to the server until takes exist. Making sessions a first-class resource (create, list, voice snapshot) would make `ListenSource.session`, part D's validation and a `listBookAudioSources` route clean, but it is a data-model change. Proposal: ship P, A to D as above with sessions unvalidated, and design sessions separately. If sessions become server-held, decide whether they are profile-scoped.
-3. **Repaired structure.** A chapter deleted by a structure repair silently moves the reader. Add `relocated: true` to the checkpoint so the UI can say "your place moved"? Cheap before release, awkward after.
-4. **Auto-finish reading.** I read "98% for more than a day" as: `progress >= 0.98` continuously for 24 hours, where the clock starts at the first write at or above 0.98 and only a write below 0.98 resets it. The alternative is "24 hours since the last checkpoint write at or above 0.98", which would let a book that is left alone finish, but would keep postponing it for someone replaying the final chapter. Confirm.
-5. **Checkpoint history.** Only the current checkpoint is kept. If "undo a mis-tap" or "where was I yesterday" is wanted, add a bounded history (for example the last 10 per profile and book) as a separate additive field or route.
-6. **Version cadence.** Five patch releases (0.5.1 to 0.5.5) versus fewer. Separate commits keep each reviewable; a single release is also valid.
+1. **Server-held listening sessions.** `session_id` is minted in the browser and unknown to the server until takes exist. Making sessions a first-class resource (create, list, voice snapshot) would make `ListenSource.session`, part D's validation and a `listBookAudioSources` route clean, but it is a data-model change. Proposal: ship P, A to D as above with sessions unvalidated, and design sessions separately. If sessions become server-held, decide whether they are profile-scoped.
+2. **Repaired structure.** A chapter deleted by a structure repair silently moves the reader. Add `relocated: true` to the checkpoint so the UI can say "your place moved"? Cheap before release, awkward after.
+3. **Version cadence.** Five patch releases (0.5.1 to 0.5.5) versus fewer. Separate commits keep each reviewable; a single release is also valid.
 
 ## Suggested implementation order
 
