@@ -490,6 +490,14 @@
       <section class="settings-group" aria-labelledby="settings-group-narration">
         <h3 class="settings-group-title" id="settings-group-narration">Narration</h3>
         <p class="field-help">Mac voices need no setup. Choose your narrator in Read &amp; listen; the expert choices for Gemini narration are under Advanced.</p>
+        <div class="settings-fallback">
+          <label class="field-label" for="fallback-narrator-provider">Fallback narrator</label>
+          <div class="limit-grid">
+            <select id="fallback-narrator-provider" aria-label="Fallback service"><option value="">Automatic (a device voice)</option><option value="system">Mac voices</option><option value="gemini">Gemini</option><option value="breeze">Breeze</option></select>
+            <select id="fallback-narrator-voice" aria-label="Fallback voice" hidden></select>
+          </div>
+          <p class="field-help">New performances read any passage the main narrator cannot with this voice: text Gemini blocks, or passages that keep failing. Each is marked so you can re-record it. Saved performances keep the fallback they were made with.</p>
+        </div>
         <details id="provider-settings-breeze" class="provider-settings breeze-settings" aria-labelledby="breeze-settings-title">
           <summary class="provider-heading"><div><h3 id="breeze-settings-title">Breeze</h3><span>Narration on your local network</span></div><span id="breeze-status" class="key-status">Not set up</span></summary>
           <label class="field-label" for="breeze-url">Server URL</label>

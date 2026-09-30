@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bardic",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "description": "The local HTTP interface of Bardic, an ebook analysis, audiobook production\nand read-along application. This document is the contract that clients are\nwritten against. It is generated from the server and checked in as\n`contract/openapi.json`; the prose guide is `docs/API.md` and a readable\nreference is `contract/API-REFERENCE.md`.\n\n## Transport and security\n\n- The server binds to loopback (`127.0.0.1:8765` by default). An opt-in\n  local-network mode adds a `.local` host name. There is **no\n  authentication**: anyone who can reach the port is treated as the owner.\n- Requests with an unexpected `Host` header are rejected on every route\n  with status 400 and the plain-text (not JSON) body `Invalid host header`,\n  before any operation runs. Writes (anything\n  but GET, HEAD and OPTIONS) are rejected with 403 when they come from\n  another browser origin (`Origin` differs from `Host`, or\n  `Sec-Fetch-Site: cross-site`). Requests without an `Origin` header, such\n  as command-line clients, are accepted. CORS can allow other browser\n  origins; it is off by default (next item).\n- **CORS is opt-in.** The server's operator enables it with the setting\n  `BARDIC_CORS_ORIGINS`: `*` (every origin) or a comma-separated list of\n  exact origins such as `https://app.example,http://localhost:5173` (scheme,\n  host and optional port; no paths, no wildcards inside a list). A server\n  where it is unset or empty sends no CORS header, answers a preflight\n  `OPTIONS` like any other unrouted method (405 `route_not_found`) and\n  refuses every cross-origin browser write as described above, so a browser\n  page from another origin can read nothing and write nothing. Where it is\n  set, for `/api/` requests:\n  - `Access-Control-Allow-Origin` is `*` for `*`. For a list it is the\n    request's own `Origin` when that origin is listed, and absent\n    otherwise; the response then also carries `Vary: Origin`.\n    `Access-Control-Expose-Headers` names `Bardic-Contract-Version`, `ETag`,\n    `Content-Range`, `Content-Length`, `Accept-Ranges`,\n    `Content-Disposition` and `Content-Type`, so browser code can read them.\n  - An `OPTIONS` request to any `/api/` path from an allowed origin is a\n    preflight, answered with 204 and no body, `Access-Control-Allow-Methods:\n    GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS`,\n    `Access-Control-Allow-Headers: Content-Type, Range, If-None-Match,\n    If-Match, Authorization` and `Access-Control-Max-Age: 600`. One from an\n    origin that is not allowed gets the 405 it gets when CORS is off.\n  - The write guard lets a write through when its `Origin` is allowed, and\n    still refuses every other cross-origin write with 403\n    `cross_origin_write`. `*` allows every `Origin`, including `null` (sent\n    by sandboxed frames and local files, which any web page can produce\n    anyway). A list allows `null` only when it contains the entry `null`.\n  - `Access-Control-Allow-Credentials` is never sent, so browsers do not\n    attach cookies or HTTP authentication. The trusted `Host` check above is\n    not relaxed, and a preflight with an untrusted `Host` is refused like any\n    other request. A preflight carries `Cache-Control: no-store` and\n    `Bardic-Contract-Version` like every other `/api/` response.\n  - This is not authentication. An allowed origin can read and change the\n    whole library and start paid work, and `*` allows any web page in any\n    browser that can reach the server. Clients cannot see the setting; a\n    call that fails in the browser with a CORS error means the server has not\n    allowed that page's origin.\n- Every `/api/` response carries `Cache-Control: no-store`, except a\n  successful cover image (`getBookCover`), which sets its own caching\n  headers: a strong `ETag`, and `immutable` at its content-addressed `?v=`\n  URL.\n- Every `/api/` response, success or error, also carries the header\n  `Bardic-Contract-Version`: the `info.version` of the contract the server\n  implements (for example `0.4.0`). It lets a client notice a server that is\n  newer or older than the contract it was generated from without an extra\n  request.\n- URLs returned inside responses (audio, covers, auditions) are\n  root-relative. Resolve them against the server's base URL.\n\n## Conventions\n\n- JSON requests use `Content-Type: application/json`; imports and voice\n  clones use multipart form data. Request bodies reject unknown fields\n  (422). Omitted fields take their documented defaults.\n- IDs are opaque strings. URL-encode them and obtain them from responses.\n- Source text offsets (`start`, `end`) are zero-based Unicode code-point\n  offsets into the chapter text, with an exclusive end. They are not UTF-8\n  byte offsets or JavaScript UTF-16 indices.\n- The reader unit is the passage. Every name on the wire says \"passage\" (`passage_id`, `passages`, `passage_count`).\n- GET requests never start paid generation and never create or change\n  library records (books, jobs, runs, artifacts, decisions or resource\n  measurements). A few write a disposable derived cache, such as the\n  analysis census cache or the passage search index, which can be deleted\n  without loss; those operations say so. `x-bardic-cost` on each operation\n  says whether it can reach a provider: `none`, `network` (contacts a\n  provider or self-hosted server without billed generation) or\n  `may_charge`.\n- Out-of-range paging parameters are clamped to the allowed range; the\n  response reports the values used.\n\n## Work and errors\n\n- Long work is queued as a job and returned immediately. A queued or\n  running job is not a result: poll `GET /api/jobs/{job_id}` (`getJob`), or\n  `GET /api/jobs`, until the job reaches a terminal status. Failures,\n  cancellations and allowance stops appear in the job, while polling itself\n  still returns 200. A terminal status is final.\n- Statuses mean the same thing on every operation:\n  - 400: the request is well-formed but cannot be carried out as asked,\n    because of its content or the library's data. Examples are an unknown\n    ID inside a request body, an empty selection, a missing original file,\n    or a name or position already taken. An operation that deliberately\n    ignores an unknown body ID says so.\n  - 404: a resource named in the path, or a session named in the query,\n    does not exist.\n  - 409: a conflict with current state that waiting, restoring or\n    previewing again resolves: an active job or series run, a stale\n    previewed plan, or an archived book or series.\n  - 413: the body is too large.\n  - 429: a request or quota limit applies.\n  - 502: a provider or self-hosted server failed or refused the work.\n    Operations whose purpose is to report a provider's state (account\n    checks, model refresh, Breeze refresh) return 200 with the classified\n    state instead.\n  - 503: the server is shutting down; nothing was queued.\n  - Archiving or restoring something already in that state succeeds\n    without change.\n- Errors are JSON `{\"detail\": ..., \"code\": ...}`. `detail` is an English\n  sentence, or a list of issues for 422 request validation. Display it; do\n  not parse it. `code` is a stable snake_case identifier: branch on it.\n  Each operation lists its codes per status (`x-bardic-error-codes`). Any\n  operation can also return these global codes:\n  - `validation_error` (422): the request failed validation.\n  - `cross_origin_write` (403): the write guard rejected a browser write from\n    an origin that the server's CORS setting does not allow.\n  - `internal_error` (500): an unexpected server defect.\n  - `route_not_found` (404, 405): no route matches the method and path.\n\n## Compatibility rules for clients\n\n- **Version handshake.** `GET /api/status` (and `POST /api/settings`, which\n  returns the same object) has `contract`: `{version, sha256}`. `version`\n  equals `info.version` of this document and the `Bardic-Contract-Version`\n  header. `sha256` is the lowercase hex SHA-256 of the exact bytes of this\n  document as checked in (`contract/openapi.json`, UTF-8), the value recorded\n  under this version in `contract/CHANGELOG.md`. A client generated from a\n  document compares `version` for compatibility (the rules below and in the\n  changelog) and `sha256` when it must be sure of the exact document. A server\n  implementation embeds the two values of the document it was built against.\n- Ignore response fields you do not know. New fields can appear in any\n  new contract version.\n- Treat enumerated string values (statuses, kinds, states) as open sets:\n  write the client so that an unknown value is handled gracefully (a `default`\n  branch that shows the raw value or treats it like an unfinished state), not\n  as a failure. The contract cannot make a generator do this. Generators\n  differ: a TypeScript type from openapi-typescript is a closed union of\n  literals, so a `switch` needs a default branch; openapi-generator's\n  `enumUnknownDefaultCase` exists only for some of its generators and its Rust\n  generator does not emit the unknown case; and the Rust generators\n  (typify, progenitor) emit closed enums that refuse an unknown value when a\n  response is deserialized. A Rust client therefore needs a post-processing\n  step on the generated code that adds an unrecognized variant to every\n  response enum (for example `#[serde(other)]` on a unit variant). Request\n  enums stay closed: send only listed values. The contract keeps response\n  enumerations as `enum` so that generated code names the known values.\n- **Tagged unions are the exception: they are closed.** A value that can be\n  one of several object shapes is a named `oneOf` whose members each carry one\n  required tag property (its name is `discriminator.propertyName`, usually\n  `kind`) with a single-value `enum`, and `discriminator.mapping` maps each tag\n  value to its own member schema (the unions whose members are written inline,\n  `Job` and `SeriesRunChild`, have no mapping: their tags are the inline enums). Select the member on the tag. A tag value is\n  a member, not an open enumeration, so the union has no catch-all member and\n  a client cannot decode a member it was not generated with. A new member\n  arrives only with a new contract version (`Bardic-Contract-Version`), which\n  the changelog announces; a client pinned to a version knows every member it\n  can receive from a server at that version. A member that has a\n  tag is never nested inside another union, and a nullable union is\n  `anyOf: [{$ref: Union}, {type: null}]`.\n- A request field with a documented default is optional: omit it to get the\n  default. Configure generators accordingly (openapi-typescript:\n  `defaultNonNullable: false`). Response schemas carry no defaults; a response\n  field is always present exactly when it is listed in `required`.\n- Avoid any field marked `x-bardic-internal`: bookkeeping that a later\n  version may remove. This version has none.\n- `info.version` follows the rules in `contract/CHANGELOG.md`.\n"
   },
   "paths": {
@@ -3709,7 +3709,7 @@
             }
           },
           "400": {
-            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.\n- `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model.\n- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_invalid`: The simple narrator voice cannot be used (see `previewPerformance` problems).\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.",
+            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.\n- `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model.\n- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1).\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3808,7 +3808,7 @@
             ]
           }
         },
-        "description": "Validate, record and start a performance. Simple performances pin a listening session (takes made\nearlier by live listening with the same narrator count as ready); cast performances snapshot the\nresolved cast now. Returns `{performance, job}`; `job` is null when every passage is already ready.\nThe record is saved before the job starts. When the preview would report `problems`, the request is\nrefused with 400: the code is the first problem's, and the detail joins every problem's sentence.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast\nperformance the same way, with `error_code: \"content_blocked\"`: cast performances have no fallback narrator\nor splitting (use one narrator to get them). There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
+        "description": "Validate, record and start a performance. Simple performances pin a listening session (takes made\nearlier by live listening with the same narrator count as ready); cast performances snapshot the\nresolved cast now. Returns `{performance, job}`; `job` is null when every passage is already ready.\nThe record is saved before the job starts. When the preview would report `problems`, the request is\nrefused with 400: the code is the first problem's, and the detail joins every problem's sentence.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage.\n\n**Fallback narrator.** The performance pins a fallback narrator (`Performance.fallback`: chosen in the create\nrequest or `preparePerformance`, else the saved default in Settings, else the automatic local narrator: a device\nvoice, else Breeze). When a passage cannot be narrated by the main narrator (Gemini blocks its text, or it keeps\nfailing after the bounded retries: a cast passage, a device or Breeze passage, or a Gemini chunk that failed or\nwas truncated past its bound; a chunk that failed with an error response is requested once more first, and an\nuncertain request is never resent), the fallback narrator reads it (for a Gemini chunk: every passage of the\nfailed chunk), the take is linked to the performance as a\n`substitute` of that reason (`content_blocked` or `failed`), it counts in `progress.passages_fallback`, and the\njob carries on with the rest. A Gemini fallback is not tried for blocked text (it would be blocked again). A\ndaily quota, repeated rate limits, cancellation and shutdown are never the passage's fault: they pause or stop the\njob and never swap a voice. Six passages in a row that fail for the main narrator stop the job with an error (the\nnarrator looks unavailable, not the text); what the fallback already read is kept and marked. A passage the\nfallback narrator cannot read either stays unrecorded, is reported in\nthe status `run.issues`, and the job completes noting it. With no usable fallback narrator, a cast passage\nGemini blocks fails the job as before, with `error_code: \"content_blocked\"`. `rerecordPerformance` can later\nre-record any of these passages with another voice. There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
         "tags": [
           "Performances"
         ],
@@ -3853,7 +3853,7 @@
             }
           },
           "400": {
-            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.\n- `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model.",
+            "description": "- `unknown_chapter`: A chapter ID in `chapter_ids` is not in this book.\n- `model_unsupported`: The Gemini model is not supported, or the model does not match the device or Breeze fixed model.\n- `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3863,7 +3863,8 @@
             },
             "x-bardic-error-codes": [
               "unknown_chapter",
-              "model_unsupported"
+              "model_unsupported",
+              "narrator_voice_invalid"
             ]
           },
           "403": {
@@ -4388,7 +4389,7 @@
             ]
           }
         },
-        "description": "Extend the performance's chapter selection and start recording what is missing, without creating a new\nperformance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so\naudio already retained is reused and only passages without current audio are narrated (a simple\nperformance also counts takes made by live listening with the same narrator). The added chapters are\nsaved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never\nrewritten. Returns `{performance, job}`; `job` is null when every passage is already ready. Refused with 409\nwhile any job is active for the book, including this performance's own: stop it, or wait, first. Blocking\nproblems are refused with 400 as for `createPerformance`.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast\nperformance the same way, with `error_code: \"content_blocked\"`: cast performances have no fallback narrator\nor splitting (use one narrator to get them). There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
+        "description": "Extend the performance's chapter selection and start recording what is missing, without creating a new\nperformance. The pinned narrator session or cast snapshot, model and pronunciations stay as they were, so\naudio already retained is reused and only passages without current audio are narrated (a simple\nperformance also counts takes made by live listening with the same narrator). The added chapters are\nsaved to `chapter_ids` and appended to `chapters_added` before the job starts; retained audio is never\nrewritten. Returns `{performance, job}`; `job` is null when every passage is already ready. Refused with 409\nwhile any job is active for the book, including this performance's own: stop it, or wait, first. Blocking\nproblems are refused with 400 as for `createPerformance`.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage.\n\n**Fallback narrator.** The performance pins a fallback narrator (`Performance.fallback`: chosen in the create\nrequest or `preparePerformance`, else the saved default in Settings, else the automatic local narrator: a device\nvoice, else Breeze). When a passage cannot be narrated by the main narrator (Gemini blocks its text, or it keeps\nfailing after the bounded retries: a cast passage, a device or Breeze passage, or a Gemini chunk that failed or\nwas truncated past its bound; a chunk that failed with an error response is requested once more first, and an\nuncertain request is never resent), the fallback narrator reads it (for a Gemini chunk: every passage of the\nfailed chunk), the take is linked to the performance as a\n`substitute` of that reason (`content_blocked` or `failed`), it counts in `progress.passages_fallback`, and the\njob carries on with the rest. A Gemini fallback is not tried for blocked text (it would be blocked again). A\ndaily quota, repeated rate limits, cancellation and shutdown are never the passage's fault: they pause or stop the\njob and never swap a voice. Six passages in a row that fail for the main narrator stop the job with an error (the\nnarrator looks unavailable, not the text); what the fallback already read is kept and marked. A passage the\nfallback narrator cannot read either stays unrecorded, is reported in\nthe status `run.issues`, and the job completes noting it. With no usable fallback narrator, a cast passage\nGemini blocks fails the job as before, with `error_code: \"content_blocked\"`. `rerecordPerformance` can later\nre-record any of these passages with another voice. There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
         "tags": [
           "Performances"
         ],
@@ -4421,6 +4422,23 @@
             "description": "Performance ID (`pf_…`)."
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PerformancePrepare"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -4433,7 +4451,7 @@
             }
           },
           "400": {
-            "description": "- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.",
+            "description": "- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.\n- `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4445,7 +4463,8 @@
               "gemini_key_missing",
               "device_narration_unavailable",
               "breeze_url_missing",
-              "narrator_voice_missing"
+              "narrator_voice_missing",
+              "narrator_voice_invalid"
             ]
           },
           "403": {
@@ -4530,7 +4549,7 @@
             ]
           }
         },
-        "description": "Generate what is missing with the same pinned narrator session or cast snapshot (settings changed since\ncreation do not apply, except that current credentials, limits and chunk options are used). Cast\nresume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes\nmatch the damaged one's content address is refused rather than overwritten (possible with\ndeterministic device voices). Chapters removed from the book are skipped. Returns `{performance, job}`\nwith `job` null when nothing is missing. Blocking problems are refused with 400 as for\n`createPerformance`.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast\nperformance the same way, with `error_code: \"content_blocked\"`: cast performances have no fallback narrator\nor splitting (use one narrator to get them). There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
+        "description": "Generate what is missing with the same pinned narrator session or cast snapshot (settings changed since\ncreation do not apply, except that current credentials, limits and chunk options are used). Cast\nresume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes\nmatch the damaged one's content address is refused rather than overwritten (possible with\ndeterministic device voices). Chapters removed from the book are skipped. An optional body\n`{fallback: {provider, voice}}` changes the fallback narrator the performance pins from now on; audio already\nread by another narrator is kept. Returns `{performance, job}` with `job` null when nothing is missing.\nBlocking problems are refused with 400 as for `createPerformance`.\n\nThe `performance` job carries `performance_id`, `mode`, `provider`, `model`, `total` (passages missing at\nstart), `progress` and a message such as `Chapter 2 of 5 · passage 14 of 40`; it completes with\n`Performance ready`. Credentials, limits and chunk options are snapshotted at start; cancellation is\nchecked between passages. Device and Breeze simple performances render one passage at a time\n(resource stage `simple_listen`). Gemini simple performances run each chapter with missing audio as a\nchild `listen_chapter` job (`parent_id`, `intent: \"queue\"`, full-size chunks) listed in the parent's\n`child_job_ids` (`child_job_id` is the running one); the parent's `progress` advances only when each\nchapter's child job settles. A live listener's chapter request is refused\n(409) rather than joining it. A child that stops for the daily quota, a budget, cancellation or an\nerror ends the parent the same way (`quota_limited` with `resume_after`, and so on), with finished\nchunks kept. Text Gemini blocks is handled inside each child job (see `startChapterListening`): the parent still\ncompletes, its message names how many passages a fallback narrator read or were left unrecorded, and\n`Performance.progress` reports them as `passages_fallback` and `passages_blocked`. Cast performances render passage by passage (resource stage `narration`, `cached: true`\nfor reuse of another performance's or a Studio take with the identical recipe) and never change the\nStudio's selected takes. Gemini cast requests share the per-minute rate limiter with other Gemini speech, and stop as\n`quota_limited` at the provider's daily quota or\nat this library's configured requests per day, and retry a per-minute 429 at most five consecutive\ntimes. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed\naudio kept, and the failure names the passage.\n\n**Fallback narrator.** The performance pins a fallback narrator (`Performance.fallback`: chosen in the create\nrequest or `preparePerformance`, else the saved default in Settings, else the automatic local narrator: a device\nvoice, else Breeze). When a passage cannot be narrated by the main narrator (Gemini blocks its text, or it keeps\nfailing after the bounded retries: a cast passage, a device or Breeze passage, or a Gemini chunk that failed or\nwas truncated past its bound; a chunk that failed with an error response is requested once more first, and an\nuncertain request is never resent), the fallback narrator reads it (for a Gemini chunk: every passage of the\nfailed chunk), the take is linked to the performance as a\n`substitute` of that reason (`content_blocked` or `failed`), it counts in `progress.passages_fallback`, and the\njob carries on with the rest. A Gemini fallback is not tried for blocked text (it would be blocked again). A\ndaily quota, repeated rate limits, cancellation and shutdown are never the passage's fault: they pause or stop the\njob and never swap a voice. Six passages in a row that fail for the main narrator stop the job with an error (the\nnarrator looks unavailable, not the text); what the fallback already read is kept and marked. A passage the\nfallback narrator cannot read either stays unrecorded, is reported in\nthe status `run.issues`, and the job completes noting it. With no usable fallback narrator, a cast passage\nGemini blocks fails the job as before, with `error_code: \"content_blocked\"`. `rerecordPerformance` can later\nre-record any of these passages with another voice. There is no dollar allowance for performances. Up to\nthree performances of different books run at once; one job per book still applies, counting every active\njob for the book (including child jobs beyond the 100-job list bound).",
         "tags": [
           "Performances"
         ],
@@ -4665,6 +4684,654 @@
           }
         },
         "description": "Local plan for an existing performance with its pinned narrator session or cast snapshot: what is ready,\nwhat a job would narrate, the request estimate, blocking `problems` and advisory `notes`. `chapter_ids`\nlists chapters to add first; leave it empty to plan the performance as it is. Chapters already selected are\nignored (`added_chapter_ids` lists the new ones). Nothing is stored, no job starts and no provider is\ncontacted. Allowed while a job runs.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/rerecord": {
+      "post": {
+        "summary": "Re-record part of a performance with another voice",
+        "operationId": "rerecordPerformance",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceRerecordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "- `unknown_passage`: A passage ID in `passage_ids`, `from_passage_id` or `to_passage_id` is not in this performance.\n- `unknown_chapter`: `chapter_id` is not part of this performance.\n- `range_incomplete`: Only one of `from_passage_id` and `to_passage_id` was sent.\n- `range_invalid`: `from_passage_id` comes after `to_passage_id` in reading order.\n- `nothing_to_rerecord`: The scope matches no passage (with `only: fallback`, none is currently read by a fallback narrator).\n- `scope_too_large`: The scope covers more than 1000 passages.\n- `gemini_key_missing`: Gemini narration with no Gemini API key configured.\n- `device_narration_unavailable`: Device narration on a server without macOS `say` and `ffmpeg`.\n- `breeze_url_missing`: Breeze narration with no Breeze server URL configured.\n- `narrator_voice_invalid`: The simple narrator voice cannot be used (see `previewPerformance` problems).\n- `narrator_voice_missing`: A cast performance whose narrator has no usable voice for the provider.\n- `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model.\n- `narrator_unavailable`: The chosen narrator cannot be used now (check its provider and voice).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "unknown_passage",
+              "unknown_chapter",
+              "range_incomplete",
+              "range_invalid",
+              "nothing_to_rerecord",
+              "scope_too_large",
+              "gemini_key_missing",
+              "device_narration_unavailable",
+              "breeze_url_missing",
+              "narrator_voice_invalid",
+              "narrator_voice_missing",
+              "model_unsupported",
+              "narrator_unavailable"
+            ]
+          },
+          "403": {
+            "description": "- `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "cross_origin_write"
+            ]
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.\n- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "job_active",
+              "series_run_active"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          },
+          "503": {
+            "description": "- `shutting_down`: The server is shutting down, or its narration worker refused the job (that job record is kept and marked `failed`). Nothing was sent to a provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "shutting_down"
+            ]
+          }
+        },
+        "description": "Read the passages in scope (see `previewPerformanceRerecord`) with the chosen provider and voice and link each\nresult to the performance. The performance's own audio and every earlier take stay retained: the new take\nbecomes the one that plays, and `restorePerformanceTake` returns to the original or any earlier take. Each\npassage is an ordinary immutable take of the chosen narrator, so passages that narrator already read are reused\nwithout a request. Works for simple and cast performances; a cast performance's re-recorded passages are read in\nthe chosen voice instead of the cast. Returns `{performance, job}`. A passage that cannot be narrated stops the\njob with finished passages kept (a re-record is your choice, so it never falls back to another narrator).\nRefused with 409 while any job is active for the book. Blocking problems are refused with 400 as for\n`createPerformance`.\n\nThe job is a `performance` job with `phase: rerecord` and `fallback` set to the chosen narrator; its progress\ncounts passages and `getPerformanceStatus` reports it per chapter. Gemini re-records stop as `quota_limited` at\nthe daily limit and retry a per-minute 429 at most five consecutive times; an uncertain request is never resent.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "may_charge"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/rerecord/preview": {
+      "post": {
+        "summary": "Estimate re-recording part of a performance",
+        "operationId": "previewPerformanceRerecord",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceRerecordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceRerecordPlan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "- `unknown_passage`: A passage ID in `passage_ids`, `from_passage_id` or `to_passage_id` is not in this performance.\n- `unknown_chapter`: `chapter_id` is not part of this performance.\n- `range_incomplete`: Only one of `from_passage_id` and `to_passage_id` was sent.\n- `range_invalid`: `from_passage_id` comes after `to_passage_id` in reading order.\n- `nothing_to_rerecord`: The scope matches no passage (with `only: fallback`, none is currently read by a fallback narrator).\n- `scope_too_large`: The scope covers more than 1000 passages.\n- `model_unsupported`: The model does not match the provider: device narration uses `macos-say`, Breeze uses `breeze-tts-2`, and Gemini needs a supported TTS model.\n- `narrator_voice_invalid`: The narrator voice cannot be used: a `library:` voice for device narration, a deleted or wrong-provider library voice, no default Breeze voice, a Breeze voice not in the last voice check or not usable, or a custom voice with a model that needs a prebuilt voice (Gemini 3.1).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "unknown_passage",
+              "unknown_chapter",
+              "range_incomplete",
+              "range_invalid",
+              "nothing_to_rerecord",
+              "scope_too_large",
+              "model_unsupported",
+              "narrator_voice_invalid"
+            ]
+          },
+          "403": {
+            "description": "- `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "cross_origin_write"
+            ]
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "description": "Local plan for reading chosen passages of a performance with another narrator: the passages the scope covers,\ntheir size, the request estimate for Gemini, blocking `problems` and advisory `notes`. Nothing is stored, no\njob starts and no provider is contacted. The scope is the first of `passage_ids`, a `from_passage_id`..\n`to_passage_id` range, a `chapter_id`, or the whole performance; `only: fallback` then keeps the passages a\nfallback narrator currently reads. Allowed while a job runs.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/status": {
+      "get": {
+        "summary": "Detailed status of a performance",
+        "operationId": "getPerformanceStatus",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "description": "Per-chapter progress and an estimate of when the work still to do will be finished, for the latest job\n(a recording of what was missing, or a re-record). Local read: it contacts no provider and changes nothing,\nand it is meant to be polled while a job runs. For a Gemini one-narrator\nperformance with blocked text it may create the deterministic listening session row of the fallback narrator.\n\n`chapters` gives each selected chapter's passages ready, read by a fallback narrator, re-recorded, blocked and\nstill to do, its size in code points, its `state`, and `eta_seconds` (when that chapter should be finished,\ncounting the unfinished chapters before it). `eta` says how the estimate was made in `basis`: `measured` from\nthis run's recorded text and elapsed time once it has produced something, `estimated` for a Gemini\none-narrator performance from speed earlier chunk jobs learned, or `unknown` (never guessed) when no speed is\nknown yet. A pause for the daily Gemini limit is reported as `paused_reason: quota` with `resumes_at`, not\nadded to `seconds`. `run.issues` lists passages of the run no narrator could record; `notes` lists the passages\nanother narrator reads and why, so a fallback is never silent.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/takes": {
+      "get": {
+        "summary": "List the takes retained for a performance's passages",
+        "operationId": "listPerformanceTakes",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          },
+          {
+            "name": "chapter_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chapter Id"
+            },
+            "description": "Only takes of passages in this chapter."
+          },
+          {
+            "name": "passage_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Passage Id"
+            },
+            "description": "Only takes of this passage."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceTakes"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "description": "Every retained choice of another narrator's audio for the performance's passages (fallback reads, re-records and\nrestores), newest first, for passages whose source text is still current, with the one currently deciding what\nplays marked `current`. Use it to hear earlier takes and to pick one for `restorePerformanceTake`. `chapter_id`\nand `passage_id` narrow the list. Local read.",
+        "tags": [
+          "Performances"
+        ],
+        "x-bardic-cost": "none"
+      }
+    },
+    "/api/books/{book_id}/performances/{performance_id}/takes/restore": {
+      "post": {
+        "summary": "Choose which take plays for passages",
+        "operationId": "restorePerformanceTake",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Book Id"
+            },
+            "description": "Book ID."
+          },
+          {
+            "name": "performance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Performance Id"
+            },
+            "description": "Performance ID (`pf_…`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "- `unknown_passage`: A passage ID is not in this performance.\n- `no_original`: Restoring the performance's own audio for a passage it never made (a fallback narrator read it).\n- `restore_ambiguous`: `take_id` was sent with more than one passage.\n- `take_stale`: The passage text changed after that take was made.\n- `take_not_playable`: `take_id` names a return to the performance's own audio; restore without a take instead.\n- `take_missing`: That take's audio file is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "unknown_passage",
+              "no_original",
+              "restore_ambiguous",
+              "take_stale",
+              "take_not_playable",
+              "take_missing"
+            ]
+          },
+          "403": {
+            "description": "- `cross_origin_write`: A browser write from another origin was rejected by the write guard (see Transport and security).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "cross_origin_write"
+            ]
+          },
+          "404": {
+            "description": "- `book_not_found`: No book has this ID.\n- `performance_not_found`: The book has no performance with this ID.\n- `take_not_found`: The performance has no such take for that passage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_not_found",
+              "performance_not_found",
+              "take_not_found"
+            ]
+          },
+          "409": {
+            "description": "- `book_archived`: The book is archived: restore it first.\n- `job_active`: A job is queued or running for this book.\n- `series_run_active`: An active series run reserves this book.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "book_archived",
+              "job_active",
+              "series_run_active"
+            ]
+          },
+          "422": {
+            "description": "- `validation_error`: The request failed validation: a missing, extra or out-of-range field or parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "validation_error"
+            ]
+          },
+          "500": {
+            "description": "- `internal_error`: An unexpected server defect, such as damaged stored data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-bardic-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "description": "Without `take_id`, return the given passages to the performance's own audio (the audio it made itself). With\n`take_id`, make that retained take the one that plays for its passage (exactly one). Records a new choice and\nnever deletes or rewrites audio, so the choice can itself be undone. A local write that starts no job and is\nrefused while a job is active for the book, so a running writer cannot reverse the choice. Returns the performance\nwith updated readiness.",
         "tags": [
           "Performances"
         ],
@@ -9024,7 +9691,7 @@
             }
           },
           "400": {
-            "description": "- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.\n- `unknown_step`: An `analysis_step_presets` entry names a step that is not registered.\n- `step_config_invalid`: An `analysis_step_presets` entry has a provider or model its step does not take.\n- `step_preset_invalid`: An `analysis_step_presets` entry has an empty name, repeats another entry's `id`, or repeats a name already used for the same step (ignoring case).",
+            "description": "- `cloud_provider_unknown`: A key of `api_keys`, `analysis_models_by_provider` or `preprocess_models_by_provider` is not `gemini`, `openai` or `anthropic`.\n- `model_id_invalid`: An analysis or preprocessing model ID is malformed.\n- `analysis_provider_unknown`: `analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.\n- `tts_model_unsupported`: `tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.\n- `fallback_unsupported`: `fallback_narrator.provider` is not `system`, `gemini` or `breeze`.\n- `narrator_voice_invalid`: `fallback_narrator.voice` cannot be used by its provider.\n- `breeze_url_invalid`: `breeze_url` is not an http(s) server root without path, query or credentials.\n- `local_service_unknown`: A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.\n- `service_url_invalid`: A self-hosted server URL is not an http(s) server root without path, query or credentials.\n- `unknown_step`: An `analysis_step_presets` entry names a step that is not registered.\n- `step_config_invalid`: An `analysis_step_presets` entry has a provider or model its step does not take.\n- `step_preset_invalid`: An `analysis_step_presets` entry has an empty name, repeats another entry's `id`, or repeats a name already used for the same step (ignoring case).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9037,6 +9704,8 @@
               "model_id_invalid",
               "analysis_provider_unknown",
               "tts_model_unsupported",
+              "fallback_unsupported",
+              "narrator_voice_invalid",
               "breeze_url_invalid",
               "local_service_unknown",
               "service_url_invalid",
@@ -14637,6 +15306,81 @@
         "title": "Error",
         "type": "object"
       },
+      "FallbackChoice": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "system",
+              "gemini",
+              "breeze"
+            ],
+            "description": "`system`, `gemini` or `breeze`."
+          },
+          "voice": {
+            "type": "string",
+            "maxLength": 200,
+            "default": "",
+            "description": "Provider voice ID, `library:<id>`, or empty for the provider default; at most 200 characters."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "FallbackChoice",
+        "description": "A narrator: provider and voice."
+      },
+      "FallbackNarratorChoice": {
+        "description": "The saved fallback narrator: who reads a passage the main narration cannot.",
+        "properties": {
+          "provider": {
+            "description": "Narration provider of the fallback narrator.",
+            "enum": [
+              "system",
+              "gemini",
+              "breeze"
+            ],
+            "type": "string"
+          },
+          "voice": {
+            "description": "Voice as accepted by simple narration: a provider voice ID, a `library:<id>` reference, or an empty string for the provider's default voice.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "voice"
+        ],
+        "title": "FallbackNarratorChoice",
+        "type": "object"
+      },
+      "FallbackNarratorUpdate": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`system`, `gemini` or `breeze`; null clears the saved fallback narrator."
+          },
+          "voice": {
+            "type": "string",
+            "maxLength": 200,
+            "default": "",
+            "description": "Provider voice ID, `library:<id>`, or empty for the provider default; up to 200 characters."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FallbackNarratorUpdate",
+        "description": "The fallback narrator to save, or a request to clear it."
+      },
       "GenerateRequest": {
         "properties": {
           "book_id": {
@@ -14708,7 +15452,7 @@
         "description": "Multipart form data for `importBook`."
       },
       "Job": {
-        "description": "A background job, as stored and returned by the server: one of eight kinds, selected by `kind`.\n\n**Lifecycle.** A job starts `queued`, becomes `running` when a worker picks\nit up, and ends in exactly one terminal status:\n\n- `completed`: the work finished.\n- `failed`: an error stopped it; `error` holds the reason. Validated work\n  and finished audio are kept.\n- `cancelled`: stopped by a cancel request (or never started).\n- `interrupted`: the server stopped or restarted while the job was queued\n  or running, or (series child) the series run stopped before this book\n  started.\n- `budget_limited`: an analysis request allowance or dollar budget was\n  reached; saved work is kept.\n- `quota_limited`: the daily Gemini speech request quota was reached;\n  `resume_after` says when it resets.\n\nA `series` parent can also stay `running` while it waits for the owner's\nreview (`waiting_for_review` is set and no book is running); it continues\nonly when resumed (`resumeSeriesProcessing`) and ends when cancelled.\n\n**A terminal status is final.** Once a job reaches a terminal status,\nits `status`, `message`, `error` and `resume_after` never change again,\nwhatever happens later (a worker slot coming up for a job cancelled while\nqueued, or the server shutting down). Other fields may still be updated\nas bookkeeping. Resuming work uses the original start route and creates a\nnew job; old job IDs are never revived. A queued series child that is\ncancelled or passed over never starts later.\n\n**Kinds.** Every kind has the fields `id`, `book_id`, `kind`, `status`, `progress`, `total`, `message`, `error`,\n`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`, `error_code` on\na job that failed for a documented cause) and only the\nfields of its own kind below; a field that a kind does not declare is not sent for it. A route that always returns\none kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePreviewJob`, `PerformanceJob`, `PipelineJob`,\n`SeriesJob`, `RenderJob`), which has the same fields as the branch here.\n\n| kind | started by | own fields |\n| --- | --- | --- |\n| `render` | enhanced narration | none |\n| `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.3.0 has `series_id`, `series_run_id`, `position` |\n| `pipeline` | an analysis pipeline run, or a series run (one child per book) | `run_id`, `steps`, `scheduling`; a series child also `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |\n| `series` | series processing (the parent) | `series_id`, `book_ids`, `child_job_ids`, the run settings (`steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits`, `estimated_cost_usd`, `requests`, `context_pending_books`), `finished_at`, `waiting_for_review` |\n| `listen` | simple passage listening | `session_id`, `passage_id`, `provider`, `model`, `audio` |\n| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing`, `fallback`, `content_blocked` |\n| `voice_preview` | voice preview | `preview_id`, `preview`, `passage_id`, `provider`, `model`, `audio` |\n| `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id` |\n\n**Progress.** `progress` and `total` are counts in kind-specific units, not\na percentage, and `total` may change while running: passages for\n`render`, `performance` and `listen_chapter` (passages ready from the\nscope start to the chapter end; a Gemini simple `performance` advances\nonly when each chapter's child job settles); 0/1 for `listen` and\n`voice_preview`;\nanalyzer work units for `analyze` and `pipeline`; books for `series`.\n\nThe union is closed: a new job kind is a new member in a new contract version. Clients that only follow a job read\nthe fields every kind has (`status`, `progress`, `total`, `message`, `error`).\n",
+        "description": "A background job, as stored and returned by the server: one of eight kinds, selected by `kind`.\n\n**Lifecycle.** A job starts `queued`, becomes `running` when a worker picks\nit up, and ends in exactly one terminal status:\n\n- `completed`: the work finished.\n- `failed`: an error stopped it; `error` holds the reason. Validated work\n  and finished audio are kept.\n- `cancelled`: stopped by a cancel request (or never started).\n- `interrupted`: the server stopped or restarted while the job was queued\n  or running, or (series child) the series run stopped before this book\n  started.\n- `budget_limited`: an analysis request allowance or dollar budget was\n  reached; saved work is kept.\n- `quota_limited`: the daily Gemini speech request quota was reached;\n  `resume_after` says when it resets.\n\nA `series` parent can also stay `running` while it waits for the owner's\nreview (`waiting_for_review` is set and no book is running); it continues\nonly when resumed (`resumeSeriesProcessing`) and ends when cancelled.\n\n**A terminal status is final.** Once a job reaches a terminal status,\nits `status`, `message`, `error` and `resume_after` never change again,\nwhatever happens later (a worker slot coming up for a job cancelled while\nqueued, or the server shutting down). Other fields may still be updated\nas bookkeeping. Resuming work uses the original start route and creates a\nnew job; old job IDs are never revived. A queued series child that is\ncancelled or passed over never starts later.\n\n**Kinds.** Every kind has the fields `id`, `book_id`, `kind`, `status`, `progress`, `total`, `message`, `error`,\n`created_at`, `updated_at`, `cancel_requested` (and `resume_after` on a job that ended `quota_limited`, `error_code` on\na job that failed for a documented cause) and only the\nfields of its own kind below; a field that a kind does not declare is not sent for it. A route that always returns\none kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePreviewJob`, `PerformanceJob`, `PipelineJob`,\n`SeriesJob`, `RenderJob`), which has the same fields as the branch here.\n\n| kind | started by | own fields |\n| --- | --- | --- |\n| `render` | enhanced narration | none |\n| `analyze` | the removed Classic engine (historical jobs only) | `provider`, `model`, `scan_model`, `phase`, `chapter_id`; a series child recorded before contract 0.3.0 has `series_id`, `series_run_id`, `position` |\n| `pipeline` | an analysis pipeline run, or a series run (one child per book) | `run_id`, `steps`, `scheduling`; a series child also `series_id`, `series_run_id`, `position`, `title`, `consent_fingerprint`, `context_pending`, `context_sources`, and in some end states `not_started` or `finished_at` |\n| `series` | series processing (the parent) | `series_id`, `book_ids`, `child_job_ids`, the run settings (`steps`, `configs`, `gates`, `scheduling`, `concurrency`, `fresh`, `analysis_limits`, `estimated_cost_usd`, `requests`, `context_pending_books`), `finished_at`, `waiting_for_review` |\n| `listen` | simple passage listening | `session_id`, `passage_id`, `provider`, `model`, `audio` |\n| `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing`, `fallback`, `content_blocked` |\n| `voice_preview` | voice preview | `preview_id`, `preview`, `passage_id`, `provider`, `model`, `audio` |\n| `performance` | saved performance preparation, or a re-record of some of its passages | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id`, `fallback` |\n\n**Progress.** `progress` and `total` are counts in kind-specific units, not\na percentage, and `total` may change while running: passages for\n`render`, `performance` and `listen_chapter` (passages ready from the\nscope start to the chapter end; a Gemini simple `performance` advances\nonly when each chapter's child job settles); 0/1 for `listen` and\n`voice_preview`;\nanalyzer work units for `analyze` and `pipeline`; books for `series`.\n\nThe union is closed: a new job kind is a new member in a new contract version. Clients that only follow a job read\nthe fields every kind has (`status`, `progress`, `total`, `message`, `error`).\n",
         "discriminator": {
           "propertyName": "kind"
         },
@@ -16316,6 +17060,17 @@
                   }
                 ],
                 "description": "The `listen_chapter` job currently running, or null between chapters."
+              },
+              "fallback": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JobFallbackNarrator"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The fallback narrator snapshotted when the job was queued for passages the main narration cannot read (blocked or failing), or the narrator of a re-record job; null when none was usable. Absent on jobs queued before contract 0.5.1."
               }
             },
             "required": [
@@ -16422,6 +17177,17 @@
               }
             ],
             "description": "`blocked` only: the number of halves the chunk was split into (2), or absent when it was not split (a one-passage chunk or a half, whose passages go to the fallback narrator)."
+          },
+          "uncertain": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`failed` only: true when the request may have been processed and billed (a timeout or dropped connection), so it is never resent. Absent when the provider answered with an error, and on jobs recorded before contract 0.5.1. A saved performance retries a chunk that failed with an error response once before its fallback narrator reads it; it never retries an uncertain one."
           },
           "started_at": {
             "description": "When the request was sent: ISO 8601 UTC timestamp with offset, for example `2026-09-28T17:04:05.123456+00:00`.",
@@ -16591,7 +17357,7 @@
         "type": "object"
       },
       "JobFallbackNarrator": {
-        "description": "The free local narrator a job snapshotted for passages Gemini blocks.",
+        "description": "The fallback narrator a job snapshotted for passages the main narration cannot read.",
         "properties": {
           "session_id": {
             "description": "The narrator session (64 hex) whose takes read the blocked passages.",
@@ -16599,10 +17365,10 @@
           },
           "provider": {
             "$ref": "#/components/schemas/NarrationProvider",
-            "description": "`system` (a device voice) or `breeze`; never `gemini`."
+            "description": "`system` (a device voice), `gemini` or `breeze`."
           },
           "model": {
-            "description": "Speech model of the fallback narrator (`macos-say` or the Breeze model).",
+            "description": "Speech model of the fallback narrator (`macos-say`, the Breeze model or a Gemini TTS model).",
             "type": "string"
           },
           "voice": {
@@ -18001,7 +18767,7 @@
                 "type": "null"
               }
             ],
-            "description": "Present when a fallback narrator (`provider` is not `gemini`) read this passage because Gemini blocked its text. It is a normal immutable take of the fallback narrator, never Gemini audio. Absent otherwise."
+            "description": "Present when a different narrator read this passage than the one it stands in for: a fallback narrator (Gemini blocked the text, or the main narration kept failing) or a re-record chosen by the listener. It is a normal immutable take of the reading narrator (`provider`, `voice`), never the original narrator's audio. Absent otherwise."
           },
           "reuse": {
             "anyOf": [
@@ -18180,22 +18946,42 @@
         "type": "object"
       },
       "ListeningSubstitute": {
-        "description": "Marks a take that stands in for a passage Gemini's content policy blocked.",
+        "description": "Marks a take that stands in for a passage another narrator was supposed to read.",
         "properties": {
           "reason": {
-            "description": "Why Gemini did not narrate the passage: its content policy blocked the text.",
-            "type": "string",
+            "description": "Why this narrator read the passage: `content_blocked` (Gemini's content policy blocked the text), `failed` (the main narration kept failing on it) or `rerecord` (the listener asked for another voice). The first two are automatic fallbacks; `rerecord` is a choice. The set of values is open.",
             "enum": [
-              "content_blocked"
-            ]
+              "content_blocked",
+              "failed",
+              "rerecord"
+            ],
+            "type": "string"
           },
           "for_provider": {
-            "$ref": "#/components/schemas/NarrationProvider",
-            "description": "The provider of the session this audio stands in for (`gemini`)."
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NarrationProvider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The provider of the narration this audio stands in for; null when the record does not say."
           },
           "for_model": {
-            "description": "The speech model of the session this audio stands in for.",
+            "description": "The speech model of the narration this audio stands in for; empty when not recorded.",
             "type": "string"
+          },
+          "override_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A saved performance's take that links this audio to the performance (see `listPerformanceTakes`); absent for stand-ins made by a chapter job for blocked text, which belong to the narrator session."
           }
         },
         "required": [
@@ -18736,6 +19522,17 @@
             "description": "Display label such as `Kore · Gemini` or `Full cast · Device voices`.",
             "type": "string"
           },
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceFallback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fallback narrator this performance pinned (chosen at creation or with `preparePerformance`, else the saved default or the automatic local narrator). Null when none is usable. Passages it reads are marked in `progress` and in the audio `substitute`."
+          },
           "chapters_added": {
             "description": "Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. Empty when none were added. `chapter_ids` already includes them.",
             "items": {
@@ -18764,6 +19561,7 @@
           "job",
           "progress",
           "narrator_label",
+          "fallback",
           "chapters_added"
         ],
         "title": "Performance",
@@ -18987,7 +19785,12 @@
             "format": "int64"
           },
           "passages_fallback": {
-            "description": "Of the ready passages, those read by a fallback narrator because Gemini blocked their text (audio marked `substitute`).",
+            "description": "Of the ready passages, those a fallback narrator read because the main narration could not: Gemini blocked their text or they kept failing (audio marked `substitute` with reason `content_blocked` or `failed`).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_rerecorded": {
+            "description": "Of the ready passages, those the listener had another narrator re-record (`substitute` reason `rerecord`).",
             "type": "integer",
             "format": "int64"
           },
@@ -19010,6 +19813,7 @@
           "passages_total",
           "passages_ready",
           "passages_fallback",
+          "passages_rerecorded",
           "passages_blocked",
           "blocked_passage_ids"
         ],
@@ -19098,6 +19902,174 @@
           "performance"
         ],
         "title": "PerformanceEnvelope",
+        "type": "object"
+      },
+      "PerformanceEta": {
+        "description": "When the work still to do is expected to be finished, and how that was worked out.",
+        "properties": {
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected seconds of work still to do at the current speed, or null when no speed is known. 0 when nothing is left. It does not include time paused for a daily limit."
+          },
+          "finishes_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 UTC time `seconds` from now; null when unknown or when the work pauses first (`paused_reason`)."
+          },
+          "basis": {
+            "description": "`measured`: from this run's recorded characters and elapsed time. `estimated`: a Gemini one-narrator performance before anything was measured, from speed learned by earlier chunk jobs. `unknown`: no speed is known yet (never guessed). `none`: nothing is left.",
+            "enum": [
+              "measured",
+              "estimated",
+              "unknown",
+              "none"
+            ],
+            "type": "string"
+          },
+          "chars_remaining": {
+            "description": "Code points of text still to record (for a re-record run, still to re-record).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_remaining": {
+            "description": "Passages still to record (for a re-record run, still to re-record).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "rate_chars_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The speed used, in code points recorded per second of wall time; null when unknown."
+          },
+          "requests_remaining": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gemini one-narrator performances: planned chunk requests still needed; null otherwise."
+          },
+          "requests_left_today": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gemini one-narrator performances: daily requests this library has left for the model; null otherwise."
+          },
+          "paused_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "quota",
+                  "budget"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why work is or will be paused: `quota` (daily Gemini requests run out; see `resumes_at`) or `budget` (a request limit was reached). Null when nothing pauses it."
+          },
+          "resumes_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`quota`: ISO 8601 UTC time of the next midnight Pacific reset, when a resume can continue; null otherwise."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A sentence explaining an unknown or limited estimate; null when the estimate needs no comment."
+          }
+        },
+        "required": [
+          "seconds",
+          "finishes_at",
+          "basis",
+          "chars_remaining",
+          "passages_remaining",
+          "rate_chars_per_second",
+          "requests_remaining",
+          "requests_left_today",
+          "paused_reason",
+          "resumes_at",
+          "note"
+        ],
+        "title": "PerformanceEta",
+        "type": "object"
+      },
+      "PerformanceFallback": {
+        "description": "The narrator that reads passages the main narration cannot.",
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/NarrationProvider",
+            "description": "Narration provider of the fallback narrator."
+          },
+          "voice": {
+            "description": "Voice as requested: a provider voice ID, `library:<id>`, or empty for the provider's default voice.",
+            "type": "string"
+          },
+          "automatic": {
+            "description": "True when none was chosen and the automatic local narrator applies (a device voice, else Breeze).",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "Display label such as `Default voice · Device voices`.",
+            "type": "string"
+          },
+          "available": {
+            "description": "False while its provider cannot be used (no key, no `say`/`ffmpeg`, no Breeze URL); passages it should read stay unrecorded until it is.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider",
+          "voice",
+          "automatic",
+          "label",
+          "available"
+        ],
+        "title": "PerformanceFallback",
         "type": "object"
       },
       "PerformanceJob": {
@@ -19231,6 +20203,17 @@
               }
             ],
             "description": "The `listen_chapter` job currently running, or null between chapters."
+          },
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobFallbackNarrator"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fallback narrator snapshotted when the job was queued for passages the main narration cannot read (blocked or failing), or the narrator of a re-record job; null when none was usable. Absent on jobs queued before contract 0.5.1."
           }
         },
         "required": [
@@ -19358,6 +20341,17 @@
             "description": "Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the prefix of the default name.",
             "type": "string"
           },
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceFallback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fallback narrator the performance would use (see `Performance.fallback`); null when none is usable."
+          },
           "added_chapter_ids": {
             "anyOf": [
               {
@@ -19388,10 +20382,30 @@
           "notes",
           "quota",
           "narrator_label",
+          "fallback",
           "added_chapter_ids"
         ],
         "title": "PerformancePlan",
         "type": "object"
+      },
+      "PerformancePrepare": {
+        "properties": {
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FallbackChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Change the fallback narrator this performance pins from now on. Omit or null to keep it."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PerformancePrepare",
+        "description": "Optional body of `preparePerformance`."
       },
       "PerformanceProblem": {
         "description": "One blocking condition of a performance plan.",
@@ -19430,7 +20444,12 @@
             "type": "number"
           },
           "passages_fallback": {
-            "description": "Of the ready passages, those read by a fallback narrator because Gemini blocked their text. Nonzero means the performance is not entirely Gemini audio.",
+            "description": "Of the ready passages, those a fallback narrator read because the main narration could not (Gemini blocked their text, or they kept failing). Nonzero means the performance is not entirely its main narrator's audio.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_rerecorded": {
+            "description": "Of the ready passages, those the listener had another narrator re-record. Not counted in `passages_fallback`.",
             "type": "integer",
             "format": "int64"
           },
@@ -19448,7 +20467,21 @@
                 "type": "null"
               }
             ],
-            "description": "The provider that read the `passages_fallback` passages (`system` or `breeze`, never `gemini`), or null when there are none."
+            "description": "The provider that read the first `passages_fallback` passages found, or null when there are none."
+          },
+          "fallback_reasons": {
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "`passages_fallback` split by why the fallback narrator read them; both keys are always present.",
+            "propertyNames": {
+              "enum": [
+                "content_blocked",
+                "failed"
+              ]
+            },
+            "type": "object"
           },
           "chapters": {
             "description": "Selected chapters still in the book, in book order.",
@@ -19463,8 +20496,10 @@
           "passages_ready",
           "seconds_ready",
           "passages_fallback",
+          "passages_rerecorded",
           "passages_blocked",
           "fallback_provider",
+          "fallback_reasons",
           "chapters"
         ],
         "title": "PerformanceProgress",
@@ -19555,6 +20590,17 @@
               }
             ],
             "description": "Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed models (`macos-say`, `breeze-tts-2`) and reject any other value. At most 200 characters."
+          },
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FallbackChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The narrator that reads passages the main narration cannot (Gemini blocks the text, or it keeps failing). Omit or null for the saved default (`fallback_narrator` in Settings), else the automatic local narrator. Pinned to the performance."
           }
         },
         "additionalProperties": false,
@@ -19566,6 +20612,488 @@
         ],
         "title": "PerformanceRequest",
         "description": "A performance to preview or create."
+      },
+      "PerformanceRerecordChapter": {
+        "description": "Passages of one chapter a re-record covers.",
+        "properties": {
+          "id": {
+            "description": "Chapter ID.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Chapter title; empty string when none.",
+            "type": "string"
+          },
+          "passages": {
+            "description": "Passages of this chapter in the scope.",
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "passages"
+        ],
+        "title": "PerformanceRerecordChapter",
+        "type": "object"
+      },
+      "PerformanceRerecordPlan": {
+        "description": "Local estimate for re-recording part of a performance; nothing is stored or sent.",
+        "properties": {
+          "performance_id": {
+            "description": "The performance.",
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/NarrationProvider",
+            "description": "The chosen narrator's provider."
+          },
+          "model": {
+            "description": "Resolved speech model.",
+            "type": "string"
+          },
+          "voice": {
+            "description": "The chosen voice as requested (may be empty for the provider default or `library:…`).",
+            "type": "string"
+          },
+          "narrator_label": {
+            "description": "Display label such as `Kore · Gemini`.",
+            "type": "string"
+          },
+          "chapter_ids": {
+            "description": "Chapters the scope touches, in book order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "passages_total": {
+            "description": "Passages the scope covers.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "characters": {
+            "description": "Code points of text in those passages.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "requests_estimate": {
+            "description": "Gemini: one request per passage (a passage this narrator already read is reused without one); 0 for device and Breeze narration.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "expected_seconds": {
+            "description": "The text at 14 code points per second of audio.",
+            "type": "number"
+          },
+          "chapters": {
+            "description": "The covered passages per chapter, in book order.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceRerecordChapter"
+            },
+            "type": "array"
+          },
+          "problems": {
+            "description": "Blocking conditions; `rerecordPerformance` refuses them with the first problem's code.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceProblem"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "description": "Advisory notes: reuse, that earlier audio is kept, cast performances, and the daily request budget.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "quota": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceQuota"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gemini only; null otherwise."
+          }
+        },
+        "required": [
+          "performance_id",
+          "provider",
+          "model",
+          "voice",
+          "narrator_label",
+          "chapter_ids",
+          "passages_total",
+          "characters",
+          "requests_estimate",
+          "expected_seconds",
+          "chapters",
+          "problems",
+          "notes",
+          "quota"
+        ],
+        "title": "PerformanceRerecordPlan",
+        "type": "object"
+      },
+      "PerformanceRerecordRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "system",
+              "gemini",
+              "breeze"
+            ],
+            "description": "Required. `system`, `gemini` or `breeze`."
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The narrator voice: `\"library:vl_…\"` (that library voice's current version), a direct provider voice ID, or empty/null for Default (Gemini `Kore`, the device default voice, or the Bardic default Breeze library voice). A direct Breeze ID must be in the last Breeze voice check. At most 256 characters."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed models and reject any other value."
+          },
+          "chapter_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Re-record every passage of this chapter of the performance. Ignored when `passage_ids` or a range is sent."
+          },
+          "passage_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "type": "array",
+                "maxItems": 1000,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Re-record exactly these passages (at most 1000), which must belong to the performance. Takes precedence over a range and `chapter_id`."
+          },
+          "from_passage_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First passage of an inclusive range in reading order; needs `to_passage_id`. Takes precedence over `chapter_id`."
+          },
+          "to_passage_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last passage of the range; needs `from_passage_id`."
+          },
+          "only": {
+            "type": "string",
+            "enum": [
+              "all",
+              "fallback"
+            ],
+            "default": "all",
+            "description": "`all` (default): every passage in scope. `fallback`: only passages a fallback narrator currently reads because the main narration could not."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "PerformanceRerecordRequest",
+        "description": "The narrator to read with and which passages to re-record."
+      },
+      "PerformanceRestoreRequest": {
+        "properties": {
+          "passage_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "description": "The passages (1-1000 IDs of this performance)."
+          },
+          "take_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A take from `listPerformanceTakes` to make current; requires exactly one passage. Omit or null to return the passages to the performance's own audio."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "passage_ids"
+        ],
+        "title": "PerformanceRestoreRequest",
+        "description": "Which passages to return to a take."
+      },
+      "PerformanceRun": {
+        "description": "The latest job of a performance, as a run: a recording of what was missing, or a re-record.",
+        "properties": {
+          "job_id": {
+            "description": "The `performance` job.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`record`: preparing missing passages with the pinned narrator or cast. `rerecord`: reading chosen passages with another narrator.",
+            "enum": [
+              "record",
+              "rerecord"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "The job status.",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted",
+              "budget_limited",
+              "quota_limited"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "description": "The job's latest progress message, for people.",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 UTC time the run started working (or was queued, before it did)."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 UTC time of the last job update."
+          },
+          "waiting_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seconds the run waits for the per-minute Gemini limit before its next request, or null when it is not waiting."
+          },
+          "passages_total": {
+            "description": "Passages this run set out to record.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_done": {
+            "description": "Of those, passages finished so far (a Gemini one-narrator run advances when each chapter settles).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_total": {
+            "description": "Code points of text this run set out to record; 0 before the run reports.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_done": {
+            "description": "Code points of a `rerecord` run finished so far; 0 for a `record` run, whose progress is read from readiness.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seconds since the run started working while it is active; null otherwise."
+          },
+          "narrator_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`rerecord`: label of the narrator reading the passages; null for `record`."
+          },
+          "current_chapter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The chapter being worked on, or null when unknown or not active."
+          },
+          "issues": {
+            "description": "Passages of this run that no narrator could record (the main narration failed and the fallback narrator could not read them either), while they still have no audio. Bounded at 200.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceRunIssue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "status",
+          "message",
+          "started_at",
+          "updated_at",
+          "waiting_seconds",
+          "passages_total",
+          "passages_done",
+          "chars_total",
+          "chars_done",
+          "elapsed_seconds",
+          "narrator_label",
+          "current_chapter_id",
+          "issues"
+        ],
+        "title": "PerformanceRun",
+        "type": "object"
+      },
+      "PerformanceRunIssue": {
+        "description": "A passage this run could not record.",
+        "properties": {
+          "chapter_id": {
+            "description": "Chapter of the passage.",
+            "type": "string"
+          },
+          "passage_id": {
+            "description": "The passage.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the main narration did not read it.",
+            "enum": [
+              "content_blocked",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "outcome": {
+            "description": "Always `unrecorded`: no narrator recorded it. Re-record it with another voice or try again.",
+            "type": "string",
+            "enum": [
+              "unrecorded"
+            ]
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for an unrecorded passage."
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for an unrecorded passage."
+          },
+          "at": {
+            "description": "ISO 8601 UTC time the issue was noted.",
+            "type": "string"
+          },
+          "message": {
+            "description": "A sentence that states the condition.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chapter_id",
+          "passage_id",
+          "reason",
+          "outcome",
+          "provider",
+          "voice",
+          "at",
+          "message"
+        ],
+        "title": "PerformanceRunIssue",
+        "type": "object"
       },
       "PerformanceStarted": {
         "description": "A created or resumed performance.",
@@ -19590,6 +21118,531 @@
           "job"
         ],
         "title": "PerformanceStarted",
+        "type": "object"
+      },
+      "PerformanceStatus": {
+        "description": "The detailed status of a performance: what is ready, what is being recorded, and when it should be finished.",
+        "properties": {
+          "performance_id": {
+            "description": "The performance (`pf_…`).",
+            "type": "string"
+          },
+          "generated_at": {
+            "description": "ISO 8601 UTC time this status was computed; `eta.finishes_at` is relative to it.",
+            "type": "string"
+          },
+          "state": {
+            "description": "One state for the performance: `recording` or `queued` (a job is active), `complete`, `blocked` (only blocked passages are left), `paused` (a daily or budget limit), `stopped` (the last job failed or was stopped), `partial` or `not_started`.",
+            "enum": [
+              "recording",
+              "queued",
+              "paused",
+              "stopped",
+              "complete",
+              "blocked",
+              "partial",
+              "not_started"
+            ],
+            "type": "string"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest job as a run, or null when the performance never needed one."
+          },
+          "eta": {
+            "$ref": "#/components/schemas/PerformanceEta"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/PerformanceStatusTotals"
+          },
+          "chapters": {
+            "description": "Selected chapters still in the book, in book order.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceStatusChapter"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "description": "Passages another narrator reads (fallback or re-record), in reading order; bounded at 200.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceStatusNote"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "performance_id",
+          "generated_at",
+          "state",
+          "run",
+          "eta",
+          "totals",
+          "chapters",
+          "notes"
+        ],
+        "title": "PerformanceStatus",
+        "type": "object"
+      },
+      "PerformanceStatusChapter": {
+        "description": "Progress of one chapter, with sizes and an estimate.",
+        "properties": {
+          "id": {
+            "description": "Chapter ID.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Chapter title; empty string when the chapter has none.",
+            "type": "string"
+          },
+          "passages_total": {
+            "description": "Passages in the chapter.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_ready": {
+            "description": "Of those, passages with playable audio that matches their current source text. Includes passages a fallback narrator read.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_fallback": {
+            "description": "Of the ready passages, those a fallback narrator read because the main narration could not: Gemini blocked their text or they kept failing (audio marked `substitute` with reason `content_blocked` or `failed`).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_rerecorded": {
+            "description": "Of the ready passages, those the listener had another narrator re-record (`substitute` reason `rerecord`).",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_blocked": {
+            "description": "Passages Gemini blocked that have no audio at all, so they are not ready. They are not requested from Gemini again; they are not a failure.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "blocked_passage_ids": {
+            "description": "The passages counted in `passages_blocked`, in reading order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "`done` (nothing left), `active` (being worked on now), `queued` (waits for the running job), `paused` (a daily or budget limit stopped the job), `stopped` (the job failed or was stopped), `blocked` (only blocked passages are left), `partial`, `not_started` or `empty` (no passages).",
+            "enum": [
+              "done",
+              "active",
+              "queued",
+              "paused",
+              "stopped",
+              "blocked",
+              "partial",
+              "not_started",
+              "empty"
+            ],
+            "type": "string"
+          },
+          "passages_remaining": {
+            "description": "Passages without audio that are not blocked.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_total": {
+            "description": "Code points of text in the chapter's passages.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_ready": {
+            "description": "Code points of the passages that have audio.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_remaining": {
+            "description": "Code points of the passages still to record.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "seconds_ready": {
+            "description": "Audio seconds ready in the chapter.",
+            "type": "number"
+          },
+          "run_passages": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`rerecord` run: passages of this chapter the run covers; null otherwise."
+          },
+          "run_done": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`rerecord` run: of those, passages finished; null otherwise."
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Expected seconds until this chapter is finished, counting the chapters before it that are also unfinished, at the speed in `eta`; null when done or unknown."
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "passages_total",
+          "passages_ready",
+          "passages_fallback",
+          "passages_rerecorded",
+          "passages_blocked",
+          "blocked_passage_ids",
+          "state",
+          "passages_remaining",
+          "chars_total",
+          "chars_ready",
+          "chars_remaining",
+          "seconds_ready",
+          "run_passages",
+          "run_done",
+          "eta_seconds"
+        ],
+        "title": "PerformanceStatusChapter",
+        "type": "object"
+      },
+      "PerformanceStatusNote": {
+        "description": "A passage another narrator reads, and why.",
+        "properties": {
+          "chapter_id": {
+            "description": "Chapter of the passage.",
+            "type": "string"
+          },
+          "passage_id": {
+            "description": "The passage.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why another narrator reads it (see `ListeningSubstitute.reason`).",
+            "enum": [
+              "content_blocked",
+              "failed",
+              "rerecord"
+            ],
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provider of the narrator reading it."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Speech model of the narrator reading it."
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Voice of the narrator reading it."
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 UTC time this take was retained."
+          },
+          "excerpt": {
+            "description": "The first 80 code points of the passage, to recognise it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chapter_id",
+          "passage_id",
+          "reason",
+          "provider",
+          "model",
+          "voice",
+          "created_at",
+          "excerpt"
+        ],
+        "title": "PerformanceStatusNote",
+        "type": "object"
+      },
+      "PerformanceStatusTotals": {
+        "description": "Whole-performance counts.",
+        "properties": {
+          "passages_total": {
+            "description": "Passages in the selected chapters that are still in the book.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_ready": {
+            "description": "Of those, passages with playable audio that matches their current source text.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_fallback": {
+            "description": "Ready passages a fallback narrator read because the main narration could not.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_rerecorded": {
+            "description": "Ready passages the listener had another narrator re-record.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_blocked": {
+            "description": "Passages Gemini blocked that have no audio.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "passages_remaining": {
+            "description": "Passages without audio that are not blocked.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_total": {
+            "description": "Code points of text in all passages.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_ready": {
+            "description": "Code points of the passages that have audio.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "chars_remaining": {
+            "description": "Code points of the passages still to record.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "seconds_ready": {
+            "description": "Audio seconds ready.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "passages_total",
+          "passages_ready",
+          "passages_fallback",
+          "passages_rerecorded",
+          "passages_blocked",
+          "passages_remaining",
+          "chars_total",
+          "chars_ready",
+          "chars_remaining",
+          "seconds_ready"
+        ],
+        "title": "PerformanceStatusTotals",
+        "type": "object"
+      },
+      "PerformanceTake": {
+        "description": "One retained choice of audio for a passage of a performance.",
+        "properties": {
+          "id": {
+            "description": "Take ID; pass it to `restorePerformanceTake` as `take_id`.",
+            "type": "string"
+          },
+          "passage_id": {
+            "description": "The passage.",
+            "type": "string"
+          },
+          "chapter_id": {
+            "description": "Chapter of the passage.",
+            "type": "string"
+          },
+          "action": {
+            "description": "`use`: another narrator's audio (see `audio`). `original`: a choice to return to the performance's own audio (no audio of its own).",
+            "enum": [
+              "use",
+              "original"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why: an automatic fallback (`content_blocked`, `failed`), a re-record (`rerecord`), or a return to the original (`restore`). A restored take keeps the reason of the take it copies.",
+            "enum": [
+              "content_blocked",
+              "failed",
+              "rerecord",
+              "restore"
+            ],
+            "type": "string"
+          },
+          "created_at": {
+            "description": "ISO 8601 UTC time the choice was recorded.",
+            "type": "string"
+          },
+          "restored_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The take this one re-selected, when it came from `restorePerformanceTake`; null otherwise."
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provider of the narrator that read the passage (`use`); null for `original`."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Speech model of that narrator; null for `original`."
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Voice of that narrator; null for `original`."
+          },
+          "voice_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Display label of that voice; null for `original`."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For an automatic fallback, a fixed sentence about why the main narration did not read the passage; never a provider's own text. Null otherwise."
+          },
+          "available": {
+            "description": "False when this take's audio file is missing, so it cannot be chosen (it is skipped in favour of the next newest choice).",
+            "type": "boolean"
+          },
+          "current": {
+            "description": "True for the one choice deciding what plays for the passage now.",
+            "type": "boolean"
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ListeningPassageAudio"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The playable audio of a `use` take (marked `substitute`), or null for `original` and for a missing file."
+          }
+        },
+        "required": [
+          "id",
+          "passage_id",
+          "chapter_id",
+          "action",
+          "reason",
+          "created_at",
+          "restored_from",
+          "provider",
+          "model",
+          "voice",
+          "voice_label",
+          "error",
+          "available",
+          "current",
+          "audio"
+        ],
+        "title": "PerformanceTake",
+        "type": "object"
+      },
+      "PerformanceTakes": {
+        "description": "Retained choices of audio for a performance's passages.",
+        "properties": {
+          "performance_id": {
+            "description": "The performance.",
+            "type": "string"
+          },
+          "takes": {
+            "description": "Newest first, for passages whose source text is still current; at most 500. The performance's own audio is not listed: it is what an `original` choice returns to.",
+            "items": {
+              "$ref": "#/components/schemas/PerformanceTake"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "performance_id",
+          "takes"
+        ],
+        "title": "PerformanceTakes",
         "type": "object"
       },
       "PipelineAcceptImpact": {
@@ -27772,6 +29825,17 @@
             ],
             "description": "Gemini speech model; must be one of `tts_models` from status. Saved."
           },
+          "fallback_narrator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FallbackNarratorUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fallback narrator new performances pin. `{provider, voice}` saves it (validated locally: a Gemini or Breeze voice must be usable); `{provider: null}` clears it so the automatic local narrator applies. Existing performances keep the narrator they pinned. Saved."
+          },
           "api_keys": {
             "anyOf": [
               {
@@ -27965,6 +30029,17 @@
             "$ref": "#/components/schemas/VoiceLibraryDefaults",
             "description": "Default library voice per narration provider."
           },
+          "fallback_narrator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FallbackNarratorChoice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The saved fallback narrator that new saved performances pin (see `Performance.fallback`), or null when none is saved: a performance then falls back to the automatic local narrator (a device voice, else Breeze)."
+          },
           "providers": {
             "description": "Narration providers in order system, gemini, breeze, with availability.",
             "items": {
@@ -28063,6 +30138,7 @@
           "breeze_url",
           "local_service_urls",
           "narration_defaults",
+          "fallback_narrator",
           "providers",
           "narration_providers",
           "breeze",

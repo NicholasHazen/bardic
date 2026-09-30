@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fallback narrator, re-recording and a detailed performance status** (API contract 0.5.1). A performance pins a fallback platform and voice (a saved default in Settings, or one per performance). It reads any passage the main narration cannot, in one-narrator and full-cast performances: text Gemini blocks, or a passage that keeps failing. Every such passage is marked, counted and listed. Any chapter, range or passage can be re-recorded with another voice; the earlier audio is kept and you can switch back to it or to any earlier take. The status view shows per-chapter progress and an estimate that says whether it was measured, estimated or unknown. Quota, rate limits and cancel never swap a voice, and six failures in a row stop the job instead of replacing the whole book. A cast passage Gemini blocks no longer fails the job when a fallback is usable.
+
 - **API contract 0.5.0 (breaking): the contract now generates good typed clients.** One deliberate reshaping before any generated client, Rust server or external user exists; the browser UI changed in the same commit. See the [contract changelog](contract/CHANGELOG.md) for every change and what clients must do.
   - Every union of objects is a named tagged `oneOf` (audio, listen and preview results, series volumes, result rows, story-map nodes and edges), and `Job` is a union with one branch per job kind.
   - Response fields that are always sent are required (null where empty); integers say `int32` or `int64`; a 416 on a file is the JSON error.

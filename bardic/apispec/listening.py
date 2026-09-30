@@ -27,7 +27,7 @@ from typing_extensions import TypeAliasType
 
 from .base import Op, View, op
 from .enums import NarrationProvider
-from .common import Job, ListenChapterJob, ListenJob, PerformanceJob, RenderJob, VoicePreviewJob
+from .common import Job, JobStatus, ListenChapterJob, ListenJob, PerformanceJob, RenderJob, VoicePreviewJob
 from .media import (AudioRef, BookBreezeSettings, Provider, ListeningPassageAudio, ListeningChunkClipAudio, ListeningAudio,
                     ChapterListenChunkPlan, ChapterListenChunking, ChapterListenCalibration, ChapterListenLimits,
                     ChapterListenQuota, VoicePreview, VoicePreviewAudio)
@@ -53,6 +53,13 @@ _PROVIDER = {'gemini_key_missing': 'Gemini narration with no Gemini API key conf
              'breeze_url_missing': 'Breeze narration with no Breeze server URL configured.'}
 _UNKNOWN_PASSAGE = {'unknown_passage': 'The body names a passage (`passage_id`) that is not in this book.'}
 _SOURCE = {'passage_source_mismatch': 'The passage text no longer matches its source coordinates.'}
+_RERECORD_400 = {'unknown_passage': 'A passage ID in `passage_ids`, `from_passage_id` or `to_passage_id` is not in this performance.',
+                 'unknown_chapter': '`chapter_id` is not part of this performance.',
+                 'range_incomplete': 'Only one of `from_passage_id` and `to_passage_id` was sent.',
+                 'range_invalid': '`from_passage_id` comes after `to_passage_id` in reading order.',
+                 'nothing_to_rerecord': 'The scope matches no passage (with `only: fallback`, none is currently read by a fallback narrator).',
+                 'scope_too_large': 'The scope covers more than 1000 passages.'}
+_FALLBACK_400 = {'narrator_voice_invalid': _NARRATOR['narrator_voice_invalid']}
 _PERFORMANCE_404 = {'book_not_found': 'No book has this ID.', 'performance_not_found': 'The book has no performance with this ID.'}
 _PROBLEMS = {**_PROVIDER, 'narrator_voice_invalid': 'The simple narrator voice cannot be used (see `previewPerformance` problems).',
              'narrator_voice_missing': 'A cast performance whose narrator has no usable voice for the provider.'}
@@ -185,7 +192,8 @@ class PerformanceChapterProgress(View):
     title: str = Field(description='Chapter title; empty string when the chapter has none.')
     passages_total: int = Field(description='Passages in the chapter.')
     passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text. Includes passages a fallback narrator read.')
-    passages_fallback: int = Field(description='Of the ready passages, those read by a fallback narrator because Gemini blocked their text (audio marked `substitute`).')
+    passages_fallback: int = Field(description='Of the ready passages, those a fallback narrator read because the main narration could not: Gemini blocked their text or they kept failing (audio marked `substitute` with reason `content_blocked` or `failed`).')
+    passages_rerecorded: int = Field(description='Of the ready passages, those the listener had another narrator re-record (`substitute` reason `rerecord`).')
     passages_blocked: int = Field(description='Passages Gemini blocked that have no audio at all, so they are not ready. They are not requested from Gemini again; they are not a failure.')
     blocked_passage_ids: list[str] = Field(description='The passages counted in `passages_blocked`, in reading order.')
 
@@ -201,10 +209,21 @@ class PerformanceProgress(View):
     passages_total: int = Field(description='Passages in the selected chapters that are still in the book.')
     passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text.')
     seconds_ready: float = Field(description='Audio seconds ready.')
-    passages_fallback: int = Field(description='Of the ready passages, those read by a fallback narrator because Gemini blocked their text. Nonzero means the performance is not entirely Gemini audio.')
+    passages_fallback: int = Field(description='Of the ready passages, those a fallback narrator read because the main narration could not (Gemini blocked their text, or they kept failing). Nonzero means the performance is not entirely its main narrator\'s audio.')
+    passages_rerecorded: int = Field(description='Of the ready passages, those the listener had another narrator re-record. Not counted in `passages_fallback`.')
     passages_blocked: int = Field(description='Passages Gemini blocked that have no audio at all (no fallback narrator was available, or it failed). Counted neither as ready nor as a failure; they are not requested again.')
-    fallback_provider: NarrationProvider | None = Field(description='The provider that read the `passages_fallback` passages (`system` or `breeze`, never `gemini`), or null when there are none.')
+    fallback_provider: NarrationProvider | None = Field(description='The provider that read the first `passages_fallback` passages found, or null when there are none.')
+    fallback_reasons: dict[Literal['content_blocked', 'failed'], int] = Field(description='`passages_fallback` split by why the fallback narrator read them; both keys are always present.')
     chapters: list[PerformanceChapterProgress] = Field(description='Selected chapters still in the book, in book order.')
+
+
+class PerformanceFallback(View):
+    """The narrator that reads passages the main narration cannot."""
+    provider: NarrationProvider = Field(description='Narration provider of the fallback narrator.')
+    voice: str = Field(description='Voice as requested: a provider voice ID, `library:<id>`, or empty for the provider\'s default voice.')
+    automatic: bool = Field(description='True when none was chosen and the automatic local narrator applies (a device voice, else Breeze).')
+    label: str = Field(description='Display label such as `Default voice · Device voices`.')
+    available: bool = Field(description='False while its provider cannot be used (no key, no `say`/`ffmpeg`, no Breeze URL); passages it should read stay unrecorded until it is.')
 
 
 class Performance(View):
@@ -237,6 +256,10 @@ class Performance(View):
     job: PerformanceJob | None = Field(description='The latest `performance` job, or null when no job was ever needed.')
     progress: PerformanceProgress
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`.')
+    fallback: PerformanceFallback | None = Field(
+        description='The fallback narrator this performance pinned (chosen at creation or with `preparePerformance`, else the saved default '
+                    'or the automatic local narrator). Null when none is usable. Passages it reads are marked in `progress` and in the audio '
+                    '`substitute`.')
     chapters_added: list[PerformanceChaptersAdded] = Field(
         description='Retained history of chapters added after creation with `addPerformanceChapters`, oldest first. '
                     'Empty when none were added. `chapter_ids` already includes them.')
@@ -304,9 +327,168 @@ class PerformancePlan(View):
     quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
     narrator_label: str = Field(description='Display label such as `Kore · Gemini` or `Full cast · Device voices`; also the '
                                             'prefix of the default name.')
+    fallback: PerformanceFallback | None = Field(
+        description='The fallback narrator the performance would use (see `Performance.fallback`); null when none is usable.')
     added_chapter_ids: list[str] | None = Field(
         description='`previewPerformanceResume` only: the requested chapters that are not yet part of the performance, '
                     'in book order (empty when none are new). Null in the plan `previewPerformance` returns.')
+
+
+# ---- status
+
+PerformanceStateName = Literal['recording', 'queued', 'paused', 'stopped', 'complete', 'blocked', 'partial', 'not_started']
+ChapterStateName = Literal['done', 'active', 'queued', 'paused', 'stopped', 'blocked', 'partial', 'not_started', 'empty']
+
+
+class PerformanceRunIssue(View):
+    """A passage this run could not record."""
+    chapter_id: str = Field(description='Chapter of the passage.')
+    passage_id: str = Field(description='The passage.')
+    reason: Literal['content_blocked', 'failed'] = Field(description='Why the main narration did not read it.')
+    outcome: Literal['unrecorded'] = Field(description='Always `unrecorded`: no narrator recorded it. Re-record it with another voice or try again.')
+    provider: str | None = Field(description='Null for an unrecorded passage.')
+    voice: str | None = Field(description='Null for an unrecorded passage.')
+    at: str = Field(description='ISO 8601 UTC time the issue was noted.')
+    message: str = Field(description='A sentence that states the condition.')
+
+
+class PerformanceRun(View):
+    """The latest job of a performance, as a run: a recording of what was missing, or a re-record."""
+    job_id: str = Field(description='The `performance` job.')
+    kind: Literal['record', 'rerecord'] = Field(description='`record`: preparing missing passages with the pinned narrator or cast. `rerecord`: reading chosen passages with another narrator.')
+    status: JobStatus = Field(description='The job status.')
+    message: str = Field(description='The job\'s latest progress message, for people.')
+    started_at: str | None = Field(description='ISO 8601 UTC time the run started working (or was queued, before it did).')
+    updated_at: str | None = Field(description='ISO 8601 UTC time of the last job update.')
+    waiting_seconds: float | None = Field(description='Seconds the run waits for the per-minute Gemini limit before its next request, or null when it is not waiting.')
+    passages_total: int = Field(description='Passages this run set out to record.')
+    passages_done: int = Field(description='Of those, passages finished so far (a Gemini one-narrator run advances when each chapter settles).')
+    chars_total: int = Field(description='Code points of text this run set out to record; 0 before the run reports.')
+    chars_done: int = Field(description='Code points of a `rerecord` run finished so far; 0 for a `record` run, whose progress is read from readiness.')
+    elapsed_seconds: float | None = Field(description='Seconds since the run started working while it is active; null otherwise.')
+    narrator_label: str | None = Field(description='`rerecord`: label of the narrator reading the passages; null for `record`.')
+    current_chapter_id: str | None = Field(description='The chapter being worked on, or null when unknown or not active.')
+    issues: list[PerformanceRunIssue] = Field(description='Passages of this run that no narrator could record (the main narration failed and the fallback narrator could not read them either), while they still have no audio. Bounded at 200.')
+
+
+
+
+class PerformanceEta(View):
+    """When the work still to do is expected to be finished, and how that was worked out."""
+    seconds: float | None = Field(description='Expected seconds of work still to do at the current speed, or null when no speed is known. 0 when nothing is left. It does not include time paused for a daily limit.')
+    finishes_at: str | None = Field(description='ISO 8601 UTC time `seconds` from now; null when unknown or when the work pauses first (`paused_reason`).')
+    basis: Literal['measured', 'estimated', 'unknown', 'none'] = Field(description='`measured`: from this run\'s recorded characters and elapsed time. `estimated`: a Gemini one-narrator performance before anything was measured, from speed learned by earlier chunk jobs. `unknown`: no speed is known yet (never guessed). `none`: nothing is left.')
+    chars_remaining: int = Field(description='Code points of text still to record (for a re-record run, still to re-record).')
+    passages_remaining: int = Field(description='Passages still to record (for a re-record run, still to re-record).')
+    rate_chars_per_second: float | None = Field(description='The speed used, in code points recorded per second of wall time; null when unknown.')
+    requests_remaining: int | None = Field(description='Gemini one-narrator performances: planned chunk requests still needed; null otherwise.')
+    requests_left_today: int | None = Field(description='Gemini one-narrator performances: daily requests this library has left for the model; null otherwise.')
+    paused_reason: Literal['quota', 'budget'] | None = Field(description='Why work is or will be paused: `quota` (daily Gemini requests run out; see `resumes_at`) or `budget` (a request limit was reached). Null when nothing pauses it.')
+    resumes_at: str | None = Field(description='`quota`: ISO 8601 UTC time of the next midnight Pacific reset, when a resume can continue; null otherwise.')
+    note: str | None = Field(description='A sentence explaining an unknown or limited estimate; null when the estimate needs no comment.')
+
+
+class PerformanceStatusChapter(PerformanceChapterProgress):
+    """Progress of one chapter, with sizes and an estimate."""
+    state: ChapterStateName = Field(description='`done` (nothing left), `active` (being worked on now), `queued` (waits for the running job), `paused` (a daily or budget limit stopped the job), `stopped` (the job failed or was stopped), `blocked` (only blocked passages are left), `partial`, `not_started` or `empty` (no passages).')
+    passages_remaining: int = Field(description='Passages without audio that are not blocked.')
+    chars_total: int = Field(description='Code points of text in the chapter\'s passages.')
+    chars_ready: int = Field(description='Code points of the passages that have audio.')
+    chars_remaining: int = Field(description='Code points of the passages still to record.')
+    seconds_ready: float = Field(description='Audio seconds ready in the chapter.')
+    run_passages: int | None = Field(description='`rerecord` run: passages of this chapter the run covers; null otherwise.')
+    run_done: int | None = Field(description='`rerecord` run: of those, passages finished; null otherwise.')
+    eta_seconds: float | None = Field(description='Expected seconds until this chapter is finished, counting the chapters before it that are also unfinished, at the speed in `eta`; null when done or unknown.')
+
+
+class PerformanceStatusTotals(View):
+    """Whole-performance counts."""
+    passages_total: int = Field(description='Passages in the selected chapters that are still in the book.')
+    passages_ready: int = Field(description='Of those, passages with playable audio that matches their current source text.')
+    passages_fallback: int = Field(description='Ready passages a fallback narrator read because the main narration could not.')
+    passages_rerecorded: int = Field(description='Ready passages the listener had another narrator re-record.')
+    passages_blocked: int = Field(description='Passages Gemini blocked that have no audio.')
+    passages_remaining: int = Field(description='Passages without audio that are not blocked.')
+    chars_total: int = Field(description='Code points of text in all passages.')
+    chars_ready: int = Field(description='Code points of the passages that have audio.')
+    chars_remaining: int = Field(description='Code points of the passages still to record.')
+    seconds_ready: float = Field(description='Audio seconds ready.')
+
+
+class PerformanceStatusNote(View):
+    """A passage another narrator reads, and why."""
+    chapter_id: str = Field(description='Chapter of the passage.')
+    passage_id: str = Field(description='The passage.')
+    reason: Literal['content_blocked', 'failed', 'rerecord'] = Field(description='Why another narrator reads it (see `ListeningSubstitute.reason`).')
+    provider: str | None = Field(description='Provider of the narrator reading it.')
+    model: str | None = Field(description='Speech model of the narrator reading it.')
+    voice: str | None = Field(description='Voice of the narrator reading it.')
+    created_at: str | None = Field(description='ISO 8601 UTC time this take was retained.')
+    excerpt: str = Field(description='The first 80 code points of the passage, to recognise it.')
+
+
+class PerformanceStatus(View):
+    """The detailed status of a performance: what is ready, what is being recorded, and when it should be finished."""
+    performance_id: str = Field(description='The performance (`pf_…`).')
+    generated_at: str = Field(description='ISO 8601 UTC time this status was computed; `eta.finishes_at` is relative to it.')
+    state: PerformanceStateName = Field(description='One state for the performance: `recording` or `queued` (a job is active), `complete`, `blocked` (only blocked passages are left), `paused` (a daily or budget limit), `stopped` (the last job failed or was stopped), `partial` or `not_started`.')
+    run: PerformanceRun | None = Field(description='The latest job as a run, or null when the performance never needed one.')
+    eta: PerformanceEta
+    totals: PerformanceStatusTotals
+    chapters: list[PerformanceStatusChapter] = Field(description='Selected chapters still in the book, in book order.')
+    notes: list[PerformanceStatusNote] = Field(description='Passages another narrator reads (fallback or re-record), in reading order; bounded at 200.')
+
+
+# ---- re-record
+
+class PerformanceRerecordChapter(View):
+    """Passages of one chapter a re-record covers."""
+    id: str = Field(description='Chapter ID.')
+    title: str = Field(description='Chapter title; empty string when none.')
+    passages: int = Field(description='Passages of this chapter in the scope.')
+
+
+class PerformanceRerecordPlan(View):
+    """Local estimate for re-recording part of a performance; nothing is stored or sent."""
+    performance_id: str = Field(description='The performance.')
+    provider: NarrationProvider = Field(description='The chosen narrator\'s provider.')
+    model: str = Field(description='Resolved speech model.')
+    voice: str = Field(description='The chosen voice as requested (may be empty for the provider default or `library:…`).')
+    narrator_label: str = Field(description='Display label such as `Kore · Gemini`.')
+    chapter_ids: list[str] = Field(description='Chapters the scope touches, in book order.')
+    passages_total: int = Field(description='Passages the scope covers.')
+    characters: int = Field(description='Code points of text in those passages.')
+    requests_estimate: int = Field(description='Gemini: one request per passage (a passage this narrator already read is reused without one); 0 for device and Breeze narration.')
+    expected_seconds: float = Field(description='The text at 14 code points per second of audio.')
+    chapters: list[PerformanceRerecordChapter] = Field(description='The covered passages per chapter, in book order.')
+    problems: list[PerformanceProblem] = Field(description='Blocking conditions; `rerecordPerformance` refuses them with the first problem\'s code.')
+    notes: list[str] = Field(description='Advisory notes: reuse, that earlier audio is kept, cast performances, and the daily request budget.')
+    quota: PerformanceQuota | None = Field(description='Gemini only; null otherwise.')
+
+
+class PerformanceTake(View):
+    """One retained choice of audio for a passage of a performance."""
+    id: str = Field(description='Take ID; pass it to `restorePerformanceTake` as `take_id`.')
+    passage_id: str = Field(description='The passage.')
+    chapter_id: str = Field(description='Chapter of the passage.')
+    action: Literal['use', 'original'] = Field(description='`use`: another narrator\'s audio (see `audio`). `original`: a choice to return to the performance\'s own audio (no audio of its own).')
+    reason: Literal['content_blocked', 'failed', 'rerecord', 'restore'] = Field(description='Why: an automatic fallback (`content_blocked`, `failed`), a re-record (`rerecord`), or a return to the original (`restore`). A restored take keeps the reason of the take it copies.')
+    created_at: str = Field(description='ISO 8601 UTC time the choice was recorded.')
+    restored_from: str | None = Field(description='The take this one re-selected, when it came from `restorePerformanceTake`; null otherwise.')
+    provider: str | None = Field(description='Provider of the narrator that read the passage (`use`); null for `original`.')
+    model: str | None = Field(description='Speech model of that narrator; null for `original`.')
+    voice: str | None = Field(description='Voice of that narrator; null for `original`.')
+    voice_label: str | None = Field(description='Display label of that voice; null for `original`.')
+    error: str | None = Field(description='For an automatic fallback, a fixed sentence about why the main narration did not read the passage; never a provider\'s own text. Null otherwise.')
+    available: bool = Field(description='False when this take\'s audio file is missing, so it cannot be chosen (it is skipped in favour of the next newest choice).')
+    current: bool = Field(description='True for the one choice deciding what plays for the passage now.')
+    audio: ListeningPassageAudio | None = Field(description='The playable audio of a `use` take (marked `substitute`), or null for `original` and for a missing file.')
+
+
+class PerformanceTakes(View):
+    """Retained choices of audio for a performance's passages."""
+    performance_id: str = Field(description='The performance.')
+    takes: list[PerformanceTake] = Field(description='Newest first, for passages whose source text is still current; at most 500. The performance\'s own audio is not listed: it is what an `original` choice returns to.')
 
 
 # ------------------------------------------------------------ voice previews
@@ -515,9 +697,24 @@ Studio's selected takes. Gemini cast requests share the per-minute rate limiter 
 `quota_limited` at the provider's daily quota or
 at this library's configured requests per day, and retry a per-minute 429 at most five consecutive
 times. An uncertain request (timeout, dropped connection) is never resent; the job fails with completed
-audio kept, and the failure names the passage. A passage Gemini's content policy blocks fails a cast
-performance the same way, with `error_code: "content_blocked"`: cast performances have no fallback narrator
-or splitting (use one narrator to get them). There is no dollar allowance for performances. Up to
+audio kept, and the failure names the passage.
+
+**Fallback narrator.** The performance pins a fallback narrator (`Performance.fallback`: chosen in the create
+request or `preparePerformance`, else the saved default in Settings, else the automatic local narrator: a device
+voice, else Breeze). When a passage cannot be narrated by the main narrator (Gemini blocks its text, or it keeps
+failing after the bounded retries: a cast passage, a device or Breeze passage, or a Gemini chunk that failed or
+was truncated past its bound; a chunk that failed with an error response is requested once more first, and an
+uncertain request is never resent), the fallback narrator reads it (for a Gemini chunk: every passage of the
+failed chunk), the take is linked to the performance as a
+`substitute` of that reason (`content_blocked` or `failed`), it counts in `progress.passages_fallback`, and the
+job carries on with the rest. A Gemini fallback is not tried for blocked text (it would be blocked again). A
+daily quota, repeated rate limits, cancellation and shutdown are never the passage's fault: they pause or stop the
+job and never swap a voice. Six passages in a row that fail for the main narrator stop the job with an error (the
+narrator looks unavailable, not the text); what the fallback already read is kept and marked. A passage the
+fallback narrator cannot read either stays unrecorded, is reported in
+the status `run.issues`, and the job completes noting it. With no usable fallback narrator, a cast passage
+Gemini blocks fails the job as before, with `error_code: "content_blocked"`. `rerecordPerformance` can later
+re-record any of these passages with another voice. There is no dollar allowance for performances. Up to
 three performances of different books run at once; one job per book still applies, counting every active
 job for the book (including child jobs beyond the 100-job list bound)."""
 
@@ -654,7 +851,7 @@ rather than as errors; `createPerformance` refuses them with the codes it lists.
        response=PerformancePlan,
        errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
                      'model_unsupported': 'The Gemini model is not supported, or the model does not match the '
-                                          'device or Breeze fixed model.'},
+                                          'device or Breeze fixed model.', **_FALLBACK_400},
                404: _BOOK_404, 409: _ARCHIVED},
        params={'book_id': _BOOK_ID}),
     op('POST', '/api/books/{book_id}/performances', 'createPerformance', 'Performances',
@@ -670,7 +867,7 @@ refused with 400: the code is the first problem's, and the detail joins every pr
        response=PerformanceStarted,
        errors={400: {'unknown_chapter': 'A chapter ID in `chapter_ids` is not in this book.',
                      'model_unsupported': 'The Gemini model is not supported, or the model does not match the '
-                                          'device or Breeze fixed model.', **_PROBLEMS},
+                                          'device or Breeze fixed model.', **_PROBLEMS, **_FALLBACK_400},
                404: _BOOK_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID}, cost='may_charge'),
     op('GET', '/api/books/{book_id}/performances/{performance_id}', 'getPerformance', 'Performances',
@@ -697,13 +894,14 @@ Generate what is missing with the same pinned narrator session or cast snapshot 
 creation do not apply, except that current credentials, limits and chunk options are used). Cast
 resume validates retained WAVs, so a damaged file is narrated again; a regenerated file whose bytes
 match the damaged one's content address is refused rather than overwritten (possible with
-deterministic device voices). Chapters removed from the book are skipped. Returns `{{performance, job}}`
-with `job` null when nothing is missing. Blocking problems are refused with 400 as for
-`createPerformance`.
+deterministic device voices). Chapters removed from the book are skipped. An optional body
+`{{fallback: {{provider, voice}}}}` changes the fallback narrator the performance pins from now on; audio already
+read by another narrator is kept. Returns `{{performance, job}}` with `job` null when nothing is missing.
+Blocking problems are refused with 400 as for `createPerformance`.
 
 {_PERFORMANCE_JOB}""",
        response=PerformanceStarted,
-       errors={400: {**_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing']},
+       errors={400: {**_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing'], **_FALLBACK_400},
                404: _PERFORMANCE_404,
                409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
@@ -738,6 +936,88 @@ problems are refused with 400 as for `createPerformance`.
                      **_PROVIDER, 'narrator_voice_missing': _PROBLEMS['narrator_voice_missing']},
                404: _PERFORMANCE_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
        params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
+    op('GET', '/api/books/{book_id}/performances/{performance_id}/status', 'getPerformanceStatus', 'Performances',
+       'Detailed status of a performance',
+       """\
+Per-chapter progress and an estimate of when the work still to do will be finished, for the latest job
+(a recording of what was missing, or a re-record). Local read: it contacts no provider and changes nothing,
+and it is meant to be polled while a job runs. For a Gemini one-narrator
+performance with blocked text it may create the deterministic listening session row of the fallback narrator.
+
+`chapters` gives each selected chapter's passages ready, read by a fallback narrator, re-recorded, blocked and
+still to do, its size in code points, its `state`, and `eta_seconds` (when that chapter should be finished,
+counting the unfinished chapters before it). `eta` says how the estimate was made in `basis`: `measured` from
+this run's recorded text and elapsed time once it has produced something, `estimated` for a Gemini
+one-narrator performance from speed earlier chunk jobs learned, or `unknown` (never guessed) when no speed is
+known yet. A pause for the daily Gemini limit is reported as `paused_reason: quota` with `resumes_at`, not
+added to `seconds`. `run.issues` lists passages of the run no narrator could record; `notes` lists the passages
+another narrator reads and why, so a fallback is never silent.""",
+       response=PerformanceStatus,
+       errors={404: _PERFORMANCE_404},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/rerecord/preview', 'previewPerformanceRerecord', 'Performances',
+       'Estimate re-recording part of a performance',
+       """\
+Local plan for reading chosen passages of a performance with another narrator: the passages the scope covers,
+their size, the request estimate for Gemini, blocking `problems` and advisory `notes`. Nothing is stored, no
+job starts and no provider is contacted. The scope is the first of `passage_ids`, a `from_passage_id`..
+`to_passage_id` range, a `chapter_id`, or the whole performance; `only: fallback` then keeps the passages a
+fallback narrator currently reads. Allowed while a job runs.""",
+       response=PerformanceRerecordPlan,
+       errors={400: {**_RERECORD_400, 'model_unsupported': _NARRATOR['model_unsupported'],
+                     'narrator_voice_invalid': _NARRATOR['narrator_voice_invalid']},
+               404: _PERFORMANCE_404, 409: _ARCHIVED},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/rerecord', 'rerecordPerformance', 'Performances',
+       'Re-record part of a performance with another voice',
+       f"""\
+Read the passages in scope (see `previewPerformanceRerecord`) with the chosen provider and voice and link each
+result to the performance. The performance's own audio and every earlier take stay retained: the new take
+becomes the one that plays, and `restorePerformanceTake` returns to the original or any earlier take. Each
+passage is an ordinary immutable take of the chosen narrator, so passages that narrator already read are reused
+without a request. Works for simple and cast performances; a cast performance's re-recorded passages are read in
+the chosen voice instead of the cast. Returns `{{performance, job}}`. A passage that cannot be narrated stops the
+job with finished passages kept (a re-record is your choice, so it never falls back to another narrator).
+Refused with 409 while any job is active for the book. Blocking problems are refused with 400 as for
+`createPerformance`.
+
+The job is a `performance` job with `phase: rerecord` and `fallback` set to the chosen narrator; its progress
+counts passages and `getPerformanceStatus` reports it per chapter. Gemini re-records stop as `quota_limited` at
+the daily limit and retry a per-minute 429 at most five consecutive times; an uncertain request is never resent.""",
+       response=PerformanceStarted,
+       errors={400: {**_RERECORD_400, **_PROBLEMS, 'model_unsupported': _NARRATOR['model_unsupported'],
+                     'narrator_unavailable': 'The chosen narrator cannot be used now (check its provider and voice).'},
+               404: _PERFORMANCE_404, 409: {**_ARCHIVED, **_BUSY}, 503: _STOPPING},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}, cost='may_charge'),
+    op('GET', '/api/books/{book_id}/performances/{performance_id}/takes', 'listPerformanceTakes', 'Performances',
+       'List the takes retained for a performance\'s passages',
+       """\
+Every retained choice of another narrator's audio for the performance's passages (fallback reads, re-records and
+restores), newest first, for passages whose source text is still current, with the one currently deciding what
+plays marked `current`. Use it to hear earlier takes and to pick one for `restorePerformanceTake`. `chapter_id`
+and `passage_id` narrow the list. Local read.""",
+       response=PerformanceTakes,
+       errors={404: _PERFORMANCE_404},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).',
+               'chapter_id': 'Only takes of passages in this chapter.', 'passage_id': 'Only takes of this passage.'}),
+    op('POST', '/api/books/{book_id}/performances/{performance_id}/takes/restore', 'restorePerformanceTake', 'Performances',
+       'Choose which take plays for passages',
+       """\
+Without `take_id`, return the given passages to the performance's own audio (the audio it made itself). With
+`take_id`, make that retained take the one that plays for its passage (exactly one). Records a new choice and
+never deletes or rewrites audio, so the choice can itself be undone. A local write that starts no job and is
+refused while a job is active for the book, so a running writer cannot reverse the choice. Returns the performance
+with updated readiness.""",
+       response=PerformanceEnvelope,
+       errors={400: {'unknown_passage': 'A passage ID is not in this performance.',
+                     'no_original': 'Restoring the performance\'s own audio for a passage it never made (a fallback narrator read it).',
+                     'restore_ambiguous': '`take_id` was sent with more than one passage.',
+                     'take_stale': 'The passage text changed after that take was made.',
+                     'take_not_playable': '`take_id` names a return to the performance\'s own audio; restore without a take instead.',
+                     'take_missing': 'That take\'s audio file is missing.'},
+               404: {**_PERFORMANCE_404, 'take_not_found': 'The performance has no such take for that passage.'},
+               409: {**_ARCHIVED, **_BUSY}},
+       params={'book_id': _BOOK_ID, 'performance_id': 'Performance ID (`pf_…`).'}),
     op('PATCH', '/api/books/{book_id}/performances/{performance_id}', 'updatePerformance', 'Performances',
        'Rename or archive a performance',
        'Change label fields only: `name` (trimmed) and `archived`. Never deletes or changes audio, and is '
@@ -822,6 +1102,34 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         'voice': 'Simple mode narrator: ' + _VOICE_VALUES + ' Ignored for `cast`.',
         'model': 'Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed '
                  'models (`macos-say`, `breeze-tts-2`) and reject any other value. At most 200 characters.',
+        'fallback': 'The narrator that reads passages the main narration cannot (Gemini blocks the text, or it keeps failing). '
+                    'Omit or null for the saved default (`fallback_narrator` in Settings), else the automatic local narrator. '
+                    'Pinned to the performance.',
+    },
+    'FallbackChoice': {
+        '__doc__': 'A narrator: provider and voice.',
+        'provider': '`system`, `gemini` or `breeze`.',
+        'voice': 'Provider voice ID, `library:<id>`, or empty for the provider default; at most 200 characters.',
+    },
+    'PerformancePrepare': {
+        '__doc__': 'Optional body of `preparePerformance`.',
+        'fallback': 'Change the fallback narrator this performance pins from now on. Omit or null to keep it.',
+    },
+    'PerformanceRerecordRequest': {
+        '__doc__': 'The narrator to read with and which passages to re-record.',
+        'provider': 'Required. `system`, `gemini` or `breeze`.',
+        'voice': 'The narrator voice: ' + _VOICE_VALUES,
+        'model': 'Gemini: a supported TTS model, default the configured one. Device and Breeze use their fixed models and reject any other value.',
+        'chapter_id': 'Re-record every passage of this chapter of the performance. Ignored when `passage_ids` or a range is sent.',
+        'passage_ids': 'Re-record exactly these passages (at most 1000), which must belong to the performance. Takes precedence over a range and `chapter_id`.',
+        'from_passage_id': 'First passage of an inclusive range in reading order; needs `to_passage_id`. Takes precedence over `chapter_id`.',
+        'to_passage_id': 'Last passage of the range; needs `from_passage_id`.',
+        'only': '`all` (default): every passage in scope. `fallback`: only passages a fallback narrator currently reads because the main narration could not.',
+    },
+    'PerformanceRestoreRequest': {
+        '__doc__': 'Which passages to return to a take.',
+        'passage_ids': 'The passages (1-1000 IDs of this performance).',
+        'take_id': 'A take from `listPerformanceTakes` to make current; requires exactly one passage. Omit or null to return the passages to the performance\'s own audio.',
     },
     'PerformanceChapters': {
         '__doc__': 'Chapters to add to an existing performance.',

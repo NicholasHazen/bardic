@@ -24,7 +24,7 @@ from .base import Error, Op, Tag
 # Semantic version of the contract (not of the server). While 0.x, a breaking
 # change bumps the minor version and an additive change bumps the patch
 # version. Every change is recorded in contract/CHANGELOG.md.
-VERSION = '0.5.0'
+VERSION = '0.5.1'
 
 FAMILIES = ('system', 'library', 'series', 'books', 'inspection', 'listening', 'voices', 'pipeline')
 

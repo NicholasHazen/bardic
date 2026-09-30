@@ -127,6 +127,11 @@ class ChapterListenRequest(StrictModel):
     chunking: ChunkingOptions | None = None
 
 
+class FallbackChoice(StrictModel):
+    provider: Literal['system', 'gemini', 'breeze']
+    voice: str = Field(default='', max_length=200)
+
+
 class PerformanceRequest(StrictModel):
     name: str | None = Field(default=None, max_length=200)
     mode: Literal['simple', 'cast']
@@ -134,10 +139,31 @@ class PerformanceRequest(StrictModel):
     provider: NarrationProvider
     voice: str | None = Field(default=None, max_length=256)
     model: str | None = Field(default=None, max_length=200)
+    fallback: FallbackChoice | None = None
 
 
 class PerformanceChapters(StrictModel):
     chapter_ids: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=5000)
+
+
+class PerformancePrepare(StrictModel):
+    fallback: FallbackChoice | None = None
+
+
+class PerformanceRerecordRequest(StrictModel):
+    provider: Literal['system', 'gemini', 'breeze']
+    voice: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=200)
+    chapter_id: str | None = Field(default=None, max_length=200)
+    segment_ids: list[Annotated[str, Field(max_length=200)]] | None = Field(default=None, alias='passage_ids', min_length=1, max_length=1000)
+    from_segment_id: str | None = Field(default=None, alias='from_passage_id', max_length=200)
+    to_segment_id: str | None = Field(default=None, alias='to_passage_id', max_length=200)
+    only: Literal['all', 'fallback'] = 'all'
+
+
+class PerformanceRestoreRequest(StrictModel):
+    segment_ids: list[Annotated[str, Field(max_length=200)]] = Field(alias='passage_ids', min_length=1, max_length=1000)
+    take_id: str | None = Field(default=None, max_length=64)
 
 
 class PerformanceEdit(StrictModel):
@@ -233,8 +259,14 @@ class StepPreset(StrictModel):
 MAX_STEP_PRESETS = 50
 
 
+class FallbackNarratorUpdate(StrictModel):
+    provider: str | None = None  # null clears the saved fallback narrator
+    voice: str = Field(default="", max_length=200)
+
+
 class SettingsRequest(StrictModel):
     tts_model: str | None = None
+    fallback_narrator: FallbackNarratorUpdate | None = None
     api_keys: dict[str, Annotated[str, Field(max_length=500)]] | None = None
     analysis_models_by_provider: dict[str, str] | None = None
     preprocess_models_by_provider: dict[str, str] | None = None
@@ -434,6 +466,8 @@ class Runtime:
             # Characters with no Breeze choice follow this library voice.
             "narration_defaults": {"breeze": (saved.get("narration_defaults") or {}).get("breeze")
                                    if isinstance(saved.get("narration_defaults"), dict) else None},
+            # The narrator that reads passages the main narration cannot (or None: the automatic local one).
+            "fallback_narrator": self._saved_fallback(saved.get("fallback_narrator")),
             # Last listing of the Google project's stored voices (metadata only).
             "gemini_voice_catalog": saved.get("gemini_voice_catalog") if isinstance(saved.get("gemini_voice_catalog"), dict) else None,
             # Saved step settings the owner authored on the Analyze tab (shared by every browser).
@@ -592,18 +626,52 @@ class Runtime:
             return self.breeze_config()
         return None
 
-    def fallback_narrator(self, book_id):
-        """The free local narrator that reads passages Gemini blocks, or None when neither is usable.
+    def fallback_choice(self, choice=None):
+        """A fallback narrator choice ``{provider, voice}`` from a request or the saved default; None means automatic.
 
-        The device voice comes first: it needs no network and no owner-shared GPU. Breeze is used only when
-        the device voice is unavailable and a Breeze server with a usable default voice is configured.
-        Local only. The result is what a queued job snapshots: ``{session_id, provider, model, voice}``.
+        Raises ``Invalid`` for a choice that names an unknown provider or a voice the provider cannot use.
+        """
+        choice = choice if choice is not None else self.preferences.get("fallback_narrator")
+        if not choice:
+            return None
+        provider = choice.get("provider")
+        if provider not in NARRATION_PROVIDERS:
+            raise Invalid("fallback_unsupported", "The fallback narrator provider must be system, gemini or breeze.")
+        voice = (choice.get("voice") or "").strip()
+        if provider in ("breeze", "gemini") or voice.startswith("library:"):
+            self.narrator_choice(provider, voice)  # validates the voice locally
+        return {"provider": provider, "voice": voice}
+
+    def fallback_narrator(self, book_id, choice=None):
+        """The narrator that reads passages the main narration cannot, or None when none is usable.
+
+        ``choice`` is a pinned ``{provider, voice}``. Without one the free local narrator is used: the device voice
+        first (no network, no owner-shared GPU), else Breeze with its default voice. Local only. The result is what a
+        queued job snapshots: ``{session_id, provider, model, voice}``.
         """
         from .audio import SYSTEM_MODEL
         from .listening import ListeningRepository
         repository = ListeningRepository(self.store)
         try:
-            if shutil.which("say") and shutil.which("ffmpeg"):
+            if choice:
+                provider = choice["provider"]
+                voice, pinned = self.narrator_choice(provider, choice.get("voice") or "")
+                if provider == "system":
+                    if not (shutil.which("say") and shutil.which("ffmpeg")):
+                        return None
+                    session = repository.session(book_id, "system", voice, SYSTEM_MODEL)
+                elif provider == "breeze":
+                    if not self.breeze_url():
+                        return None
+                    session = repository.session(book_id, "breeze", voice, BREEZE_MODEL, selection=pinned)
+                else:
+                    if not self.api_key:
+                        return None
+                    model = choice.get("model") or self.preferences["tts_model"]
+                    if model not in TTS_MODELS:
+                        return None
+                    session = repository.session(book_id, "gemini", voice, model)
+            elif shutil.which("say") and shutil.which("ffmpeg"):
                 session = repository.session(book_id, "system", "", SYSTEM_MODEL)
             elif self.breeze_url():
                 voice, pinned = self.narrator_choice("breeze", "")
@@ -621,6 +689,12 @@ class Runtime:
     def require_breeze(self):
         if not self.breeze_url():
             raise Invalid("breeze_url_missing", "No Breeze server URL is configured.")
+
+    @staticmethod
+    def _saved_fallback(saved):
+        if isinstance(saved, dict) and saved.get("provider") in NARRATION_PROVIDERS and isinstance(saved.get("voice", ""), str):
+            return {"provider": saved["provider"], "voice": saved.get("voice", "")}
+        return None
 
     @staticmethod
     def _saved_tts_limits(saved):
@@ -1394,6 +1468,12 @@ def create_app(data_dir: Path | None = None):
         presets = None
         if body.analysis_step_presets is not None:
             presets = step_presets(body.analysis_step_presets)
+        fallback_saved, fallback = False, None
+        if body.fallback_narrator is not None:
+            fallback_saved = True
+            if body.fallback_narrator.provider is not None:
+                fallback = runtime.fallback_choice({"provider": body.fallback_narrator.provider,
+                                                    "voice": body.fallback_narrator.voice})
         chunking = None
         if body.listen_chunking is not None:
             chunking = normalize_options({**runtime.preferences["listen_chunking"],
@@ -1412,6 +1492,8 @@ def create_app(data_dir: Path | None = None):
             preferences["local_service_urls"].update(service_urls)
             if body.tts_model is not None:
                 preferences["tts_model"] = body.tts_model
+            if fallback_saved:
+                preferences["fallback_narrator"] = fallback
             if body.analysis_provider is not None:
                 preferences["analysis_provider"] = body.analysis_provider
             preferences["analysis_models_by_provider"].update(models)
@@ -2352,11 +2434,48 @@ def create_app(data_dir: Path | None = None):
         return {'performance_id': performance_id, 'audio': performances.ready_audio(runtime, record)}
 
     @app.post('/api/books/{book_id}/performances/{performance_id}/prepare')
-    def prepare_performance(book_id: str, performance_id: str, request: Request):
+    def prepare_performance(book_id: str, performance_id: str, request: Request, body: PerformancePrepare | None = None):
         from . import performances
         runtime = rt(request)
         with runtime.store.lock:
-            return performances.prepare(runtime, book_id, performance_id)
+            return performances.prepare(runtime, book_id, performance_id, fallback=body.fallback.model_dump() if body and body.fallback else None)
+
+    @app.get('/api/books/{book_id}/performances/{performance_id}/status')
+    def performance_status(book_id: str, performance_id: str, request: Request):
+        from . import performance_status, performances
+        runtime = rt(request)
+        runtime.store.book(book_id)
+        record = performances.PerformanceRepository(runtime.store).get(book_id, performance_id)
+        return performance_status.status(runtime, record)
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/rerecord/preview')
+    def preview_performance_rerecord(book_id: str, performance_id: str, body: PerformanceRerecordRequest, request: Request):
+        from . import rerecord
+        runtime = rt(request)
+        require_active_book(runtime.store, book_id)
+        return rerecord.plan(runtime, book_id, performance_id, body.model_dump())['public']
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/rerecord')
+    def rerecord_performance(book_id: str, performance_id: str, body: PerformanceRerecordRequest, request: Request):
+        from . import rerecord
+        runtime = rt(request)
+        with runtime.store.lock:
+            return rerecord.start(runtime, book_id, performance_id, body.model_dump())
+
+    @app.get('/api/books/{book_id}/performances/{performance_id}/takes')
+    def performance_takes(book_id: str, performance_id: str, request: Request, chapter_id: str | None = None,
+                          passage_id: str | None = None):
+        from . import rerecord
+        runtime = rt(request)
+        runtime.store.book(book_id)
+        return {'performance_id': performance_id, 'takes': rerecord.takes(runtime, book_id, performance_id, chapter_id, passage_id)}
+
+    @app.post('/api/books/{book_id}/performances/{performance_id}/takes/restore')
+    def restore_performance_take(book_id: str, performance_id: str, body: PerformanceRestoreRequest, request: Request):
+        from . import rerecord
+        runtime = rt(request)
+        with runtime.store.lock:
+            return rerecord.restore(runtime, book_id, performance_id, body.segment_ids, body.take_id)
 
     @app.post('/api/books/{book_id}/performances/{performance_id}/preview')
     def preview_performance_resume(book_id: str, performance_id: str, body: PerformanceChapters, request: Request):

@@ -691,6 +691,13 @@
       voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false}))};
   }
 
+  // The same voice menu with no book open, for the saved fallback narrator in Providers & settings.
+  function voiceOptions(provider, {status, library, book = null, keep = ''} = {}) {
+    if (!PROVIDERS.includes(provider)) return null;
+    const {voices,available} = narratorChoices({provider,book,library:library || null,voices:{[provider]:keep},showAllVoices:false}, status || {});
+    return {provider,available,voices:voices.map(voice => ({id:voice.id ?? voice.name,name:voice.name || voice.id,locale:voice.locale || '',usable:voice.usable !== false}))};
+  }
+
   // Chapter jobs ------------------------------------------------------------
   const chapterSegmentsOf = (state, chapterId) => state.book.passages.filter(segment => segment.chapter_id === chapterId);
   // Adopt a session only for the narrator configuration the request was sent
@@ -1669,5 +1676,5 @@
   }
   window.BardicListen = {render,enabled,isSimple:enabled,take:resolve,resolve,ensure,prepare,updatePlayback,prepareChapter,getBuffer,getSelection,forgetAudio,stop,waitForStopped,allowsAdvance,
     chapterMarks,estimateChapter,getChapterJob:book => stateFor(book)?.chapter.job || null,choices,choose,apply,statusInput,act,describe,isContinuous,setContinuous,setShowAllVoices,macVoices,
-    nextSegment,usePerformance,leavePerformance,getPerformance,refreshPerformance,narratorOptions};
+    nextSegment,usePerformance,leavePerformance,getPerformance,refreshPerformance,narratorOptions,voiceOptions};
 })();

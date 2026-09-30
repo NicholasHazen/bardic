@@ -71,6 +71,7 @@ SQLite is the authoritative application store; JSON book projections make reader
 | [`take_archive.py`](../bardic/take_archive.py) | Private rendering followed by validated, atomic, content-addressed audio publication. Distinguishes generation recipe from actual resulting bytes. |
 | [`voice_previews.py`](../bardic/voice_previews.py) | Bounded contextual/demo auditions, retained input recipes and independent byte-addressed preview takes. Never edits casting or selected simple/enhanced takes. |
 | [`listening.py`](../bardic/listening.py) | Independent single-voice sessions/takes and a content-equivalent synthesis cache; intentionally excludes enhanced casting and performance directions. |
+| [`performance_overrides.py`](../bardic/performance_overrides.py), [`rerecord.py`](../bardic/rerecord.py), [`performance_status.py`](../bardic/performance_status.py) | Fallback and re-recorded passages of a saved performance (append-only override log, reading step, take list and restore) and the detailed per-chapter status with an honest estimate. Local reads except an explicit re-record. |
 | [`resources.py`](../bardic/resources.py) | Durable local/narration measurements and combined resource summaries, preserving unknown measurements and avoiding double-counting analysis attempts. |
 | [`diagnostics.py`](../bardic/diagnostics.py) | Bounded local operational event log; validates safe fields, suppresses duplicates, limits client events and prunes old rows independently of immutable provenance. |
 

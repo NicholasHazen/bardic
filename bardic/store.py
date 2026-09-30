@@ -18,8 +18,10 @@ ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
 # Written once, when a job reaches its terminal status; never changed afterwards.
 JOB_OUTCOME_FIELDS = frozenset({"status", "message", "error", "error_code", "resume_after"})
 # Stored bookkeeping that is not part of the published Job (the series plan
-# fingerprint stays in storage and in the `series_run` artifact).
-INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint"})
+# fingerprint stays in storage and in the `series_run` artifact; a performance run's
+# progress measurements are reported by the performance status instead).
+INTERNAL_JOB_FIELDS = frozenset({"plan_fingerprint", "skip_segment_ids", "work_started_at", "work_chars", "chars_done",
+                                  "current_chapter_id", "rerecord", "passage_issues"})
 # Job fields renamed in contract 0.2.0, by kind: stored documents from older
 # versions are translated when read, and new documents use the new names.
 LEGACY_JOB_FIELDS = {"pipeline": {"mode": "scheduling"}, "series": {"limits": "analysis_limits", "mode": "scheduling"},

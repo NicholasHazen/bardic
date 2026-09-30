@@ -36,6 +36,8 @@ const ERROR_HINTS = {
   breeze_url_missing:'Add the Breeze server URL in Providers & settings, or choose another narrator.',
   book_archived:'It is listed under Removed items.',
   job_active:'Let it finish or cancel it first.',
+  fallback_unsupported:'Choose another fallback narrator.',
+  narrator_voice_invalid:'Choose a voice from the list for that service.',
   series_run_active:'Wait for the series run to finish or stop it.',
 };
 // Panels with their own request helpers show the same hints.
@@ -79,6 +81,7 @@ function fillSettings() {
   $('#tts-model').innerHTML = (state.status?.tts_models || []).map(model => { const id = typeof model === 'string' ? model : model.id; return `<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`; }).join('');
   $('#tts-model').value = state.status?.tts_model || '';
   fillNarrationLimits();
+  fillFallbackNarrator();
   fillBreezeSettings();
   fillLocalAnalysisSettings();
   for (const provider of cloudProviders) {
@@ -88,6 +91,22 @@ function fillSettings() {
       preprocess: state.status?.preprocess_models_by_provider?.[provider] || '',
     });
   }
+}
+// The saved fallback narrator that new performances pin: a service and a voice, or automatic (none saved).
+function fillFallbackNarrator(provider = state.status?.fallback_narrator?.provider || '', keep = provider === (state.status?.fallback_narrator?.provider || '') ? state.status?.fallback_narrator?.voice || '' : '') {
+  $('#fallback-narrator-provider').value = provider;
+  const voice = $('#fallback-narrator-voice');
+  const options = provider ? window.BardicListen?.voiceOptions?.(provider, {status:state.status, library:state.voiceLibrary, book:state.book, keep}) : null;
+  voice.hidden = !options;
+  voice.innerHTML = (options?.voices || []).map(item => `<option value="${escapeHTML(item.id)}"${item.usable || item.id === keep ? '' : ' disabled'}>${escapeHTML(item.name)}${item.locale ? ` · ${escapeHTML(item.locale)}` : ''}</option>`).join('');
+  if (options) voice.value = keep && options.voices.some(item => item.id === keep) ? keep : options.voices.find(item => item.usable && item.id)?.id ?? options.voices[0]?.id ?? '';
+}
+// Only a changed choice is sent: null clears the saved fallback.
+function fallbackNarratorChange() {
+  const provider = $('#fallback-narrator-provider').value, saved = state.status?.fallback_narrator;
+  if (!provider) return saved ? {provider:null} : null;
+  const voice = $('#fallback-narrator-voice').value;
+  return saved?.provider === provider && saved.voice === voice ? null : {provider, voice};
 }
 function fillNarrationLimits() {
   const limits = state.status?.tts_limits?.[$('#tts-model').value] || {rpm:10,tpm:10000,rpd:100};
@@ -2301,6 +2320,8 @@ $('#settings-form').addEventListener('submit', async event => {
   const breezeUrl = $('#breeze-url').value.trim(), breezeKey = $('#breeze-api-key').value.trim();
   if (breezeUrl !== (state.status?.breeze?.base_url || '')) values.breeze_url = breezeUrl;
   if (breezeKey) values.breeze_api_key = breezeKey;
+  const fallback = fallbackNarratorChange();
+  if (fallback) values.fallback_narrator = fallback;
   const serviceUrls = localServiceChanges();
   if (Object.keys(serviceUrls).length) values.local_service_urls = serviceUrls;
   try { await post('/api/settings', values); clearKeyInputs(); await refreshStatus(); await loadVoiceLibrary(); if (state.book) { renderCast(); renderReader(); } $('#settings-dialog').close(); toast('Settings saved.'); } catch (error) { showInlineError('#settings-error',error.message); } finally { state.settingsBusy = false; updateSettingsControls(); }
@@ -2327,6 +2348,7 @@ $('#clear-breeze-key').addEventListener('click', async () => {
 $$('[data-check-account]').forEach(button => button.addEventListener('click', () => checkAccounts([button.dataset.checkAccount])));
 $('#check-all-accounts').addEventListener('click', () => checkAccounts(cloudProviders));
 $('#tts-model').addEventListener('change', fillNarrationLimits);
+$('#fallback-narrator-provider').addEventListener('change', event => fillFallbackNarrator(event.target.value));
 $('#tts-first-audio')?.addEventListener('change', event => {
   if (event.target.value !== 'custom') $('#tts-ramp').value = event.target.value;
   $('#tts-ramp').closest('div').hidden = event.target.value !== 'custom';

@@ -148,3 +148,12 @@ These decisions describe the implemented baseline as of September 27, 2026. They
 
 **Revisit when:** Exports should include performance audio, performances should resume automatically after the daily reset, or listening and processing need to run side by side for the same book.
 
+## D15 · Another narrator's audio is linked to a performance, never written into it
+
+**Decision:** When a passage cannot be narrated, or the listener wants another voice, a performance links a take of a chosen narrator to that passage in an append-only `performance_overrides` log (a `use` row for the take, an `original` row to go back). The newest row for the passage's current source text decides what plays. The take itself is an ordinary immutable simple-listening take of the reading narrator.
+
+**Reason:** The owner wants to switch to a fallback platform and voice when a passage has a problem, keep a note of it, and re-record sections with another voice. Performances keep audio immutable (D14), simple performances own no rows, and a cast passage has exactly one take per source. A separate log gives one mechanism for automatic fallbacks, re-records and restores in both modes, keeps every earlier take, and makes "restore" another row instead of a deletion.
+
+**Consequences:** Nothing is overwritten or deleted, so a bad re-record is one restore away. Fallback readings are noted (`substitute` reason, progress counts, status notes, job message) and never silent; only failures that are the passage's own trigger a swap (quota, rate limits, cancel and shutdown never do). A re-record is explicit and never falls back. A source edit orphans old rows by design. Simple-mode Gemini block handling keeps its existing tables.
+
+**Revisit when:** Overrides should be exported, a take-comparison UI needs more than list-and-choose, fallback passages should be re-read automatically when the main narrator recovers, or a chunk failure should be bisected to isolate one passage before falling back.

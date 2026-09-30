@@ -52,6 +52,11 @@ class JobChapterChunk(View):
     split_into: int | None = Field(
         None, description='`blocked` only: the number of halves the chunk was split into (2), or absent when it was '
                           'not split (a one-passage chunk or a half, whose passages go to the fallback narrator).')
+    uncertain: bool | None = Field(
+        None, description='`failed` only: true when the request may have been processed and billed (a timeout or dropped '
+                          'connection), so it is never resent. Absent when the provider answered with an error, and on jobs '
+                          'recorded before contract 0.5.1. A saved performance retries a chunk that failed with an error '
+                          'response once before its fallback narrator reads it; it never retries an uncertain one.')
     started_at: str = Field(description='When the request was sent: ' + TIME)
     finished_at: str | None = Field(None, description='When the request finished; absent while `requesting`. ' + TIME)
     error: str | None = Field(None, description='Human-readable reason for `rate_limited`, `truncated`, `blocked` or `failed` '
@@ -67,10 +72,10 @@ class JobChapterChunk(View):
 
 
 class JobFallbackNarrator(View):
-    """The free local narrator a job snapshotted for passages Gemini blocks."""
+    """The fallback narrator a job snapshotted for passages the main narration cannot read."""
     session_id: str = Field(description='The narrator session (64 hex) whose takes read the blocked passages.')
-    provider: NarrationProvider = Field(description='`system` (a device voice) or `breeze`; never `gemini`.')
-    model: str = Field(description='Speech model of the fallback narrator (`macos-say` or the Breeze model).')
+    provider: NarrationProvider = Field(description='`system` (a device voice), `gemini` or `breeze`.')
+    model: str = Field(description='Speech model of the fallback narrator (`macos-say`, the Breeze model or a Gemini TTS model).')
     voice: str = Field(description='Voice choice of the fallback session; empty for the default device voice.')
 
 
@@ -366,6 +371,10 @@ class PerformanceJob(JobBase):
     child_job_ids: list[str] = Field(
         description='The `listen_chapter` jobs started so far (Gemini simple performances only; empty otherwise).')
     child_job_id: str | None = Field(description='The `listen_chapter` job currently running, or null between chapters.')
+    fallback: JobFallbackNarrator | None = Field(
+        None, description='The fallback narrator snapshotted when the job was queued for passages the main narration cannot '
+                          'read (blocked or failing), or the narrator of a re-record job; null when none was usable. Absent on '
+                          'jobs queued before contract 0.5.1.')
 
 
 JOB_LIFECYCLE = """\
@@ -414,7 +423,7 @@ one kind names that kind's schema (`ListenJob`, `ListenChapterJob`, `VoicePrevie
 | `listen` | simple passage listening | `session_id`, `passage_id`, `provider`, `model`, `audio` |
 | `listen_chapter` | chapter listening, or a Gemini performance (with `parent_id`) | `session_id`, `chapter_id`, `provider`, `model`, `voice`, `intent`, `scope_start_passage_id`, `focus_passage_id`, `chunking`, `speech_limits`, `ramp_restart`, `joins`, `chunks`, `calibration`, `parent_id`, `projection`, `quota`, `waiting_seconds`, `closing`, `fallback`, `content_blocked` |
 | `voice_preview` | voice preview | `preview_id`, `preview`, `passage_id`, `provider`, `model`, `audio` |
-| `performance` | saved performance preparation | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id` |
+| `performance` | saved performance preparation, or a re-record of some of its passages | `performance_id`, `mode`, `provider`, `model`, `child_job_ids`, `child_job_id`, `fallback` |
 
 **Progress.** `progress` and `total` are counts in kind-specific units, not
 a percentage, and `total` may change while running: passages for

@@ -204,6 +204,13 @@ class StepPresetView(View):
     version: Literal[1] = Field(description='Saved-setting format version.')
 
 
+class FallbackNarratorChoice(View):
+    """The saved fallback narrator: who reads a passage the main narration cannot."""
+    provider: Literal['system', 'gemini', 'breeze'] = Field(description='Narration provider of the fallback narrator.')
+    voice: str = Field(description='Voice as accepted by simple narration: a provider voice ID, a `library:<id>` reference, or an '
+                                   'empty string for the provider\'s default voice.')
+
+
 class ContractInfo(View):
     """The contract this server implements: the version handshake."""
     version: str = Field(
@@ -240,6 +247,9 @@ class Status(View):
         description='Resolved self-hosted server URLs: the Settings value when one was saved (even an empty string), '
                     'otherwise the environment variable.')
     narration_defaults: VoiceLibraryDefaults = Field(description='Default library voice per narration provider.')
+    fallback_narrator: FallbackNarratorChoice | None = Field(
+        description='The saved fallback narrator that new saved performances pin (see `Performance.fallback`), or null when none '
+                    'is saved: a performance then falls back to the automatic local narrator (a device voice, else Breeze).')
     # Derived
     providers: list[StatusNarrationAvailability] = Field(description='Narration providers in order system, gemini, breeze, with availability.')
     narration_providers: dict[NarrationProvider, NarrationProviderInfo] = Field(
@@ -360,6 +370,8 @@ OPS: list[Op] = [
            'model_id_invalid': 'An analysis or preprocessing model ID is malformed.',
            'analysis_provider_unknown': '`analysis_provider` is not `local`, `gemini`, `openai` or `anthropic`.',
            'tts_model_unsupported': '`tts_model`, or a model key of `tts_limits`, is not one of `tts_models`.',
+           'fallback_unsupported': '`fallback_narrator.provider` is not `system`, `gemini` or `breeze`.',
+           'narrator_voice_invalid': '`fallback_narrator.voice` cannot be used by its provider.',
            'breeze_url_invalid': '`breeze_url` is not an http(s) server root without path, query or credentials.',
            'local_service_unknown': 'A key of `local_service_urls` is not `local_llm`, `booknlp` or `novel_analyzer`.',
            'service_url_invalid': 'A self-hosted server URL is not an http(s) server root without path, query or '
@@ -491,6 +503,9 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
         '__doc__': 'A partial settings update. Every field is optional; omitted fields stay unchanged. Unknown '
                    'fields are refused (422).',
         'tts_model': 'Gemini speech model; must be one of `tts_models` from status. Saved.',
+        'fallback_narrator': 'The fallback narrator new performances pin. `{provider, voice}` saves it (validated locally: a '
+                             'Gemini or Breeze voice must be usable); `{provider: null}` clears it so the automatic local '
+                             'narrator applies. Existing performances keep the narrator they pinned. Saved.',
         'analysis_step_presets': 'Saved step settings for the Analyze tab, at most 50. Replaces the saved list; `[]` '
                                  'clears it. Validated as a whole: an unknown step, a provider or model the step does '
                                  'not take, a duplicate `id`, or a duplicate name for one step is refused (400) and '
@@ -520,6 +535,11 @@ REQUEST_DOCS: dict[str, dict[str, str]] = {
                               'characters. An empty string clears it and also overrides its environment variable. '
                               'Services not included keep their value; a service never set in Settings uses its '
                               'environment variable, which is never saved. Saved.',
+    },
+    'FallbackNarratorUpdate': {
+        '__doc__': 'The fallback narrator to save, or a request to clear it.',
+        'provider': '`system`, `gemini` or `breeze`; null clears the saved fallback narrator.',
+        'voice': 'Provider voice ID, `library:<id>`, or empty for the provider default; up to 200 characters.',
     },
     'StepPreset': {
         '__doc__': 'One saved step setting (format version 1).',
