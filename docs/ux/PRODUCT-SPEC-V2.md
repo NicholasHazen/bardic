@@ -164,7 +164,7 @@ Requirement IDs are stable references for tests and tasks. "Must" is required fo
 - **S6.** Lock screen, headset and car controls (Media Session) mirror play, pause, seek, next and previous.
 - **S7.** Switching audiobook mid-chapter keeps the text place. The old audiobook keeps playing until the new one has audio at that place; meanwhile the capsule shows *Getting ready*.
 - **S8.** Reaching the end of a chapter continues to the next when its audio is ready. If it is not ready, playback shows *Getting ready* or *Waiting* and continues automatically.
-- **S9.** Reaching the end of the book shows an end state with *Mark as finished* and the next book in the series if one exists.
+- **S9.** Reaching the end of the book shows an end state (`[EndOfBook]`) with *Mark as finished*, the next book in the series that the listener owns (and a note when a volume is missing), and *Listen again from the start*. It says that leaving the book there marks it finished after 24 hours (C6).
 
 ### 5.6 Places and sync
 
@@ -206,7 +206,7 @@ See section 8 for the model. Requirements:
 ### 5.9 Offline and downloads
 
 - **O1.** *Download* (`[DownloadSheet]`) offers: what is ready now, the whole book as it is made, or chosen chapters. It shows size, free space on the device, a Wi-Fi-only option and a *keep downloading new chapters* option.
-- **O2.** Downloads are per device and per audiobook. Progress, pause, cancel, retry and per-chapter failures are visible (`[DownloadProgress]`). A full device stops the download with a message and keeps what finished.
+- **O2.** Downloads are per device and per audiobook. While a download runs in the background, Read mode shows only a small progress ring beside the reader controls (`[ReadDownloading]`); tapping it opens the downloads; it never covers text. Progress, pause, cancel, retry and per-chapter failures are visible (`[DownloadProgress]`). A full device stops the download with a message and keeps what finished.
 - **O3.** Downloaded chapters play with no connection to the server. The book text for downloaded chapters is downloaded with them so Read mode works offline.
 - **O4.** Away from the server, Home and Library show only what is on this device as openable; other books show as unavailable (`[HomeOffline]`). The unreachable screen (`[ServerOffline]`) lists what can be played.
 - **O5.** Opening a chapter that is not on the device while offline says so and offers the next downloaded chapter.
@@ -217,7 +217,7 @@ See section 8 for the model. Requirements:
 ### 5.10 Settings and recovery
 
 - **G1.** Settings (`[Settings]`): Listener, Voices (default voice, free, premium, your own server), Allowance, Downloads and storage, Listening behaviour (continue into next chapter, keep screen on, when places differ), Reader appearance, About (an editable server name, version, data location, free space) (`[ServerName]`).
-- **G2.** *Free up space* (per book and per audiobook) shows how much it would free, deletes only audio that can be made again, and leaves places and downloads.
+- **G2.** *Free up space* (`[FreeSpace]`, per book, choosing which audiobooks) shows how much each would free, deletes only audio that can be made again, and leaves places and downloads. For a premium audiobook it warns that making the audio again needs a new plan and shows the estimate.
 - **G3.** *Delete permanently* (`[DeleteConfirm]`, `[DeleteUndo]`) is separate from removal. It lists exactly what will be deleted with sizes, and is confirmed by a slide control. After confirming, the book is hidden immediately and the deletion is **scheduled 60 seconds later**; a visible countdown with *Undo* stays on screen, cancels cleanly, and survives a client closing or a server restart (the schedule is stored on the server). When the time passes, the book, its audio, places, history and plans for it are deleted and cannot be recovered. Devices with downloads are offered removal on their next connection.
 - **G4.** Export (D12): one audio file per audiobook with chapter markers (an M4B container), not per chapter. Other formats may be added as a setting later. Backup: a documented way to copy the server's data folder while stopped, and a server command that produces a consistent backup while running.
 - **G5.** If the server is unreachable (`[ServerOffline]`) the client says what is still available and never loses queued work.
@@ -367,7 +367,8 @@ Every board is required unless marked follow-up.
 - **Plans and offline:** `[PlanFree]`, `[PlanPremium]`, `[EstimateExplained]`, `[PlanBlocked]`, `[PlanPaused]`, `[DownloadSheet]`, `[DownloadProgress]`, `[Downloads]`, `[UpdateAudio]`, `[ServerOffline]`.
 - **Listen and read:** `[B1Listen]`, `[B1Read]`, `[B1ReadControls]`, `[BarExpanded]`, `[B1Tablet]`, `[B1TabletListen]`, `[B1TabletRead]`, `[ReaderAppearance]`, `[ReaderAppearanceTablet]`, `[SleepTimer]`, `[ChaptersSheet]`, `[SpeedSheet]`, `[BookSearch]`, `[ReadAway]`.
 - **Settings and edge states:** `[Settings]`, `[VoiceSources]`, `[PremiumAccount]`, `[KeyProblem]`, `[Allowance]`, `[FirstPlay]`, `[NoVoice]`, `[PlaceConflict]`.
-- **Known design gaps to close before build:** end-of-book state (S9), a *delete permanently* confirmation, an empty Library search result, a *free up space* confirmation, a read-along download-progress indicator.
+- **Also designed:** `[EndOfBook]` (S9), `[FreeSpace]` (G2), `[SearchEmpty]`, `[ReadDownloading]` (download ring in Read mode), `[DeleteConfirm]`, `[DeleteUndo]`, `[SetupVoice]`, `[BreezeServer]`, `[ServerName]`, `[AllowanceLimit]`, `[UpdateAudio]`, `[EstimateExplained]`, `[PlanBlocked]`, `[KeyProblem]`, `[DownloadProgress]`.
+- **Remaining design gaps:** none known. Tablet-portrait Now Playing boards carry v1 spacing and should get a polish pass during the build.
 
 ## 13. Extension points (follow-ons)
 
