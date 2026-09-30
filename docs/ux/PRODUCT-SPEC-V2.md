@@ -74,7 +74,7 @@ The sound of one chapter for one audiobook. Audio is **immutable**: making it ag
 A priced proposal to make audio with a premium voice. Has a scope (audiobook and chapters), an **estimate** (low, likely, high), a **limit** (the most it may spend) and a state (section 8). Free voices do not need a plan; they show a simple start confirmation for large jobs.
 
 ### 3.9 Allowance
-A monthly spending ceiling for the whole Bardic, shared by every listener. Tracks estimated spending and the number of items with unknown cost.
+An optional monthly spending limit for the whole Bardic, shared by every listener. **Off by default**: with no monthly limit, only each plan's own limit applies. Always tracks estimated spending for the month and the number of items with unknown cost.
 
 ### 3.10 Key
 A credential for a premium provider. State: *missing*, *valid*, *rejected*. Stored only on the server, never sent to clients after entry.
@@ -98,6 +98,12 @@ A browser profile that has used Bardic: an identifier, a name the user can edit,
 | D7 | The default voice is a listener setting. |
 | D8 | Costs are shown as a range with a "most likely" value, with an explanation of how it is computed. Unknown is shown as unknown. |
 | D9 | A plan that stops because of a provider quota resumes automatically after it resets, inside its original limit, without new approval. |
+| D10 | There is no monthly limit by default. It is a setting. Plans always have their own limit. |
+| D11 | Permanent deletion is a deliberate action (a slide-to-confirm) followed by a 60-second undo window. |
+| D12 | Export is one audio file per audiobook with chapter markers, not per chapter. |
+| D13 | Free voices are not bundled. On first use Bardic asks the listener to choose a voice, downloads it to the Bardic computer, and a setting manages voices afterwards. |
+| D14 | Provider prices are refreshed once a day and whenever usage is fetched. |
+| D15 | The server has a user-editable name, shown on every device. |
 
 ## 5. Functional requirements
 
@@ -142,8 +148,11 @@ Requirement IDs are stable references for tests and tasks. "Must" is required fo
 - **V3.** Choosing a free voice and pressing *Start listening* begins playback (section 7.2). *Make ready* for a free voice starts a background job after a simple confirmation showing time and space.
 - **V4.** Choosing a premium voice never starts playback or spending by itself. It offers *Plan the whole book* and *Plan from chapter N* (section 8).
 - **V5.** Settings › Voices (`[VoiceSources]`): free voices (status *Available*), premium voices (status *Connected*, *Not set up* or *Key rejected*), and an optional user-run voice server. Keys are managed in one place (`[PremiumAccount]`, `[KeyProblem]`).
-- **V6.** **Default voice** (`[VoiceDefault]`) is a listener setting, used when that listener presses play on a book with no audiobook for them. If the default is premium, pressing play on a new book opens a plan first (P2). The default must be chosen at first run from the available free voices, preferring one that ships with Bardic.
-- **V7.** If no free voice is available, pressing play shows a clear problem with instructions and an option to add a premium voice (`[NoVoice]`). Bardic ships with a bundled free voice (see 14.2).
+- **V6.** **Default voice** (`[VoiceDefault]`) is a listener setting, used when that listener presses play on a book with no audiobook for them. If the default is premium, pressing play on a new book opens a plan first (P2). The default is chosen at first use (V8).
+- **V7.** If no free voice is installed, pressing play shows a clear problem with the choice to download one, use a voice already on the computer, or add a premium voice (`[NoVoice]`).
+- **V8.** **First-time free voice** (`[FirstVoice]`, D13): the first time a listener needs a free voice, Bardic lists available voices with a sample, language and size, asks the listener to choose, and downloads it to the Bardic computer with progress. Voices already on the computer (operating-system voices) may be used instead. The chosen voice becomes that listener's default.
+- **V9.** **Free voices** (`[FreeVoices]`, Settings › Voices): add, download, update and remove voices; shows installed, downloading and available states. Removing a voice never deletes audio already made with it; such an audiobook stays playable.
+- **V10.** Downloaded voice files are verified (hash and licence recorded) before use. A failed or interrupted download resumes or retries without leaving a half-installed voice.
 
 ### 5.5 Listening and reading
 
@@ -184,13 +193,13 @@ See section 8 for the model. Requirements:
 
 - **PL1.** A premium plan sheet (`[PlanPremium]`) shows scope, text size, chapters to make, time, **estimate as a range with a most-likely value**, the plan's limit, and what remains of the Allowance. It explains the range (`[EstimateExplained]`).
 - **PL2.** The plan's limit defaults to the top of the range rounded up, and is editable down to the most-likely value and up to the amount left in the Allowance.
-- **PL3.** If the estimate's low end exceeds what is left in the Allowance, the plan cannot be approved and the sheet offers a smaller scope or opening the Allowance (`[PlanBlocked]`).
+- **PL3.** If a monthly limit is set and the estimate's low end exceeds what is left under it, the plan cannot be approved and the sheet offers a smaller scope or opening the Allowance (`[PlanBlocked]`). With no monthly limit this check does not apply.
 - **PL4.** Approving starts a job. The book page shows progress, spend so far (estimated) and the limit, with Pause and Stop (`[BookRunning]`).
-- **PL5.** The plan **stops** and asks before exceeding its limit or the Allowance. Completed chapters are kept.
+- **PL5.** The plan **stops** and asks before exceeding its limit or, if one is set, the monthly limit. Completed chapters are kept.
 - **PL6.** When a provider's own quota blocks work, the plan is **Waiting**, says when the quota resets if known, and **resumes automatically** inside the original limit (D9). It offers *Make the rest with a free voice* as a new audiobook (D2), and *Stop here*.
 - **PL7.** A plan changes state only through user actions or the automatic rules above. A plan is never extended, raised or retried silently.
-- **PL8.** The Allowance (`[Allowance]`) has a monthly amount and a default per-plan limit. It shows this month's estimated spending, how many items have unknown cost (never counted as zero), and says it is an estimate that may differ from the provider's bill. It is shared by all listeners.
-- **PL9.** Lowering the Allowance below current spending is allowed. It blocks new plans and stops running plans at their next chapter boundary, keeping completed work.
+- **PL8.** The Allowance (`[Allowance]`, `[AllowanceLimit]`) shows this month's estimated spending and how many items have unknown cost (never counted as zero), says it is an estimate that may differ from the provider's bill, and offers two settings: an optional **monthly limit** (off by default) and a **default limit for one plan**. It is shared by all listeners.
+- **PL9.** Setting a monthly limit below current spending is allowed. It blocks new plans and stops running plans at their next chapter boundary, keeping completed work. Turning the limit off never changes a running plan's own limit.
 - **PL10.** Every plan, approval, stop and Allowance change records which listener and device did it.
 - **PL11.** A rejected or expired key stops running plans at the next request, keeps completed chapters, and shows the key problem (`[KeyProblem]`). Free voices are unaffected.
 
@@ -207,11 +216,12 @@ See section 8 for the model. Requirements:
 
 ### 5.10 Settings and recovery
 
-- **G1.** Settings (`[Settings]`): Listener, Voices (default voice, free, premium, your own server), Allowance, Downloads and storage, Listening behaviour (continue into next chapter, keep screen on, when places differ), Reader appearance, About (server name, version, data location).
+- **G1.** Settings (`[Settings]`): Listener, Voices (default voice, free, premium, your own server), Allowance, Downloads and storage, Listening behaviour (continue into next chapter, keep screen on, when places differ), Reader appearance, About (an editable server name, version, data location, free space) (`[ServerName]`).
 - **G2.** *Free up space* (per book and per audiobook) shows how much it would free, deletes only audio that can be made again, and leaves places and downloads.
-- **G3.** *Delete permanently* is separate, asks for typed confirmation, and deletes the book, its audio, places and history. It cannot be undone.
-- **G4.** Export: the audiobook as audio files with chapter markers (later format choices are allowed). Backup: a documented way to copy the server's data folder while stopped, and a server command that produces a consistent backup while running.
+- **G3.** *Delete permanently* (`[DeleteConfirm]`, `[DeleteUndo]`) is separate from removal. It lists exactly what will be deleted with sizes, and is confirmed by a slide control. After confirming, the book is hidden immediately and the deletion is **scheduled 60 seconds later**; a visible countdown with *Undo* stays on screen, cancels cleanly, and survives a client closing or a server restart (the schedule is stored on the server). When the time passes, the book, its audio, places, history and plans for it are deleted and cannot be recovered. Devices with downloads are offered removal on their next connection.
+- **G4.** Export (D12): one audio file per audiobook with chapter markers (an M4B container), not per chapter. Other formats may be added as a setting later. Backup: a documented way to copy the server's data folder while stopped, and a server command that produces a consistent backup while running.
 - **G5.** If the server is unreachable (`[ServerOffline]`) the client says what is still available and never loses queued work.
+- **G7.** The **server name** (D15) is editable, defaults to the computer's name, is shown on every device (switcher, Settings, the unreachable screen) and is used for local-network discovery. Changing it never changes the address clients already use.
 - **G6.** First play (`[FirstPlay]`) shows *Getting ready* with the expected wait and a way to choose another voice.
 
 ## 6. Audio states and listening states
@@ -273,7 +283,7 @@ The server computes an **estimate** for a plan as a range:
 - **Low**: characters to speak × the lowest plausible price, assuming no retries.
 - **Likely**: characters × the published price, plus expected retry overhead.
 - **High**: characters × the highest plausible price, plus a retry allowance.
-Inputs: exact character counts of the text to speak (known), the provider's published price for the chosen voice (an assumption, dated), and known overheads. `[EstimateExplained]` tells the listener what is known, what is assumed, what can differ and what is unknown.
+Inputs: exact character counts of the text to speak (known), the provider's price for the chosen voice (an assumption, dated), and known overheads. **Prices are refreshed once a day and whenever usage is fetched** (D14). Every estimate shows the date of the prices it used ("prices as of 30 September"). If a refresh fails, the last prices are kept, their age is shown, and the estimate says so; an estimate is never hidden for that reason. `[EstimateExplained]` tells the listener what is known, what is assumed, what can differ and what is unknown.
 
 ### 8.2 Spending
 Spending counts known usage reported by the provider, or a price-based estimate when usage is reported in units. If a provider does not report usage for a request, the item's cost is **unknown**. Unknown items are counted and shown, never as zero (P6). Reported totals are labelled as estimates: they are not the provider's bill.
@@ -380,12 +390,12 @@ The following are not built now. The model leaves room so they do not need a rew
 ### 14.1 Risks
 1. **Offline in a web client.** Browsers limit storage and can evict it; iOS does not allow background downloads and is stricter about installed versus non-installed sites. Mitigations: installable web app, request persistent storage, download in the foreground with clear progress, verify files on open, and treat a native wrapper as a follow-on if limits bite. **This is the largest risk to goal 5.**
 2. **Latency.** Speech generation speed and provider rate limits decide whether "play within seconds" is true. The server must produce audio ahead of the listener and the client must handle *Getting ready* well.
-3. **Free voice availability.** Depending on the operating system's voices gives a poor and uneven first experience.
+3. **First-voice download.** The first play depends on a download and a hosted catalogue. Mitigations: a small default voice, a resumable download with clear progress, verification of files, and a documented way to install a voice file manually.
 4. **Cost honesty.** Providers differ in what they report. Unknown cost will occur; the Allowance must stay useful when it does.
 5. **Shared trust.** No passwords means any device on the network can approve spending. Keep the Allowance visible and audit everything.
 
 ### 14.2 Decisions this spec asks the architecture to make
-- **Bundled free voice.** Ship a cross-platform neural voice with Bardic (for example a small open model) so a free voice exists on any computer, and treat operating-system voices as extras. This makes V6 and V7 reliable.
+- **Free voices are downloaded, not bundled** (D13). The server needs a catalogue of open-licence voices (name, language, sample, size, hash, licence) it can fetch, and a runtime able to speak them on the target platforms. The catalogue and voice files need a hosting source; until a voice is installed, a first play must go through the first-voice chooser. A first-time download needs internet on the Bardic computer; operating-system voices are the offline alternative.
 - **Two repositories.** A Rust server that owns data, jobs, voices and plans, and a web client that owns presentation and device storage. The contract between them is designed from sections 3 to 9, not derived from the prototype.
 - **Contract first.** A language-neutral, versioned API description is the normative interface. Dedicated clients are generated from it.
 - **Single data folder, single writer.** Keep the prototype's rule of one instance per data folder. Use an embedded database and a content-addressed file store for audio.
@@ -393,10 +403,11 @@ The following are not built now. The model leaves room so they do not need a rew
 
 ## 15. Open items
 
-1. The default monthly Allowance and default per-plan limit on first run (suggestion: none until the listener sets one, and no premium plan can be approved without an Allowance).
-2. Whether the place-conflict default should be *Ask* or *Use newest* for new listeners. This spec says *Ask*.
-3. Whether *delete permanently* needs a listener name typed, or only a confirm.
-4. Export format details (single file versus per-chapter, chapter markers).
-5. The exact bundled free voice and its license.
-6. Service-level details for estimating provider price per voice (how often published prices are refreshed, and who updates them).
-7. The naming of the Bardic computer in the UI ("your Bardic computer" in this spec; the server may have a user-editable name).
+Resolved in this revision: the default Allowance (none; optional monthly limit), delete confirmation (slide plus 60-second undo), export format (one file with chapters), the bundled voice (downloaded on first use), price refresh (daily and on usage), and server naming (editable).
+
+1. **Place-conflict default.** *Ask* or *Use newest* for new listeners. This spec says *Ask*; the trade-offs are in the review notes.
+2. **Price source.** Most providers do not publish prices in a machine-readable form. Decide where the daily refresh reads from: a price table maintained and published with Bardic, the provider where it exposes one, or both with the table as a fallback.
+3. **Voice catalogue.** Which voices, which hosting location, and which licences are acceptable.
+4. **Export encoder.** Producing an M4B with chapters requires audio encoding on the server; choose a library and check licensing.
+5. **Undo window length.** 60 seconds is specified; decide whether it should be a setting.
+6. **Mixed-voice audiobooks.** Revisit after the first release (D2).
