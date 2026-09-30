@@ -30,7 +30,7 @@ These are testable. Each has acceptance tests in section 11.
 - **P1. Words are never changed.** A book's text is stored once, unchanged, and is what the reader shows and the voice speaks.
 - **P2. Nothing paid starts without an approved plan.** No action, default, retry or resume spends money outside an approved plan's limit.
 - **P3. Finished audio is kept.** A failure, stop, limit or restart never deletes audio that was already made.
-- **P4. Free is always available.** Premium is an upgrade, never a gate. A book can always be listened to with a free voice if one exists.
+- **P4. Free is never a paid-only gate.** Premium is an upgrade, not a requirement. If a free voice source (Breeze, or voices on this computer) is set up, every book can be listened to without spending anything. Bardic ships with no voice: first use walks the listener through setting one up (V8).
 - **P5. Places follow the listener.** A listener's place and finished marks are the only per-listener state; everything else is shared.
 - **P6. Unknown is shown as unknown.** Unknown cost, size or duration is never displayed as zero.
 - **P7. The user chooses when two places disagree.** Bardic never silently discards a place.
@@ -62,7 +62,7 @@ A book has ordered **chapters** (including front and back matter, flagged as not
 Per listener and book: chapter, text offset, when it was last changed, which device changed it, and whether the book is **finished** (marked by the listener, or automatic: at least 98% and unchanged for 24 hours, where any change restarts the clock). A short history (latest 10 places) supports undo and conflict resolution. A place is anchored to text, not to audio time, so it is valid for every voice.
 
 ### 3.5 Voice
-A way of speaking: name, **tier** (*free*: runs on the Bardic computer, costs nothing; *premium*: a paid provider), language, a short sample, and a **revision** that changes whenever the provider or the computer changes how it sounds. Voices belong to the server and are shared.
+A way of speaking: name, **source**, **tier** (*free*: from Breeze or from voices already on the Bardic computer, costs nothing per use; *premium*: Gemini, paid), language, a short sample, and a **revision** that changes whenever the provider or the computer changes how it sounds. Voices come from **voice sources** the listener sets up: **Breeze** (their own voice server, address entered in settings), **Gemini** (every voice Gemini offers, through a Google API key), and optionally **this computer** (voices already installed). Bardic lists the voices each source reports; it does not distribute any. Voices belong to the server and are shared.
 
 ### 3.6 Audiobook
 A book voiced by **one voice** (a voice at a specific revision, with the settings it was made with). A book can have several audiobooks. Each chapter of an audiobook has an audio state (section 6). A listener listens to exactly one audiobook of a book at a time. Mixing voices inside one audiobook is not allowed in this version.
@@ -101,8 +101,8 @@ A browser profile that has used Bardic: an identifier, a name the user can edit,
 | D10 | There is no monthly limit by default. It is a setting. Plans always have their own limit. |
 | D11 | Permanent deletion is a deliberate action (a slide-to-confirm) followed by a 60-second undo window. |
 | D12 | Export is one audio file per audiobook with chapter markers, not per chapter. |
-| D13 | Free voices are not bundled. On first use Bardic asks the listener to choose a voice, downloads it to the Bardic computer, and a setting manages voices afterwards. |
-| D14 | Provider prices are refreshed once a day and whenever usage is fetched. |
+| D13 | Bardic ships with no voices. Voices come from sources the user sets up: Gemini (all its voices) and a Breeze server if configured, plus voices already on the computer if present. If none is set up, the first play prompts the user to set one up. No licensing work now; this is for personal use. |
+| D14 | Provider prices are pulled from the provider where an interface exists (for Google, the Cloud Billing Catalog), refreshed once a day and whenever usage is fetched. |
 | D15 | The server has a user-editable name, shown on every device. |
 
 ## 5. Functional requirements
@@ -143,16 +143,16 @@ Requirement IDs are stable references for tests and tasks. "Must" is required fo
 
 ### 5.4 Voices
 
-- **V1.** Voice chooser (`[VoiceFree]`, `[VoicePremium]`, `[VoiceNoAccount]`): tabs Free and Premium, a short audible sample for each voice, and what it costs.
-- **V2.** Free samples are always available and free. Premium samples are short and count toward the Allowance; if no key is set, sample buttons explain that a key is needed.
+- **V1.** Voice chooser (`[VoiceFree]`, `[VoicePremium]`, `[VoiceNoAccount]`): tabs Free (Breeze voices, then voices on this computer) and Premium (all Gemini voices), a short audible sample for each voice, and what it costs.
+- **V2.** Free samples cost nothing. Premium samples are short and count toward spending; if no Gemini key is set, sample buttons explain that a key is needed.
 - **V3.** Choosing a free voice and pressing *Start listening* begins playback (section 7.2). *Make ready* for a free voice starts a background job after a simple confirmation showing time and space.
 - **V4.** Choosing a premium voice never starts playback or spending by itself. It offers *Plan the whole book* and *Plan from chapter N* (section 8).
-- **V5.** Settings › Voices (`[VoiceSources]`): free voices (status *Available*), premium voices (status *Connected*, *Not set up* or *Key rejected*), and an optional user-run voice server. Keys are managed in one place (`[PremiumAccount]`, `[KeyProblem]`).
+- **V5.** Settings › Voices (`[VoiceSources]`): one card per source. **Breeze** (`[BreezeServer]`: server address, connection test, the voices it reports, refreshed on opening the screen and daily), **Gemini** (status *Connected*, *Not set up* or *Key rejected*; key in `[PremiumAccount]`, `[KeyProblem]`) and **This computer** (shown when voices are found). At least one source is required to play.
 - **V6.** **Default voice** (`[VoiceDefault]`) is a listener setting, used when that listener presses play on a book with no audiobook for them. If the default is premium, pressing play on a new book opens a plan first (P2). The default is chosen at first use (V8).
-- **V7.** If no free voice is installed, pressing play shows a clear problem with the choice to download one, use a voice already on the computer, or add a premium voice (`[NoVoice]`).
-- **V8.** **First-time free voice** (`[FirstVoice]`, D13): the first time a listener needs a free voice, Bardic lists available voices with a sample, language and size, asks the listener to choose, and downloads it to the Bardic computer with progress. Voices already on the computer (operating-system voices) may be used instead. The chosen voice becomes that listener's default.
-- **V9.** **Free voices** (`[FreeVoices]`, Settings › Voices): add, download, update and remove voices; shows installed, downloading and available states. Removing a voice never deletes audio already made with it; such an audiobook stays playable.
-- **V10.** Downloaded voice files are verified (hash and licence recorded) before use. A failed or interrupted download resumes or retries without leaving a half-installed voice.
+- **V7.** If no source is set up, or the chosen source is unreachable, pressing play shows a clear problem with the choices to set up Breeze, add a Gemini key or use voices on this computer (`[NoVoice]`). An unreachable Breeze server is shown as *Needs you* with a retry; nothing falls back to a paid voice on its own (P2).
+- **V8.** **First-time set up** (`[SetupVoice]`, D13): when no source is set up, the first play, or the first visit to Voices, shows the three sources with what each is, its tier and one action each. Completing any one continues to the voice chooser, and the chosen voice becomes that listener's default.
+- **V9.** Bardic reads the voice list from each source when a voice screen opens and once a day. If a source is unreachable, its last known voices stay listed but cannot be used until it is reachable; audio already made with them keeps playing.
+- **V10.** Changing or removing a source never deletes audio already made with its voices; such an audiobook stays playable and is marked with the source it came from.
 
 ### 5.5 Listening and reading
 
@@ -171,7 +171,7 @@ Requirement IDs are stable references for tests and tasks. "Must" is required fo
 - **C1.** The client writes the place to the server on events (pause, chapter change, seek, closing, backgrounding) and at most every 30 seconds while playing. It keeps a precise local copy continuously (exact audio time, scroll).
 - **C2.** The server keeps, per listener and book, the latest place and a bounded history of the previous ten. Identical writes change nothing.
 - **C3.** On opening a book the client compares its local place with the server's. If the server's place was changed by another device since this device last synced, the client applies the listener's setting: **Ask** (default), **Use newest**, or **Use this device**.
-- **C4.** **Ask** shows both places with device name, chapter, progress and time, and lets the listener pick one (`[PlaceConflict]`). The other place remains in history.
+- **C4.** **Ask** shows both places with device name, chapter, progress and time, and lets the listener pick one (`[PlaceConflict]`). The other place remains in history. The prompt also offers a one-tap **Always use the newest place** that switches the listener's setting to *Use newest* (D3); it can be changed back in Settings › Listening.
 - **C5.** Away from the server, the client queues place writes and sends them on reconnect. A queued write that conflicts with a newer server place follows C3.
 - **C6.** A book is finished when marked, or when it is at least 98% and its place has not changed for 24 hours. Any change restarts the automatic clock. A marked finish is cleared by any change of place.
 - **C7.** History lets the listener restore a recent place ("undo a mis-tap") from the book menu.
@@ -258,7 +258,7 @@ Exactly one applies at a time (`[Status]`). Stopping or pausing is not a failure
 5. Close the app; open on another device and resume at the same place (C3).
 
 ### 7.2 Press play on a book with no audio
-1. Resolve the listener's default voice (V6). If none is available, show the no-voice problem (V7).
+1. Resolve the listener's default voice (V6). If no voice source is set up, show the set-up prompt (V8); if the source is unreachable, show the no-voice problem (V7).
 2. If premium, open a plan (P2). Otherwise create an audiobook for that voice if none exists.
 3. Make the audio for the chapter containing the place, starting at the place, then continue ahead in the background (M3).
 4. Show *Getting ready* with the expected wait; begin playing as soon as the first audio exists.
@@ -283,7 +283,7 @@ The server computes an **estimate** for a plan as a range:
 - **Low**: characters to speak × the lowest plausible price, assuming no retries.
 - **Likely**: characters × the published price, plus expected retry overhead.
 - **High**: characters × the highest plausible price, plus a retry allowance.
-Inputs: exact character counts of the text to speak (known), the provider's price for the chosen voice (an assumption, dated), and known overheads. **Prices are refreshed once a day and whenever usage is fetched** (D14). Every estimate shows the date of the prices it used ("prices as of 30 September"). If a refresh fails, the last prices are kept, their age is shown, and the estimate says so; an estimate is never hidden for that reason. `[EstimateExplained]` tells the listener what is known, what is assumed, what can differ and what is unknown.
+Inputs: exact character counts of the text to speak (known), the provider's price for the chosen voice (an assumption, dated), and known overheads. **Prices are read from the provider wherever it exposes them** (for Gemini, Google's Cloud Billing Catalog, which needs a key that can read it) and **refreshed once a day and whenever usage is fetched** (D14). Gemini reports per-request token usage, which Bardic uses for actual spending. Where a provider offers no price interface, Bardic falls back to a price table that the owner edits in settings, and labels estimates accordingly. Every estimate shows the date of the prices it used ("prices as of 30 September"). If a refresh fails, the last prices are kept, their age is shown, and the estimate says so; an estimate is never hidden for that reason. `[EstimateExplained]` tells the listener what is known, what is assumed, what can differ and what is unknown.
 
 ### 8.2 Spending
 Spending counts known usage reported by the provider, or a price-based estimate when usage is reported in units. If a provider does not report usage for a request, the item's cost is **unknown**. Unknown items are counted and shown, never as zero (P6). Reported totals are labelled as estimates: they are not the provider's bill.
@@ -345,7 +345,7 @@ Each promise and decision has at least these tests.
 - **P1.** Import, then compare stored text byte for byte with the source text; reader text equals stored text; edits to title or cover do not change it.
 - **P2.** With a valid key and no plan, no request to a premium provider is ever made by play, default voice, retry, resume or sample (samples excepted and counted). With a plan approved, total estimated spend never exceeds its limit.
 - **P3.** Kill the server during a job: after restart, every chapter is either Ready or Not yet; completed audio is present and playable.
-- **P4.** With no key and no network, a free voice plays a book.
+- **P4.** With a Breeze server reachable and no Gemini key, a book plays with no spending. With no source set up, play shows the set-up prompt and sends nothing anywhere.
 - **P5.** Two listeners on two devices keep separate places for one book; deleting one listener leaves the other's places.
 - **P6.** A provider that returns no usage produces an "unknown" count in the Allowance and never increases the spent total by zero.
 - **P7.** Device A and B hold different places: the prompt shows both with device and chapter; choosing one never loses the other from history.
@@ -390,12 +390,12 @@ The following are not built now. The model leaves room so they do not need a rew
 ### 14.1 Risks
 1. **Offline in a web client.** Browsers limit storage and can evict it; iOS does not allow background downloads and is stricter about installed versus non-installed sites. Mitigations: installable web app, request persistent storage, download in the foreground with clear progress, verify files on open, and treat a native wrapper as a follow-on if limits bite. **This is the largest risk to goal 5.**
 2. **Latency.** Speech generation speed and provider rate limits decide whether "play within seconds" is true. The server must produce audio ahead of the listener and the client must handle *Getting ready* well.
-3. **First-voice download.** The first play depends on a download and a hosted catalogue. Mitigations: a small default voice, a resumable download with clear progress, verification of files, and a documented way to install a voice file manually.
+3. **No built-in voice.** A fresh install cannot speak until a source is set up. Mitigations: a short, clear set-up flow (`[SetupVoice]`), optional use of voices already on the computer, and a sample book that explains what is needed. Quality and latency depend on the user's Breeze server or on Gemini's rate limits.
 4. **Cost honesty.** Providers differ in what they report. Unknown cost will occur; the Allowance must stay useful when it does.
 5. **Shared trust.** No passwords means any device on the network can approve spending. Keep the Allowance visible and audit everything.
 
 ### 14.2 Decisions this spec asks the architecture to make
-- **Free voices are downloaded, not bundled** (D13). The server needs a catalogue of open-licence voices (name, language, sample, size, hash, licence) it can fetch, and a runtime able to speak them on the target platforms. The catalogue and voice files need a hosting source; until a voice is installed, a first play must go through the first-voice chooser. A first-time download needs internet on the Bardic computer; operating-system voices are the offline alternative.
+- **Voice sources are adapters.** The server talks to Breeze, Gemini and local voices through one internal voice-source interface (list voices, speak a chunk, report usage and limits), so another source can be added without touching the rest.
 - **Two repositories.** A Rust server that owns data, jobs, voices and plans, and a web client that owns presentation and device storage. The contract between them is designed from sections 3 to 9, not derived from the prototype.
 - **Contract first.** A language-neutral, versioned API description is the normative interface. Dedicated clients are generated from it.
 - **Single data folder, single writer.** Keep the prototype's rule of one instance per data folder. Use an embedded database and a content-addressed file store for audio.
@@ -403,11 +403,10 @@ The following are not built now. The model leaves room so they do not need a rew
 
 ## 15. Open items
 
-Resolved in this revision: the default Allowance (none; optional monthly limit), delete confirmation (slide plus 60-second undo), export format (one file with chapters), the bundled voice (downloaded on first use), price refresh (daily and on usage), and server naming (editable).
+Resolved: the default Allowance (none; optional monthly limit), delete confirmation (slide plus 60-second undo), export format (one file with chapters), the voice catalogue (Gemini's voices plus Breeze's, no bundled or downloaded voices), price refresh (daily and on usage, read from the provider), server naming (editable), place-conflict default (*Ask*, with an "Always use newest" choice in the prompt), and licensing (none for now; personal use).
 
-1. **Place-conflict default.** *Ask* or *Use newest* for new listeners. This spec says *Ask*; the trade-offs are in the review notes.
-2. **Price source.** Most providers do not publish prices in a machine-readable form. Decide where the daily refresh reads from: a price table maintained and published with Bardic, the provider where it exposes one, or both with the table as a fallback.
-3. **Voice catalogue.** Which voices, which hosting location, and which licences are acceptable.
-4. **Export encoder.** Producing an M4B with chapters requires audio encoding on the server; choose a library and check licensing.
-5. **Undo window length.** 60 seconds is specified; decide whether it should be a setting.
-6. **Mixed-voice audiobooks.** Revisit after the first release (D2).
+1. **Price interfaces.** Google publishes list prices through its Cloud Billing Catalog API, which uses a Google Cloud key that may differ from the Gemini key; decide whether Bardic asks for it or uses a price table in settings. Confirm whether Breeze reports usage (it should be free) and what voices metadata it offers.
+2. **Gemini edge case.** Gemini's speech preview can return success and usage with no audio. Decide how such an item is counted (spent, with a failed chapter) and whether it retries.
+3. **Export encoder.** Producing an M4B with chapters requires audio encoding on the server; choose a library.
+4. **Undo window length.** 60 seconds is specified; decide whether it should be a setting.
+5. **Mixed-voice audiobooks.** Revisit after the first release (D2).
