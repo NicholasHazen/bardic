@@ -62,6 +62,9 @@ def fixture_book():
                 item[field] = names[item[field]]
     for scene in book['scenes']:
         scene['segment_ids'] = [names[i] for i in scene.get('segment_ids', [])]
+        # A direction spec carries the whole scene dict, though no request reads its `character_ids`. The digests were
+        # recorded when an import stored [] there; the importer now fills it, and `pipeline_unit_keys` is unchanged.
+        scene['character_ids'] = []
     book['id'] = BOOK_ID
     book['created_at'] = '2026-01-01T00:00:00+00:00'
     book['characters'] += [

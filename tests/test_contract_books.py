@@ -6,7 +6,9 @@ tests/conftest.py, including each error `code`.
 import pytest
 from fastapi.testclient import TestClient
 
-from bardic.app import create_app
+from bardic.app import create_app, manual_fields
+from bardic.pipeline.contract import locked
+from bardic.pipeline.evidence import reviewed_speaker
 from classic_fixtures import classic_references
 
 
@@ -122,6 +124,143 @@ def test_real_edit_locks_only_changed_fields_and_confirmation_locks_the_speaker(
     assert record['confidence'] == 1.0 and record['edited'] is True and record['edited_fields'] == ['speaker_id']
     again = client.patch(f"/api/books/{book['id']}/passages/{line['id']}", json={'speaker_id': mara_id})
     assert again.json()['revision'] == book['revision'] + 1
+
+
+# Passages of an imported book: narration (created at confidence 1.0, speaker `narrator`) and dialogue (speaker
+# `unassigned`, confidence 0). `manual_fields` lists what a person changed, never a field that was only resent.
+LAMP = 'Chapter One\n\nMara held the lamp. \u201cStay,\u201d she said.\n\n***\n\nNight fell over the quiet harbor.\n'
+
+
+def imported_lamp(client):
+    response = client.post('/api/books', files={'file': ('lamp.txt', LAMP.encode(), 'text/plain')})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def passage_of(book, kind):
+    return next(p for p in book['passages'] if p['kind'] == kind)
+
+
+def edit_passage(client, book, passage, **body):
+    response = client.patch(f"/api/books/{book['id']}/passages/{passage['id']}", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def manual(book, passage):
+    return item(book, 'passages', passage['id'])['manual_fields']
+
+
+def test_an_imported_books_scenes_list_the_speakers_of_their_passages(client):
+    book = imported_lamp(client)
+    assert [scene['character_ids'] for scene in book['scenes']] == [['narrator', 'unassigned'], ['narrator']]
+    for scene in book['scenes']:
+        assert scene['character_ids'] == sorted({p['speaker_id'] for p in book['passages'] if p['scene_id'] == scene['id']})
+    # The stored projection carries it too, not just the presented one.
+    assert [scene['character_ids'] for scene in stored(client, book['id'])['scenes']] == [['narrator', 'unassigned'], ['narrator']]
+
+
+def test_a_direction_edit_of_narration_locks_only_the_direction(client):
+    book = imported_lamp(client)
+    narration = passage_of(book, 'narration')
+    assert narration['confidence'] == 1.0 and narration['manual_fields'] == []
+    edited = edit_passage(client, book, narration, direction='Slowly.')
+    assert manual(edited, narration) == ['direction']
+    assert all(p['manual_fields'] == [] for p in edited['passages'] if p['id'] != narration['id'])
+    record = item(stored(client, book['id']), 'segments', narration['id'])
+    assert record['edited'] is True and record['edited_fields'] == ['direction']
+    # Analysis may still replace the speaker: nothing locked it, and nothing reads it as a manual choice.
+    assert not locked(record, 'speaker_id') and not reviewed_speaker(record)
+    # A second field accumulates; the speaker is still not a manual field.
+    assert manual(edit_passage(client, edited, narration, cues=['quiet']), narration) == ['cues', 'direction']
+
+
+def test_resending_a_whole_form_locks_only_what_changed(client):
+    book = imported_lamp(client)
+    narration = passage_of(book, 'narration')
+    form = {'speaker_id': 'narrator', 'direction': '', 'cues': []}
+    # Nothing differs from the stored values: nothing is saved or locked.
+    same = edit_passage(client, book, narration, **form)
+    assert same['revision'] == book['revision'] and manual(same, narration) == []
+    assert 'edited_fields' not in item(stored(client, book['id']), 'segments', narration['id'])
+    changed = edit_passage(client, book, narration, **{**form, 'direction': 'Slowly.'})
+    assert changed['revision'] == book['revision'] + 1 and manual(changed, narration) == ['direction']
+    # The same form again, and the same form with another field changed.
+    assert edit_passage(client, changed, narration, **{**form, 'direction': 'Slowly.'})['revision'] == changed['revision']
+    assert manual(edit_passage(client, changed, narration, **{**form, 'direction': 'Slowly.', 'cues': ['soft']}),
+                  narration) == ['cues', 'direction']
+
+
+def add_mara(client, book):
+    cast = client.post(f"/api/books/{book['id']}/characters", json={'name': 'Mara'}).json()
+    return next(c for c in cast['characters'] if c['name'] == 'Mara')['id'], cast
+
+
+def test_speaker_and_direction_edits_of_dialogue_lock_what_was_changed(client):
+    # Direction alone leaves the speaker and its confidence as analysis left them.
+    book = imported_lamp(client)
+    mara, book = add_mara(client, book)[0], client.get(f"/api/books/{book['id']}").json()
+    line = passage_of(book, 'dialogue')
+    assert line['speaker_id'] == 'unassigned' and line['confidence'] == 0
+    by_direction = edit_passage(client, book, line, direction='Sharp.')
+    assert manual(by_direction, line) == ['direction'] and item(by_direction, 'passages', line['id'])['confidence'] == 0
+    # Choosing the speaker is a review of it: locked, and confidence 1.0.
+    both = edit_passage(client, by_direction, line, speaker_id=mara)
+    assert manual(both, line) == ['direction', 'speaker_id'] and item(both, 'passages', line['id'])['confidence'] == 1.0
+    # Speaker alone, on a fresh book.
+    fresh = imported_lamp(client)
+    mara, fresh = add_mara(client, fresh)[0], client.get(f"/api/books/{fresh['id']}").json()
+    assert manual(edit_passage(client, fresh, passage_of(fresh, 'dialogue'), speaker_id=mara), passage_of(fresh, 'dialogue')) == ['speaker_id']
+    # Speaker and direction in one request.
+    other = imported_lamp(client)
+    mara, other = add_mara(client, other)[0], client.get(f"/api/books/{other['id']}").json()
+    both_at_once = edit_passage(client, other, passage_of(other, 'dialogue'), speaker_id=mara, direction='Sharp.')
+    assert manual(both_at_once, passage_of(other, 'dialogue')) == ['direction', 'speaker_id']
+
+
+def test_passages_edited_before_per_field_tracking_list_every_field(client):
+    book = imported_lamp(client)
+    narration, line = passage_of(book, 'narration'), passage_of(book, 'dialogue')
+    saved = stored(client, book['id'])
+    # An edit from before per-field tracking recorded only `edited`, and that locks every field.
+    item(saved, 'segments', narration['id']).update(edited=True)
+    item(saved, 'segments', line['id']).update(edited=True)
+    runtime(client).store.save_book(saved)
+    presented = client.get(f"/api/books/{book['id']}").json()
+    everything = ['cues', 'direction', 'seed', 'speaker_id']
+    assert manual(presented, narration) == everything and manual(presented, line) == everything
+    # A later edit keeps the whole-item lock.
+    after = edit_passage(client, presented, narration, direction='Slowly.')
+    assert manual(after, narration) == everything
+    assert item(stored(client, book['id']), 'segments', narration['id'])['edited_fields'] == ['*', 'direction']
+
+
+def test_a_dialogue_speaker_confirmed_before_contract_0_2_0_stays_a_manual_field(client):
+    book = imported_lamp(client)
+    line = passage_of(book, 'dialogue')
+    saved = stored(client, book['id'])
+    record = item(saved, 'segments', line['id'])
+    # Before 0.2.0 a confirmation of an unchanged speaker recorded only `edited` and confidence 1.0.
+    record.update(edited=True, edited_fields=['direction'], confidence=1.0)
+    runtime(client).store.save_book(saved)
+    assert manual(client.get(f"/api/books/{book['id']}").json(), line) == ['direction', 'speaker_id']
+    assert reviewed_speaker(record)
+    # Without that confirmation (confidence below 1.0), only the direction is a manual field.
+    record['confidence'] = 0.8
+    assert manual_fields(record) == ['direction'] and not reviewed_speaker(record)
+
+
+def test_confidence_1_0_on_narration_is_not_a_speaker_review():
+    """Narration starts at confidence 1.0, so an edit of another field must not read as a speaker confirmation."""
+    narration = {'id': 'n1', 'kind': 'narration', 'speaker_id': 'narrator', 'confidence': 1.0,
+                 'edited': True, 'edited_fields': ['direction']}
+    assert manual_fields(narration) == ['direction'] and not reviewed_speaker(narration)
+    # The bare marker (an edit from before per-field tracking) still locks everything, narration included.
+    del narration['edited_fields']
+    assert manual_fields(narration) == ['cues', 'direction', 'seed', 'speaker_id'] and reviewed_speaker(narration)
+    # A person who changed the speaker of a narration passage recorded it.
+    narration.update(edited_fields=['speaker_id'], speaker_id='mara')
+    assert manual_fields(narration) == ['speaker_id'] and reviewed_speaker(narration)
 
 
 def test_legacy_whole_item_lock_is_kept_by_a_later_edit(client):

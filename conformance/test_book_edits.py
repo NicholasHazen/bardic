@@ -1,8 +1,6 @@
 """Manual edits to a book (cast, passages, scenes, pronunciations). The canonical text never changes."""
 from __future__ import annotations
 
-import pytest
-
 from . import helpers
 
 
@@ -123,7 +121,6 @@ def test_passage_edit_direction_cues_and_seed(api, fresh_book):
     _assert_text_untouched(fresh_book, cleared)
 
 
-@pytest.mark.xfail(strict=True, reason='Known Python defect (contract 0.4.0): editPassage locks speaker_id when only direction was sent. Fix in Python or Rust; strict, so this fails once it passes and the marker must go.')
 def test_manual_fields_lists_only_the_fields_a_person_changed(api, fresh_book):
     """`manual_fields`: "the passage fields a person set by hand"; an edit locks each field it actually changes."""
     path = {'book_id': fresh_book['id'], 'passage_id': fresh_book['passages'][0]['id']}

@@ -296,8 +296,9 @@ PASSAGE_EDIT_FIELDS = ("cues", "direction", "seed", "speaker_id")
 def manual_fields(segment: dict) -> list[str]:
     """The passage fields a person set by hand, from the stored edit locks (see pipeline.contract.locked).
 
-    ``["*"]`` or a bare ``edited`` flag (an edit from before per-field tracking) locks every field. A speaker
-    confirmed before per-field locks recorded confirmations (``edited`` and confidence 1.0) counts too.
+    ``["*"]`` or a bare ``edited`` flag (an edit from before per-field tracking) locks every field. A dialogue
+    speaker confirmed before per-field locks recorded confirmations (``edited`` and confidence 1.0) counts too
+    (see ``reviewed_speaker``); an edit of anything else never does.
     """
     from .pipeline.evidence import reviewed_speaker
 

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-
 from . import helpers
 from . import synthetic
 from .synthetic import MOON, jpeg_size
@@ -58,7 +56,6 @@ def test_scene_break_ornament_splits_scenes(txt_book):
     assert len(scenes) >= 2, 'a scene-break ornament line starts a new scene'
 
 
-@pytest.mark.xfail(strict=True, reason='Known Python defect (contract 0.4.0): scenes[].character_ids is empty after a TXT/EPUB import. Fix in Python or Rust; strict, so this fails once it passes and the marker must go.')
 def test_scene_character_ids_list_the_speakers_of_their_passages(txt_book, epub_book):
     """`BookScene.character_ids`: "IDs of characters attributed to its passages (including narrator/unassigned)"."""
     for book in (txt_book, epub_book):
