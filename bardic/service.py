@@ -35,6 +35,11 @@ LABEL = "local.bardic"
 # launchd's wait for a graceful stop before it sends SIGKILL. Shutdown lets a request already sent finish:
 # analysis allows 180 s and ordinary narration 240 s. A long chapter chunk (up to 900 s) is cut off.
 EXIT_TIMEOUT = 300
+# launchd gives a job 256 open files by default. The server holds one descriptor per connection plus the
+# library database and audio files; the Rust replacement caps connections at 128 and needs a 208 budget, and
+# both benefit from headroom. These are the soft and hard limits launchd applies to the job.
+FILE_LIMIT_SOFT = 1024
+FILE_LIMIT_HARD = 2048
 READY_TIMEOUT = 90
 LOG_ROTATE_BYTES = 10 * 1024 * 1024
 DEV_PORTS = range(8770, 8800)
@@ -137,6 +142,8 @@ def service_plist(checkout: Path, log: Path) -> dict:
         "KeepAlive": {"SuccessfulExit": False},
         "ThrottleInterval": 30,
         "ExitTimeOut": EXIT_TIMEOUT,
+        "SoftResourceLimits": {"NumberOfFiles": FILE_LIMIT_SOFT},
+        "HardResourceLimits": {"NumberOfFiles": FILE_LIMIT_HARD},
         "StandardOutPath": str(log),
         "StandardErrorPath": str(log),
     }

@@ -131,6 +131,10 @@ def test_launch_agent_runs_the_server_itself_with_a_path_for_macos_tools(tmp_pat
     # A requested stop stays stopped; a crash restarts. Shutdown outlasts analysis and ordinary narration requests.
     assert plist["KeepAlive"] == {"SuccessfulExit": False} and plist["RunAtLoad"] is True
     assert plist["ExitTimeOut"] >= 240
+    # launchd's default of 256 open files is below what a busy server with audio needs; the limits are explicit.
+    assert plist["SoftResourceLimits"] == {"NumberOfFiles": service.FILE_LIMIT_SOFT}
+    assert plist["HardResourceLimits"] == {"NumberOfFiles": service.FILE_LIMIT_HARD}
+    assert 256 < service.FILE_LIMIT_SOFT <= service.FILE_LIMIT_HARD
     assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(tmp_path / "bardic.log")
     assert "GEMINI_API_KEY" not in plist["EnvironmentVariables"]  # Keys stay in the checkout's .env.
 
