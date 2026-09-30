@@ -2,17 +2,18 @@
 
 Status: **proposal, 2026-09-30.** Nothing here is implemented. `contract/openapi.json` (0.5.0) is unchanged. Each part is written so it can be turned into `bardic/apispec/` entries, following [API-WORKFLOW.md](../API-WORKFLOW.md), without further design.
 
-The redesign (Library → Book page → Now Playing, see [FOUNDATIONS.md](FOUNDATIONS.md)) makes four assumptions (plus a profile decision that scopes the first) the backend does not meet today. This document defines each as a contract change, and records what to leave client-local.
+The redesign (Library → Book page → Now Playing, see [FOUNDATIONS.md](FOUNDATIONS.md)) makes four assumptions (plus a profile decision that scopes the first, and a listing gap for listening sessions) the backend does not meet today. This document defines each as a contract change, and records what to leave client-local.
 
 | # | Design assumption | Today | Proposal | Contract bump |
 |---|---|---|---|---|
-| P | Several listeners share one library without sharing places; a dropdown, no auth | No notion of a listener | `Profile` resource + optional `X-Bardic-Profile` header | additive, 0.5.1 |
-| A | Place and finished state follow the book across devices; Library shows "Continue" and progress | `bardic:progress:<bookId>` and `bardic:lastBook` in `localStorage` | Coarse server checkpoint per profile and book + `checkpoint` on `LibraryBookSummary`; granular playback time stays on the client | additive, 0.5.2 |
-| B | Aurora palette derives from the cover, without decoding it in the browser on every render | Client would have to fetch and sample every thumbnail | `sample` colour on `LibraryBookCover` (computed once, stored) | additive, 0.5.3 |
-| C | Importing a book already in the library warns instead of silently creating a copy | `importBook` is "not deduplicated" by contract | `source_sha256` on books + `findDuplicateBooks` | additive, 0.5.4 |
-| D | Book page shows per-chapter "Saved audio" for the chosen narrator | Client must page `listListeningTakes` and derive coverage itself | `getBookAudioStatus` (read-only, per chapter) | additive, 0.5.5 |
+| P | Several listeners share one library without sharing places; a dropdown, no auth | No notion of a listener | `Profile` resource + optional `X-Bardic-Profile` header | 0.5.1 |
+| S | The narrator sheet and Book page list the narrators that already have saved audio | Session rows exist on the server but cannot be listed; the browser remembers its choice in `bardic:listen:<id>` | `listBookListeningSessions`; session IDs validated wherever they are referenced | 0.5.1 |
+| A | Place and finished state follow the book across devices; Library shows "Continue" and progress | `bardic:progress:<bookId>` and `bardic:lastBook` in `localStorage` | Coarse server checkpoint per profile and book + `checkpoint` on `LibraryBookSummary`; granular playback time stays on the client | 0.5.1 |
+| B | Aurora palette derives from the cover, without decoding it in the browser on every render | Client would have to fetch and sample every thumbnail | `sample` colour on `LibraryBookCover` (computed once, stored) | 0.5.1 |
+| C | Importing a book already in the library warns instead of silently creating a copy | `importBook` is "not deduplicated" by contract | `source_sha256` on books + `findDuplicateBooks` | 0.5.1 |
+| D | Book page shows per-chapter "Saved audio" for the chosen narrator | Client must page `listListeningTakes` and derive coverage itself | `getBookAudioStatus` (read-only, per chapter) | 0.5.1 |
 
-All four are additive (new operations, new always-sent response fields, no changed meaning), so each is a patch bump under the 0.x rules. Ship them as separate commits in the order above; P then A unblock the most UI. Every new operation has cost class none (no `x-bardic-cost`): none contacts a provider.
+Everything here is additive (new operations, new always-sent response fields, new optional header, no changed meaning), so under the 0.x rules it is a patch bump. **The whole set ships as one release, 0.5.1, with one changelog entry.** The generator records the contract hash per version and the tests fail if `openapi.json` changes after its version was recorded, so build it on one branch and record the changelog and version once, at the end, rather than per part. P then A unblock the most UI. Every new operation has cost class none (no `x-bardic-cost`): none contacts a provider.
 
 Shared conventions: operation IDs are permanent, so the names below are the ones to keep. Wire names are snake_case. Always-sent fields have no default. Errors use the existing `Error {detail, code}` shape with the status classes in `bardic/errors.py`; `book_not_found` (404) and `book_archived` (409) are reused, not redefined.
 
@@ -100,6 +101,7 @@ BookCheckpoint {
   mode: "listening" | "reading" // how the reader last moved it; open enumeration
   source: ListenSource | null   // narrator the reader was using; null when reading only
   device_id: string | null      // opaque, client-generated, echoed back
+  relocated: boolean            // true when the stored place no longer exists and this is the nearest surviving spot
   updated_at: string            // ISO 8601 UTC, set by the server
 }
 
@@ -109,7 +111,7 @@ ListenSource  (named oneOf, discriminator `kind`; open enumeration)
   { kind: "performance", performance_id: string }
 ```
 
-`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. `session_id` is opaque and browser-minted; the server stores it verbatim and does not validate it (open question 1).
+`progress` is computed over narrative chapters only, so front and back matter do not distort it. `ListenSource` mirrors what `listListeningTakes` and the performance routes already address, so "resume with the same narrator" needs no new identity. A `session` or `performance` source is validated on write and resolved on read (part S).
 
 ### Operations
 
@@ -178,7 +180,7 @@ The Continue row is `checkpoint != null && !checkpoint.finished`, sorted by `che
 
 - `book_checkpoints(profile_id TEXT NOT NULL, book_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(profile_id, book_id))`, with `checkpoint_version: 1` in the body; the body holds the current checkpoint and its bounded history list. Created idempotently; writes are short Store-lock transactions, never held across requests.
 - Archiving a book keeps checkpoints (restore resumes). Excluded from the analysis export.
-- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone, the response resolves to the first passage of the nearest earlier surviving chapter (open question 2).
+- A structure repair that changes passage boundaries still resolves the stored offset to the containing passage. If the chapter is gone (or the offset is beyond its text), reads resolve to the first passage of the nearest earlier surviving chapter and set **`relocated: true`**, so the UI can say "Your place moved because the book's chapters were repaired". `relocated` is computed at read time and is never stored: the stored offset is left alone, so nothing is lost, and the next `setBookCheckpoint` (the reader moving) makes the new place real and clears it. History items are never `relocated`.
 
 ### Client behaviour
 
@@ -315,16 +317,55 @@ ChapterAudioStatus {
 
 - `state` is `complete` when every passage is ready, `stale` when nothing is ready but some passages have stale takes, `partial` when some are ready, `none` otherwise. Stale audio stays a separate count (AGENTS.md: rejected, cached, stale and unknown states remain distinct) and is never counted as ready.
 - `seconds_total` is null rather than 0 when durations for the missing passages are unknown (unknown is not zero). The design shows "n of m chapters saved" from the passage counts, never from a guessed total.
-- Errors: 404 `book_not_found`; 404 `listening_source_not_found` when the source ID does not exist for the book (for `performance`) — sessions cannot be checked (open question 1), so an unknown session ID returns a valid, all-`none` status; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
+- Errors: 404 `book_not_found`; 404 `listening_session_not_found` or `performance_not_found` (both existing codes) when the source ID does not belong to the book; a removed (archived) book still returns 200, because reading its status is harmless. 400 `invalid_request` for a missing or inconsistent `source_id`.
 - Cost: none, no provider. Each call resolves currency by checking take metadata against current passages, so it costs about as much as `listListeningTakes`; document that, and cache nothing server-side in the first version.
-
-### Optional follow-up: `listBookAudioSources`
-
-`GET /api/books/{book_id}/audio-sources` would return each source that has any saved audio (with its voice snapshot and counts), feeding "Ways to listen" and the narrator sheet's "already recorded" hints without the client remembering session IDs. It depends on making listening sessions a server-held resource, which is a larger change (open question 1), so it is **not** part of this proposal's patch series.
 
 ### Tests
 
-Complete/partial/stale/none chapters from constructed takes; a text edit turns ready into stale; performance source; unknown performance 404; unknown session is all `none`; unknown durations give `seconds_total: null`; archived book 200; response validated against the contract.
+Complete/partial/stale/none chapters from constructed takes; a text edit turns ready into stale; performance source; unknown performance and unknown session 404; unknown durations give `seconds_total: null`; archived book 200; response validated against the contract.
+
+---
+
+## S. Listening sessions on the server
+
+### What exists, what is missing
+
+A correction to the earlier draft: listening sessions are **already server-side**. `ListeningSession` is a deterministic hash of a narrator configuration (provider, voice, model, and for Breeze the pinned voice revision, seed and settings). The server stores its row in `listening_sessions` the first time a narrator is previewed or used, returns 404 `listening_session_not_found` for an unknown ID, and never deletes sessions (their takes are retained history). The same narrator therefore always maps to the same session, and a session can never dangle.
+
+What is missing is the *listing* and the *remembering*:
+- Nothing lists a book's sessions, so the client remembers its choice in `localStorage` (`bardic:listen:<bookId>`), and the design's "Ways to listen" and narrator sheet cannot show which narrators already have audio.
+- Sessions are validated only by routes that take `session_id` directly, not where a checkpoint or status route would reference one.
+
+### Operation
+
+| ID | Route | Purpose |
+|---|---|---|
+| `listBookListeningSessions` | `GET /api/books/{book_id}/listen/sessions` | Every narrator session the book has, with how much audio each holds. |
+
+```
+ListeningSessionSummary {
+  session: ListeningSession     // the existing shape, unchanged
+  passages_total: integer       // passages in the book's narrative chapters
+  passages_ready: integer       // passages with current, playable audio for this session (same currency rule as listListeningTakes)
+  seconds_ready: number         // sum of those takes' durations
+  last_audio_at: string | null  // when the newest retained take for this session was made; null when it has none
+}
+```
+
+Response is `{sessions: [ListeningSessionSummary]}`, newest `last_audio_at` first, sessions with no audio last (by creation). Read-only, no provider contact, cost class none; it does the same currency check as `listListeningTakes` for each session, so its cost grows with sessions times passages, which is small for the handful of narrators a book has. Works for archived books. Errors: 404 `book_not_found`.
+
+Performances are not sessions and stay under `listPerformances`; "Ways to listen" combines the two lists.
+
+### Behaviour changes that go with it
+
+- `setBookCheckpoint`: a `source` of kind `session` must name a session of this book, and kind `performance` a performance of this book, else 400 `checkpoint_invalid`. A stored source that no longer resolves (a deleted performance) is returned as `source: null`.
+- `getBookAudioStatus`: an unknown source is a 404 as in part D, no longer a valid empty status.
+- **Choice is per profile, audio is shared.** Sessions and their takes belong to the book (shared spend, shared cache). *Which narrator this listener uses* is `BookCheckpoint.source`. Choosing a narrator without moving (before any audio) is a `setBookCheckpoint` with the same place and a new `source`; that counts as a change for the finish clock (part A).
+- Client: `bardic:listen:<bookId>` no longer holds the session ID; it keeps only unsent form state (an unconfirmed voice pick). On first load after upgrading, a stored session ID that appears in the listing is adopted into the checkpoint, otherwise ignored.
+
+### Tests
+
+List with zero, one and several sessions; counts agree with `listListeningTakes` for each; ordering; a stale take is not counted as ready; archived book; checkpoint write rejects a foreign or unknown session and performance; dangling performance reads back as null; status route 404.
 
 ---
 
@@ -337,8 +378,8 @@ Complete/partial/stale/none chapters from constructed takes; a text edit turns r
 | Playback speed (`bardic:speed`) | device | Depends on the device and headphones. |
 | Reader appearance (size, theme, width) | device | Phone and iPad want different values. |
 | Paid-run consent | `sessionStorage` | Deliberately not persisted (cost rules). |
-| Narrator/session choice | `BookCheckpoint.source` (A) | The one server-held slice worth sharing across devices. |
-| Draft listening sessions `bardic:listen:<id>` | device, until open question 1 | See below. |
+| Narrator choice | `BookCheckpoint.source` (A), sessions listed by S | Server-held and per profile. |
+| Unsent narrator form state `bardic:listen:<bookId>` | device | A draft, not a choice, until the listener commits it. |
 
 If per-profile preferences (speed, appearance) are wanted later, add one `getPreferences`/`setPreferences` pair under the profile scope, not more per-feature routes.
 
@@ -349,21 +390,23 @@ If per-profile preferences (speed, appearance) are wanted later, add one `getPre
 3. A book is finished when marked, or when progress is at least 98% and the checkpoint has not changed for more than 24 hours; any change resets that clock (part A, "Finished").
 4. Spending limits stay universal across profiles; profiles do not separate cost (part P).
 5. Checkpoint history is kept, bounded to 10 per profile and book (part A).
+6. Listening sessions are exposed from the server (part S). They already existed there; the change is listing and validation, so nothing moves out of the browser except the remembered choice.
+7. The checkpoint carries `relocated` (part A).
+8. All of this ships as one release, 0.5.1, with one changelog entry.
 
 ## Open questions
 
-1. **Server-held listening sessions.** `session_id` is minted in the browser and unknown to the server until takes exist. Making sessions a first-class resource (create, list, voice snapshot) would make `ListenSource.session`, part D's validation and a `listBookAudioSources` route clean, but it is a data-model change. Proposal: ship P, A to D as above with sessions unvalidated, and design sessions separately. If sessions become server-held, decide whether they are profile-scoped.
-2. **Repaired structure.** A chapter deleted by a structure repair silently moves the reader. Add `relocated: true` to the checkpoint so the UI can say "your place moved"? Cheap before release, awkward after.
-3. **Version cadence.** Five patch releases (0.5.1 to 0.5.5) versus fewer. Separate commits keep each reviewable; a single release is also valid.
+None blocking. The first implementation task is to confirm, from the retained data, how many existing `bardic:listen:*` choices map to a session row (they should all, since the row is created on first use).
 
-## Suggested implementation order
+## Suggested implementation order (commits on one branch, one release)
 
-1. P (profiles) and A (checkpoints): unblock the profile picker, Continue, progress, finished state and cross-device resume. P must land first because A's routes and the `checkpoint` summary field are profile-scoped.
-2. B (cover sample): tiny, self-contained, unblocks the palette without client image decoding.
-3. D (audio status): unblocks the Book page badges.
-4. C (duplicates): needs the backfill path, and is the only part with a client-side hash step.
+1. P (profiles, header, CORS) and A (checkpoints, history, finished, `relocated`, summary field).
+2. S (session listing and validation) and D (audio status), which share the take-currency check.
+3. B (cover sample).
+4. C (duplicates and the hash backfill).
+5. Only then: `uv run --frozen python -m bardic.apispec`, the 0.5.1 changelog entry, the contract-conformance tests, and updates to [DATA-MODEL.md](../DATA-MODEL.md) and [ROADMAP.md](../ROADMAP.md).
 
-For each: `bardic/apispec/` (Views with field descriptions, `op(...)`, `REQUEST_DOCS`, errors) in the same commit as the route, `uv run --frozen python -m bardic.apispec`, changelog entry with the new patch version, test receiving each 2xx, and an update to [DATA-MODEL.md](../DATA-MODEL.md) and [ROADMAP.md](../ROADMAP.md).
+Each part still adds its `bardic/apispec/` entries (Views with field descriptions, `op(...)`, `REQUEST_DOCS`, errors) in the same commit as its route, with a test that receives each 2xx.
 
 ## Design consequences to carry back to the canvas
 
@@ -371,3 +414,4 @@ For each: `bardic/apispec/` (Views with field descriptions, `op(...)`, `REQUEST_
 - Continue row and progress bars read `checkpoint`. Add an "Almost done" state for `progress >= 0.98 && !finished`, and the "Mark as finished" / "Mark as not started" items in the book menu.
 - The "Continue from your other device" prompt shows the other device's passage, not a time.
 - Settings copy must not promise privacy for profiles.
+- The narrator sheet and "Ways to listen" list the book's sessions with ready counts (S), and the Continue prompt for a moved place uses `relocated` (A).
