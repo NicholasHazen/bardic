@@ -32,10 +32,10 @@ Not profile-scoped, on purpose: the library and books, cast and voices, takes, p
 ### Model
 
 ```
-Profile { id: string, name: string, created_at: string, last_used_at: string | null }
+Profile { id: string, name: string, created_at: string, last_used_at: string | null, books_started: integer }
 ```
 
-`last_used_at` is the newest checkpoint write by that profile (null if none), so the picker can sort by recency.
+`last_used_at` is the newest checkpoint write by that profile (null if none), so the picker can sort by recency. `books_started` counts the profile's checkpoints, so the delete confirmation can say how many books' places are lost ("6 books started"). The picker copy ("Listened today", "Not started yet") derives from `last_used_at`.
 
 | ID | Route | Purpose |
 |---|---|---|
